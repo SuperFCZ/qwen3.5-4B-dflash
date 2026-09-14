@@ -88,7 +88,7 @@ class Qwen3_5ForCausalLMWrapper(nn.Module):
             raise RuntimeError("deployed wrapper rejected the quantized Target")
 
     def commit_dflash_chunk_state(self, committed_rows: int) -> Any:
-        """Publish scalar GDN state from the accepted-prefix chunk call."""
+        """Publish scalar GDN state for the selected accepted prefix."""
 
         return self.model.commit_dflash_chunk_state(committed_rows)
 

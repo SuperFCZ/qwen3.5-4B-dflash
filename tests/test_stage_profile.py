@@ -604,3 +604,47 @@ def test_missing_second_gdr_pass_fails_capture_validation(setup_profiler):
             adapter, [1], stage="accept-commit", block_size=4,
             eos_token_ids=[], warmup=0, profiler=profiler,
         )
+
+
+class MtpTarget(FakeTarget):
+    @property
+    def dflash_rollback_audit(self):
+        return {**super().dflash_rollback_audit,
+                "gdr_backend": "npu_gated_delta_rule_mtp_bank_select",
+                "rollback_mtp_state_select_layer_calls": self.adapter.state_select_calls}
+
+
+class MtpAdapter(FakeAdapter):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.target = MtpTarget(self)
+        self.state_select_calls = 0
+
+    def commit_rollback(self, accepted):
+        before = self.gdr_commit_calls
+        super().commit_rollback(accepted)
+        self.gdr_commit_calls = before
+        self.state_select_calls += 2
+
+
+@pytest.mark.parametrize("stage", ["verify", "accept-commit", "decode-round"])
+def test_mtp_profile_counts_bank_selection_without_second_gdr(setup_profiler, stage):
+    events, collector, profiler = setup_profiler(stage)
+    adapter = MtpAdapter(collector, events, reject=True)
+    with profiler:
+        report = profile_one_stage(adapter, [1], stage=stage, block_size=4,
+                                   eos_token_ids=[], warmup=1, profiler=profiler)
+    assert report["gdr_backend"] == "npu_gated_delta_rule_mtp_bank_select"
+    assert report["captured_gdr_layer_calls"] == {
+        "verify": 2 if stage in {"verify", "decode-round"} else 0, "commit": 0}
+    assert report["captured_mtp_state_select_layer_calls"] == (0 if stage == "verify" else 2)
+    assert report["result"]["accepted_draft_tokens"] == 0
+
+
+def test_mtp_missing_bank_selection_fails_capture_validation(setup_profiler):
+    events, collector, profiler = setup_profiler("accept-commit")
+    adapter = MtpAdapter(collector, events, reject=True)
+    adapter.commit_rollback = lambda accepted: None
+    with profiler, pytest.raises(RuntimeError, match="state-selection calls"):
+        profile_one_stage(adapter, [1], stage="accept-commit", block_size=4,
+                          eos_token_ids=[], warmup=0, profiler=profiler)

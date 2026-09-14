@@ -104,11 +104,8 @@ def assert_gdr_effective_length_source_contract() -> None:
             assert "output_final_state" in keyword_names
 
     rollback_tree = ast.parse(SOURCE.read_text("utf-8"), filename=str(SOURCE))
-    assert not any(
-        isinstance(node, ast.Attribute)
-        and node.attr == "npu_gated_delta_rule_mtp"
-        for node in ast.walk(rollback_tree)
-    )
+    # This contract covers the ordinary/default Chunk calls. Optional native
+    # MTP dispatch and bank selection are exercised in test_torch_npu_gdr_routes.
     commit_method = next(
         node
         for node in ast.walk(rollback_tree)

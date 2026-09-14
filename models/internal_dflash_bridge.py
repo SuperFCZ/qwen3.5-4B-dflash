@@ -2,7 +2,7 @@
 
 The HIAI target owns model loading and its custom operators.  This module
 keeps the old complete-prefix adapter as an oracle and adds a persistent
-rollback transaction for the separate two-pass chunk-GDR modeling.
+rollback transaction with selectable two-pass Chunk or MTP verification.
 
 The legacy full-prefix route builds a fresh hybrid cache per call:
 
@@ -17,7 +17,9 @@ The rollback route bootstraps the prompt in block-aligned chunks of at most 64
 real rows, keeps one scalar hybrid state across rounds, and executes one
 ``K + 1`` verification block with the original chunk GDR.  After Target
 acceptance it calls the original chunk GDR again with ``effective_length=a+1``
-to publish the committed recurrent state.  Full-attention KV uses provisional
+to publish the committed recurrent state.  The optional MTP route instead
+keeps an FP32 per-row recurrent bank and copies the selected prefix state.
+Full-attention KV uses provisional
 physical writes plus a logical commit cursor.  Causal-conv prefix states remain
 a Tensor golden on the input device.
 
@@ -188,6 +190,7 @@ class InternalDFlashTarget(nn.Module):
         dtype: torch.dtype,
         kv_cache_max_len: int,
         rollback_enabled: bool = False,
+        verify_gdr: str = "chunk",
         draft_input_embeddings: nn.Module | None = None,
         draft_output_embeddings: nn.Module | None = None,
         quantization_request: TargetQuantizationRequest | None = None,
@@ -240,6 +243,14 @@ class InternalDFlashTarget(nn.Module):
             else self._execution_output_embeddings()
         )
         self.rollback_enabled = bool(rollback_enabled)
+        if verify_gdr not in {"chunk", "mtp"} or (verify_gdr == "mtp" and not self.rollback_enabled):
+            raise ValueError("verify_gdr must be chunk or mtp; mtp requires rollback")
+        self.verify_gdr = verify_gdr
+        if verify_gdr == "mtp":
+            configure = getattr(execution_model, "configure_dflash_verify_gdr", None)
+            if not callable(configure):
+                raise TypeError("MTP Target must implement configure_dflash_verify_gdr")
+            configure(verify_gdr)
         if self.rollback_enabled:
             self.dflash_feature_source = _ROLLBACK_FEATURE_SOURCE
             self.dflash_full_prefix_execution_mode = "persistent_incremental_rollback"
@@ -247,6 +258,9 @@ class InternalDFlashTarget(nn.Module):
             self.dflash_rollback_mode = (
                 "original-gdr-two-pass-chunk-torch-conv-prefix-logical-paged-kv"
             )
+            if verify_gdr == "mtp":
+                self.dflash_rollback_contract_id = "qwen3.5-4b-dflash-hiai-mtp-bank-rollback-v1"
+                self.dflash_rollback_mode = "mtp-fp32-bank-select-torch-conv-prefix-logical-paged-kv"
         self.kv_cache_max_len = _positive_int(
             kv_cache_max_len,
             name="kv_cache_max_len",
@@ -281,6 +295,7 @@ class InternalDFlashTarget(nn.Module):
         self._rollback_commit_calls = 0
         self._rollback_gdr_verify_layer_calls = 0
         self._rollback_gdr_commit_layer_calls = 0
+        self._rollback_mtp_state_select_layer_calls = 0
         self._rollback_aborts = 0
         self._target_embedding_calls = 0
         self._target_embedding_successes = 0
@@ -342,19 +357,24 @@ class InternalDFlashTarget(nn.Module):
             "enabled": self.rollback_enabled,
             "historical_prefix_replay_during_verify": False,
             "conv_bank_backend": "torch_tensor_golden_on_input_device",
-            "gdr_backend": "npu_chunk_gated_delta_rule_two_pass",
+            "verify_gdr": self.verify_gdr,
+            "gdr_backend": ("npu_gated_delta_rule_mtp_bank_select" if self.verify_gdr == "mtp"
+                            else "npu_chunk_gated_delta_rule_two_pass"),
             "ordinary_gdr_effective_length_contract": (
                 "int16_batch_call_local_valid_rows"
             ),
             "verify_gdr_policy": (
-                "original_chunk_gdr_effective_length_equals_verify_rows"
+                "mtp_t_slot_fp32_bank_int8_input_slot_zero" if self.verify_gdr == "mtp"
+                else "original_chunk_gdr_effective_length_equals_verify_rows"
             ),
             "commit_gdr_policy": (
-                "same_round_start_state_second_chunk_effective_length_a_plus_1"
+                "clone_output_bank_slot_a_no_second_gdr" if self.verify_gdr == "mtp"
+                else "same_round_start_state_second_chunk_effective_length_a_plus_1"
             ),
-            "custom_gdr_mtp_required": False,
+            "custom_gdr_mtp_required": self.verify_gdr == "mtp",
             "persistent_gdn_state": (
-                "scalar_conv_fp16_recurrent_original_receiver_dtype"
+                "scalar_conv_fp16_recurrent_fp32_after_mtp_commit" if self.verify_gdr == "mtp"
+                else "scalar_conv_fp16_recurrent_original_receiver_dtype"
             ),
             "persistent_call_synchronization_policy": (
                 "same_device_stream_dependencies_no_per_call_host_barrier"
@@ -384,6 +404,7 @@ class InternalDFlashTarget(nn.Module):
                 "rollback_commit_calls",
                 "rollback_gdr_verify_layer_calls",
                 "rollback_gdr_commit_layer_calls",
+                "rollback_mtp_state_select_layer_calls",
                 "rollback_aborts",
             ),
             "ordinary_prefill_token_calls": self._ordinary_prefill_token_calls,
@@ -403,6 +424,7 @@ class InternalDFlashTarget(nn.Module):
             "rollback_gdr_commit_layer_calls": (
                 self._rollback_gdr_commit_layer_calls
             ),
+            "rollback_mtp_state_select_layer_calls": self._rollback_mtp_state_select_layer_calls,
             "rollback_aborts": self._rollback_aborts,
             "target_quantization": dict(self.dflash_target_quantization_audit),
         }
@@ -1048,12 +1070,12 @@ class InternalDFlashTarget(nn.Module):
                     raise TypeError("chunk commit conv state changed dtype")
                 if recurrent_state.dtype != torch.float32:
                     raise TypeError("chunk commit recurrent state must use FP32")
-                # Match the receiver's ordinary GDR cache boundary exactly:
-                # the operator returns FP32, then persistent storage uses the
-                # dtype of the round-start state (normally FP16).
+                # Chunk keeps the receiver's cache boundary (normally FP16).
+                # MTP retains the selected bank's FP32 values across rounds.
                 updated[index] = (
                     conv_state,
-                    recurrent_state.to(old_recurrent.dtype),
+                    recurrent_state if self.verify_gdr == "mtp"
+                    else recurrent_state.to(old_recurrent.dtype),
                 )
         except Exception:
             self._rollback_invalid = True
@@ -1062,7 +1084,10 @@ class InternalDFlashTarget(nn.Module):
         self._persistent_state = updated
         self._persistent_cursor += committed_rows
         self._last_committed_rows = committed_rows
-        self._rollback_gdr_commit_layer_calls += len(linear_indices)
+        if self.verify_gdr == "mtp":
+            self._rollback_mtp_state_select_layer_calls += len(linear_indices)
+        else:
+            self._rollback_gdr_commit_layer_calls += len(linear_indices)
         committed = {
             "logits": output["logits"][:, :committed_rows, :],
             "dflash_features": output["dflash_features"][:, :committed_rows, :],
@@ -1239,7 +1264,10 @@ def _load_qwen35_target_impl(
     wrapper_module_name: str,
     hiai_module_name: str,
     rollback_enabled: bool,
+    verify_gdr: str = "chunk",
 ) -> nn.Module:
+    if verify_gdr not in {"chunk", "mtp"} or (verify_gdr == "mtp" and not rollback_enabled):
+        raise ValueError("verify_gdr must be chunk or mtp; mtp requires rollback")
     quantization_request = TargetQuantizationRequest.from_environment()
     raw_max_len = os.environ.get(KV_CACHE_MAX_LEN_ENV)
     if raw_max_len is None:
@@ -1254,6 +1282,9 @@ def _load_qwen35_target_impl(
             f"{wrapper_module_name} must export Qwen3_5ForCausalLMWrapper"
         )
     hiai_module = importlib.import_module(hiai_module_name)
+    if verify_gdr == "mtp":
+        # Fail before loading the checkpoint if the native extension is absent.
+        hiai_module.require_gdr_mtp()
     expected_model_class = getattr(hiai_module, "Qwen3_5ForCausalLM", None)
     if not isinstance(expected_model_class, type):
         raise TypeError(
@@ -1431,6 +1462,7 @@ def _load_qwen35_target_impl(
         dtype=dtype,
         kv_cache_max_len=kv_cache_max_len,
         rollback_enabled=rollback_enabled,
+        verify_gdr=verify_gdr,
         draft_input_embeddings=draft_input_embeddings,
         draft_output_embeddings=draft_output_embeddings,
         quantization_request=quantization_request,
@@ -1463,6 +1495,7 @@ def load_qwen35_rollback_target(
     *,
     device: torch.device,
     dtype: torch.dtype,
+    verify_gdr: str = "chunk",
 ) -> nn.Module:
     """Load the separate rollback modeling through the wrapper adapter."""
 
@@ -1475,6 +1508,7 @@ def load_qwen35_rollback_target(
         ),
         hiai_module_name="models.modeling_qwen3_5_hiai_nd_dflash_rollback",
         rollback_enabled=True,
+        verify_gdr=verify_gdr,
     )
 
 

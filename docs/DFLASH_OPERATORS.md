@@ -2,7 +2,7 @@
 
 本文描述 Python NPU strict-greedy rollback 的算子依赖、Tensor 实现和性能候选。AIR/OM/C++
 的融合 verify/commit 与显式 I/O 见 [框架接口](QUANT_AIR_OM_FRAMEWORK.md)。
-增量 OM 新增可选 GDR MTP 路径；它的 FP32 bank、注册接口和
+Torch-NPU 直接推理和增量 OM 均可选择 GDR MTP 路径；它的 FP32 bank、注册接口和
 `--verify-gdr` 命令见 [两条验证路径](GDR_VERIFY_ROUTES.md)。以下 Python eager
 rollback 的依赖结论仍按 Chunk 路径描述。
 
@@ -12,7 +12,7 @@ rollback 的依赖结论仍按 Chunk 路径描述。
 
 ## 1. 当前结论
 
-- 必需接口：`ChunkGatedDeltaRule` 的 `effective_length` ABI；prompt、decode、verify 和
+- 默认 Chunk 必需接口：`ChunkGatedDeltaRule` 的 `effective_length` ABI；prompt、decode、verify 和
   accepted-prefix commit 都复用它，不调用 `GatedDeltaRuleMTP`。
 - 当前可运行：causal-conv 使用输入 NPU 上的 Tensor golden；KV 使用现有
   `npu_cache_update_` 逐 row 写；attention 使用现有 `adn_fused_infer_attention`；Draft 使用

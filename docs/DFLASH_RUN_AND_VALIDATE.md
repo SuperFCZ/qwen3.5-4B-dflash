@@ -154,6 +154,7 @@ FP16 不需要量化文件，在当前 Bash 会话设置：
 QUANT_ARGS=()
 export KV_CAPACITY=2048
 export MAX_NEW_TOKENS=32
+export VERIFY_GDR=chunk
 cat > "$AI_RUN_DIR/prompt.txt" <<'TEXT'
 请用一句话解释为什么天空是蓝色的。
 TEXT
@@ -161,6 +162,7 @@ TEXT
 NPU_ARGS=(
   --target-dir "$TARGET_DIR" --draft-dir "$DRAFT_DIR"
   --kv-cache-max-len "$KV_CAPACITY" --device npu:0
+  --verify-gdr "$VERIFY_GDR"
   --prompt-file "$AI_RUN_DIR/prompt.txt" --prompt-mode chat --enable-thinking
 )
 ```
@@ -168,6 +170,13 @@ NPU_ARGS=(
 `KV_CAPACITY` 必须是 64 的倍数，覆盖 prompt 和输出 token。
 `--block-size` 包含一个 anchor，取值 2..16；16 表示最多 15 个 proposal。
 NPU prefill 每块最多 64 个真实 token，ordinary decode 每次一行。
+
+`VERIFY_GDR=chunk` 使用默认两遍 GDR；`VERIFY_GDR=mtp` 使用一次 GDR MTP
+加 FP32 bank 选择。先设置变量再构造上面的 `NPU_ARGS` 数组；后面的运行、
+benchmark 和分阶段 profiling 命令都会使用所选路线。直接推理无需重新编译 OM，
+但 MTP 原生算子必须已注册。接口、状态精度和完整命令见
+[两条验证路径](GDR_VERIFY_ROUTES.md)。下文的“两遍”描述适用于默认 Chunk 路线；
+MTP 的 accept-commit 复制 bank 第 a 槽，不执行第二遍 GDR。
 
 要使用 W8A8，先完成下面的量化输入准备，然后设置 `QUANT_ARGS`。只运行 FP16 可直接进入第 5 步。
 

@@ -657,6 +657,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("ordinary", "dflash"), required=True)
     parser.add_argument("--target-dir", required=True)
     parser.add_argument("--draft-dir", required=True)
+    parser.add_argument("--verify-gdr", choices=("chunk", "mtp"), default="chunk",
+                        help="Target verifier: two-pass Chunk (default) or native MTP bank selection")
     parser.add_argument(
         "--target-factory",
         default=DEFAULT_NPU_TARGET_FACTORY,
@@ -894,6 +896,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "classification": "real NPU synchronized rollback execution",
         "mode": config.mode,
         "strict_greedy_exact_match": True,
+        "verify_gdr": args.verify_gdr,
         "historical_prefix_replay_during_verify": False,
         "request": _legacy._request_payload(
             args,

@@ -37,6 +37,7 @@ from .target_quant import (
 
 AIC_METRICS = ("PipeUtilization", "Memory", "MemoryUB")
 GDR_BACKEND = "npu_chunk_gated_delta_rule_two_pass"
+MTP_GDR_BACKEND = "npu_gated_delta_rule_mtp_bank_select"
 STAGE_SCOPES = {
     "prefill": (
         "one complete Target.begin_rollback: fresh-cache reset, all real "
@@ -90,17 +91,38 @@ STAGE_SCOPES = {
 }
 
 
+MTP_STAGE_SCOPES = {
+    "verify": "one Target verify: scalar state clones, per-layer native MTP call and FP32 bank; excludes Target Top1, acceptance and bank selection",
+    "draft-verify": "Draft proposal and verify input preparation plus Target MTP verify; excludes Target Top1, acceptance and bank selection",
+    "accept-commit": "acceptance comparison, compact copies of selected recurrent/conv bank slot a, FP32 state publication, logical KV commit and next-round feature projection; no second GDR",
+    "decode-round": "one complete Draft/MTP verify transaction including input preparation, Target Top1, acceptance and FP32 bank selection; excludes prefill and detokenization",
+}
+
+
+def _gdr_backend(target):
+    backend = target.dflash_rollback_audit.get("gdr_backend")
+    if backend not in {GDR_BACKEND, MTP_GDR_BACKEND}:
+        raise RuntimeError("stage profiling requires a supported Chunk/MTP GDR target")
+    return backend
+
+
 def _snapshot_gdr_calls(target):
     audit = target.dflash_rollback_audit
-    if audit.get("gdr_backend") != GDR_BACKEND:
-        raise RuntimeError("stage profiling on this branch requires the two-pass chunk-GDR target")
+    _gdr_backend(target)
     counts = {}
     for step in ("verify", "commit"):
         value = audit.get(f"rollback_gdr_{step}_layer_calls")
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise RuntimeError(f"missing or invalid chunk-GDR {step} layer counter")
+            raise RuntimeError(f"missing or invalid GDR {step} layer counter")
         counts[step] = value
     return counts
+
+
+def _snapshot_mtp_select_calls(target):
+    count = target.dflash_rollback_audit.get("rollback_mtp_state_select_layer_calls")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise RuntimeError("missing or invalid MTP state-selection layer counter")
+    return count
 
 
 def add_profile_arguments(parser: argparse.ArgumentParser) -> None:
@@ -191,15 +213,21 @@ def profile_one_stage(
     prompt_ids = _input_ids(prompt, device)
     eos = _normalize_eos(eos_token_ids)
     captured_gdr_calls = None
+    captured_mtp_select_calls = None
+    gdr_backend = _gdr_backend(adapter.target)
 
     @contextmanager
     def measured_capture():
-        nonlocal captured_gdr_calls
+        nonlocal captured_gdr_calls, captured_mtp_select_calls
         before = _snapshot_gdr_calls(adapter.target)
+        before_select = (_snapshot_mtp_select_calls(adapter.target)
+                         if gdr_backend == MTP_GDR_BACKEND else None)
         with profiler.capture():
             yield
         after = _snapshot_gdr_calls(adapter.target)
         captured_gdr_calls = {key: after[key] - before[key] for key in before}
+        if before_select is not None:
+            captured_mtp_select_calls = _snapshot_mtp_select_calls(adapter.target) - before_select
 
     def once(measured: bool):
         def capture(selected_stage: str):
@@ -300,13 +328,18 @@ def profile_one_stage(
         raise RuntimeError("single-stage profiling did not capture exactly one window")
     expected_gdr = {
         "verify": stage in {"verify", "draft-verify", "decode-round"},
-        "commit": stage in {"accept-commit", "decode-round"},
+        "commit": gdr_backend == GDR_BACKEND and stage in {"accept-commit", "decode-round"},
     }
     if captured_gdr_calls is None or any(
         count < 0 or (count > 0) != expected_gdr[key]
         for key, count in captured_gdr_calls.items()
     ):
-        raise RuntimeError("captured chunk-GDR layer calls do not match the selected stage")
+        raise RuntimeError("captured GDR layer calls do not match the selected route/stage")
+    if gdr_backend == MTP_GDR_BACKEND and (
+        captured_mtp_select_calls is None or captured_mtp_select_calls < 0
+        or (captured_mtp_select_calls > 0) != (stage in {"accept-commit", "decode-round"})
+    ):
+        raise RuntimeError("captured MTP state-selection calls do not match the selected stage")
     return {
         "schema_version": 3,
         "route": "qwen3.5-dflash-single-stage-profile",
@@ -321,10 +354,10 @@ def profile_one_stage(
         "aic_metrics": profiler.metrics,
         "capture_windows": profiler.windows,
         "captured_calls": captured_calls(stage),
-        "gdr_backend": GDR_BACKEND,
+        "gdr_backend": gdr_backend,
         "captured_gdr_layer_calls": captured_gdr_calls,
-        # This branch always runs a second chunk GDR pass on commit, including
-        # accepted=0. An empty commit export is a failed capture.
+        "captured_mtp_state_select_layer_calls": captured_mtp_select_calls,
+        # Chunk commits execute GDR; MTP commits clone selected bank slots.
         "operator_rows_required": True,
         "warmup_iterations": warmup,
         "warmup_output_match": stable,
@@ -334,7 +367,8 @@ def profile_one_stage(
         "block_size": block_size,
         "proposal_capacity": block_size - 1,
         "max_new_tokens_applies": False,
-        "stage_scope": STAGE_SCOPES[stage],
+        "stage_scope": (MTP_STAGE_SCOPES.get(stage, STAGE_SCOPES[stage])
+                        if gdr_backend == MTP_GDR_BACKEND else STAGE_SCOPES[stage]),
         "synchronization": "before/after the selected stage; no added Draft/verify barrier in joint mode",
         "result": measured,
     }
@@ -361,7 +395,7 @@ def profile_all_stages(adapter, prompt_token_ids, *, block_size, eos_token_ids, 
         "status": "PASS_CAPTURE", "profile_stage": "all",
         "profile_output": profiler.output, "collector": COLLECTOR,
         "aic_metrics": profiler.metrics, "capture_windows": len(reports),
-        "gdr_backend": GDR_BACKEND,
+        "gdr_backend": _gdr_backend(adapter.target),
         "stages": list(SINGLE_STAGES), "captures": reports,
         "formal_latency_evidence": False, "strict_greedy_exact_match": None,
         "correctness_gate": {"status": "NOT_RUN_STAGE_DIAGNOSTIC"},

@@ -1,12 +1,15 @@
 # 选择 GDR MTP 或两遍 Chunk 验证
 
-AIR/OM/C++ 增量路径支持额外参数 `--verify-gdr chunk|mtp`。
+Torch-NPU 直接推理和 AIR/OM/C++ 增量路径都支持参数 `--verify-gdr chunk|mtp`。
 默认仍是 `chunk`。这次复用同一仓库
 [`framework/quant-air-om` 的 GDR MTP 接口](https://github.com/day8reak/qwen3.5-4B-dflash/blob/631c86fc0c4e053817f0786ab8067b5565638d50/framework/python/qwen35_dflash/ascend310p/custom_op_export.py)，
 来源提交 `631c86fc0c4e053817f0786ab8067b5565638d50`。
 接入的是现有 MTP 算子的前端、Meta、GE 转换及状态选择；不包含新的设备 kernel。
 
 ## 1. 两条路径怎样工作
+
+下表的固定 16 行、外部输出数和 ABI 属于增量 OM。Torch-NPU 直接推理使用实际
+`T=K+1` 行（1～16，包含 anchor），由运行参数选择算子，不需要先导出 OM。
 
 | 项目 | `chunk`，默认 | `mtp` |
 |---|---|---|
@@ -50,7 +53,58 @@ MTP bundle 仅把普通路径舍入后的 recurrent state 用 FP32 容器保存�
 DFlash MTP Verify 则保留选中状态的 FP32 数值。两条路径的 ABI 不同，不能混装图。
 Draft 权重、算子和默认 `--deterministic=1` 编译策略不变。
 
-## 2. 导出前检查 MTP 算子
+## 2. Torch-NPU 直接推理：运行参数选择
+
+`models.dflash_v1.run_npu`、`models.dflash_v1.run_rollback` 和
+`models.dflash_v1.benchmark_npu` 都接受 `--verify-gdr chunk|mtp`，默认 `chunk`。
+同一个 Python/Torch-NPU 环境可选择两条路线，前提是对应的自定义算子已经注册；
+不需要安装两套 Torch-NPU。仓库提供调用和状态管理代码，不包含新的设备 kernel。
+
+| 参数 | Verify 的 Torch-NPU 接口 | 接受数确定后 |
+|---|---|---|
+| `--verify-gdr chunk` | `npu_chunk_gated_delta_rule` | 第二遍 Chunk 重算接受前缀 |
+| `--verify-gdr mtp` | `npu_gated_delta_rule_mtp` | 从 FP32 bank 复制第 a 槽，无第二遍 GDR |
+
+沿用 [Python NPU 手册](DFLASH_RUN_AND_VALIDATE.md)的模型、算子注册和环境配置：
+
+```bash
+export VERIFY_GDR=mtp
+export PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}"
+cd "$AI_RUN_DIR"
+"$MODEL_PYTHON" -B -m models.dflash_v1.run_npu \
+  --target-dir "$TARGET_DIR" --draft-dir "$DRAFT_DIR" \
+  --verify-gdr "$VERIFY_GDR" --device npu:0 \
+  --kv-cache-max-len "$KV_CAPACITY" \
+  --block-size 16 --max-new-tokens 128 --execution-mode dflash \
+  --prompt '请用通俗的中文解释什么是机器学习。' \
+  --report "$AI_RUN_DIR/native-$VERIFY_GDR.json"
+```
+
+把 `VERIFY_GDR` 改为 `chunk` 即切回两遍版本；直接推理无需重新编译 AIR/OM。
+`--block-size 16` 包含一个 anchor 和最多 15 个候选。W8A8 Target 沿用原来的
+`--quant_mode enable --config <原推理YAML路径>`，此参数不改变量化、Draft 或调度策略。
+`dflash` 模式只生成当前路线的输出；需要 ordinary 严格对照时使用原有
+`--execution-mode validate`。benchmark 的独立重复性与严格对照检查保持原样。
+
+MTP 路线在加载权重前检查原生接口；支持
+`torch_npu.npu_gated_delta_rule_mtp` 或已注册的
+`torch.ops.npu.npu_gated_delta_rule_mtp`。缺少接口会明确报错，不回退到 Chunk；
+默认 Chunk 不需要安装 MTP。此原生 MTP 选择仅适用于 NPU，不接受 CPU/CUDA。
+
+与固定形状 OM 不同，直接推理把当前标量状态播种成实际 T 槽 FP32 bank，
+用 `INT8[B]=0` 选择初始槽。Verify 保存 recurrent/conv bank，commit 复制
+第 a 槽形成独立的小块缓存，避免切片继续占用整个 bank。跨轮 recurrent state
+保留 FP32，普通 prefill/decode 继续使用原来的 Chunk 和 FP16 舍入。
+零接受提交旧 anchor，下一轮继续投机。
+
+报告的 `target_rollback_audit.verify_gdr` 和 `gdr_backend` 记录实际加载路线。
+MTP 提交记录 `rollback_mtp_state_select_layer_calls`，
+`rollback_gdr_commit_layer_calls` 保持 0；Chunk 提交记录第二遍 GDR 调用。
+分阶段 profiling 的 verify、accept-commit、decode-round 也使用所选路线，并检查
+MTP 提交确实选择了状态。native 的确定性设置和 ATC 的 `--deterministic`
+属于不同入口；`--verify-gdr` 不会切换它们。
+
+## 3. AIR/OM 导出前检查 MTP 算子
 
 使用 [部署手册](GDR_CHUNK_AIR_OM.md)中已配置的 CANN、模型 Python、
 receiver、自定义算子环境和锁定的 `factory.json`。选择 MTP 时还需要已有
@@ -82,7 +136,7 @@ GE 输出名必须为 `core_attn`、`last_recurrent_state`，不能把后者注�
 前端会检查 dispatcher schema、FP32 bank 和 INT8 selector；算子缺失会报错，不回退到 Chunk 或 CPU。
 默认 Chunk 导出不要求安装 GDR MTP。
 
-## 3. 用一个参数选择导出路径
+## 4. 用一个参数选择导出路径
 
 `--verify-gdr` 可以用于 `export-air` 和 `build-om`，
 优先于 factory JSON 中的 `"verify_gdr": "chunk"` / `"mtp"`。
@@ -118,7 +172,7 @@ export DEPLOYMENT_MANIFEST="$VERIFY_BUNDLE/deployment-manifest.json"
 export CPP_RUNNER="$AI_RUN_DIR/build/cpp-gdr-routes/qwen35_dflash_acl_runner"
 ```
 
-## 4. 跑相同的多 prompt 对照
+## 5. AIR/OM 跑相同的多 prompt 对照
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_prompts.py" \
@@ -134,7 +188,7 @@ export CPP_RUNNER="$AI_RUN_DIR/build/cpp-gdr-routes/qwen35_dflash_acl_runner"
 Chunk deployment manifest 并传 `--verify-gdr chunk` 即可。
 `infer-cpp`、`prepare-chunk-plan`、`profile_om.py` 同样支持这个校验参数；
 `--summarize-existing` 读取保存且通过 hash 校验的 plan，不会重新解释或重跑旧结果。
-此参数的支持范围是增量 AIR/OM/C++；已有 Python eager rollback 入口继续使用 Chunk。
+这些命令用于增量 AIR/OM/C++；Torch-NPU 直接推理的运行参数见第 2 节。
 
 新请求和汇总记录 `verify_gdr`，C++ case 报告的 `abi.id` 记录具体 ABI。
 两条路径沿用相同的 3 次预热＋10 次正式测量、接受率计数和持续投机策略。
@@ -142,11 +196,17 @@ Chunk deployment manifest 并传 `--verify-gdr chunk` 即可。
 读取文字、接受率、按位置分段和 decode/Draft/Verify 时延的命令见
 [当前结果手册](DFLASH_CURRENT_USAGE_AND_RESULTS.md)。
 
-## 5. 当前证据与待测项
+## 6. 当前证据与待测项
+
+多长度、多 prompt 的两路线批量对照见 [一次性测试命令](GDR_LENGTH_BENCHMARK.md)。
+默认测 32/64/128/256/512/1024 个新 token；模型容量不足时先按该页命令扩容导出。
 
 已有 **20.69% 接受率、整体 1.50075×** 的 8 prompt 结果属于 Chunk 两遍路线，
 不能当作 MTP 的结果。这次本地验证覆盖小模型状态选择/拒绝恢复、FP32 状态保留、
 普通路径舍入、AOT/Meta/GE 接口、清单路线校验和 C++ fake-ACL 调度。
+Torch-NPU 直接入口另有主机模拟测试，覆盖单行、短块和 16 行的状态 bank、
+零/部分/全部接受、跨轮 FP32 状态保留、参数传递、缺失接口报错和分阶段 profiling 检查。
+这些测试使用原生接口的 CPU 替身，不构成 NPU kernel 或设备性能证据。
 当前本地目标 profile 是 simulation-only，没有可用 310P、CANN/ATC；
 新 MTP 路径的真实 AIR 导出、ATC 编译、设备精度、接受率和分项时延待实测。
 

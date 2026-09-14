@@ -8,6 +8,8 @@
 新增 `--verify-gdr chunk|mtp` 可选择两遍 Chunk 或 GDR MTP，见
 [验证路径切换命令](GDR_VERIFY_ROUTES.md)。本页现有实测结果均为 Chunk；
 MTP 的精度、接受率和时延待设备对照。
+新增 [多长度、双路线批量对照](GDR_LENGTH_BENCHMARK.md)，可一次测
+32/64/128/256/512/1024 个新 token，并汇总实际 decode/Draft/Verify 图调用时延。
 
 当前 8 条 prompt、每条生成 128 token 的结果：7 条加速，1 条变慢；
 按全部正式测量的总时间计算，整体 **1.50075×**，吞吐增加 **50.07%**，

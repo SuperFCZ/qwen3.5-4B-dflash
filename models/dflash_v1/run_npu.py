@@ -47,11 +47,13 @@ ORIGINAL_QUANT_DISABLE = "disable"
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run Qwen3.5-4B DFlash with two-pass chunk-GDR rollback"
+            "Run Qwen3.5-4B DFlash with selectable Chunk/MTP GDR rollback"
         )
     )
     parser.add_argument("--target-dir", required=True)
     parser.add_argument("--draft-dir", required=True)
+    parser.add_argument("--verify-gdr", choices=("chunk", "mtp"), default="chunk",
+                        help="Target verifier: two-pass Chunk (default) or native MTP bank selection")
     parser.add_argument(
         "--target-factory",
         default=DEFAULT_TARGET_FACTORY,
@@ -284,6 +286,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         str(args.max_new_tokens),
         "--execution-mode",
         args.execution_mode,
+        "--verify-gdr",
+        args.verify_gdr,
         "--block-size",
         str(args.block_size),
     ]

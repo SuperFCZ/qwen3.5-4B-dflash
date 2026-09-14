@@ -9,8 +9,11 @@ Qwen3.5-4B-DFlash checkpoint，以 FP16 执行。
 以及 deterministic 开关和 FC 漂移的定位结果。
 当前 8 条、每条 128 token 的设备报告显示整体 1.50075× 加速、20.69% 候选接受率；
 7 条更快，1 条变慢，各模式重复稳定，跨模式输出不同，任务质量未评估。
-上述结果属于默认 Chunk 路线。增量 OM 也可通过 `--verify-gdr mtp` 选择 GDR MTP；
+上述结果属于默认 Chunk 路线。Torch-NPU 直接推理和增量 OM 都可通过
+`--verify-gdr chunk|mtp` 选择两遍 Chunk 或 GDR MTP；
 导出、清单选择、状态差异和对照命令见 [两条验证路径](docs/GDR_VERIFY_ROUTES.md)。
+要一次比较两条路线在 32/64/128/256/512/1024 等生成长度下的接受率和时延，
+使用 [多长度对照命令](docs/GDR_LENGTH_BENCHMARK.md)。
 
 再看 [DFlash 结构与生成流程](docs/DFLASH_ARCHITECTURE.md)：从整体流程和逐轮例子，
 理解 Target/Draft、三张 DFlash OM、状态提交，以及获得加速的条件。

@@ -4,8 +4,8 @@
 only the production generation path.  Both keep persistent Target state and no
 verification call receives the historical prefix.  CPU/CUDA use a
 ``DynamicCache`` transaction with GDN-state restore plus bounded commit replay;
-the HIAI route delegates two-pass chunk-GDR and logical-KV commit to the
-receiver bridge.
+the HIAI route selects two-pass Chunk or native MTP bank selection and delegates
+logical-KV commit to the receiver bridge.
 """
 
 from __future__ import annotations
@@ -58,6 +58,8 @@ def _parser():
         "state, T=K+1 verification, rollback, and bounded commit"
     )
     parser.set_defaults(target_factory=None, hiai_source=None)
+    parser.add_argument("--verify-gdr", choices=("chunk", "mtp"), default="chunk",
+                        help="NPU Target verifier; MTP requires the registered native operator")
     parser.add_argument(
         "--execution-mode",
         choices=("validate", "dflash"),
@@ -144,6 +146,11 @@ def _load_transactional_target(
     dtype: torch.dtype,
 ) -> tuple[nn.Module, str]:
     device_type = str(args.device).split(":", 1)[0].lower()
+    verify_gdr = getattr(args, "verify_gdr", "chunk")
+    if verify_gdr not in {"chunk", "mtp"}:
+        raise ValueError("verify_gdr must be chunk or mtp")
+    if verify_gdr == "mtp" and device_type != "npu":
+        raise ValueError("--verify-gdr mtp requires the Torch-NPU rollback target")
     if device_type == "npu":
         factory_spec = args.target_factory or DEFAULT_NPU_TARGET_FACTORY
         factory = _legacy._load_callable(factory_spec)
@@ -151,6 +158,7 @@ def _load_transactional_target(
             args.target_dir,
             device=torch.device(args.device),
             dtype=dtype,
+            **({"verify_gdr": verify_gdr} if verify_gdr != "chunk" else {}),
         )
         route = factory_spec
     else:
@@ -184,6 +192,8 @@ def _load_transactional_target(
         raise RuntimeError("rollback target declares historical-prefix verification")
     if device_type == "npu" and audit.get("enabled") is not True:
         raise RuntimeError("HIAI target was not created by the rollback factory")
+    if device_type == "npu" and audit.get("verify_gdr", "chunk") != verify_gdr:
+        raise RuntimeError("loaded Target verification route differs from --verify-gdr")
     return target, route
 
 
@@ -432,6 +442,7 @@ def _run(args, *, request_started: float, cleanup: ExitStack) -> int:
 
     progress_fields = {
         "execution_mode": args.execution_mode,
+        "verify_gdr": getattr(args, "verify_gdr", "chunk"),
         "prompt_tokens": len(prompt_ids),
         "max_new_tokens": args.max_new_tokens,
         "block_size": effective_block_size,
@@ -539,8 +550,14 @@ def _run(args, *, request_started: float, cleanup: ExitStack) -> int:
             "prefix states on the input NPU device; physical provisional "
             "paged-KV writes with logical-cursor commit"
         )
+        if args.verify_gdr == "mtp":
+            state_policy = (
+                "persistent scalar HIAI state; native MTP verify produces per-row FP32 banks; "
+                "commit clones bank slot a after anchor plus a accepted proposals; "
+                "FP32 recurrent state retained across rounds; logical paged-KV commit"
+            )
         target_operator_policy = {
-            "gdr": "npu_chunk_gated_delta_rule_two_pass",
+            "gdr": target_rollback_audit["gdr_backend"],
             "conv_bank": "torch_tensor_golden_on_input_device",
             "kv_update": "existing_npu_cache_update_per_row_correctness_fallback",
             "attention": "existing_adn_fused_infer_attention",
@@ -606,6 +623,7 @@ def _run(args, *, request_started: float, cleanup: ExitStack) -> int:
         ],
         "correctness_gate": correctness_gate,
         "verification_mode": "incremental_transactional_rollback",
+        "verify_gdr": args.verify_gdr if device_type == "npu" else None,
         "historical_prefix_replay_during_verify": False,
         "state_policy": state_policy,
         "device": str(adapter.device),

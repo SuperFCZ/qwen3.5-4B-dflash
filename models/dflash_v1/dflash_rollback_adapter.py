@@ -8,7 +8,7 @@ time.  The replay is bounded by ``K + 1`` and never includes the historical
 prefix.
 
 The HIAI bridge implements the same public methods with scalar committed GDN
-state, two-pass chunk GDR, and a logical paged-KV cursor, so the scheduler below
+state, selectable two-pass Chunk/MTP GDR, and a logical paged-KV cursor, so the scheduler below
 it is backend-neutral.
 """
 

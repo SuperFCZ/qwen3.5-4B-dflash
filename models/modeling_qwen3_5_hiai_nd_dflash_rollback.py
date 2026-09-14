@@ -1,17 +1,20 @@
 # coding=utf-8
-"""Qwen3.5 HIAI target with two-pass chunk-GDR DFlash rollback.
+"""Qwen3.5 HIAI target with selectable Chunk/MTP DFlash rollback.
 
-The ordinary path and DFlash verification path both call the receiver's
+The ordinary path and default Chunk verification path call the receiver's
 ``npu_chunk_gated_delta_rule`` ABI.  A DFlash round keeps one scalar committed
 GDN state per layer, runs ``K + 1`` rows (anchor plus proposals) provisionally,
 then calls the same chunk GDR a second time with ``effective_length=a+1`` after
 the Target has accepted ``a`` proposals.  Only the second call's FP32 final
 state is eligible for commit; the bridge applies the ordinary receiver's
-persistent-state dtype boundary before publication.  No recurrent state bank
-and no ``npu_gated_delta_rule_mtp`` operator are required by this route.
+persistent-state dtype boundary before publication.  The optional MTP verifier
+uses ``npu_gated_delta_rule_mtp`` once and retains its FP32 per-row state bank;
+commit selects the accepted prefix without a second GDR call. Ordinary calls
+always retain the original Chunk path and FP16 state rounding.
 
-The first pass retains a bounded per-layer commit capsule containing the GDR
-inputs, round-start recurrent state, and causal-conv prefix states.  The bridge
+Chunk retains a per-layer commit capsule containing the GDR inputs,
+round-start recurrent state, and causal-conv prefix states. MTP retains the
+recurrent and causal-conv banks. The bridge
 must either commit or discard every capsule before starting another Target
 call.  Full-attention K/V writes remain provisional physical writes and are
 issued one row at a time so a block crossing a 64-token cache boundary is
@@ -69,6 +72,37 @@ logger = logging.get_logger(__name__)
 DFLASH_BLOCK_SIZE = 16
 DFLASH_MAX_PROPOSALS = DFLASH_BLOCK_SIZE - 1
 DFLASH_MAX_VERIFY_TOKENS = DFLASH_BLOCK_SIZE
+
+
+def require_gdr_mtp() -> Callable:
+    """Resolve the installed native operator; never substitute another route."""
+    operation = getattr(torch_npu, "npu_gated_delta_rule_mtp", None)
+    if not callable(operation):
+        operation = getattr(torch.ops.npu, "npu_gated_delta_rule_mtp", None)
+    if not callable(operation):
+        raise RuntimeError("--verify-gdr mtp requires registered npu_gated_delta_rule_mtp")
+    return operation
+
+
+def run_dflash_mtp_gdr(query, key, value, g, beta, initial_state):
+    """Seed the native T-slot input bank and return the per-row FP32 bank."""
+    rows = query.shape[1]
+    if not 1 <= rows <= DFLASH_MAX_VERIFY_TOKENS:
+        raise ValueError("MTP verify requires 1..16 rows")
+    initial_bank = initial_state.float().unsqueeze(1).repeat(1, rows, 1, 1, 1)
+    # Input selection is known before verify. The current accepted count is not.
+    selector = torch.zeros(query.shape[0], dtype=torch.int8, device=query.device)
+    output, bank = require_gdr_mtp()(
+        query, key, value, g, beta, initial_bank, selector,
+        chunk_size=64, output_final_state=True, use_qk_l2norm_in_kernel=True,
+    )
+    if tuple(output.shape) != tuple(value.shape) or output.dtype != query.dtype:
+        raise ValueError("MTP returned an invalid attention output shape or dtype")
+    if tuple(bank.shape) != tuple(initial_bank.shape) or bank.dtype != torch.float32:
+        raise ValueError("MTP must return a complete FP32 recurrent state bank")
+    if bank.device != initial_state.device or output.device != query.device:
+        raise ValueError("MTP outputs must remain on the input device")
+    return output, bank
 
 
 def _normalize_gdr_effective_length(
@@ -1008,6 +1042,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             self.hidden_size, self.num_v_heads, bias=False
         )
         self.layer_type = config.layer_types[layer_idx]
+        self.dflash_verify_gdr = "chunk"
         self._dflash_chunk_commit_capsule: Optional[tuple[torch.Tensor, ...]] = None
 
     @property
@@ -1022,12 +1057,20 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self,
         committed_rows: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Re-run original chunk GDR for the accepted input prefix only."""
+        """Compute selected prefix state using the configured verification route."""
 
         capsule = self._dflash_chunk_commit_capsule
         if capsule is None:
             raise RuntimeError(
                 f"GDN layer {self.layer_idx} has no pending chunk verification"
+            )
+        if self.dflash_verify_gdr == "mtp":
+            conv_bank, recurrent_bank = capsule
+            # B=1 slices can already be contiguous views. Clone so publishing a
+            # scalar state does not keep the entire T-slot native bank alive.
+            return (
+                select_dflash_chunk_commit_state(conv_bank, committed_rows).clone(),
+                select_dflash_chunk_commit_state(recurrent_bank, committed_rows).clone(),
             )
         query, key, value, g, beta, initial_state, conv_state_bank = capsule
         verify_tokens = int(query.shape[1])
@@ -1156,8 +1199,18 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             if initial_recurrent_state is not None
             else recurrent_state.to(torch.float32)
         )
-        core_attn_out, last_recurrent_state = (
-            torch_npu.npu_chunk_gated_delta_rule(
+        if dflash_chunk_verify and self.dflash_verify_gdr == "mtp":
+            core_attn_out, recurrent_bank = run_dflash_mtp_gdr(
+                query, key, value, g, beta, gdr_initial_state,
+            )
+            assert next_conv_state_bank is not None
+            self._dflash_chunk_commit_capsule = (
+                next_conv_state_bank.detach(), recurrent_bank.detach(),
+            )
+            # Provisional only. The bridge publishes the selected bank slot.
+            recurrent_state = recurrent_bank[:, -1]
+        else:
+            core_attn_out, last_recurrent_state = torch_npu.npu_chunk_gated_delta_rule(
                 query,
                 key,
                 value,
@@ -1169,26 +1222,20 @@ class Qwen3_5GatedDeltaNet(nn.Module):
                 output_final_state=True,
                 use_qk_l2norm_in_kernel=True,
             )
-        )
-        if tuple(last_recurrent_state.shape) != tuple(gdr_initial_state.shape):
-            raise ValueError("chunk GDR returned an invalid recurrent-state shape")
-        if dflash_chunk_verify:
-            if last_recurrent_state.dtype != torch.float32:
-                raise TypeError("DFlash chunk GDR state must use FP32")
-            assert initial_recurrent_state is not None
-            assert next_conv_state_bank is not None
-            self._dflash_chunk_commit_capsule = (
-                query.detach(),
-                key.detach(),
-                value.detach(),
-                g.detach(),
-                beta.detach(),
-                initial_recurrent_state.detach(),
-                next_conv_state_bank.detach(),
-            )
-            recurrent_state = last_recurrent_state
-        else:
-            recurrent_state = last_recurrent_state.to(torch.float16)
+            if tuple(last_recurrent_state.shape) != tuple(gdr_initial_state.shape):
+                raise ValueError("chunk GDR returned an invalid recurrent-state shape")
+            if dflash_chunk_verify:
+                if last_recurrent_state.dtype != torch.float32:
+                    raise TypeError("DFlash chunk GDR state must use FP32")
+                assert initial_recurrent_state is not None
+                assert next_conv_state_bank is not None
+                self._dflash_chunk_commit_capsule = (
+                    query.detach(), key.detach(), value.detach(), g.detach(), beta.detach(),
+                    initial_recurrent_state.detach(), next_conv_state_bank.detach(),
+                )
+                recurrent_state = last_recurrent_state
+            else:
+                recurrent_state = last_recurrent_state.to(torch.float16)
         core_attn_out = core_attn_out.reshape(-1, self.head_v_dim)
         z = z.reshape(-1, self.head_v_dim)
         core_attn_out = self.norm(core_attn_out, z)
@@ -1471,7 +1518,7 @@ class KwargsForCausalLM(FlashAttentionKwargs, TransformersKwargs):
 
 
 class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
-    """Tensor-returning HIAI LM with opt-in chunk-GDR transactions."""
+    """Tensor-returning HIAI LM with selectable Chunk/MTP transactions."""
 
     _tied_weights_keys = {"lm_head.weight": "language_model.embed_tokens.weight"}
     config: Qwen3_5TextConfig
@@ -1491,6 +1538,23 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
             config.hidden_size, config.vocab_size, bias=False
         )
         self.post_init()
+
+    def configure_dflash_verify_gdr(self, verify_gdr: str) -> None:
+        if verify_gdr not in {"chunk", "mtp"}:
+            raise ValueError("verify_gdr must be chunk or mtp")
+        layers = self.language_model._dflash_gdn_layers()
+        if any(layer.dflash_pending_chunk_rows is not None for layer in layers):
+            raise RuntimeError("cannot change GDR route with a pending verification")
+        if verify_gdr == "mtp":
+            require_gdr_mtp()
+        for layer in layers:
+            layer.dflash_verify_gdr = verify_gdr
+        self.dflash_verify_gdr = verify_gdr
+        self.dflash_state_contract_id = (
+            "qwen3.5-4b-dflash-target-mtp-bank-commit-v1" if verify_gdr == "mtp"
+            else "qwen3.5-4b-dflash-target-chunk-commit-v1"
+        )
+        self.language_model.dflash_state_contract_id = self.dflash_state_contract_id
 
     def discard_dflash_chunk_state(self) -> None:
         self.language_model.discard_dflash_chunk_state()
