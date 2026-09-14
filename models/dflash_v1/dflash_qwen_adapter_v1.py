@@ -1500,6 +1500,16 @@ def _load_target(
             dtype=dtype,
         )
     else:
+        import transformers
+
+        # The vendored target uses the 5.14 dictionary-valued GDN cache ABI.
+        # Fail before reading multi-GB target weights when the locked runtime
+        # is absent. Custom loaders retain ownership of their own runtime ABI.
+        if transformers.__version__ != "5.14.1":
+            raise RuntimeError(
+                "the packaged Qwen3.5 target requires transformers==5.14.1 "
+                f"(SOURCE_LOCK.json); found {transformers.__version__}"
+            )
         # The packaged sibling contains the opt-in feature collector; the
         # ordinary Transformers class does not expose dflash_features.
         try:

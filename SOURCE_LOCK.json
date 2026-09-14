@@ -76,7 +76,7 @@
     "ops_file": "models/dflash_v1/dflash_ops.py",
     "ops_sha256": "595a73d68565a009cc7bd9f8523f94e846accff41a9926a9fe3d8e24400fcb94",
     "adapter_file": "models/dflash_v1/dflash_qwen_adapter_v1.py",
-    "adapter_sha256": "02023ccc063aadb82a0d7eef955840264018745ca25f7e690cd1e758c63c6cbb",
+    "adapter_sha256": "bbb736278fa0c98d2bb5b0f98036a1795009831fd564da2acab53725dd0a6000",
     "scheduler_file": "models/dflash_v1/dflash_reference_decode_v1.py",
     "scheduler_sha256": "e7efc6fbfdf049a597f33d37b6e348ae6274c3242e8ad56396e3f1122b911f70",
     "draft_model_file": "models/dflash_v1/modeling_dflash.py",
@@ -117,7 +117,7 @@
     "runner_file": "models/dflash_v1/run_rollback.py",
     "runner_sha256": "35fa7962d03e36085b331120f4cf69d46985247c9d4d4c164ad5ff11175bc976",
     "adapter_file": "models/dflash_v1/dflash_rollback_adapter.py",
-    "adapter_sha256": "4cdb4489e9ed7345914ffc025804abfafe431326a1701e32540354de33069643",
+    "adapter_sha256": "7687b11a9acb898dc949d5afe83b2aeec92c81a61614c03b4c1a293106f48d80",
     "scheduler_file": "models/dflash_v1/dflash_rollback_decode.py",
     "scheduler_sha256": "a2ee1b6306bd377d8da833c06059ab6fcd16df53a69d6f86dd1fb0ef6a86de79",
     "hiai_modeling_file": "models/modeling_qwen3_5_hiai_nd_dflash_rollback.py",
@@ -155,7 +155,7 @@
     "source_2_file": "tools/validate_draft_quantization.py",
     "source_2_sha256": "d49f37cea4463dcd9afcd3b5a00e414708f47f30f2645a9ef1c12be5d597a53b",
     "source_3_file": "docs/DRAFT_QUANTIZATION.md",
-    "source_3_sha256": "ca8fd0b6d4c1aa4afbaaea81ec5d2f04d374e4f9599764fd36a59cdd358ed736"
+    "source_3_sha256": "0823fafe66632f775ae3a88160e9603113ff1ea4ddffc443747ee98edff461f2"
   },
   "quantized_om_sources": {
     "source_0_file": "framework/python/qwen35_dflash/ascend310p/contracts.py",

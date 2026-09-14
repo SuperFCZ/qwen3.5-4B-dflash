@@ -44,11 +44,11 @@ from .modeling_dflash import DFlashDraftKVCache, DFlashDraftModel
 @dataclass(frozen=True)
 class _LinearStateSnapshot:
     layer_index: int
-    conv_states: Tensor | None
-    recurrent_states: Tensor | None
-    is_conv_states_initialized: bool
-    is_recurrent_states_initialized: bool
-    has_previous_state: bool
+    conv_states: Tensor | dict[int, Tensor | None] | None
+    recurrent_states: Tensor | dict[int, Tensor | None] | None
+    is_conv_states_initialized: bool | dict[int, bool]
+    is_recurrent_states_initialized: bool | dict[int, bool]
+    has_previous_state: bool | dict[int, bool]
 
 
 @dataclass(frozen=True)
@@ -63,8 +63,16 @@ def _output_field(output: object, name: str) -> object | None:
     return getattr(output, name, None)
 
 
-def _clone_optional_tensor(value: object) -> Tensor | None:
-    return value.detach().clone() if isinstance(value, Tensor) else None
+def _clone_cache_state(value: Any) -> Any:
+    # Transformers 5.14 stores per-state tensors AND initialization flags in
+    # dictionaries. Preserve their structure; bool(dict) loses individual flags.
+    if isinstance(value, Tensor):
+        return value.detach().clone()
+    if isinstance(value, dict):
+        return {key: _clone_cache_state(item) for key, item in value.items()}
+    if value is None or isinstance(value, bool):
+        return value
+    raise TypeError(f"unsupported linear cache state: {type(value).__name__}")
 
 
 def _snapshot_framework_cache(cache: DynamicCache) -> _FrameworkCacheSnapshot:
@@ -80,19 +88,19 @@ def _snapshot_framework_cache(cache: DynamicCache) -> _FrameworkCacheSnapshot:
         linear_states.append(
             _LinearStateSnapshot(
                 layer_index=index,
-                conv_states=_clone_optional_tensor(
+                conv_states=_clone_cache_state(
                     getattr(layer, "conv_states", None)
                 ),
-                recurrent_states=_clone_optional_tensor(
+                recurrent_states=_clone_cache_state(
                     getattr(layer, "recurrent_states", None)
                 ),
-                is_conv_states_initialized=bool(
+                is_conv_states_initialized=_clone_cache_state(
                     getattr(layer, "is_conv_states_initialized", False)
                 ),
-                is_recurrent_states_initialized=bool(
+                is_recurrent_states_initialized=_clone_cache_state(
                     getattr(layer, "is_recurrent_states_initialized", False)
                 ),
-                has_previous_state=bool(
+                has_previous_state=_clone_cache_state(
                     getattr(layer, "has_previous_state", False)
                 ),
             )
@@ -103,24 +111,26 @@ def _snapshot_framework_cache(cache: DynamicCache) -> _FrameworkCacheSnapshot:
     )
 
 
-def _restore_tensor_attribute(
-    layer: object,
-    name: str,
-    snapshot: Tensor | None,
-) -> None:
-    current = getattr(layer, name, None)
-    if snapshot is None:
-        setattr(layer, name, None)
-        return
+def _restore_cache_state(current: Any, snapshot: Any) -> Any:
+    if isinstance(snapshot, dict):
+        if not isinstance(current, dict):
+            return _clone_cache_state(snapshot)
+        for key in tuple(current):
+            if key not in snapshot:
+                del current[key]
+        for key, value in snapshot.items():
+            current[key] = _restore_cache_state(current.get(key), value)
+        return current
     if (
-        isinstance(current, Tensor)
+        isinstance(snapshot, Tensor)
+        and isinstance(current, Tensor)
         and current.shape == snapshot.shape
         and current.dtype == snapshot.dtype
         and current.device == snapshot.device
     ):
         current.copy_(snapshot)
-    else:
-        setattr(layer, name, snapshot.detach().clone())
+        return current
+    return _clone_cache_state(snapshot)
 
 
 @torch.inference_mode()
@@ -128,30 +138,28 @@ def _restore_framework_cache(
     cache: DynamicCache,
     snapshot: _FrameworkCacheSnapshot,
 ) -> None:
-    cache.crop(snapshot.sequence_length)
+    # Only full-attention KV can be cropped by sequence length. In 5.14,
+    # LinearAttentionLayer.crop instead needs past recording and a negative
+    # removal count; our private snapshots already own GDN rollback.
+    linear_indices = {state.layer_index for state in snapshot.linear_states}
+    for index, layer in enumerate(cache.layers):
+        if index not in linear_indices:
+            layer.crop(snapshot.sequence_length)
+        elif hasattr(layer, "keys"):
+            raise RuntimeError("combined KV/GDN cache layers are not supported")
     if int(cache.get_seq_length()) != snapshot.sequence_length:
         raise RuntimeError("attention KV cache did not restore its round-start length")
     for state in snapshot.linear_states:
         if state.layer_index >= len(cache.layers):
             raise RuntimeError("linear state snapshot references a missing cache layer")
         layer = cache.layers[state.layer_index]
-        _restore_tensor_attribute(layer, "conv_states", state.conv_states)
-        _restore_tensor_attribute(
-            layer,
-            "recurrent_states",
-            state.recurrent_states,
-        )
-        setattr(
-            layer,
-            "is_conv_states_initialized",
-            state.is_conv_states_initialized,
-        )
-        setattr(
-            layer,
-            "is_recurrent_states_initialized",
-            state.is_recurrent_states_initialized,
-        )
-        setattr(layer, "has_previous_state", state.has_previous_state)
+        for name in (
+            "conv_states", "recurrent_states", "is_conv_states_initialized",
+            "is_recurrent_states_initialized", "has_previous_state",
+        ):
+            setattr(layer, name, _restore_cache_state(
+                getattr(layer, name, None), getattr(state, name),
+            ))
 
 
 class FrameworkDFlashRollbackTarget(nn.Module):

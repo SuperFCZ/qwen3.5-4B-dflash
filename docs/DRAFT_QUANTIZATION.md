@@ -104,6 +104,10 @@ W4 为 277158400 bytes，另需当前反量化矩阵、cache 和运行时工作�
 
 该命令用独立 NumPy 字节解码对照全部 36 个真实 Linear，以及完整 Draft 的普通前向和
 两轮增量缓存前向。两份固定 checkpoint 在 CPU 上均达到零差异。
+完整 CPU 生成对照使用 `run_rollback` 的默认 `validate` 模式，并传入
+`--draft-quantization "$DRAFT_VARIANT" --device cpu --dtype float16`。
+其包内 Target 要求 `SOURCE_LOCK.json` 锁定的 `transformers==5.14.1`；版本不符会在
+加载 Target 权重前报错。应使用声明的模型环境或 run 内隔离依赖，不能修改共享环境。
 另有 actual `torch.export` 数据流检查、位序/分组/版本拒绝测试和 C++ fake-ACL 常驻权重测试。
 这些是主机证据，尚不能证明 TorchAir、ATC 或 310P 真机通过；最终要求两种版本各完成
 实际 AIR/OM 构建、无 fallback 执行、ordinary/DFlash token-ID/EOS 零差异和配对 3+10 测量。
@@ -115,5 +119,8 @@ W4 为 277158400 bytes，另需当前反量化矩阵、cache 和运行时工作�
 - mask、RoPE 配置位置、nullable sliding_window 和 target feature 层属于 checkpoint
   合同。只替换 Linear 精度而保留六层配置会加载错误的 Draft。
 - 所选 feature 合同绑定到 Target 实例；普通 Target 数学和其他实例不随之改变。
+- Transformers 5.14.1 的 GDN cache 使用按 state 编号的字典，状态和初始化标志均需完整
+  快照。回滚只裁剪全注意力 KV，GDN 从快照恢复；对整个 DynamicCache 调用 `crop`
+  不适用。真实小型 Qwen 混合层测试覆盖 0/部分/全部接受，并与普通逐 token 提交逐值比较。
 - OM 量化权重作为显式只读输入，C++ 每次加载检查描述符、哈希并只上传一次。
   源码检查和测试已扩展；未把 CPU/fake-ACL 通过提升为真机通过，未修改通用技能。
