@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
-  "package_revision": "r13",
+  "package_revision": "r14",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
     "version": 7,
@@ -155,7 +155,7 @@
     "contract_file": "config/npu_benchmark_v1.json",
     "contract_sha256": "b5fdd64b1eaea44b3f53452bc260cf62de53ca38b1fcd8699bf4f9e358d99c76",
     "documentation_file": "docs/DFLASH_RUN_AND_VALIDATE.md",
-    "documentation_sha256": "bcce45ec722709149681344292cfb9124480cc1fb6122d886fc791e22179df96",
+    "documentation_sha256": "f5bef81ecd4a10c145a5f21ba780987cd2742e9cb4a8fab0224a514a2de783b7",
     "policy": "strict-greedy gate before timing; original main inference.py and both rollback modes use an equal 32-token budget; quantized ordinary and DFlash use the exact same original YAML and resolved artifacts; rollback ordinary remains the scheduler-control baseline; rollback prefill uses block-aligned real-token chunks and rollback verify/accepted+1 commit defaults to two original-GDR chunk calls, with --verify-gdr mtp selecting native MTP and compact FP32 bank selection; separate ordinary/dflash processes; synchronized unprofiled 3+10 baseline; cumulative counters separated from resettable session state; copied-source content identity without VCS metadata; msprof diagnostic only with MSTX disabled by default and explicit opt-in; no CPU fallback; native msprof dynamic CLI single-stage and all-stage diagnostics with one loaded application, independent fresh-state warmups and one acknowledged window per stage; verify collects the first Chunk or unique MTP pass; accept-commit captures the accepted+1 second Chunk pass or MTP bank selection even at zero acceptance; decode-round collects the complete selected route; per-window GDR verify/commit layer counters, MTP state-selection counters when selected, and nonempty operator exports are required; separate raw directories and synchronized timing CSV; no pyACL and no formal latency or strict-greedy accuracy claim from stage diagnostics; ordinary Python and C++ prefill/decode/all windows; C++ DFlash prefill/draft/fused-verify/all windows; native C++ socket barriers and standard-library Python controller; actual graph-call counts checked; no device-performance claim from host fixtures; shared per-stage operator type/task reports grouped by input/output dtype, device/model and original CSV; general OM profiling entry prepares a fresh mode-specific plan from the selected deployment manifest"
   },
   "incremental_om_framework": {
@@ -164,7 +164,7 @@
     "files": [
       {
         "source_file": "README.md",
-        "source_sha256": "54c45a5f983643545a083b79688de4fa3efac145db4cf727e9a54fccbceab398"
+        "source_sha256": "34dd9c3bdf5a74d3eee1a8443d027de0ff75b8dbe77285a59315819c07cf5655"
       },
       {
         "source_file": "config/gdr_chunk_air_om_factory.example.json",
@@ -176,7 +176,7 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "354a4701c8bbe1cf2bd584b0fac960c958d892948b452f346a675f548755badf"
+        "source_sha256": "e1f258cf89a8502be82b484ed0a754cc9261d038194d8c1fa853e51afb4e34e4"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -533,6 +533,22 @@
       {
         "source_file": "tests/test_gdr_length_matrix.py",
         "source_sha256": "638d9df218163b093b5ea70e6c5c559cd79adaec690a78a57d9731be349bb6f0"
+      },
+      {
+        "source_file": "config/dflash_env.sh.example",
+        "source_sha256": "732883acd7830df4b88186617a3cdf95220067ed12974dd891743d3bab47af00"
+      },
+      {
+        "source_file": "tools/activate_env.sh",
+        "source_sha256": "0d18aceb747765887e38e10486f15a4453b7ca1a5e61c80383f269436d03b62e"
+      },
+      {
+        "source_file": "tools/python-bootstrap/sitecustomize.py",
+        "source_sha256": "e68b19bc84dc7499ab114ace2a1b5a9a6516fb830aa4dbfd79c235f000f2b295"
+      },
+      {
+        "source_file": "tests/test_environment_config.py",
+        "source_sha256": "1b13f7221375285501a871b3d21fd6bc2f20b945c636f0477788635428feba87"
       }
     ],
     "supported_abis": [

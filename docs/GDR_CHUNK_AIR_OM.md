@@ -1,23 +1,15 @@
 # OM/C++ 使用
 
-已有 OM 和 runner：设置下面变量后直接运行。首次部署见文末[导出与编译](#导出与编译)。
+先按 [README](../README.md#环境配置)保存环境配置。新终端执行：
 
 ```bash
-export REPO_ROOT=/absolute/path/qwen3.5-4B-dflash
-export AI_RUN_DIR=/absolute/path/run
-export MODEL_PYTHON=/absolute/path/npu-env/bin/python
-export TARGET_DIR=/absolute/path/Qwen3.5-4B
-export CPP_RUNNER=/absolute/path/qwen35_dflash_acl_runner
-export CHUNK_DEPLOYMENT_MANIFEST=/absolute/path/chunk/deployment-manifest.json
-export MTP_DEPLOYMENT_MANIFEST=/absolute/path/mtp/deployment-manifest.json
-export DEPLOYMENT_MANIFEST="$CHUNK_DEPLOYMENT_MANIFEST"
-export PYTHONPATH="$REPO_ROOT/framework/python:$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-mkdir -p "$AI_RUN_DIR"
+source /absolute/path/dflash-env.sh
 cd "$AI_RUN_DIR"
 ```
 
-先加载设备 CANN 环境。切换 MTP 时把 `DEPLOYMENT_MANIFEST` 指向
-`"$MTP_DEPLOYMENT_MANIFEST"`；已有 OM 的路线由编译产物决定。
+配置里的 `VERIFY_GDR=chunk|mtp` 自动选择对应的 `DEPLOYMENT_MANIFEST`。
+两个 manifest 填实际已编译路径；切换参数不会把已有 Chunk OM 转成 MTP。
+首次部署见文末[导出与编译](#导出与编译)。`QUANT_MODE` 只控制原生推理，OM 精度由编译产物决定。
 
 ## 多 prompt 测试
 
@@ -25,8 +17,8 @@ cd "$AI_RUN_DIR"
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_prompts.py" \
   --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
   --deployment-manifest "$DEPLOYMENT_MANIFEST" \
-  --runner-config "$AI_RUN_DIR/runner.json" --model-dir "$TARGET_DIR" \
-  --max-new-tokens 128 --max-draft-tokens 15 --device-id 0 \
+  --runner-config "$RUNNER_CONFIG" --model-dir "$TARGET_DIR" \
+  --max-new-tokens "$MAX_NEW_TOKENS" --max-draft-tokens "$MAX_DRAFT_TOKENS" --device-id "$DEVICE_ID" \
   --low-memory --allow-output-differences
 ```
 
@@ -34,7 +26,7 @@ cd "$AI_RUN_DIR"
 `--allow-output-differences` 用于当前允许输出差异的实验；去掉则严格比较 token/EOS。
 `--low-memory` 先测全部普通模式，再测全部 DFlash。
 
-常用调整：`--prompt-id math` 只测一条；`--max-new-tokens 512` 改输出上限；
+常用调整：`--prompt-id math` 只测一条；配置文件中 `MAX_NEW_TOKENS=512` 改输出上限；
 `--prompts /path/prompts.json` 自定义输入，格式：
 `[{"id":"my_case","prompt":"你的问题","category":"自定义"}]`。
 
@@ -46,10 +38,10 @@ cd "$AI_RUN_DIR"
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
   --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
-  --runner-config "$AI_RUN_DIR/runner.json" --model-dir "$TARGET_DIR" \
+  --runner-config "$RUNNER_CONFIG" --model-dir "$TARGET_DIR" \
   --chunk-deployment-manifest "$CHUNK_DEPLOYMENT_MANIFEST" \
   --mtp-deployment-manifest "$MTP_DEPLOYMENT_MANIFEST" \
-  --lengths 32 64 128 256 512 1024 --max-draft-tokens 15 --device-id 0 \
+  --lengths 32 64 128 256 512 1024 --max-draft-tokens "$MAX_DRAFT_TOKENS" --device-id "$DEVICE_ID" \
   --low-memory --allow-output-differences
 ```
 
@@ -61,9 +53,9 @@ cd "$AI_RUN_DIR"
 
 ## 查看文字、接受率和重新汇总
 
-```bash
-export SAVED_BATCH=/absolute/path/prompt-suite-xxx/runner-batch.json
+在环境配置中填写 `SAVED_BATCH`（已有 `runner-batch.json` 的路径），重新 `source` 后执行：
 
+```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/decode_outputs.py" \
   --model-dir "$TARGET_DIR" --report "$SAVED_BATCH" --prompt-id zh_explain
 
@@ -80,14 +72,13 @@ export SAVED_BATCH=/absolute/path/prompt-suite-xxx/runner-batch.json
 ## msprof
 
 ```bash
-export MSPROF_BIN=/absolute/path/msprof
 for MODE in ordinary dflash; do
   "$MODEL_PYTHON" -B "$REPO_ROOT/tools/profile_om.py" \
     --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
     --deployment-manifest "$DEPLOYMENT_MANIFEST" \
     --prompt-report "${SAVED_BATCH}.cases/zh_explain.json" \
-    --profile-mode "$MODE" --profile-stage all --device-id 0 \
-    --max-new-tokens 128 --max-draft-tokens 15 --profile-warmup 3
+    --profile-mode "$MODE" --profile-stage all --device-id "$DEVICE_ID" \
+    --max-new-tokens "$MAX_NEW_TOKENS" --max-draft-tokens "$MAX_DRAFT_TOKENS" --profile-warmup 3
 done
 ```
 
@@ -103,12 +94,10 @@ OM Verify 已包含接受判断和状态提交；此采集是单阶段窗口，�
 
 先完成 [Torch-NPU 首次准备](DFLASH_RUN_AND_VALIDATE.md#首次准备)和 W8A8 配置。
 还需匹配版本的 TorchAir、ATC、AscendCL、CMake/C++17；MTP 路线需要对应设备算子和 GE 注册。
-下列路径使用新的运行目录，已部署用户保留原配置。
+在环境配置中填写实际 `ATC_BIN`、`SOC_VERSION` 和 `KV_CAPACITY=2048` 后重新 `source`。
+下列命令使用未占用的产物目录，已部署用户保留原配置。
 
 ```bash
-export ATC_BIN=/absolute/path/atc
-export SOC_VERSION=Ascend310P3    # 改为实际 SoC 型号
-export MAX_SEQUENCE_LENGTH=2048
 cd "$AI_RUN_DIR"
 
 "$MODEL_PYTHON" -B "$REPO_ROOT/framework/scripts/lock_quant_inputs.py" \
@@ -129,7 +118,7 @@ config = {
     "max_sequence_length": int(os.environ["MAX_SEQUENCE_LENGTH"]),
     "include_ordinary_decode": True,
     "draft_attention_matmul_dtype": "float16",
-    "dtype": "float16", "device": "npu:0",
+    "dtype": "float16", "device": "npu:" + os.environ["DEVICE_ID"],
     "adn_rms_norm_ge_op_type": "AdnRmsNorm",
 }
 with (run / "factory.json").open("x") as f:
@@ -153,10 +142,6 @@ PY
   --build-dir "$AI_RUN_DIR/build/cpp" --ascendcl-root "$CANN_ROOT" \
   --output "$AI_RUN_DIR/reports/cpp-build.json"
 
-export CPP_RUNNER="$AI_RUN_DIR/build/cpp/qwen35_dflash_acl_runner"
-export CHUNK_DEPLOYMENT_MANIFEST="$AI_RUN_DIR/artifacts-chunk/deployment-manifest.json"
-export MTP_DEPLOYMENT_MANIFEST="$AI_RUN_DIR/artifacts-mtp/deployment-manifest.json"
-export DEPLOYMENT_MANIFEST="$CHUNK_DEPLOYMENT_MANIFEST"
 ```
 
 只需要一种路线，将 `for VERIFY_GDR in chunk mtp` 改为 `in chunk` 或 `in mtp`。
@@ -165,7 +150,7 @@ export DEPLOYMENT_MANIFEST="$CHUNK_DEPLOYMENT_MANIFEST"
 创建 `runner.json`，填写真实设备和软件版本：
 
 ```bash
-cat > "$AI_RUN_DIR/runner.json" <<'JSON'
+cat > "$RUNNER_CONFIG" <<'JSON'
 {
   "device_model": "填写设备型号",
   "cann": "填写CANN版本",
@@ -198,7 +183,7 @@ PY
 ```
 
 用上面的导出/编译循环，将 `factory.json` 换为 `factory-lengths.json`，
-bundle 换为尚未使用的 `artifacts-lengths-$VERIFY_GDR`；完成后更新两个 manifest 变量。
+bundle 换为尚未使用的 `artifacts-lengths-$VERIFY_GDR`；完成后更新环境配置中的两个 manifest 路径并重新 `source`。
 容量变大可能增加显存和耗时，两条路线须使用同一容量重新比较。
 
 </details>
@@ -210,10 +195,9 @@ bundle 换为尚未使用的 `artifacts-lengths-$VERIFY_GDR`；完成后更新�
 "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p recompile-draft-om \
   --deployment-manifest "$DEPLOYMENT_MANIFEST" --atc "$ATC_BIN" \
   --output "${DEPLOYMENT_MANIFEST%/*}/deployment-manifest-deterministic.json"
-export DEPLOYMENT_MANIFEST="${DEPLOYMENT_MANIFEST%/*}/deployment-manifest-deterministic.json"
 ```
 
 新清单必须与原清单同目录、文件名未被使用；三个 Target OM 保持原文件。
-运行矩阵时也要更新对应的 `CHUNK_DEPLOYMENT_MANIFEST` 或 `MTP_DEPLOYMENT_MANIFEST`。
+把环境配置中的 `CHUNK_DEPLOYMENT_MANIFEST` 或 `MTP_DEPLOYMENT_MANIFEST` 改为新清单，重新 `source`。
 
 </details>
