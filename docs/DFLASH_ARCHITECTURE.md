@@ -38,41 +38,34 @@ OM Draft 的 QK/PV 矩阵乘默认 FP16，缩放、Mask、Softmax 为 FP32；
 
 ## Draft 内部流程
 
-```mermaid
-flowchart TD
-    F["新提交的 Target 特征：8 × 2560"] --> FC["FC：20480 → 2560 → RMSNorm"]
-    FC --> CK["各层独立投影 K/V；K 做 RMSNorm + RoPE"]
-    CK --> CACHE["追加到各层的上下文 KV cache"]
-    B["anchor + K 个 MASK，K ≤ 15"] --> EMB["Target 的 FP16 embedding"]
-    EMB --> N
-    subgraph L["Draft Decoder × 6 层"]
-        N["RMSNorm → block Q/K/V；Q/K norm + RoPE"] --> A["Attention：Q 来自 block"]
-        CACHE --> A
-        A --> O["输出投影 + 残差"]
-        O --> M["RMSNorm → SwiGLU MLP + 残差"]
-    end
-    M --> H["最终 RMSNorm → 取 MASK 行 → Target 的 FP16 LM head"]
-    H --> TOP["全词表 Top1：一次并行提出 K 个候选"]
-    TOP --> V["Target Verify：Chunk 或 MTP"]
-    V --> C["仅提交旧 anchor + 接受前缀；修正 / bonus token 作新 anchor"]
-    C -->|新增 Target 特征供下轮使用| F
-    C -->|新 anchor| B
-```
+参照 [DFlash 官方图 2](https://arxiv.org/pdf/2602.06036#page=4) 的
+“Target 特征注入各层 KV、MASK 块并行生成”结构，按本仓库的 6 层 Draft 重画。
+**从左向右看：绿色主线生成候选，蓝色支路提供上下文。**
 
-- **上下文分支**：首次使用 prompt 的 Target 特征，后续只追加新提交位置的特征。
-  同一份 FC/RMSNorm 结果供 6 层分别生成 K/V；上下文不作为 Draft 的 Query。
-- **候选分支**：每层 Attention 读取上下文 KV 和本轮 block 的临时 KV。
-  滑窗层按因果窗口计算，full-attention 层允许块内双向注意；六层均处理整个 block。
-  第 0 行是 anchor，只有后面的 MASK 行输出候选，一次 Draft 前向完成。
-- **缓存更新**：block 的临时 KV 不作为下轮的已提交上下文。
-  验证接受 a 个候选后，下轮用旧 anchor 加这 a 个候选的 Target 特征补入缓存；
-  零接受也补入旧 anchor，新修正 token 留作下一轮 anchor。
-- **OM 实现**：上述上下文更新和候选生成合在同一个 `draft.om`，Chunk/MTP 共用。
-  特征输入物理 64 行、block 16 行，由有效长度屏蔽 padding；长 prompt 按 64 行逐块建缓存，
-  中间块的 Draft 候选丢弃，其计算仍计入预填充成本。
+![Draft 的三个输入、两路计算及两个输出](assets/dflash-draft-flow.svg)
+
+- **输入**：新增 Target 特征、历史上下文 KV、`anchor + K 个 MASK`；anchor 是 Target 上次给出的最后一个 token。
+- **输出**：一次前向得到 K 个候选及更新后的上下文 KV。只有 MASK 行生成候选，随后交给 Chunk 或 MTP Verify。
+- **跨轮缓存**：首次加入 prompt 特征；之后加入上一轮旧 anchor 和接受前缀的 Target 特征。
+  本轮 block 的临时 KV 不留到下一轮；零接受也加入旧 anchor 的特征。
+
+<details>
+<summary>算子与 OM 接口细节</summary>
+
+同一份 FC/RMSNorm 结果供 6 层分别生成上下文 K/V；Query 只来自 anchor/MASK block。
+每层内部为 RMSNorm → Q/K/V 投影（Q/K norm + RoPE）→ Attention → 输出投影与残差，
+再经 RMSNorm → SwiGLU MLP 与残差。滑窗层按因果窗口计算，full-attention 层允许块内双向注意。
+
+Chunk/MTP 共用同一个 `draft.om`，把上下文更新和候选生成合在一次调用中。
+逻辑接口为 `(features, start_position, valid_rows, anchor, proposal_count, 历史 KV)`
+→ `(候选 token, 更新后的 KV)`，位置和有效长度控制可见范围。
+特征物理 64 行、block 16 行，由有效长度屏蔽 padding；长 prompt 按 64 行逐块建缓存，
+中间块的候选丢弃，其计算仍计入预填充成本。
 
 实现见 [Draft 模型](../models/dflash_v1/modeling_dflash.py)、
 [DraftContextGraph / DraftProposeGraph](../framework/python/qwen35_dflash/ascend310p/incremental.py)。
+
+</details>
 
 ## Chunk 两遍与 MTP
 

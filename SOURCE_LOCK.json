@@ -172,7 +172,11 @@
       },
       {
         "source_file": "docs/DFLASH_ARCHITECTURE.md",
-        "source_sha256": "4c6764c849743ec0813bcdf9df08e39c902f3c80447d7b9df454e81cb3303d2e"
+        "source_sha256": "2deb9fa4d61d53cd39909a24cd81d281e26c8090ee03f46d94e85d7af5c55308"
+      },
+      {
+        "source_file": "docs/assets/dflash-draft-flow.svg",
+        "source_sha256": "1635daa2439aea4082fe6c4818c353d4e7ff77a6822adc635d15433f9f880c83"
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
