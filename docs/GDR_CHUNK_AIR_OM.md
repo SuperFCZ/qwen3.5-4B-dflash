@@ -172,7 +172,7 @@ PY
 `prefill.om`、`decode.om`、`draft.om`、`verify_chunk.om`、`verify_mtp.om`。
 两个部署清单分别是同目录的 `deployment-manifest.json`（Chunk）和
 `deployment-manifest-mtp.json`（MTP）。将环境配置的两个 manifest 路径改为这两个文件，重新 `source`，
-再执行上面的[双路线多长度测试](#多长度与双路线测试)。公共图不重复编译、不复制存储。
+完成第 5 步重建 runner 后，再执行上面的[双路线多长度测试](#多长度与双路线测试)。公共图不重复编译、不复制存储。
 
 复用要求两次导出使用同一源码、权重、配置（仅 `verify_gdr` 不同）、工具链及编译选项；不匹配会报错。
 只用 MTP 时可向空目录导出，省略 `--reuse-common-from`，随后编译该目录的 `air-manifest.json`。
