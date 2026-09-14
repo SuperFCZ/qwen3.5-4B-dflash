@@ -124,28 +124,61 @@ config = {
 with (run / "factory.json").open("x") as f:
     json.dump(config, f, indent=2)
 PY
+```
 
-(
-  set -e
-  for VERIFY_GDR in chunk mtp; do
-    "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p export-air \
-      --factory qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs \
-      --factory-config "$AI_RUN_DIR/factory.json" --verify-gdr "$VERIFY_GDR" \
-      --bundle-dir "$AI_RUN_DIR/artifacts-$VERIFY_GDR"
-    "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p compile-om \
-      --air-manifest "$AI_RUN_DIR/artifacts-$VERIFY_GDR/air-manifest.json" \
-      --atc "$ATC_BIN" --soc-version "$SOC_VERSION"
-  done
-)
+下面四步分别执行，每步成功并返回命令提示符后再继续。只用一种路线时，执行对应的两步即可。
+`export-air` 的 PASS 表示 AIR 导出完成；`compile-om` 的 PASS 和对应目录下的
+`deployment-manifest.json` 才表示整套 OM 编译完成，单个 `.om` 文件不能代表整套完成。
 
+**1. 导出 Chunk AIR**
+
+```bash
+"$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p export-air \
+  --factory qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs \
+  --factory-config "$AI_RUN_DIR/factory.json" --verify-gdr chunk \
+  --bundle-dir "$AI_RUN_DIR/artifacts-chunk"
+```
+
+**2. 编译 Chunk OM**
+
+```bash
+"$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p compile-om \
+  --air-manifest "$AI_RUN_DIR/artifacts-chunk/air-manifest.json" \
+  --atc "$ATC_BIN" --soc-version "$SOC_VERSION"
+```
+
+**3. 导出 MTP AIR**
+
+```bash
+"$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p export-air \
+  --factory qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs \
+  --factory-config "$AI_RUN_DIR/factory.json" --verify-gdr mtp \
+  --bundle-dir "$AI_RUN_DIR/artifacts-mtp"
+```
+
+**4. 编译 MTP OM**
+
+```bash
+"$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p compile-om \
+  --air-manifest "$AI_RUN_DIR/artifacts-mtp/air-manifest.json" \
+  --atc "$ATC_BIN" --soc-version "$SOC_VERSION"
+```
+
+当前 ATC 输出会被收集，每张图结束后才写入 `$AI_RUN_DIR/log/dflash-atc/<图名>.log`；
+编译期间可能长时间没有终端输出，不能仅据此判断卡死。
+编译默认给 Draft 设置 `--deterministic=1`；详见[漂移问题](DFLASH_CURRENT_USAGE_AND_RESULTS.md#deterministic-与-fc-漂移)。
+
+中断后：已有 PASS 的 `deployment-manifest.json` 无需重编；已有 AIR 且 `om/` 未创建或为空时，
+可只重跑对应的编译命令。若 `om/` 非空但没有部署清单，当前不支持自动续编；保留原产物，
+改用新 bundle 目录导出和编译，并更新环境配置中的 manifest 路径。
+
+**5. 构建 runner**
+
+```bash
 "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p build-cpp \
   --build-dir "$AI_RUN_DIR/build/cpp" --ascendcl-root "$CANN_ROOT" \
   --output "$AI_RUN_DIR/reports/cpp-build.json"
-
 ```
-
-只需要一种路线，将 `for VERIFY_GDR in chunk mtp` 改为 `in chunk` 或 `in mtp`。
-编译默认给 Draft 设置 `--deterministic=1`；详见[漂移问题](DFLASH_CURRENT_USAGE_AND_RESULTS.md#deterministic-与-fc-漂移)。
 
 创建 `runner.json`，填写真实设备和软件版本：
 
@@ -182,8 +215,9 @@ with (run / "factory-lengths.json").open("x") as f:
 PY
 ```
 
-用上面的导出/编译循环，将 `factory.json` 换为 `factory-lengths.json`，
-bundle 换为尚未使用的 `artifacts-lengths-$VERIFY_GDR`；完成后更新环境配置中的两个 manifest 路径并重新 `source`。
+分别执行上面的四步，将两条导出命令中的 `factory.json` 换为 `factory-lengths.json`，
+四条命令中的 `artifacts-chunk` / `artifacts-mtp` 换为尚未使用的
+`artifacts-lengths-chunk` / `artifacts-lengths-mtp`；完成后更新环境配置中的两个 manifest 路径并重新 `source`。
 容量变大可能增加显存和耗时，两条路线须使用同一容量重新比较。
 
 </details>
