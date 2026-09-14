@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
-  "package_revision": "r16",
+  "package_revision": "r17",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
     "version": 7,
@@ -126,7 +126,7 @@
       "mtp_operator": "torch_npu.npu_gated_delta_rule_mtp or torch.ops.npu.npu_gated_delta_rule_mtp",
       "mtp_input_bank": "FP32[B,T,H,Dk,Dv], T=K+1 in 1..16, INT8[B] input selector zero",
       "mtp_commit": "compact clone of output bank slot a; no second GDR; FP32 recurrent state",
-      "ordinary_route": "original Chunk with FP16 persistent rounding",
+      "ordinary_route": "original Chunk with FP32 persistent recurrent state",
       "validation": "CPU native-interface shims and host transactions only; actual NPU validation pending"
     },
     "native_route_tests_file": "tests/test_torch_npu_gdr_routes.py",
@@ -164,7 +164,7 @@
     "files": [
       {
         "source_file": "README.md",
-        "source_sha256": "34dd9c3bdf5a74d3eee1a8443d027de0ff75b8dbe77285a59315819c07cf5655"
+        "source_sha256": "e7fd2e6e5cfbeba7a8d544e876f12869c650e5ba1a8a5db50ecb7aac31f69467"
       },
       {
         "source_file": "config/gdr_chunk_air_om_factory.example.json",
@@ -172,11 +172,11 @@
       },
       {
         "source_file": "docs/DFLASH_ARCHITECTURE.md",
-        "source_sha256": "4163a4adcba0dacc150ddb938e2d2b8b588d4cfe3be1ae364f1c6ceaaa1e78e7"
+        "source_sha256": "4c6764c849743ec0813bcdf9df08e39c902f3c80447d7b9df454e81cb3303d2e"
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "fe55af204e8063999ff935e60e6f5607e1a10a0af84abcf3f94c8fa2ae4002fc"
+        "source_sha256": "8e6108e1b0cf1a14471b7fceb811530cd748f118202eaa2a765b7cd67270d451"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -384,7 +384,7 @@
       },
       {
         "source_file": "tests/test_prompt_tokenization.py",
-        "source_sha256": "1c29c34bf219d5cf8fac5939195ed06fef0517b39e7580b1fe3d39e85310548e"
+        "source_sha256": "1ccb6753e817d6790e38d860f8777cdfde01c4bca5f7ab2d7b75b40a9bb8911f"
       },
       {
         "source_file": "tests/test_quant_air_om_framework.py",
@@ -496,11 +496,11 @@
       },
       {
         "source_file": "tools/benchmark_prompts.py",
-        "source_sha256": "d3370a69a39836d1fdd2ea7f0f599fdca1fd94c47396899165297db30fbbb41f"
+        "source_sha256": "05bccdf76e6047355124df0544108ab3a5f46b202a1950cbb426bce4d9d03b99"
       },
       {
         "source_file": "tests/test_prompt_suite.py",
-        "source_sha256": "7f44e6b82aeb306d4dc49a45a039a94346de91307f7e17742a27b538e60d8588"
+        "source_sha256": "6a6a5c355a2a7f3cbf4f19b3068f144c70a72741d417cad23779cb0e2497137a"
       },
       {
         "source_file": "tests/test_draft_compile_determinism.py",
@@ -528,11 +528,11 @@
       },
       {
         "source_file": "tools/benchmark_gdr_lengths.py",
-        "source_sha256": "501117ff78bf234f7d6db2efa0a4fa197c73fc4b530d17f9d5c5ca339b738824"
+        "source_sha256": "5fd78056006f7dc26c591ed1b8c671ace3613b3585243e88a7e57127fe6f4109"
       },
       {
         "source_file": "tests/test_gdr_length_matrix.py",
-        "source_sha256": "638d9df218163b093b5ea70e6c5c559cd79adaec690a78a57d9731be349bb6f0"
+        "source_sha256": "ef30af9851e8058234587dd905ec3c57697f955a4921a289da45136e4d538a9e"
       },
       {
         "source_file": "config/dflash_env.sh.example",
@@ -560,11 +560,11 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/common_reuse.py",
-        "source_sha256": "3049f28a180e23adef5ef23dc50a63ddc0dfca0d41062816dab1cab6af84aab6"
+        "source_sha256": "fdb834c496ab26580fc9b0d5beb707ed8d842f9f017083cb35a75284d838341e"
       },
       {
         "source_file": "tests/test_common_gdr_reuse.py",
-        "source_sha256": "ced3cafc7788d18632368818e943351887f1d3c097073e853e0685947e4679b9"
+        "source_sha256": "af72a03881edaf2fafe315a32b7a9fe573afb90021a3dbe4a02113c563e93696"
       },
       {
         "source_file": "docs/DFLASH_OPERATORS.md",
@@ -573,6 +573,10 @@
       {
         "source_file": "tests/test_internal_dflash_bridge_rollback.py",
         "source_sha256": "76a600d219cab8645294091c880f33d0c474b09605a4b61d4b5790b3013bbacf"
+      },
+      {
+        "source_file": "config/prompts_long_1k.json",
+        "source_sha256": "a790a0c4b3662412dcc01e6c113d033deb85e90c6c003a5276ed04b74dbccf7f"
       }
     ],
     "supported_abis": [
@@ -602,7 +606,18 @@
         "chunk",
         "mtp"
       ],
-      "policy": "preflight both complete bundles and all prompt budgets before device jobs; independent paired 3+10 prompt suites per length/route; always-on speculation; explicit allow-output-differences; warmups/startup excluded from measured graph-call and model-loop statistics"
+      "policy": "preflight both complete bundles and all prompt budgets before device jobs; independent paired 3+10 prompt suites per length/route; always-on speculation; explicit allow-output-differences; warmups/startup excluded from measured graph-call and model-loop statistics",
+      "long_context_prompts": {
+        "file": "config/prompts_long_1k.json",
+        "count": 4,
+        "locked_tokenizer_chat_input_tokens": [
+          983,
+          998,
+          1001,
+          1008
+        ],
+        "policy": "full prompts, no truncation or repetition padding; runtime records actual input_tokens and checks input plus output against capacity"
+      }
     },
     "common_reuse": "same-directory two-route bundle has five OM files; export-air --reuse-common-from reuses validated prefill/decode/draft AIR payloads and OMs; only Verify exported/compiled; separate directories may use hardlinks"
   }

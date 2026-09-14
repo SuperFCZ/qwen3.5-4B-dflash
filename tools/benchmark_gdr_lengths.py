@@ -94,7 +94,8 @@ def read_cell(summary_path, route, length, prompts):
     for item, expected in zip(summary["cases"], prompts):
         if item.get("prompt_token_ids") != expected["prompt_token_ids"]:
             raise ValueError("tokenized prompts differ between matrix cells")
-        row = dict(item, verify_gdr=route, max_new_tokens=length)
+        row = dict(item, verify_gdr=route, max_new_tokens=length,
+                   input_tokens=len(expected["prompt_token_ids"]))
         if row["status"] in suite.MEASURED_STATUSES:
             path = Path(row["raw_report"])
             if sha256_file(path) != row["raw_report_sha256"]:
@@ -151,7 +152,10 @@ def render(summary):
     def number(value, percent=False):
         return "N/A" if value is None else f"{value:.2%}" if percent else f"{value:.2f}"
 
-    lines = [
+    lines = ["| Prompt | Input tokens |", "|---|---:|"]
+    for prompt in summary["prompts"]:
+        lines.append(f"| {prompt['id']} | {len(prompt['prompt_token_ids'])} |")
+    lines += ["", "Input tokens include the selected chat template; output budgets are listed separately.", "",
         "| Max new tokens | GDR | Measured / prompts | Acceptance | Tokens / round | DFlash tok/s | Speedup vs ordinary | Decode ms/call | Draft ms/call | Verify ms/call |",
         "|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
@@ -193,7 +197,7 @@ def save(root, summary):
     atomic_write_json(root / "summary.json", summary)
     (root / "summary.md").write_text(render(summary), encoding="utf-8")
     fields = [
-        "verify_gdr", "max_new_tokens", "id", "status", "acceptance_rate",
+        "verify_gdr", "max_new_tokens", "id", "input_tokens", "status", "acceptance_rate",
         "tokens_per_speculative_round", "generated_tokens", "ordinary_generated_tokens",
         "stop_reason", "ordinary_stop_reason", "dflash_tokens_per_second",
         "ordinary_tokens_per_second", "speedup", "throughput_speedup",
@@ -227,6 +231,7 @@ def prepare(args, root):
     prompts = suite.load_prompts(args.prompts, args.prompt_id)
     for prompt in prompts:
         prompt["prompt_token_ids"] = tokenize_prompt(tokenizer, prompt["prompt"], chat=args.chat)
+        prompt["input_tokens"] = len(prompt["prompt_token_ids"])
     required_capacity = math.ceil(
         (max(len(p["prompt_token_ids"]) for p in prompts) + max(args.lengths)) / 64) * 64
     bundles = {}

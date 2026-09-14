@@ -1,6 +1,7 @@
 """Length/route orchestration, counting and fake-ACL rejection; host evidence only."""
 import argparse
 import copy
+import csv
 import json
 import os
 from pathlib import Path
@@ -119,6 +120,32 @@ def test_unsupported_later_budget_rejected_before_first_job(matrix_args, monkeyp
         matrix.run(matrix_args)
 
 
+@pytest.mark.parametrize("matrix_args", [1088, 2048], indirect=True)
+def test_1k_context_grid_checks_input_plus_output_before_any_device_job(matrix_args, monkeypatch):
+    from qwen35_dflash.ascend310p import workflow
+
+    tokenizer = SimpleNamespace(apply_chat_template=lambda *args, **kwargs: [4] * 1024)
+    monkeypatch.setattr(workflow, "load_tokenizer", lambda **kwargs: (tokenizer, "host-1k-token-fixture"))
+    monkeypatch.setattr(matrix.suite, "run", no_execution)
+    matrix_args.prompts = matrix.REPO / "config/prompts_long_1k.json"
+    matrix_args.lengths = [128, 512, 1024]
+    matrix_args.plan_only = True
+    capacity = json.loads(matrix_args.chunk_deployment_manifest.read_text())["graphs"][0]["metadata"]["incremental_contract"]["capacity"]
+    if capacity < 2048:
+        with pytest.raises(ValueError, match=r"prompt 1024 \+ budget 128 exceeds capacity 1088"):
+            matrix.run(matrix_args)
+        return
+    assert matrix.run(matrix_args) == 0
+    root, = matrix_args.run_dir.glob("gdr-lengths-*")
+    report = json.loads((root / "request.json").read_text())
+    frozen = json.loads((root / "prompts.json").read_text())
+    assert report["minimum_required_capacity"] == 2048
+    assert len(report["cells"]) * len(frozen) == 24
+    assert frozen == report["prompts"]
+    assert all(p["input_tokens"] == len(p["prompt_token_ids"]) == 1024 for p in frozen)
+    assert "| long_zh_qa | 1024 |" in (root / "summary.md").read_text()
+
+
 def test_wrong_route_is_not_silently_relabelled(matrix_args, monkeypatch):
     matrix_args.mtp_deployment_manifest = matrix_args.chunk_deployment_manifest
     monkeypatch.setattr(matrix.suite, "run", no_execution)
@@ -145,6 +172,8 @@ def test_all_lengths_and_routes_execute_even_when_fake_acl_is_rejected(matrix_ar
     report = json.loads((root / "summary.json").read_text())
     assert report["status"] == "FAIL_OR_INCOMPLETE"
     assert len(report["cells"]) == 4
+    csv_rows = list(csv.DictReader((root / "cases.csv").open()))
+    assert len(csv_rows) == 4 and all(row["input_tokens"] == "2" for row in csv_rows)
     for cell in report["cells"]:
         assert cell["suite_exit_code"] == 1
         assert cell["aggregate"]["measured_prompts"] == 0

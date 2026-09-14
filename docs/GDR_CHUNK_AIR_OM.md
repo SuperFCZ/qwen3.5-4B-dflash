@@ -51,6 +51,27 @@ cd "$AI_RUN_DIR"
 - `gdr-lengths-*/summary.md` 汇总接受率、加速、普通 Decode / Draft / Verify 的 ms/call；
   `cases.csv` 每个组合一行。分项缺失显示 N/A。
 
+### 约 1K 输入上下文
+
+[内置长 prompt](../config/prompts_long_1k.json)共 4 条：中文摘要、跨段检索、约束规划、英文分析。
+使用锁定的 Qwen tokenizer 和默认聊天模板，输入分别为 **983、998、1001、1008 token**；
+运行报告的 `Input tokens` / `input_tokens` 会记录当前 tokenizer 的实际长度。
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
+  --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
+  --runner-config "$RUNNER_CONFIG" --model-dir "$TARGET_DIR" \
+  --chunk-deployment-manifest "$CHUNK_DEPLOYMENT_MANIFEST" \
+  --mtp-deployment-manifest "$MTP_DEPLOYMENT_MANIFEST" \
+  --prompts "$REPO_ROOT/config/prompts_long_1k.json" \
+  --lengths 128 512 1024 --max-draft-tokens "$MAX_DRAFT_TOKENS" --device-id "$DEVICE_ID" \
+  --low-memory --allow-output-differences
+```
+
+共 24 个组合；两条路线使用相同的完整输入。这里 1K 指输入长度，`--lengths` 指输出上限。
+这组输入加 1024 输出可放入容量 2048；更换 tokenizer 后仍以启动前的容量检查为准。
+只测当前路线时，给上面的 `benchmark_prompts.py` 命令加同一个 `--prompts` 参数即可。
+
 ## 查看文字、接受率和重新汇总
 
 在环境配置中填写 `SAVED_BATCH`（已有 `runner-batch.json` 的路径），重新 `source` 后执行：
@@ -176,6 +197,11 @@ PY
 
 复用要求两次导出使用同一源码、权重、配置（仅 `verify_gdr` 不同）、工具链及编译选项；不匹配会报错。
 只用 MTP 时可向空目录导出，省略 `--reuse-common-from`，随后编译该目录的 `air-manifest.json`。
+
+遇到 `Common reuse export differs` 时，新版会打印具体字段。
+旧版曾将审计信息中 JSON 的 list 与内存 tuple 误判为不一致，现已修复；
+源码哈希、张量接口或配置确实不同时仍会拒绝复用。更新源码后，旧清单的源码哈希也会变化，
+应在新目录用同一版本重新执行上述四步，不修改旧清单或覆盖已有 OM。
 
 当前 ATC 输出会被收集，每张图结束后才写入 `$AI_RUN_DIR/log/dflash-atc/<本次编译目录>/<图名>.log`；
 编译期间可能长时间没有终端输出，不能仅据此判断卡死。

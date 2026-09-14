@@ -1,6 +1,7 @@
 """Prompt IDs must retain chat formatting across tokenizer return containers."""
 
 from collections import UserDict
+import os
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -62,6 +63,23 @@ def test_chat_ignores_other_mapping_fields(mapping):
 
 def test_raw_prompt_has_no_chat_generation_marker(tokenizer):
     assert tokenize_prompt(tokenizer, "hello world", chat=False) == [1, 2]
+
+
+def test_long_context_suite_length_with_locked_target_tokenizer():
+    """Optional real-tokenizer check; this never loads model weights."""
+    model_dir = os.environ.get("QWEN35_TEST_TOKENIZER_DIR")
+    if not model_dir:
+        pytest.skip("set QWEN35_TEST_TOKENIZER_DIR to the locked Target checkpoint")
+    from transformers import AutoTokenizer
+    from tools.benchmark_prompts import load_prompts
+
+    target = AutoTokenizer.from_pretrained(model_dir, local_files_only=True, trust_remote_code=False)
+    prompts = load_prompts(ROOT / "config/prompts_long_1k.json")
+    assert len(prompts) == 4
+    for prompt in prompts:
+        tokens = tokenize_prompt(target, prompt["prompt"], chat=True)
+        assert 960 <= len(tokens) <= 1024, (prompt["id"], len(tokens))
+        assert len(tokens) + 1024 <= 2048
 
 
 @pytest.mark.parametrize("chat", [False, True])

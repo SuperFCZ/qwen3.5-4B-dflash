@@ -213,7 +213,8 @@ def test_wrapper_records_requests_and_rejects_fake_acl_as_device_evidence(chunk_
     assert summary["status"] == "FAIL_OR_INCOMPLETE"
     assert summary["aggregate"]["failed_prompts"] == 2
     assert all("fake ACL" in r["error"] for r in summary["cases"])
-    assert "| prompt_01 | FAIL |" in (root / "summary.md").read_text()
+    assert all(row["input_tokens"] == 2 for row in summary["cases"])
+    assert "| prompt_01 | 2 | FAIL |" in (root / "summary.md").read_text()
 
 
 @pytest.mark.parametrize("low_memory", [False, True])
@@ -320,7 +321,7 @@ def test_decoding_failed_pair_keeps_special_tokens_and_both_texts():
     assert "| FAIL" in text and "<think>你好世界" in text and "<think>你好！" in text
     rows = [row, dict(id="missing", status="NOT_RUN", error="load failed", failure_stage="load_dflash")]
     md = suite.markdown(dict(cases=rows, aggregate=suite.aggregate(rows)))
-    assert "failed: 1; not run: 1" in md and "| missing | NOT_RUN |" in md
+    assert "failed: 1; not run: 1" in md and "| missing | N/A | NOT_RUN |" in md
     assert "Each passing prompt" not in md and "Weighted acceptance: N/A" in md
     assert "ordinary_dflash_parity" in md
 

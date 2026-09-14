@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 
 import pytest
+import torch
 
 from test_incremental_air_om import specs, small_threads
 from rms_norm_test_support import adn_rms_norm_cpu
@@ -24,6 +25,13 @@ def shared_build(tmp_path, monkeypatch):
     calls = {"factory": [], "export": [], "atc": []}
     active = {}
     metadata_change = {}
+    # Use the production audit property, including tuple-valued counter names.
+    # The saved JSON converts these tuples to lists between export processes.
+    from test_internal_dflash_bridge_rollback import FakeHIAIModel, FakeWrapper, InternalDFlashTarget
+    bridge = InternalDFlashTarget(
+        FakeWrapper(FakeHIAIModel()), device=torch.device("cpu"), dtype=torch.float16,
+        kv_cache_max_len=64, rollback_enabled=True,
+    )
 
     def factory(config):
         calls["factory"].append(config)
@@ -31,7 +39,8 @@ def shared_build(tmp_path, monkeypatch):
         for spec in specs(verify_gdr=config.get("verify_gdr", "chunk"),
                           include_ordinary_decode=config.get("include_ordinary_decode", True)):
             meta = {**spec.metadata, "quant_source_lock": {"sha256": "host-source"},
-                    "quant_input_manifest_sha256": "host-inputs", **metadata_change}
+                    "quant_input_manifest_sha256": "host-inputs",
+                    "target_rollback_audit": dict(bridge.dflash_rollback_audit), **metadata_change}
             values.append(replace(spec, metadata=meta))
         active.update({v.name: v for v in values})
         return values
@@ -188,6 +197,19 @@ def test_compile_failure_preserves_source_and_publishes_no_manifest(shared_build
                            runner=fail, atc_identity="fake-host-test")
     assert sha256_file(source.parent / "om/draft.om") == before
     assert not (tmp_path / "mtp/deployment-manifest.json").exists()
+
+
+def test_reuse_reports_real_nested_audit_difference(shared_build, tmp_path):
+    calls, export, _, original, change = shared_build
+    saved = original["graphs"][0]["metadata"]["target_rollback_audit"]
+    assert isinstance(saved["cumulative_counter_fields"], list)
+    change["target_rollback_audit"] = {
+        **saved, "persistent_gdn_state": "unexpected_fp16_state",
+    }
+    calls["export"].clear()
+    with pytest.raises(ValueError, match=r"target_prefill.metadata.target_rollback_audit.persistent_gdn_state"):
+        export("mtp", "changed-audit", Path(original["manifest_path"]))
+    assert not calls["export"] and not (tmp_path / "changed-audit").exists()
 
 
 def test_cli_exposes_common_reuse():

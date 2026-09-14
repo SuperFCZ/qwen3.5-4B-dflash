@@ -36,6 +36,44 @@ anchor 是已输出、尚待本轮写入状态的 token。若候选为 `A B C`�
 OM Draft 的 QK/PV 矩阵乘默认 FP16，缩放、Mask、Softmax 为 FP32；
 原生 Torch-NPU Draft 使用 FP32 矩阵乘。两者不能视为完全相同的数值路径。
 
+## Draft 内部流程
+
+```mermaid
+flowchart TD
+    F["新提交的 Target 特征：8 × 2560"] --> FC["FC：20480 → 2560 → RMSNorm"]
+    FC --> CK["各层独立投影 K/V；K 做 RMSNorm + RoPE"]
+    CK --> CACHE["追加到各层的上下文 KV cache"]
+    B["anchor + K 个 MASK，K ≤ 15"] --> EMB["Target 的 FP16 embedding"]
+    EMB --> N
+    subgraph L["Draft Decoder × 6 层"]
+        N["RMSNorm → block Q/K/V；Q/K norm + RoPE"] --> A["Attention：Q 来自 block"]
+        CACHE --> A
+        A --> O["输出投影 + 残差"]
+        O --> M["RMSNorm → SwiGLU MLP + 残差"]
+    end
+    M --> H["最终 RMSNorm → 取 MASK 行 → Target 的 FP16 LM head"]
+    H --> TOP["全词表 Top1：一次并行提出 K 个候选"]
+    TOP --> V["Target Verify：Chunk 或 MTP"]
+    V --> C["仅提交旧 anchor + 接受前缀；修正 / bonus token 作新 anchor"]
+    C -->|新增 Target 特征供下轮使用| F
+    C -->|新 anchor| B
+```
+
+- **上下文分支**：首次使用 prompt 的 Target 特征，后续只追加新提交位置的特征。
+  同一份 FC/RMSNorm 结果供 6 层分别生成 K/V；上下文不作为 Draft 的 Query。
+- **候选分支**：每层 Attention 读取上下文 KV 和本轮 block 的临时 KV。
+  滑窗层按因果窗口计算，full-attention 层允许块内双向注意；六层均处理整个 block。
+  第 0 行是 anchor，只有后面的 MASK 行输出候选，一次 Draft 前向完成。
+- **缓存更新**：block 的临时 KV 不作为下轮的已提交上下文。
+  验证接受 a 个候选后，下轮用旧 anchor 加这 a 个候选的 Target 特征补入缓存；
+  零接受也补入旧 anchor，新修正 token 留作下一轮 anchor。
+- **OM 实现**：上述上下文更新和候选生成合在同一个 `draft.om`，Chunk/MTP 共用。
+  特征输入物理 64 行、block 16 行，由有效长度屏蔽 padding；长 prompt 按 64 行逐块建缓存，
+  中间块的 Draft 候选丢弃，其计算仍计入预填充成本。
+
+实现见 [Draft 模型](../models/dflash_v1/modeling_dflash.py)、
+[DraftContextGraph / DraftProposeGraph](../framework/python/qwen35_dflash/ascend310p/incremental.py)。
+
 ## Chunk 两遍与 MTP
 
 | 项目 | `chunk`（默认） | `mtp` |

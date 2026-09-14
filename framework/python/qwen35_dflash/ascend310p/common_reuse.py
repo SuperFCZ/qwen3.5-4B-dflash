@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 from pathlib import Path
 
@@ -36,12 +37,33 @@ def _verified_file(root, record):
 
 
 def _metadata(value):
-    result = copy.deepcopy(value)
+    # Compare the representation that actually survives an AIR-manifest write.
+    # The live bridge audit contains tuples (e.g. cumulative_counter_fields);
+    # JSON reloads them as lists, without changing the graph or its contract.
+    result = json.loads(json.dumps(value, allow_nan=False))
     for key in ("factory_id", "verify_gdr"):
         result.pop(key, None)
     for key in _ROUTE_CONTRACT:
         result["incremental_contract"].pop(key, None)
     return result
+
+
+def _difference(old, new, path):
+    """Identify the first real mismatch without dumping the whole manifest."""
+    if isinstance(old, dict) and isinstance(new, dict):
+        for key in sorted(old.keys() | new.keys()):
+            child = f"{path}.{key}"
+            if key not in old or key not in new:
+                return child + (" (missing from saved manifest)" if key not in old else " (missing from current export)")
+            if old[key] != new[key]:
+                return _difference(old[key], new[key], child)
+    if isinstance(old, list) and isinstance(new, list):
+        for i, (left, right) in enumerate(zip(old, new)):
+            if left != right:
+                return _difference(left, right, f"{path}[{i}]")
+        if len(old) != len(new):
+            return f"{path}.length (saved={len(old)}, current={len(new)})"
+    return f"{path} (saved={repr(old)[:160]}, current={repr(new)[:160]})"
 
 
 def _config(config):
@@ -118,7 +140,8 @@ def validate_common_export(source, headers, environment):
                     not new.get("quant_source_lock") or not new.get("quant_input_manifest_sha256")):
                 raise ValueError("Common reuse requires locked source and input identities")
             if old != new:
-                raise ValueError(f"Common reuse export differs: {name}.{key}; use matching source/configuration")
+                raise ValueError("Common reuse export differs: " + _difference(old, new, f"{name}.{key}")
+                                 + "; use matching source/configuration")
     if environment != source["air"]["environment"]:
         raise ValueError("Common reuse export environment differs")
 
@@ -161,7 +184,7 @@ def validate_common_compile(air, root, *, atc_path, soc_version, arguments, iden
             old, new = ((_metadata(original[key]), _metadata(value))
                         if key == "metadata" else (original[key], value))
             if old != new:
-                raise ValueError(f"Common reuse AIR graph differs: {name}.{key}")
+                raise ValueError("Common reuse AIR graph differs: " + _difference(old, new, f"{name}.{key}"))
         for payload in graph["payload_files"]:
             _verified_file(root, payload)
         expected = [str(atc_path), "--mode=0", "--framework=1",

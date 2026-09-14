@@ -295,13 +295,14 @@ def aggregate(rows):
 def markdown(summary):
     def value(number, percent=False):
         return "N/A" if number is None else f"{number * 100:.2f}%" if percent else f"{number:.2f}"
-    lines = ["| Prompt | Status | Acceptance | Tokens / speculative round | Draft tok/s | Speedup | Generated |",
-             "|---|---|---:|---:|---:|---:|---:|"]
+    lines = ["| Prompt | Input tokens | Status | Acceptance | Tokens / speculative round | DFlash tok/s | Speedup | Generated |",
+             "|---|---:|---|---:|---:|---:|---:|---:|"]
     for row in summary["cases"]:
+        input_tokens = row.get("input_tokens", "N/A")
         if row["status"] not in MEASURED_STATUSES:
-            lines.append(f"| {row['id']} | {row['status']} | — | — | — | — | — |")
+            lines.append(f"| {row['id']} | {input_tokens} | {row['status']} | — | — | — | — | — |")
         else:
-            lines.append(f"| {row['id']} | {row['status']} | {value(row['acceptance_rate'], True)} | "
+            lines.append(f"| {row['id']} | {input_tokens} | {row['status']} | {value(row['acceptance_rate'], True)} | "
                          f"{value(row['tokens_per_speculative_round'])} | {value(row['dflash_tokens_per_second'])} | "
                          f"{value(row['speedup'])}x | {row['generated_tokens']} |")
     totals = summary["aggregate"]
@@ -354,7 +355,7 @@ def collect_results(args, prompts, raw, index, plan_hash, batch_hash, eos, exit_
         index_error = "missing/invalid batch index or fake ACL; inspect runner.log"
     rows = []
     for i, prompt in enumerate(prompts):
-        row = {**prompt, "status": "FAIL"}
+        row = {**prompt, "input_tokens": len(prompt["prompt_token_ids"]), "status": "FAIL"}
         try:
             if index_error:
                 raise RuntimeError(index_error)
@@ -535,6 +536,7 @@ def run(args):
                 or any(token < 0 or token >= contract["vocab_size"] for token in tokens)):
             raise ValueError(f"prompt {item['id']} exceeds vocabulary/context limit; shorten it or reduce max-new-tokens")
         item["prompt_token_ids"] = tokens
+        item["input_tokens"] = len(tokens)
     batch = root / "prompts.txt"
     batch.write_text("QWEN35_PROMPT_BATCH_V1\n" + "".join(
         f"{p['id']} \"{','.join(map(str, p['prompt_token_ids']))}\"\n" for p in prompts))
