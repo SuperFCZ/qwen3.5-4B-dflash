@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path
 import re
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -28,10 +29,103 @@ DEFAULT_PROMPTS = [
 ]
 
 MEASURED_STATUSES = {"PASS", "PASS_WITH_DIFFERENCES"}
+LONG_PROMPTS = REPO / "config/prompts_long_1k.json"
+STAGES = {
+    "ordinary_prefill": ("ordinary", "target_prefill"),
+    "ordinary_decode": ("ordinary", "target_decode"),
+    "dflash_prefill": ("dflash", "target_prefill"),
+    "draft": ("dflash", "draft"),
+    "verify": ("dflash", "target_verify"),
+}
+PHASES = {f"{mode}_{phase}": (mode, phase)
+          for mode in ("ordinary", "dflash") for phase in ("prefill", "decode")}
 
 
-def load_prompts(path, prompt_ids=None):
-    values = json.loads(path.read_text()) if path else DEFAULT_PROMPTS
+def set_benchmark_counts(args):
+    args.warmup = getattr(args, "warmup", 1)
+    args.repetitions = getattr(args, "repetitions", 3)
+    if (type(args.warmup) is not int or args.warmup < 0
+            or type(args.repetitions) is not int or args.repetitions <= 0):
+        raise ValueError("warmup must be non-negative and repetitions must be positive integers")
+
+
+def checked_times(values, label):
+    if any(type(v) not in (int, float) or not math.isfinite(v) or v < 0 for v in values):
+        raise ValueError(f"invalid stage timing: {label}")
+    return math.fsum(values)
+
+
+def stage_timings(report):
+    """Measured graph calls, including context-building Draft calls during prefill."""
+    result = {}
+    for label, (mode, stage) in STAGES.items():
+        runs = report.get(mode, {}).get("measurements", [])
+        groups = [m.get("stage_ms", {}).get(stage) for m in runs]
+        if not groups or any(group is None for group in groups):
+            result[label] = {"available": False}
+            continue
+        if any(not isinstance(group, list) for group in groups):
+            raise ValueError(f"invalid stage timing array: {mode}/{stage}")
+        values = [value for group in groups for value in group]
+        total = checked_times(values, f"{mode}/{stage}")
+        result[label] = {
+            "available": True, "calls": len(values), "total_ms": total,
+            "mean_ms": total / len(values) if values else None,
+            "median_ms": statistics.median(values) if values else None,
+            "measurements": len(runs), "mean_total_ms_per_generation": total / len(runs),
+        }
+    return result
+
+
+def phase_timings(report):
+    """Full prefill/decode phase elapsed time; startup/reset/warmup excluded."""
+    result = {}
+    for label, (mode, phase) in PHASES.items():
+        values = [m.get("latency_ms", {}).get(phase)
+                  for m in report.get(mode, {}).get("measurements", [])]
+        if not values or any(value is None for value in values):
+            result[label] = {"available": False}
+            continue
+        total = checked_times(values, f"{mode}/{phase}")
+        result[label] = {"available": True, "measurements": len(values),
+                         "total_ms": total, "mean_ms": total / len(values)}
+    return result
+
+
+def render_timings(rows, *, measured_only=True):
+    def number(value):
+        return "N/A" if value is None else f"{value:.2f}"
+
+    good = [row for row in rows if not measured_only or row["status"] in MEASURED_STATUSES]
+    if not good:
+        return ""
+    lines = ["Generation phases (mean ms/generation):", "",
+             "| Prompt | Ordinary Prefill | Ordinary Decode loop | DFlash Prefill | DFlash Decode loop |",
+             "|---|---:|---:|---:|---:|"]
+    for row in good:
+        timings = row.get("phase_timings", {})
+        lines.append(f"| {row['id']} | " + " | ".join(
+            number(timings.get(key, {}).get("mean_ms")) for key in PHASES) + " |")
+    lines += ["", "Graph latency (mean ms/call / cumulative mean ms/generation):", "",
+              "| Prompt | Ordinary Prefill | Ordinary Decode | DFlash Prefill | Draft | Verify |",
+              "|---|---:|---:|---:|---:|---:|"]
+    for row in good:
+        timings = row.get("stage_timings", {})
+        cells = [number(timings.get(key, {}).get("mean_ms")) + " / " +
+                 number(timings.get(key, {}).get("mean_total_ms_per_generation")) for key in STAGES]
+        lines.append(f"| {row['id']} | " + " | ".join(cells) + " |")
+    lines += ["", "Measured repetitions only; warmups, model loading and request reset excluded.",
+              "DFlash Prefill phase includes Target Prefill and context-building Draft calls. "
+              "Graph Draft totals include those calls; phase and graph tables overlap and must not be added together.",
+              "Graph times are synchronized OM calls, not kernel times. Missing timings are N/A."]
+    return "\n".join(lines) + "\n"
+
+
+def load_prompts(path, prompt_ids=None, prompt_group="all"):
+    if prompt_group not in ("all", "short", "long"):
+        raise ValueError("prompt-group must be all, short, or long")
+    values = (json.loads(path.read_text()) if path else
+              [dict(p, group="short") for p in DEFAULT_PROMPTS] + json.loads(LONG_PROMPTS.read_text()))
     if not isinstance(values, list) or not 1 <= len(values) <= 64:
         raise ValueError("prompts must be a JSON list of 1..64 strings or {id, prompt, category} objects")
     result, seen = [], set()
@@ -45,12 +139,21 @@ def load_prompts(path, prompt_ids=None):
                 or name in seen or not isinstance(prompt, str) or not prompt.strip()):
             raise ValueError("each prompt needs nonempty text and a unique safe id")
         seen.add(name)
-        result.append({"id": name, "category": str(item.get("category", "custom")), "prompt": prompt})
+        group = item.get("group", "custom")
+        if group not in ("short", "long", "custom"):
+            raise ValueError("prompt group must be short, long, or custom")
+        result.append({"id": name, "category": str(item.get("category", "custom")),
+                       "prompt": prompt, "group": group})
+    if prompt_group != "all":
+        result = [item for item in result if item["group"] == prompt_group]
+        seen = {item["id"] for item in result}
     if prompt_ids:
         unknown = set(prompt_ids) - seen
         if unknown:
             raise ValueError(f"unknown prompt id(s): {', '.join(sorted(unknown))}")
         result = [item for item in result if item["id"] in prompt_ids]
+    if not result:
+        raise ValueError(f"no prompts in selected group {prompt_group}; custom JSON may specify group: short or long")
     return result
 
 
@@ -256,6 +359,7 @@ def summarize_prompt(report):
         raise ValueError("invalid acceptance counters or model latency")
     return {
         "drafted_tokens": drafted, "accepted_draft_tokens": accepted,
+        "stage_timings": stage_timings(report), "phase_timings": phase_timings(report),
         "acceptance_rate": accepted / drafted if drafted else None,
         "speculative_rounds": len(rounds), "tokens_emitted_in_speculative_rounds": emitted,
         "tokens_per_speculative_round": emitted / len(rounds) if rounds else None,
@@ -282,7 +386,7 @@ def aggregate(rows):
     drafted = sum(r["drafted_tokens"] for r in good)
     accepted = sum(r["accepted_draft_tokens"] for r in good)
     latency = sum(r["dflash_total_measured_ms"] for r in good)
-    return {"scope": "prompts admitted by the selected output-comparison policy and independent 3+10 checks",
+    return {"scope": "prompts admitted by the selected output-comparison policy and requested repeatability checks",
             "passed_prompts": sum(r["status"] == "PASS" for r in rows),
             "allowed_difference_prompts": sum(r["status"] == "PASS_WITH_DIFFERENCES" for r in rows),
             "measured_prompts": len(good), "failed_prompts": sum(r["status"] == "FAIL" for r in rows),
@@ -306,21 +410,27 @@ def markdown(summary):
                          f"{value(row['tokens_per_speculative_round'])} | {value(row['dflash_tokens_per_second'])} | "
                          f"{value(row['speedup'])}x | {row['generated_tokens']} |")
     totals = summary["aggregate"]
+    protocol = summary.get("protocol", {})
+    repeats = f"{protocol.get('warmup', 'N/A')}+{protocol.get('repetitions', 'N/A')}"
     lines += ["", f"Passed: {totals['passed_prompts']}; failed: {totals['failed_prompts']}; not run: {totals['not_run_prompts']}.",
+              f"Warmup per mode/prompt: {protocol.get('warmup', 'N/A')}; measured repetitions: {protocol.get('repetitions', 'N/A')}.",
               f"Weighted acceptance: {value(totals['weighted_acceptance_rate'], True)}.",
               "Acceptance = accepted draft tokens / proposed draft tokens; warmups excluded.",
               "Speedup > 1 means faster than ordinary generation; acceptance alone does not establish speedup."]
     if totals.get("allowed_difference_prompts"):
         lines += [f"Allowed output differences: {totals['allowed_difference_prompts']}; "
-                  "both modes passed independent 3+10 checks. Output parity remains FAIL; task quality was not evaluated.",
+                  f"both modes passed independent {repeats} checks. Output parity remains FAIL; task quality was not evaluated.",
                   "Speedup compares model-loop time for each mode's own output. Different EOS lengths can change the work; "
                   "JSON also records both token counts and throughput_speedup."]
     if totals["passed_prompts"]:
-        lines += ["Each passing prompt passed token/EOS parity and the existing 3+10 repeatability gates."]
+        lines += [f"Each passing prompt passed token/EOS parity and the requested {repeats} repeatability checks."]
     elif not totals.get("allowed_difference_prompts"):
         lines += ["No prompt has passed the complete checks; no validated acceptance or speedup is available."]
     if any(r.get("observed_acceptance", {}).get("available") for r in summary["cases"]):
         lines += ["", render_acceptance(summary["cases"]).rstrip()]
+    timings = render_timings(summary["cases"])
+    if timings:
+        lines += ["", timings.rstrip()]
     if any(r.get("acceptance_by_position") for r in summary["cases"]):
         lines += ["", render_position_acceptance(summary["cases"]).rstrip()]
     for row in summary["cases"]:
@@ -347,6 +457,7 @@ def collect_results(args, prompts, raw, index, plan_hash, batch_hash, eos, exit_
     from qwen35_dflash.ascend310p.utils import sha256_file
 
     allow_differences = getattr(args, "allow_output_differences", False)
+    warmup, repetitions = getattr(args, "warmup", 3), getattr(args, "repetitions", 10)
     index_error = None
     if (exit_code not in (None, 0, 1) or raw.get("fake_acl") is not False
             or raw.get("status") not in ("PASS", "FAIL") or raw.get("error")
@@ -382,6 +493,7 @@ def collect_results(args, prompts, raw, index, plan_hash, batch_hash, eos, exit_
                 om_sha256=plan_hash, device_id=args.device_id, max_new_tokens=args.max_new_tokens,
                 max_draft_tokens=args.max_draft_tokens, chunk_abi=True, low_memory=args.low_memory,
                 verify_gdr=getattr(args, "verify_gdr", None),
+                warmup=warmup, repetitions=repetitions,
                 allow_output_differences=allow_differences)
             if report["eos_token_ids"] != eos or report["protocol"].get("round_trace_enabled") is not True:
                 raise ValueError("EOS or trace settings differ")
@@ -410,14 +522,16 @@ def collect_results(args, prompts, raw, index, plan_hash, batch_hash, eos, exit_
     parity_failed = any(r.get("ordinary_parity", {}).get("status") == "FAIL" for r in rows)
     return {"schema_version": 1, "status": ("PASS_WITH_DIFFERENCES" if differences else "PASS") if ok else "FAIL_OR_INCOMPLETE",
         "cases": rows, "aggregate": aggregate(rows), "protocol": {
-            "warmup": 3, "repetitions": 10, "low_memory": args.low_memory,
+            "warmup": warmup, "repetitions": repetitions, "low_memory": args.low_memory,
+            "prompt_group": getattr(args, "prompt_group", "all"),
             "output_comparison": "allow_output_differences" if allow_differences else "strict",
             "dflash_speculation_policy": raw.get("dflash_speculation_policy", "not_recorded"),
             "models_reused_across_prompts": raw.get("models_reused_across_prompts"), "order": raw.get("order"),
             "verify_gdr": getattr(args, "verify_gdr", None)},
-        "startup_ms": raw.get("startup_ms"), "runner_index": str(index), "runner_exit_code": exit_code,
+        "startup_ms": raw.get("startup_ms"), "runner_index": str(index),
+        "runner_index_sha256": sha256_file(index) if index.is_file() else None, "runner_exit_code": exit_code,
         "ordinary_parity": "FAIL" if parity_failed else "PASS" if ok else "FAIL_OR_INCOMPLETE",
-        "quality_evaluation": "NOT_RUN", "formal_latency_evidence": bool(ok and not differences),
+        "quality_evaluation": "NOT_RUN", "formal_latency_evidence": bool(ok and not differences and (warmup, repetitions) == (3, 10)),
         "scope": "This selected prompt suite. Allowed differences are experimental comparisons of each mode's own output, not quality equivalence."}
 
 
@@ -448,7 +562,9 @@ def summarize_existing(args):
     raw = json.loads(index.read_text())
     command = request["command"]
 
-    def argument(name):
+    def argument(name, default=None):
+        if isinstance(command, list) and name not in command and default is not None:
+            return default  # Older C++ requests omitted the then-fixed 3+10 defaults.
         if not isinstance(command, list) or command.count(name) != 1:
             raise ValueError(f"saved request needs one {name}")
         return command[command.index(name) + 1]
@@ -468,8 +584,13 @@ def summarize_existing(args):
     if batch.read_text() != expected_batch:
         raise ValueError("saved prompt tokens differ from batch inputs")
     stored = argparse.Namespace(device_id=int(argument("--device-id")),
+        warmup=int(argument("--warmup", "3")), repetitions=int(argument("--repetitions", "10")),
+        prompt_group=request.get("prompt_group", "all"),
         max_new_tokens=int(argument("--max-new-tokens")), max_draft_tokens=int(argument("--max-draft-tokens")),
         low_memory="--low-memory" in command, allow_output_differences=args.allow_output_differences)
+    set_benchmark_counts(stored)
+    if any(request.get(key, getattr(stored, key)) != getattr(stored, key) for key in ("warmup", "repetitions")):
+        raise ValueError("saved request repeat counts disagree with command")
     from qwen35_dflash.ascend310p.incremental_plan import require_verify_gdr
     stored.verify_gdr = require_verify_gdr(
         {"abi": plan.read_text().splitlines()[0]}, getattr(args, "verify_gdr", None))
@@ -512,7 +633,8 @@ def run(args):
     os.environ["AI_RUN_DIR"] = str(run_dir)
     if args.device_id < 0 or not 1 <= args.max_draft_tokens <= 15 or args.max_new_tokens <= 0:
         raise ValueError("invalid device/token limits")
-    prompts = load_prompts(args.prompts, getattr(args, "prompt_id", None))
+    set_benchmark_counts(args)
+    prompts = load_prompts(args.prompts, getattr(args, "prompt_id", None), getattr(args, "prompt_group", "all"))
     manifest = (args.deployment_manifest or run_dir / "artifacts/deployment-manifest.json").resolve()
     config = json.loads((args.runner_config or run_dir / "runner.json").read_text())
     identity = validate_cpp_runner_options(config, args.device_id)
@@ -520,6 +642,8 @@ def run(args):
     help_result = subprocess.run([str(executable), "--help"], capture_output=True, text=True)
     if help_result.returncode or "--prompt-batch" not in help_result.stdout:
         raise RuntimeError("rebuild the C++ runner: --prompt-batch support is required")
+    if (args.warmup, args.repetitions) != (3, 10) and "positive; default 10" not in help_result.stdout:
+        raise RuntimeError("rebuild the C++ runner for configurable --warmup/--repetitions (no OM recompilation needed)")
     root = require_run_output(Path(tempfile.mkdtemp(prefix="prompt-suite-", dir=run_dir)))
     print(f"Output: {root}", flush=True)
     plan, deployment, contract = write_incremental_plan(
@@ -547,10 +671,12 @@ def run(args):
         "--output", str(index), "--eos-token-ids", ",".join(map(str, eos)),
         "--pad-token-id", str(identity["pad_token_id"]), "--device-id", str(args.device_id),
         "--max-new-tokens", str(args.max_new_tokens), "--max-draft-tokens", str(args.max_draft_tokens),
-        "--warmup", "3", "--repetitions", "10", "--trace-rounds"]
+        "--warmup", str(args.warmup), "--repetitions", str(args.repetitions), "--trace-rounds"]
     if args.low_memory:
         command.append("--low-memory")
     request = {"schema_version": 1, "prompts": prompts, "chat": args.chat, "eos_token_ids": eos,
+        "prompt_group": getattr(args, "prompt_group", "all"),
+        "warmup": args.warmup, "repetitions": args.repetitions,
         "verify_gdr": args.verify_gdr, "incremental_abi": contract["abi"],
         "allow_output_differences": getattr(args, "allow_output_differences", False),
         "max_new_tokens": args.max_new_tokens, "max_draft_tokens": args.max_draft_tokens,
@@ -580,7 +706,9 @@ def main():
                         help="require the selected compiled route; omitted: read manifest")
     parser.add_argument("--runner-config", type=Path)
     parser.add_argument("--model-dir", type=Path, help="required for inference; optional for decoding saved outputs")
-    parser.add_argument("--prompts", type=Path, help="optional JSON list; defaults to eight varied prompts")
+    parser.add_argument("--prompts", type=Path, help="custom JSON; default: 8 short + 12 long (~1K input) prompts")
+    parser.add_argument("--prompt-group", choices=("all", "short", "long"), default="all",
+                        help="select all (default), short, or long inputs; custom JSON can specify group")
     parser.add_argument("--prompt-id", action="append", help="run only selected ID(s); repeatable")
     parser.add_argument("--chat", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--eos-token-id", type=int, action="append", help="repeatable; default 248044")
@@ -588,8 +716,10 @@ def main():
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--max-draft-tokens", type=int, default=15)
     parser.add_argument("--low-memory", action="store_true")
+    parser.add_argument("--warmup", type=int, default=1, help="warmup generations per mode and prompt (default 1)")
+    parser.add_argument("--repetitions", type=int, default=3, help="measured generations per mode and prompt (default 3)")
     parser.add_argument("--allow-output-differences", action="store_true",
-                        help="report cross-mode differences without rejecting otherwise valid 3+10 measurements")
+                        help="allow cross-mode differences; retain the requested repeatability checks")
     parser.add_argument("--summarize-existing", type=Path, metavar="BATCH_JSON",
                         help="read a saved runner batch and request; no inference or runner/model files required")
     try:

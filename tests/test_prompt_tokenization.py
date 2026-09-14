@@ -75,7 +75,7 @@ def test_long_context_suite_length_with_locked_target_tokenizer():
 
     target = AutoTokenizer.from_pretrained(model_dir, local_files_only=True, trust_remote_code=False)
     prompts = load_prompts(ROOT / "config/prompts_long_1k.json")
-    assert len(prompts) == 4
+    assert len(prompts) == 12
     for prompt in prompts:
         tokens = tokenize_prompt(target, prompt["prompt"], chat=True)
         assert 960 <= len(tokens) <= 1024, (prompt["id"], len(tokens))

@@ -78,18 +78,20 @@
 整体加速按总模型时间之比计算，不平均各行倍数；加载、模式切换不计入模型循环。
 表内加速比使用时延中位数，吞吐增幅按全部测量的 tok/s 计算。
 
-## Decode、Draft、Verify 时延
+## Prefill、Decode、Draft、Verify 时延
 
 | 项目 | 当前数据 / 读取位置 |
 |---|---|
 | 旧短 prompt 普通全程摊销 | 约 34.4～34.5 ms/token，含 prefill，不能当成纯 decode |
+| 普通 / DFlash 完整 Prefill 阶段 | 各自 `measurements[].latency_ms.prefill`；每次生成一个值 |
+| 普通 / DFlash Prefill 图 ms/call | 各自 `measurements[].stage_ms.target_prefill[]` |
 | 普通 Decode 图 ms/call | 原始 ordinary `measurements[].stage_ms.target_decode[]` |
 | Draft 图 ms/call | 原始 dflash `measurements[].stage_ms.draft[]` |
 | Verify 图 ms/call | 原始 dflash `measurements[].stage_ms.target_verify[]` |
 
-目前提供的两组日志均未展示这三项图计时数组，**暂缺单独实测值**。
-[多长度测试](GDR_CHUNK_AIR_OM.md#多长度与双路线测试)的外层汇总问题需先修复；
-原始子报告中的计时仍可读取。需要算子级热点时使用 [msprof](GDR_CHUNK_AIR_OM.md#msprof)。
+目前提供的两组日志均未展示这些分项计时，**暂缺单独实测值**。
+[统一测试](GDR_CHUNK_AIR_OM.md)已修复外层汇总，并展示完整阶段与图调用时延；
+历史子报告也可重新汇总读取已有分项。需要算子级热点时使用 [msprof](GDR_CHUNK_AIR_OM.md#msprof)。
 
 `stage_ms` 为同步 OM 调用墙钟时间，包含必要的数据绑定、传输和同步；
 Verify 包含图内状态提交，不能再加一份 commit。长 prompt 的 Draft 调用还可能包括
@@ -140,9 +142,9 @@ det0 样例是少量元素的 1 FP16 ULP 变化，可传播到 norm、KV 和候�
 
 ## 其他已知问题
 
-- **多长度外层误报 fake ACL**：当前 C++ 把 `fake_acl` 写在批次索引中，单个 prompt 子报告没有此字段；
-  `benchmark_gdr_lengths.py` 却要求子报告的该字段严格为 `false`，将缺失误判为 fake ACL。
-  本次子套件已完成，外层汇总失败；修复与离线重新汇总待处理。
+- **多长度外层误报 fake ACL（已修复）**：C++ 把 `fake_acl` 写在批次索引中，单个 prompt 子报告没有此字段。
+  新版从批次索引核验该标志，并匹配子报告路径、模型哈希；仍拒绝 fake ACL。
+  上述旧外层报告保留当时的失败状态，未重新执行设备测量。新版统一测试会打印两种模式的完整 Prefill 阶段及各 OM 分项时延。
 - **普通 decode 与 verify 输出分叉**：已观察到，尚未分离数值路径与状态更新的影响。
 - **低接受率**：zh_plan 仅 6.39%，实际慢于普通模型；暂未定位统一根因。
 - **Chunk 单输出性能退化**：历史单 GDR 约 22～29 ms，双输出约 0.26～0.27 ms；

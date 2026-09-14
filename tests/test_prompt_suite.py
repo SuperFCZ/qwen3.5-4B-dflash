@@ -165,7 +165,10 @@ def test_weighted_acceptance_keeps_failures_and_empty_denominator_visible():
 
 
 def test_default_and_custom_prompts(tmp_path):
-    assert len(suite.load_prompts(None)) == 8
+    assert len(suite.load_prompts(None)) == 20
+    assert len(suite.load_prompts(None, prompt_group="short")) == 8
+    assert len(suite.load_prompts(None, prompt_group="long")) == 12
+    assert {p["group"] for p in suite.load_prompts(None)} == {"short", "long"}
     assert [p["id"] for p in suite.load_prompts(None, ["code", "math"])] == ["math", "code"]
     with pytest.raises(ValueError, match="unknown prompt"):
         suite.load_prompts(None, ["absent"])
@@ -173,11 +176,38 @@ def test_default_and_custom_prompts(tmp_path):
     custom.write_text(json.dumps(["一个问题", {"id": "code", "prompt": "Write code", "category": "code"}]))
     result = suite.load_prompts(custom)
     assert [r["id"] for r in result] == ["prompt_01", "code"]
+    with pytest.raises(ValueError, match="no prompts in selected group"):
+        suite.load_prompts(custom, prompt_group="long")
+    frozen = suite.load_prompts(None, ["math", "long_zh_code"])
+    custom.write_text(json.dumps(frozen))
+    assert suite.load_prompts(custom) == frozen
+    assert [p["id"] for p in suite.load_prompts(custom, prompt_group="long")] == ["long_zh_code"]
+    with pytest.raises(ValueError, match="unknown prompt"):
+        suite.load_prompts(custom, ["math"], prompt_group="long")
     for bad in ([42], [{"id": "../escape", "prompt": "x"}],
                 [{"id": "x", "prompt": "x"}, {"id": "x", "prompt": "y"}], []):
         custom.write_text(json.dumps(bad))
         with pytest.raises(ValueError):
             suite.load_prompts(custom)
+
+
+@pytest.mark.parametrize("warmup,repetitions", [(0, 2), (1, 3), (3, 10)])
+def test_cpp_batch_honors_explicit_repeat_counts(chunk_bundle, tmp_path, monkeypatch, warmup, repetitions):
+    monkeypatch.setenv("QWEN35_FAKE_ACCEPT", "15")
+    command, output, plan = batch_command(chunk_bundle, tmp_path, [("p", [4, 5])], True)
+    command[command.index("--warmup") + 1] = str(warmup)
+    command[command.index("--repetitions") + 1] = str(repetitions)
+    proc = subprocess.run(command, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    index = json.loads(output.read_text())
+    assert index["fake_acl"] is True  # Host test evidence only.
+    report = json.loads(Path(index["cases"][0]["report"]).read_text())
+    validate_cpp_runner_report(report, prompt_token_ids=[4, 5], om_sha256=sha256_file(plan),
+        device_id=0, max_new_tokens=20, max_draft_tokens=15, chunk_abi=True, low_memory=True,
+        warmup=warmup, repetitions=repetitions)
+    for mode in ("ordinary", "dflash"):
+        assert report[mode]["warmup"] == warmup
+        assert report[mode]["repetitions"] == len(report[mode]["measurements"]) == repetitions
 
 
 def test_wrapper_records_requests_and_rejects_fake_acl_as_device_evidence(chunk_bundle, tmp_path, monkeypatch):
@@ -209,6 +239,13 @@ def test_wrapper_records_requests_and_rejects_fake_acl_as_device_evidence(chunk_
     request = json.loads((root / "request.json").read_text())
     assert [p["prompt_token_ids"] for p in request["prompts"]] == [[4, 3], [4, 15]]
     assert "--deterministic=1" in request["draft_atc_command"]
+    assert (request["warmup"], request["repetitions"]) == (1, 3)
+    raw_index = json.loads((root / "runner-batch.json").read_text())
+    for case in raw_index["cases"]:
+        raw = json.loads(Path(case["report"]).read_text())
+        for mode in ("ordinary", "dflash"):
+            assert raw[mode]["warmup"] == 1
+            assert raw[mode]["repetitions"] == len(raw[mode]["measurements"]) == 3
     summary = json.loads((root / "summary.json").read_text())
     assert summary["status"] == "FAIL_OR_INCOMPLETE"
     assert summary["aggregate"]["failed_prompts"] == 2

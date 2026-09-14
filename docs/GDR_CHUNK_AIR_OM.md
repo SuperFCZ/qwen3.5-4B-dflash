@@ -11,79 +11,76 @@ cd "$AI_RUN_DIR"
 两个 manifest 填实际已编译路径；新版共用同一目录里的 3 个公共 OM，各自引用自己的 Verify。
 首次部署见文末[导出与编译](#导出与编译)。`QUANT_MODE` 只控制原生推理，OM 精度由编译产物决定。
 
-## 多 prompt 测试
+## 统一测试：短 / 1K 上下文、Chunk / MTP、多长度
+
+默认 **8 条短 prompt + 12 条约 1K 输入 prompt**，每模式 **1 轮预热 + 3 轮测量**。
+原有四条长 prompt 保留，新增数学核算、代码修复、技术翻译、结构化抽取、方案比较、事件排序、规则判断和创作。
+两种输入共用下面一条命令；投机始终开启，低内存模式先测全部普通模式，再测全部 DFlash。
+
+首次升级需重建 C++ runner 才支持可调轮数，**不用因此重新编译 OM**。
+已有构建目录且指向当前源码时执行 `cmake --build "$(dirname "$CPP_RUNNER")" --parallel 4`；
+首次构建见文末第 5 步。
 
 ```bash
-"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_prompts.py" \
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
   --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
-  --deployment-manifest "$DEPLOYMENT_MANIFEST" \
   --runner-config "$RUNNER_CONFIG" --model-dir "$TARGET_DIR" \
-  --max-new-tokens "$MAX_NEW_TOKENS" --max-draft-tokens "$MAX_DRAFT_TOKENS" --device-id "$DEVICE_ID" \
+  --chunk-deployment-manifest "$CHUNK_DEPLOYMENT_MANIFEST" \
+  --mtp-deployment-manifest "$MTP_DEPLOYMENT_MANIFEST" \
+  --verify-gdr both --prompt-group all --lengths 128 \
+  --warmup 1 --repetitions 3 \
+  --max-draft-tokens "$MAX_DRAFT_TOKENS" --device-id "$DEVICE_ID" \
   --low-memory --allow-output-differences
 ```
 
-默认 8 条 prompt，每模式 3 次预热 + 10 次测量，投机始终开启。
-`--allow-output-differences` 用于当前允许输出差异的实验；去掉则严格比较 token/EOS。
-`--low-memory` 先测全部普通模式，再测全部 DFlash。
-
-常用调整：`--prompt-id math` 只测一条；配置文件中 `MAX_NEW_TOKENS=512` 改输出上限；
-`--prompts /path/prompts.json` 自定义输入，格式：
-`[{"id":"my_case","prompt":"你的问题","category":"自定义"}]`。
-
-结果在终端打印的 `prompt-suite-*`：`summary.md` 看速度/接受率，
-`generations.txt` 看文字，`runner-batch.json.cases/` 保存每轮和分项计时。
-
-## 多长度与双路线测试
-
-默认同时测 Chunk、MTP；下列参数可以组合：
-
-| 选择 | 参数 |
+| 选择 | 修改参数 |
 |---|---|
-| 只测 Chunk / MTP | `--verify-gdr chunk` / `--verify-gdr mtp`；两条都测用 `both`（默认） |
-| 只测一个输出长度 | `--lengths 512` |
-| 只测一条 prompt | `--prompt-id math`；可重复参数选择多条 |
+| 只测短 / 长输入 | `--prompt-group short` / `--prompt-group long` |
+| 只测 Chunk / MTP | `--verify-gdr chunk` / `--verify-gdr mtp`；另一条清单可省略 |
+| 单个 / 多个输出上限 | `--lengths 512` / `--lengths 128 512 1024` |
+| 单条 prompt | `--prompt-id long_zh_code`；可重复参数，可与短 prompt ID 混选 |
+| 恢复原测量次数 | `--warmup 3 --repetitions 10` |
+| 只检查不运行 | 增加 `--plan-only` |
 
-```bash
-"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
-  --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
-  --runner-config "$RUNNER_CONFIG" --model-dir "$TARGET_DIR" \
-  --chunk-deployment-manifest "$CHUNK_DEPLOYMENT_MANIFEST" \
-  --mtp-deployment-manifest "$MTP_DEPLOYMENT_MANIFEST" \
-  --lengths 32 64 128 256 512 1024 --max-draft-tokens "$MAX_DRAFT_TOKENS" --device-id "$DEVICE_ID" \
-  --low-memory --allow-output-differences
-```
+上面是 20 条 × 2 路线 × 1 长度，共 40 个组合；改成三个长度就是 120 个。
+省略 `--lengths` 则测试 32、64、128、256、512、1024 六个输出上限。
+两条路线使用相同完整输入，必须都能容纳输入加输出；内置长输入含聊天模板为 **960–1024 token**，
+配 1024 输出需要容量 2048。运行时再用当前 tokenizer 检查，提前 EOS 按实际输出计数。
 
-- 只测一条路线时，只需提供该路线的 `--*-deployment-manifest`，另一份清单不读取、不加载。
-- 双路线模型须有相同容量；所选路线均须容纳 `prompt tokens + max_new_tokens`，短 prompt 套件建议 2048。
-- 加 `--plan-only` 只检查清单、哈希和容量，不执行设备模型。旧 512 容量 OM 需扩容重导出。
-- 6 个长度 × 2 条路线 × 8 条 prompt，共 96 个组合，按组串行运行；提前 EOS 按实际长度统计。
-- `gdr-lengths-*/summary.md` 汇总接受率、加速、普通 Decode / Draft / Verify 的 ms/call；
-  `cases.csv` 每个组合一行。分项缺失显示 N/A。
+自定义输入仍可用 `--prompts /path/prompts.json`：
+`[{"id":"my_case","prompt":"你的问题","category":"自定义","group":"long"}]`。
+`group` 可省略；只有筛选 short/long 时才需要标注。
+原 `benchmark_prompts.py` 入口仍支持这些输入选择和轮数参数，单个输出上限用 `--max-new-tokens`。
 
-### 约 1K 输入上下文
+结果看 `gdr-lengths-*/summary.md` 和 `cases.csv`：整体及 short/long 分组的接受率、tok/s、加速比，
+普通 **Prefill / Decode**、DFlash **Prefill / Draft / Verify** 的平均 ms/call 与累计平均 ms/次生成。
+另列完整 Prefill / Decode 阶段耗时；DFlash Prefill 包含构建上下文的 Draft 调用，不能与图调用表重复相加。
+统计均排除预热、模型加载和请求重置，缺失分项显示 N/A。
+每组子目录的 `generations.txt` 保存文字输出，`runner-batch.json.cases/` 保存逐轮原始记录。
+`--allow-output-differences` 接受跨模式输出差异，仍检查指定轮数内的稳定性；去掉则严格比较 token/EOS。
 
-[内置长 prompt](../config/prompts_long_1k.json)共 4 条：中文摘要、跨段检索、约束规划、英文分析。
-使用锁定的 Qwen tokenizer 和默认聊天模板，输入分别为 **983、998、1001、1008 token**；
-运行报告的 `Input tokens` / `input_tokens` 会记录当前 tokenizer 的实际长度。
-对应 ID：`long_zh_summary`、`long_zh_qa`、`long_zh_plan`、`long_en_analysis`。
+<details>
+<summary>12 条长 prompt 的 ID 和实际输入长度</summary>
 
-```bash
-"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
-  --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
-  --runner-config "$RUNNER_CONFIG" --model-dir "$TARGET_DIR" \
-  --chunk-deployment-manifest "$CHUNK_DEPLOYMENT_MANIFEST" \
-  --mtp-deployment-manifest "$MTP_DEPLOYMENT_MANIFEST" \
-  --prompts "$REPO_ROOT/config/prompts_long_1k.json" \
-  --lengths 128 512 1024 --max-draft-tokens "$MAX_DRAFT_TOKENS" --device-id "$DEVICE_ID" \
-  --low-memory --allow-output-differences
-```
+| ID | 类型 | 输入 token |
+|---|---|---:|
+| long_zh_summary | 中文摘要 | 983 |
+| long_zh_qa | 跨段检索 | 998 |
+| long_zh_plan | 约束规划 | 1001 |
+| long_en_analysis | 英文分析 | 1008 |
+| long_zh_math | 数学核算 | 975 |
+| long_zh_code | 代码修复 | 984 |
+| long_zh_translate | 技术翻译 | 1004 |
+| long_zh_extract | 结构化抽取 | 1024 |
+| long_zh_compare | 方案比较 | 971 |
+| long_zh_timeline | 事件排序 | 1004 |
+| long_zh_rules | 规则判断 | 979 |
+| long_zh_story | 约束创作 | 960 |
 
-共 24 个组合；两条路线使用相同的完整输入。这里 1K 指输入长度，`--lengths` 指输出上限。
-这组输入加 1024 输出可放入容量 2048；更换 tokenizer 后仍以启动前的容量检查为准。
-只测“1K 跨段检索 × 输出 512 × MTP”：上面命令增加
-`--prompt-id long_zh_qa --verify-gdr mtp`，并把 `--lengths 128 512 1024` 改成 `--lengths 512`；
-可省略 `--chunk-deployment-manifest`。仍执行普通 / DFlash 各 3 次预热、10 次测量。
-`benchmark_prompts.py` 也支持同一个 `--prompts` 和 `--prompt-id`，路线由所给部署清单决定。
+长度使用锁定的 Qwen tokenizer 和默认聊天模板；[完整文本](../config/prompts_long_1k.json)。
+1K 指输入上下文，`--lengths` 指输出上限。
+
+</details>
 
 ## 查看文字、接受率和重新汇总
 
@@ -206,7 +203,7 @@ PY
 `prefill.om`、`decode.om`、`draft.om`、`verify_chunk.om`、`verify_mtp.om`。
 两个部署清单分别是同目录的 `deployment-manifest.json`（Chunk）和
 `deployment-manifest-mtp.json`（MTP）。将环境配置的两个 manifest 路径改为这两个文件，重新 `source`，
-完成第 5 步重建 runner 后，再执行上面的[双路线多长度测试](#多长度与双路线测试)。公共图不重复编译、不复制存储。
+完成第 5 步重建 runner 后，再执行上面的统一测试。公共图不重复编译、不复制存储。
 
 复用要求两次导出使用同一源码、权重、配置（仅 `verify_gdr` 不同）、工具链及编译选项；不匹配会报错。
 只用 MTP 时可向空目录导出，省略 `--reuse-common-from`，随后编译该目录的 `air-manifest.json`。

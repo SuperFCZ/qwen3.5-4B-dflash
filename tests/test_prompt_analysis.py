@@ -21,7 +21,7 @@ def round_row(prefix, proposed, target, accepted, emitted, fallback, stage="targ
                 emitted_token_ids=emitted, fallback_token_id=fallback, stage=stage)
 
 
-def saved_report():
+def saved_report(warmup=3, repetitions=10):
     draft_tokens = [6, 7, 8, 42, 43, 44, 45, 46]
     ordinary_tokens = list(range(6, 14))
     rounds = [round_row(2, [], [6], [], [6], 6, "target_prefill"),
@@ -39,15 +39,15 @@ def saved_report():
         if draft:
             measurement["rounds"] = rounds
         return dict(status="PASS", generation_mode="dflash-strict-greedy" if draft else "ordinary-greedy",
-                    warmup=3, repetitions=10, stable_generated_token_ids=tokens,
-                    stable_stop_reason="max_new_tokens", measurements=[copy.deepcopy(measurement) for _ in range(10)],
+                    warmup=warmup, repetitions=repetitions, stable_generated_token_ids=tokens,
+                    stable_stop_reason="max_new_tokens", measurements=[copy.deepcopy(measurement) for _ in range(repetitions)],
                     latency_ms=dict(model_total=dict(median=ms)), generated_tokens_per_second=len(tokens) / ms * 1000)
 
     return dict(schema_version=1, status="FAIL", failure_stage="ordinary_dflash_parity", error="outputs differ",
                 runner_id="qwen35-dflash-ascendcl-cpp-v1", runner_version="synthetic-fixture", cpu_fallback=False,
                 device_id=0, model=dict(sha256="plan-hash"), prompt_token_ids=[4, 5], eos_token_ids=[63],
                 limits=dict(max_new_tokens=8, max_draft_tokens=15),
-                protocol=dict(warmup=3, repetitions=10, low_memory=False, round_trace_enabled=True),
+                protocol=dict(warmup=warmup, repetitions=repetitions, low_memory=False, round_trace_enabled=True),
                 abi=dict(id="qwen35-dflash-chunk-v3", graph_count=4),
                 ordinary=benchmark(ordinary_tokens, False), dflash=benchmark(draft_tokens, True),
                 ordinary_parity=dict(status="FAIL", token_id_mismatches=5, eos_mismatches=0,
@@ -149,7 +149,8 @@ def write_saved_suite(root, report=None):
     command = ["no-runner", "--model", str(plan), "--model-sha256", sha256_file(plan),
         "--prompt-batch", str(batch), "--prompt-batch-sha256", sha256_file(batch),
         "--device-id", "0", "--max-new-tokens", "8", "--max-draft-tokens", "15",
-        "--eos-token-ids", ",".join(map(str, report["eos_token_ids"]))]
+        "--eos-token-ids", ",".join(map(str, report["eos_token_ids"])),
+        "--warmup", str(report["protocol"]["warmup"]), "--repetitions", str(report["protocol"]["repetitions"])]
     request = dict(prompts=[dict(id="p", prompt="synthetic", prompt_token_ids=[4, 5])],
                    command=command, max_new_tokens=8, max_draft_tokens=15, eos_token_ids=report["eos_token_ids"])
     (root / "request.json").write_text(json.dumps(request))
@@ -159,6 +160,35 @@ def write_saved_suite(root, report=None):
 def offline_args(root, index, allow=True):
     return argparse.Namespace(run_dir=root, summarize_existing=index, model_dir=None,
                               allow_output_differences=allow)
+
+
+@pytest.mark.parametrize("warmup,repetitions", [(1, 3), (0, 2), (3, 10)])
+def test_saved_repeat_counts_override_current_cli_defaults(tmp_path, warmup, repetitions):
+    index = write_saved_suite(tmp_path / "saved", saved_report(warmup, repetitions))
+    args = offline_args(tmp_path, index)
+    args.warmup, args.repetitions = 5, 7  # Reanalysis must ignore these.
+    assert suite.summarize_existing(args) == 0
+    output, = tmp_path.glob("prompt-summary-*/summary.json")
+    summary = json.loads(output.read_text())
+    assert summary["protocol"]["warmup"] == warmup
+    assert summary["protocol"]["repetitions"] == repetitions
+    assert summary["aggregate"]["accepted_draft_tokens"] == 6 * repetitions
+    assert f"independent {warmup}+{repetitions} checks" in suite.markdown(summary)
+
+
+@pytest.mark.parametrize("corruption", ["unstable", "missing", "count", "warmup"])
+def test_three_measurements_still_require_full_stable_results(tmp_path, corruption):
+    report = saved_report(1, 3)
+    if corruption == "unstable":
+        report["dflash"]["measurements"][2]["generated_token_ids"][0] = 99
+    elif corruption == "missing":
+        report["dflash"]["measurements"].pop()
+    elif corruption == "count":
+        report["dflash"]["repetitions"] = 2
+    else:
+        report["ordinary"]["warmup"] = 0
+    index = write_saved_suite(tmp_path / "saved", report)
+    assert suite.summarize_existing(offline_args(tmp_path, index)) == 1
 
 
 @pytest.mark.parametrize("allow", [False, True])

@@ -85,6 +85,8 @@ def test_default_grid_includes_512_and_1024():
         "--chunk-deployment-manifest", "/chunk.json", "--mtp-deployment-manifest", "/mtp.json"])
     assert args.lengths == [32, 64, 128, 256, 512, 1024]
     assert args.verify_gdr == "both"
+    assert args.prompt_group == "all"
+    assert (args.warmup, args.repetitions) == (1, 3)
 
 
 def test_plan_only_checks_both_routes_and_all_budgets(matrix_args, monkeypatch):
@@ -99,6 +101,33 @@ def test_plan_only_checks_both_routes_and_all_budgets(matrix_args, monkeypatch):
     assert report["bundles"]["chunk"]["abi"] != report["bundles"]["mtp"]["abi"]
     assert all(c["status"] == "NOT_RUN" for c in report["cells"])
     assert report["formal_latency_evidence"] is False
+
+
+@pytest.mark.parametrize("group,count", [("all", 20), ("short", 8), ("long", 12)])
+def test_default_mixed_prompts_freeze_selected_group_once(matrix_args, monkeypatch, group, count):
+    matrix_args.prompts = None
+    matrix_args.prompt_group = group
+    matrix_args.plan_only = True
+    monkeypatch.setattr(matrix.suite, "run", no_execution)
+    assert matrix.run(matrix_args) == 0
+    root, = matrix_args.run_dir.glob("gdr-lengths-*")
+    request = json.loads((root / "request.json").read_text())
+    frozen = json.loads((root / "prompts.json").read_text())
+    assert len(frozen) == count
+    assert frozen == request["prompts"]
+    reloaded = matrix.suite.load_prompts(root / "prompts.json", prompt_group=group)
+    assert [p["id"] for p in reloaded] == [p["id"] for p in frozen]
+    assert [p["group"] for p in reloaded] == [p["group"] for p in frozen]
+    assert request["protocol"]["warmup"] == 1
+    assert request["protocol"]["repetitions"] == 3
+
+
+@pytest.mark.parametrize("warmup,repetitions", [(-1, 3), (1, 0), (True, 3)])
+def test_invalid_repeat_counts_fail_before_any_device_job(matrix_args, monkeypatch, warmup, repetitions):
+    matrix_args.warmup, matrix_args.repetitions = warmup, repetitions
+    monkeypatch.setattr(matrix.suite, "run", no_execution)
+    with pytest.raises(ValueError, match="warmup must be non-negative"):
+        matrix.run(matrix_args)
 
 
 @pytest.mark.parametrize("route,prompt_id,long_context", [
@@ -119,9 +148,8 @@ def test_single_prompt_length_and_route_launch_only_requested_case(
         "--lengths", "64", "--prompt-id", prompt_id, "--eos-token-id", "63",
         "--low-memory", "--allow-output-differences",
     ]
-    prompts = matrix.REPO / "config/prompts_long_1k.json" if long_context else None
-    if prompts:
-        argv += ["--prompts", str(prompts)]
+    prompts = None  # Both groups now share the default entry; no second prompt-file command.
+    argv += ["--prompt-group", "long" if long_context else "short"]
     assert matrix.run(matrix.parser().parse_args(argv)) == 1  # Fake ACL is rejected as device evidence.
     root, = matrix_args.run_dir.glob("gdr-lengths-*")
     report = json.loads((root / "summary.json").read_text())
@@ -207,10 +235,10 @@ def test_1k_context_grid_checks_input_plus_output_before_any_device_job(matrix_a
     report = json.loads((root / "request.json").read_text())
     frozen = json.loads((root / "prompts.json").read_text())
     assert report["minimum_required_capacity"] == 2048
-    assert len(report["cells"]) * len(frozen) == 24
+    assert len(report["cells"]) * len(frozen) == 72
     assert frozen == report["prompts"]
     assert all(p["input_tokens"] == len(p["prompt_token_ids"]) == 1024 for p in frozen)
-    assert "| long_zh_qa | 1024 |" in (root / "summary.md").read_text()
+    assert "| long_zh_qa | long | 1024 |" in (root / "summary.md").read_text()
 
 
 def test_wrong_route_is_not_silently_relabelled(matrix_args, monkeypatch):
@@ -255,7 +283,8 @@ def test_all_lengths_and_routes_execute_even_when_fake_acl_is_rejected(matrix_ar
 
 
 def measured_row(name, accepted, proposed, elapsed, tokens=20):
-    timings = {stage: {"available": True, "calls": 2, "total_ms": 6.0, "mean_ms": 3.0}
+    timings = {stage: {"available": True, "calls": 2, "total_ms": 6.0, "mean_ms": 3.0,
+                       "measurements": 1, "mean_total_ms_per_generation": 6.0}
                for stage in matrix.STAGES}
     return dict(id=name, status="PASS_WITH_DIFFERENCES", drafted_tokens=proposed,
                 accepted_draft_tokens=accepted, ordinary_total_measured_ms=100,
@@ -274,6 +303,7 @@ def test_weighted_metrics_use_actual_eos_tokens_and_calls():
     assert totals["both_modes_reached_budget"] == 0  # EOS before budget=32.
     assert totals["stage_ms_per_call"]["verify"]["calls"] == 4
     assert totals["stage_ms_per_call"]["verify"]["mean_ms"] == 3
+    assert totals["stage_ms_per_call"]["verify"]["mean_total_ms_per_generation"] == 6
     rows[1]["stage_timings"]["draft"] = {"available": False}
     assert matrix.aggregate_cases(rows)["stage_ms_per_call"]["draft"]["available"] is False
 
@@ -300,7 +330,8 @@ def test_stage_timing_excludes_warmup_and_distinguishes_missing_from_zero_calls(
     times = matrix.stage_timings(report)
     assert times["ordinary_decode"]["mean_ms"] == 3
     assert times["verify"]["median_ms"] == 6
-    assert times["draft"] == dict(available=True, calls=0, total_ms=0.0, mean_ms=None, median_ms=None)
+    assert times["draft"] == dict(available=True, calls=0, total_ms=0.0, mean_ms=None, median_ms=None,
+                                 measurements=1, mean_total_ms_per_generation=0.0)
     assert times["ordinary_prefill"] == {"available": False}
     for bad in (-1, float("nan"), True):
         broken = copy.deepcopy(report)
@@ -319,3 +350,84 @@ def test_cell_hash_mismatch_cannot_enter_aggregates(tmp_path):
     raw.write_text('{"changed": true}')
     with pytest.raises(ValueError, match="changed after suite validation"):
         matrix.read_cell(summary, "mtp", 32, [{"id": "p", "prompt_token_ids": [4, 5]}])
+
+
+@pytest.fixture
+def saved_matrix_cell(tmp_path):
+    # A schema fixture, never a device measurement. Production puts fake_acl
+    # in the batch index, not in its per-prompt reports.
+    from test_prompt_analysis import saved_report, write_saved_suite, offline_args
+
+    report = saved_report(1, 3)
+    for mode in ("ordinary", "dflash"):
+        for m in report[mode]["measurements"]:
+            m["stage_ms"] = {"target_prefill": [2, 4], "target_decode": [3, 5],
+                             "draft": [1, 3], "target_verify": [6]}
+            m["latency_ms"].update(prefill=12, decode=18, model_total=30)
+    index = write_saved_suite(tmp_path / "saved", report)
+    assert matrix.suite.summarize_existing(offline_args(tmp_path, index)) == 0
+    summary, = tmp_path.glob("prompt-summary-*/summary.json")
+    return summary, index, [{"id": "p", "group": "long", "prompt_token_ids": [4, 5]}]
+
+
+def test_real_batch_schema_without_per_case_fake_flag_keeps_timings(saved_matrix_cell, tmp_path):
+    summary, index, prompts = saved_matrix_cell
+    report = json.loads(Path(json.loads(index.read_text())["cases"][0]["report"]).read_text())
+    assert "fake_acl" not in report
+    cell = matrix.read_cell(summary, "chunk", 8, prompts)
+    assert cell["aggregate"]["measured_prompts"] == 1
+    assert cell["aggregate_by_group"]["long"]["measured_prompts"] == 1
+    timing = cell["aggregate"]["stage_ms_per_call"]["dflash_prefill"]
+    assert timing["mean_ms"] == 3
+    assert timing["mean_total_ms_per_generation"] == 6
+    assert cell["aggregate"]["phase_timings"]["dflash_prefill"]["mean_ms"] == 12
+    cell.update(verify_gdr="chunk", max_new_tokens=8)
+    payload = dict(prompts=prompts, cells=[cell], lengths=[8], protocol={"warmup": 1, "repetitions": 3})
+    matrix.save(tmp_path, payload)
+    row, = csv.DictReader((tmp_path / "cases.csv").open())
+    for stage in matrix.STAGES:
+        assert row[stage + "_ms_per_call"]
+        assert row[stage + "_ms_per_generation"]
+    assert row["group"] == "long"
+    assert row["dflash_prefill_phase_ms_per_generation"] == "12.0"
+    text = (tmp_path / "summary.md").read_text()
+    assert "Ordinary Prefill" in text and "DFlash Prefill" in text and "Draft | Verify" in text
+    assert "3.00 / 6.00" in text and "12.00" in text
+
+
+@pytest.mark.parametrize("flag", [True, None, 0, "false"])
+def test_matrix_needs_explicit_real_batch_identity(saved_matrix_cell, flag):
+    summary, index, prompts = saved_matrix_cell
+    payload = json.loads(summary.read_text())
+    payload.pop("runner_index_sha256")  # Older summaries had no index hash.
+    summary.write_text(json.dumps(payload))
+    batch = json.loads(index.read_text())
+    if flag is None:
+        batch.pop("fake_acl")
+    else:
+        batch["fake_acl"] = flag
+    index.write_text(json.dumps(batch))
+    with pytest.raises(ValueError, match="fake ACL or missing batch identity"):
+        matrix.read_cell(summary, "chunk", 8, prompts)
+
+
+def test_matrix_binds_real_batch_to_the_actual_case(saved_matrix_cell):
+    summary, index, prompts = saved_matrix_cell
+    payload = json.loads(summary.read_text())
+    payload.pop("runner_index_sha256")
+    summary.write_text(json.dumps(payload))
+    batch = json.loads(index.read_text())
+    batch["model_sha256"] = "different-model"
+    index.write_text(json.dumps(batch))
+    with pytest.raises(ValueError, match="index/case report identity differs"):
+        matrix.read_cell(summary, "chunk", 8, prompts)
+
+
+def test_graph_call_weighting_and_full_prefill_phase_are_distinct():
+    report = {"ordinary": {"warmups": [{"stage_ms": {"target_prefill": [9999]}}], "measurements": [
+        {"stage_ms": {"target_prefill": [2, 4]}, "latency_ms": {"prefill": 8}},
+        {"stage_ms": {"target_prefill": [9]}, "latency_ms": {"prefill": 11}}]}}
+    stage = matrix.stage_timings(report)["ordinary_prefill"]
+    assert stage["mean_ms"] == 5  # Pool three calls, not the two per-generation means.
+    assert stage["mean_total_ms_per_generation"] == 7.5
+    assert matrix.suite.phase_timings(report)["ordinary_prefill"]["mean_ms"] == 9.5

@@ -76,8 +76,8 @@ void Usage(std::ostream& stream) {
       << "  --pad-token-id ID            default 0\n"
       << "  --max-new-tokens N           default 32\n"
       << "  --max-draft-tokens N         default 15\n"
-      << "  --warmup N                   target evidence requires 3\n"
-      << "  --repetitions N              target evidence requires 10\n"
+      << "  --warmup N                   non-negative; default 3\n"
+      << "  --repetitions N              positive; default 10\n"
       << "  --device-id N                default 0\n";
   stream << "  --debug-draft-replay N       frozen-input Draft diagnostic; N calls per phase, no msprof\n"
          << "  --debug-draft-workspace MODE shared (default) or private; debug replay only\n"
@@ -276,8 +276,9 @@ Arguments ParseArguments(int argc, char** argv) {
       TakeOptional(&values, "max-new-tokens", "32"), "max-new-tokens");
   result.max_draft_tokens = ParseSize(
       TakeOptional(&values, "max-draft-tokens", "15"), "max-draft-tokens");
-  result.warmup =
-      ParseSize(TakeOptional(&values, "warmup", "3"), "warmup");
+  const auto warmup = ParseInt64(TakeOptional(&values, "warmup", "3"), "warmup");
+  if (warmup < 0) throw std::invalid_argument("warmup must be non-negative");
+  result.warmup = static_cast<std::size_t>(warmup);
   result.repetitions = ParseSize(
       TakeOptional(&values, "repetitions", "10"), "repetitions");
   const std::int64_t device_id = ParseInt64(
@@ -339,10 +340,8 @@ Arguments ParseArguments(int argc, char** argv) {
   if (result.pad_token_id < 0) {
     throw std::invalid_argument("pad-token-id must be non-negative");
   }
-  if (result.warmup != 3 || result.repetitions != 10) {
-    throw std::invalid_argument(
-        "target evidence requires exactly 3 warmups and 10 repetitions");
-  }
+  if (result.repetitions == 0)
+    throw std::invalid_argument("repetitions must be positive");
   std::transform(
       result.model_sha256.begin(),
       result.model_sha256.end(),

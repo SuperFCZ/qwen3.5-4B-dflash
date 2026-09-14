@@ -8,7 +8,6 @@ import json
 import math
 import os
 from pathlib import Path
-import statistics
 import sys
 import tempfile
 import time
@@ -21,36 +20,8 @@ from qwen35_dflash.ascend310p.utils import atomic_write_json, require_run_output
 
 ROUTES = ("chunk", "mtp")
 DEFAULT_LENGTHS = (32, 64, 128, 256, 512, 1024)
-STAGES = {
-    "ordinary_prefill": ("ordinary", "target_prefill"),
-    "ordinary_decode": ("ordinary", "target_decode"),
-    "dflash_prefill": ("dflash", "target_prefill"),
-    "draft": ("dflash", "draft"),
-    "verify": ("dflash", "target_verify"),
-}
-
-
-def stage_timings(report):
-    """Pool only measured graph calls; missing arrays are not zero latency."""
-    result = {}
-    for label, (mode, stage) in STAGES.items():
-        runs = report.get(mode, {}).get("measurements", [])
-        groups = [m.get("stage_ms", {}).get(stage) for m in runs]
-        if not groups or any(group is None for group in groups):
-            result[label] = {"available": False}
-            continue
-        if any(not isinstance(group, list) for group in groups):
-            raise ValueError(f"invalid stage timing array: {mode}/{stage}")
-        values = [value for group in groups for value in group]
-        if any(type(v) not in (int, float) or not math.isfinite(v) or v < 0 for v in values):
-            raise ValueError(f"invalid stage timing: {mode}/{stage}")
-        total = math.fsum(values)
-        result[label] = {
-            "available": True, "calls": len(values), "total_ms": total,
-            "mean_ms": total / len(values) if values else None,
-            "median_ms": statistics.median(values) if values else None,
-        }
-    return result
+STAGES = suite.STAGES
+stage_timings = suite.stage_timings
 
 
 def aggregate_cases(rows):
@@ -77,10 +48,23 @@ def aggregate_cases(rows):
         else:
             calls = sum(value["calls"] for value in values)
             elapsed = math.fsum(value["total_ms"] for value in values)
+            measurements = sum(value["measurements"] for value in values)
             totals["stage_ms_per_call"][stage] = {
                 "available": True, "calls": calls, "total_ms": elapsed,
                 "mean_ms": elapsed / calls if calls else None,
+                "measurements": measurements,
+                "mean_total_ms_per_generation": elapsed / measurements if measurements else None,
             }
+    totals["phase_timings"] = {}
+    for phase in suite.PHASES:
+        values = [row.get("phase_timings", {}).get(phase, {}) for row in good]
+        if not values or any(not value.get("available") for value in values):
+            totals["phase_timings"][phase] = {"available": False}
+            continue
+        measurements = sum(value["measurements"] for value in values)
+        elapsed = math.fsum(value["total_ms"] for value in values)
+        totals["phase_timings"][phase] = {"available": True, "measurements": measurements,
+                                         "total_ms": elapsed, "mean_ms": elapsed / measurements}
     return totals
 
 
@@ -90,20 +74,40 @@ def read_cell(summary_path, route, length, prompts):
         raise ValueError("saved suite verification route differs from matrix request")
     if [row["id"] for row in summary["cases"]] != [p["id"] for p in prompts]:
         raise ValueError("saved suite prompt IDs differ from matrix request")
-    rows = []
+    rows, batch = [], None
     for item, expected in zip(summary["cases"], prompts):
         if item.get("prompt_token_ids") != expected["prompt_token_ids"]:
             raise ValueError("tokenized prompts differ between matrix cells")
         row = dict(item, verify_gdr=route, max_new_tokens=length,
-                   input_tokens=len(expected["prompt_token_ids"]))
+                   input_tokens=len(expected["prompt_token_ids"]), group=expected.get("group", "custom"))
         if row["status"] in suite.MEASURED_STATUSES:
             path = Path(row["raw_report"])
             if sha256_file(path) != row["raw_report_sha256"]:
                 raise ValueError("case report changed after suite validation")
             report = json.loads(path.read_text())
-            if report.get("fake_acl") is not False:
+            # Production per-prompt reports omit fake_acl; the batch index owns it.
+            index = Path(summary["runner_index"])
+            if batch is None:
+                if summary.get("runner_index_sha256") and sha256_file(index) != summary["runner_index_sha256"]:
+                    raise ValueError("batch index changed after suite validation")
+                batch = json.loads(index.read_text())
+                if batch.get("fake_acl") is not False:
+                    raise ValueError("fake ACL or missing batch identity cannot supply matrix device measurements")
+                if [case["id"] for case in batch.get("cases", [])] != [p["id"] for p in prompts]:
+                    raise ValueError("batch index prompt IDs differ from matrix request")
+            case = batch["cases"][len(rows)]
+            if (Path(case["report"]).resolve() != path.resolve()
+                    or path.resolve() != (Path(str(index) + ".cases") / (row["id"] + ".json")).resolve()
+                    or case["status"] != report.get("status")
+                    or not batch.get("model_sha256")
+                    or batch["model_sha256"] != report.get("model", {}).get("sha256")):
+                raise ValueError("batch index/case report identity differs")
+            if ("fake_acl" in report and report["fake_acl"] is not False
+                    or "fake-acl" in report.get("runner_version", "")
+                    or report.get("cpu_fallback") is not False):
                 raise ValueError("fake ACL cannot supply matrix device measurements")
             row["stage_timings"] = stage_timings(report)
+            row["phase_timings"] = suite.phase_timings(report)
             for mode in ("ordinary", "dflash"):
                 row[mode + "_measured_tokens"] = sum(
                     len(m["generated_token_ids"]) for m in report[mode]["measurements"])
@@ -113,7 +117,10 @@ def read_cell(summary_path, route, length, prompts):
     return {
         "status": summary["status"], "summary": str(summary_path),
         "summary_sha256": sha256_file(summary_path), "cases": rows,
-        "aggregate": aggregate_cases(rows), "startup_ms": summary.get("startup_ms"),
+        "aggregate": aggregate_cases(rows),
+        "aggregate_by_group": {group: aggregate_cases([r for r in rows if r["group"] == group])
+                               for group in dict.fromkeys(r["group"] for r in rows)},
+        "startup_ms": summary.get("startup_ms"),
         "process_wall_seconds": summary.get("process_wall_seconds"),
         "ordinary_parity": summary.get("ordinary_parity"),
     }
@@ -154,31 +161,41 @@ def render(summary):
     def number(value, percent=False):
         return "N/A" if value is None else f"{value:.2%}" if percent else f"{value:.2f}"
 
-    lines = ["| Prompt | Input tokens |", "|---|---:|"]
+    lines = ["| Prompt | Group | Input tokens |", "|---|---|---:|"]
     for prompt in summary["prompts"]:
-        lines.append(f"| {prompt['id']} | {len(prompt['prompt_token_ids'])} |")
+        lines.append(f"| {prompt['id']} | {prompt.get('group', 'custom')} | {len(prompt['prompt_token_ids'])} |")
+    protocol = summary.get("protocol", {})
+    lines += ["", f"Warmup per mode/prompt: {protocol.get('warmup', 'N/A')}; "
+              f"measured repetitions: {protocol.get('repetitions', 'N/A')}."]
     lines += ["", "Input tokens include the selected chat template; output budgets are listed separately.", "",
-        "| Max new tokens | GDR | Measured / prompts | Acceptance | Tokens / round | DFlash tok/s | Speedup vs ordinary | Decode ms/call | Draft ms/call | Verify ms/call |",
-        "|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Max new tokens | GDR | Group | Measured / prompts | Acceptance | Tokens / round | DFlash tok/s | Speedup vs ordinary |",
+        "|---:|---|---|---:|---:|---:|---:|---:|",
     ]
+    timing_rows = []
     for cell in summary["cells"]:
-        agg = cell.get("aggregate", {})
-        stages = agg.get("stage_ms_per_call", {})
-        latencies = [number(stages.get(name, {}).get("mean_ms")) for name in ("ordinary_decode", "draft", "verify")]
-        lines.append(
-            f"| {cell['max_new_tokens']} | {cell['verify_gdr']} | "
-            f"{agg.get('measured_prompts', 0)} / {len(summary['prompts'])} | "
-            f"{number(agg.get('weighted_acceptance_rate'), True)} | "
-            f"{number(agg.get('tokens_per_speculative_round'))} | "
-            f"{number(agg.get('dflash_tokens_per_second'))} | "
-            f"{number(agg.get('total_model_time_speedup'))} | " + " | ".join(latencies) + " |")
+        groups = {"all": cell.get("aggregate", {})}
+        if len({p.get("group", "custom") for p in summary["prompts"]}) > 1:
+            groups.update(cell.get("aggregate_by_group", {}))
+        for group, agg in groups.items():
+            count = sum(group == "all" or p.get("group", "custom") == group for p in summary["prompts"])
+            lines.append(
+                f"| {cell['max_new_tokens']} | {cell['verify_gdr']} | {group} | "
+                f"{agg.get('measured_prompts', 0)} / {count} | "
+                f"{number(agg.get('weighted_acceptance_rate'), True)} | "
+                f"{number(agg.get('tokens_per_speculative_round'))} | "
+                f"{number(agg.get('dflash_tokens_per_second'))} | "
+                f"{number(agg.get('total_model_time_speedup'))} |")
+            timing_rows.append(dict(id=f"{cell['verify_gdr']}/{cell['max_new_tokens']}/{group}",
+                                    stage_timings=agg.get("stage_ms_per_call", {}),
+                                    phase_timings=agg.get("phase_timings", {})))
     lines += [
         "", "Acceptance is accepted/proposed; time speedup is sum ordinary model time / sum DFlash model time.",
-        "Each row uses only prompts admitted by the selected comparison policy and independent 3+10 checks.",
+        "Each row uses only prompts admitted by the selected comparison policy and requested repeatability checks.",
         "Measured calls exclude warmups and startup. Draft includes any Draft calls during multi-chunk prefill.",
         "Verify includes commit inside the selected OM. ms/call is synchronized graph-call time, not kernel time.",
         "Budgets are upper limits: EOS can end generation early. Actual tokens and stop reasons are in cases.csv/JSON.",
     ]
+    lines += ["", suite.render_timings(timing_rows, measured_only=False).rstrip()]
     if summary["route_comparison"]:
         lines += ["", "| Max new tokens | Matched prompts | MTP/Chunk throughput | MTP speedup vs Chunk by model time |",
                   "|---:|---:|---:|---:|"]
@@ -200,11 +217,13 @@ def save(root, summary):
     atomic_write_json(root / "summary.json", summary)
     (root / "summary.md").write_text(render(summary), encoding="utf-8")
     fields = [
-        "verify_gdr", "max_new_tokens", "id", "input_tokens", "status", "acceptance_rate",
+        "verify_gdr", "max_new_tokens", "id", "group", "input_tokens", "status", "acceptance_rate",
         "tokens_per_speculative_round", "generated_tokens", "ordinary_generated_tokens",
         "stop_reason", "ordinary_stop_reason", "dflash_tokens_per_second",
         "ordinary_tokens_per_second", "speedup", "throughput_speedup",
-        "ordinary_decode_ms_per_call", "draft_ms_per_call", "verify_ms_per_call", "raw_report",
+        *[stage + "_ms_per_call" for stage in STAGES],
+        *[stage + "_ms_per_generation" for stage in STAGES],
+        *[phase + "_phase_ms_per_generation" for phase in suite.PHASES], "raw_report",
     ]
     with (root / "cases.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
@@ -212,8 +231,11 @@ def save(root, summary):
         for cell in summary["cells"]:
             for row in cell.get("cases", []):
                 record = {name: row.get(name) for name in fields}
-                for stage in ("ordinary_decode", "draft", "verify"):
+                for stage in STAGES:
                     record[stage + "_ms_per_call"] = row.get("stage_timings", {}).get(stage, {}).get("mean_ms")
+                    record[stage + "_ms_per_generation"] = row.get("stage_timings", {}).get(stage, {}).get("mean_total_ms_per_generation")
+                for phase in suite.PHASES:
+                    record[phase + "_phase_ms_per_generation"] = row.get("phase_timings", {}).get(phase, {}).get("mean_ms")
                 writer.writerow(record)
 
 
@@ -227,6 +249,7 @@ def prepare(args, root):
         raise ValueError("lengths must be distinct positive output budgets")
     if args.device_id < 0 or not 1 <= args.max_draft_tokens <= 15:
         raise ValueError("invalid device or proposal limit")
+    suite.set_benchmark_counts(args)
     selection = getattr(args, "verify_gdr", "both")
     if selection not in (*ROUTES, "both"):
         raise ValueError("verify-gdr must be chunk, mtp, or both")
@@ -234,7 +257,7 @@ def prepare(args, root):
     for route in routes:
         if getattr(args, route + "_deployment_manifest", None) is None:
             raise ValueError(f"--{route}-deployment-manifest is required for --verify-gdr {selection}")
-    prompts = suite.load_prompts(args.prompts, args.prompt_id)
+    prompts = suite.load_prompts(args.prompts, args.prompt_id, getattr(args, "prompt_group", "all"))
     args.runner_config = (args.runner_config or args.run_dir / "runner.json").resolve()
     identity = validate_cpp_runner_options(json.loads(args.runner_config.read_text()), args.device_id)
     args.runner = resolve_cpp_runner(args.runner)
@@ -281,7 +304,8 @@ def prepare(args, root):
         "runner": {"path": str(args.runner), "sha256": sha256_file(args.runner)},
         "script_sha256": sha256_file(Path(__file__)), "suite_script_sha256": sha256_file(Path(suite.__file__)),
         "protocol": {
-            "warmup": 3, "repetitions": 10, "max_draft_tokens": args.max_draft_tokens,
+            "warmup": args.warmup, "repetitions": args.repetitions, "max_draft_tokens": args.max_draft_tokens,
+            "prompt_group": getattr(args, "prompt_group", "all"),
             "chat": args.chat, "eos_token_ids": args.eos_token_id or [248044],
             "output_comparison": "allow_output_differences" if args.allow_output_differences else "strict",
             "dflash_speculation_policy": "always_on", "low_memory": args.low_memory,
@@ -378,7 +402,9 @@ def parser():
                         help="required when --verify-gdr is mtp or both")
     result.add_argument("--lengths", type=int, nargs="+", default=list(DEFAULT_LENGTHS),
                         help="one or more output budgets, e.g. --lengths 512")
-    result.add_argument("--prompts", type=Path, help="prompt JSON; defaults to the 8 built-in short prompts")
+    result.add_argument("--prompts", type=Path, help="custom JSON; default: 8 short + 12 long (~1K input) prompts")
+    result.add_argument("--prompt-group", choices=("all", "short", "long"), default="all",
+                        help="select all (default), short, or long inputs; custom JSON can specify group")
     result.add_argument("--prompt-id", action="append",
                         help="test only this ID from --prompts or the built-in suite; repeat to select several")
     result.add_argument("--chat", action=argparse.BooleanOptionalAction, default=True)
@@ -386,6 +412,8 @@ def parser():
     result.add_argument("--device-id", type=int, default=0)
     result.add_argument("--max-draft-tokens", type=int, default=15)
     result.add_argument("--low-memory", action="store_true")
+    result.add_argument("--warmup", type=int, default=1, help="warmup generations per mode and prompt (default 1)")
+    result.add_argument("--repetitions", type=int, default=3, help="measured generations per mode and prompt (default 3)")
     result.add_argument("--allow-output-differences", action="store_true")
     result.add_argument("--plan-only", action="store_true", help="validate selected cells without loading/executing device models")
     return result

@@ -269,16 +269,19 @@ def _validate_mode_report(
     report: Mapping[str, Any],
     *,
     generation_mode: str,
+    warmup: int = 3,
+    repetitions: int = 10,
 ) -> None:
     if report.get("status") != "PASS":
         raise RuntimeError(f"C++ {name} report is not passing")
     if report.get("generation_mode") != generation_mode:
         raise RuntimeError(f"C++ {name} generation mode differs")
-    if report.get("warmup") != 3 or report.get("repetitions") != 10:
-        raise RuntimeError(f"C++ {name} report is not a strict 3+10 measurement")
+    if (type(report.get("warmup")) is not int or type(report.get("repetitions")) is not int
+            or report["warmup"] != warmup or report["repetitions"] != repetitions):
+        raise RuntimeError(f"C++ {name} report differs from requested {warmup}+{repetitions} measurements")
     measurements = report.get("measurements")
-    if not isinstance(measurements, list) or len(measurements) != 10:
-        raise RuntimeError(f"C++ {name} report must retain ten raw measurements")
+    if not isinstance(measurements, list) or len(measurements) != repetitions:
+        raise RuntimeError(f"C++ {name} report must retain {repetitions} raw measurements")
     stable_tokens = [int(item) for item in report.get("stable_generated_token_ids", [])]
     stable_stop = report.get("stable_stop_reason")
     if not stable_tokens:
@@ -302,7 +305,11 @@ def validate_cpp_runner_report(
     verify_gdr: str | None = None,
     low_memory: bool = False,
     allow_output_differences: bool = False,
+    warmup: int = 3,
+    repetitions: int = 10,
 ) -> None:
+    if type(warmup) is not int or warmup < 0 or type(repetitions) is not int or repetitions <= 0:
+        raise ValueError("warmup must be non-negative and repetitions must be positive integers")
     allowed_parity_failure = (
         allow_output_differences
         and report.get("status") == "FAIL"
@@ -325,8 +332,9 @@ def validate_cpp_runner_report(
     if int(limits.get("max_draft_tokens", -1)) != int(max_draft_tokens):
         raise RuntimeError("C++ runner max_draft_tokens differs")
     protocol = report.get("protocol", {})
-    if protocol.get("warmup") != 3 or protocol.get("repetitions") != 10:
-        raise RuntimeError("C++ runner protocol is not the locked 3+10")
+    if (type(protocol.get("warmup")) is not int or type(protocol.get("repetitions")) is not int
+            or protocol["warmup"] != warmup or protocol["repetitions"] != repetitions):
+        raise RuntimeError(f"C++ runner protocol differs from requested {warmup}+{repetitions}")
     if protocol.get("low_memory", False) is not low_memory:
         raise RuntimeError("C++ runner low-memory mode differs from the request")
     if low_memory and (
@@ -355,14 +363,14 @@ def validate_cpp_runner_report(
     if not isinstance(ordinary, Mapping) or not isinstance(dflash, Mapping):
         raise RuntimeError("C++ runner omitted paired mode reports")
     _validate_mode_report(
-        "ordinary", ordinary, generation_mode="ordinary-greedy"
+        "ordinary", ordinary, generation_mode="ordinary-greedy", warmup=warmup, repetitions=repetitions
     )
     _validate_mode_report(
-        "DFlash", dflash, generation_mode="dflash-strict-greedy"
+        "DFlash", dflash, generation_mode="dflash-strict-greedy", warmup=warmup, repetitions=repetitions
     )
     if allow_output_differences:
         # This policy accepts only cross-mode numerical/output differences.
-        # Both independent 3+10 runs and all identity checks above still apply.
+        # Both modes must satisfy the requested repeat counts and all identity checks.
         expected, actual = ordinary["stable_generated_token_ids"], dflash["stable_generated_token_ids"]
         mismatches = sum(
             i >= len(expected) or i >= len(actual) or expected[i] != actual[i]

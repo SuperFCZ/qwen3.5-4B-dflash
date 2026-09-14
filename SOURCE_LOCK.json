@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
-  "package_revision": "r18",
+  "package_revision": "r19",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
     "version": 7,
@@ -164,7 +164,7 @@
     "files": [
       {
         "source_file": "README.md",
-        "source_sha256": "e7fd2e6e5cfbeba7a8d544e876f12869c650e5ba1a8a5db50ecb7aac31f69467"
+        "source_sha256": "5a50d5c2a17cc88c2b5ac615aa304d063b8f670219d576e18624b37ecf657c92"
       },
       {
         "source_file": "config/gdr_chunk_air_om_factory.example.json",
@@ -180,7 +180,7 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "b5aa2bab71598a0325c0bf7647d417243b61b3b11e324019185feac240403efe"
+        "source_sha256": "ff56d2362c7c863287e90a37892b004f462a310de5a9d9c8e384b6349a64a499"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -240,7 +240,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/cpp_runtime.py",
-        "source_sha256": "055d5f14a4f106844be9ba51851faa142035cfab689903382b80765854d64707"
+        "source_sha256": "5d0a8f406017780ddabe99a0cc375ec0bf2d8038b7553f9caf57f062a1f76298"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/custom_op_export.py",
@@ -296,7 +296,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/CMakeLists.txt",
-        "source_sha256": "691d4ce15a12d1962b9412b9e9467e42340cae037c20df92ea90d621afad95f9"
+        "source_sha256": "ea297cf282aa424d2a813e0996625e6c472ab777fb40754ad61636273a2aa05b"
       },
       {
         "source_file": "framework/runtime/cpp/include/qwen35_dflash/acl_executor.hpp",
@@ -336,7 +336,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/src/main.cpp",
-        "source_sha256": "1592cac5e293eb8181e769311ec7df6f7fc723c0d98d975ba2e838fd38bf44c6"
+        "source_sha256": "3658c39b0735e0f92277b496a4b4e0c239e70064022a0555d3abd5c94116e6d1"
       },
       {
         "source_file": "framework/runtime/cpp/src/sha256.cpp",
@@ -388,7 +388,7 @@
       },
       {
         "source_file": "tests/test_prompt_tokenization.py",
-        "source_sha256": "1ccb6753e817d6790e38d860f8777cdfde01c4bca5f7ab2d7b75b40a9bb8911f"
+        "source_sha256": "2e8d438f0d33da9ca5537a4310fabcb9a3832fa2c28a8b7f6e72ba77897fa594"
       },
       {
         "source_file": "tests/test_quant_air_om_framework.py",
@@ -500,11 +500,11 @@
       },
       {
         "source_file": "tools/benchmark_prompts.py",
-        "source_sha256": "05bccdf76e6047355124df0544108ab3a5f46b202a1950cbb426bce4d9d03b99"
+        "source_sha256": "d7afecb8d59606f7c82e6ea37b2aa1cc828ee27395200c07061985024f47a837"
       },
       {
         "source_file": "tests/test_prompt_suite.py",
-        "source_sha256": "6a6a5c355a2a7f3cbf4f19b3068f144c70a72741d417cad23779cb0e2497137a"
+        "source_sha256": "119590349875717ec45ef8086ec410f096804e0d6538b1db07ec641b663a596b"
       },
       {
         "source_file": "tests/test_draft_compile_determinism.py",
@@ -516,11 +516,11 @@
       },
       {
         "source_file": "tests/test_prompt_analysis.py",
-        "source_sha256": "402300f92c14f9358fdd95701600d85e4c5ae1f44b9f59a3c315a8e21aaa4a11"
+        "source_sha256": "5a37781b810800e469c79b6d4f3549c5b7153c5c2ca13c1b9de22348900d51d5"
       },
       {
         "source_file": "docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md",
-        "source_sha256": "89e6569ada09e9a3aaf8fd2780398b5341d04894e84e0934b431e86255c2dce4"
+        "source_sha256": "4ddf516778630e4296bb0a3980bb74802af4d41fd07c74cd766795a879cae922"
       },
       {
         "source_file": "framework/abi/dflash-mtp-v1.json",
@@ -532,11 +532,11 @@
       },
       {
         "source_file": "tools/benchmark_gdr_lengths.py",
-        "source_sha256": "a499b8b868bd7f4a1ab980681565ae7c3f91f9174c49de576e622c94100b07c0"
+        "source_sha256": "e82f046e8f0863b27c1fbb950f0ea86a4bd62f817b4433224c9424a06262e71f"
       },
       {
         "source_file": "tests/test_gdr_length_matrix.py",
-        "source_sha256": "319a9cdc566c8e499068bbf002ac1b0ea0453ba19a1b3160e0e9541bb157556a"
+        "source_sha256": "e2a46d2e49775ff067984b15bf1d57605e5744bd4464f1ca6c0fe5f94357d69c"
       },
       {
         "source_file": "config/dflash_env.sh.example",
@@ -580,7 +580,7 @@
       },
       {
         "source_file": "config/prompts_long_1k.json",
-        "source_sha256": "a790a0c4b3662412dcc01e6c113d033deb85e90c6c003a5276ed04b74dbccf7f"
+        "source_sha256": "dd74c6383e3f48643994e63d204031329be6cefc923b01180220715097335868"
       }
     ],
     "supported_abis": [
@@ -610,20 +610,33 @@
         "chunk",
         "mtp"
       ],
-      "policy": "preflight selected complete bundles and selected prompt budgets before device jobs; independent paired 3+10 prompt suites per length/route; always-on speculation; explicit allow-output-differences; warmups/startup excluded from measured graph-call and model-loop statistics",
+      "policy": "preflight selected bundles, input+output budgets and repeat counts; independent paired suites default to 1 warmup + 3 measured generations; configurable counts saved and checked against requests; always-on speculation; explicit allow-output-differences; batch-owned fake_acl identity; phase and graph times exclude warmups/startup/reset; mixed suites also aggregate short/long groups",
       "long_context_prompts": {
         "file": "config/prompts_long_1k.json",
-        "count": 4,
+        "count": 12,
         "locked_tokenizer_chat_input_tokens": [
           983,
           998,
           1001,
-          1008
+          1008,
+          975,
+          984,
+          1004,
+          1024,
+          971,
+          1004,
+          979,
+          960
         ],
         "policy": "full prompts, no truncation or repetition padding; runtime records actual input_tokens and checks input plus output against capacity"
       },
       "default_verify_gdr": "both",
-      "selection": "--verify-gdr chunk|mtp|both; repeatable --prompt-id; one or more --lengths; only selected manifests are required and read"
+      "selection": "--prompt-group all|short|long; --verify-gdr chunk|mtp|both; repeatable --prompt-id; one or more --lengths; --warmup and --repetitions; only selected manifests are required and read",
+      "default_prompt_group": "all",
+      "default_prompt_count": 20,
+      "default_warmup": 1,
+      "default_repetitions": 3,
+      "timing_output": "ordinary prefill/decode and DFlash prefill/draft/verify mean synchronized ms/call and cumulative mean ms/generation; full prefill/decode phases separately include orchestration and context-building Draft; timings in terminal, Markdown, JSON and per-prompt CSV"
     },
     "common_reuse": "same-directory two-route bundle has five OM files; export-air --reuse-common-from reuses validated prefill/decode/draft AIR payloads and OMs; only Verify exported/compiled; separate directories may use hardlinks"
   }
