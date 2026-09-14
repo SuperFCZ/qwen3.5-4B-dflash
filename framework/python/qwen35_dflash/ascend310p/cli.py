@@ -59,6 +59,7 @@ def command_export(args: argparse.Namespace) -> int:
         args.factory,
         _factory_config(args),
         args.bundle_dir,
+        reuse_common_from=args.reuse_common_from,
     )
     _print(payload)
     return 0
@@ -89,6 +90,7 @@ def command_build(args: argparse.Namespace) -> int:
         args.factory,
         _factory_config(args),
         args.bundle_dir,
+        reuse_common_from=args.reuse_common_from,
     )
     payload = compile_air_bundle(
         Path(exported["manifest_path"]),
@@ -372,6 +374,8 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--verify-gdr", choices=("chunk", "mtp"),
                         help="incremental verifier; overrides factory config (default: chunk)")
     export.add_argument("--bundle-dir", type=Path, required=True)
+    export.add_argument("--reuse-common-from", type=Path,
+                        help="reuse ordinary prefill/decode and Draft AIR/OM on the same filesystem")
     export.set_defaults(handler=command_export)
 
     compile_parser = subparsers.add_parser(
@@ -395,6 +399,8 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--verify-gdr", choices=("chunk", "mtp"),
                        help="incremental verifier; overrides factory config (default: chunk)")
     build.add_argument("--bundle-dir", type=Path, required=True)
+    build.add_argument("--reuse-common-from", type=Path,
+                       help="reuse ordinary prefill/decode and Draft AIR/OM on the same filesystem")
     _add_atc_arguments(build)
     build.set_defaults(handler=command_build)
 

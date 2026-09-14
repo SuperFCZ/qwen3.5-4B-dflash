@@ -79,10 +79,29 @@ def test_routes_are_explicit_and_mtp_requires_fp32_state():
         assert c["abi"] == abi and require_verify_gdr(c, route) == route
         with pytest.raises(ValueError, match="requested verify_gdr"):
             require_verify_gdr(c, "mtp" if route == "chunk" else "chunk")
-        if route == "mtp":
-            c["target_states"][1]["dtype"] = "float16"
-            with pytest.raises(ValueError, match="FP32"):
-                validate_incremental_bundle(graphs)
+        c["target_states"][1]["dtype"] = "float16"
+        with pytest.raises(ValueError, match="FP32"):
+            validate_incremental_bundle(graphs)
+
+
+@pytest.mark.parametrize("route,legacy", [("chunk", "qwen35-dflash-chunk-v3"),
+                                         ("mtp", "qwen35-dflash-mtp-v1")])
+def test_legacy_route_contracts_remain_readable(route, legacy):
+    graphs = manifest_graphs(specs(verify_gdr=route))
+    for graph in graphs:
+        c = graph["metadata"]["incremental_contract"]
+        c["abi"] = legacy
+        c.pop("recurrent_state_dtype", None)
+        if route == "chunk":
+            c["state_policy"] = "in-graph-acceptance-two-pass-gdr-atomic-fp16-state-output"
+            for t in c["target_states"]:
+                if t["name"].endswith("_recurrent"):
+                    t["dtype"] = "float16"
+            for tensors in graph["metadata"]["tensor_abi"].values():
+                for t in tensors:
+                    if t["name"].endswith("_recurrent") and not t["name"].startswith("verify_discard_"):
+                        t["dtype"] = "float16"
+    assert validate_incremental_bundle(graphs)["abi"] == legacy
 
 
 def test_mtp_is_not_a_silent_fallback():
@@ -93,21 +112,25 @@ def test_mtp_is_not_a_silent_fallback():
             gdr=gdr, attention=attention_op, rotary=rotary, verify_gdr="mtp")
 
 
-def test_mtp_bundle_preserves_ordinary_fp16_rounding():
+def test_routes_share_ordinary_fp32_states_without_rounding():
     chunk = {s.name: s for s in specs()}
     mtp = {s.name: s for s in specs(verify_gdr="mtp")}
     c, m = chunk["target_prefill"], mtp["target_prefill"]
     with torch.inference_mode():
         co, mo = c.model(*c.example_args), m.model(*m.example_args)
+        assert co[3].dtype == mo[3].dtype == torch.float32
+        assert torch.any(co[3] != co[3].half().float())
         for a, b in zip(co, mo):
-            torch.testing.assert_close(a, b.to(a.dtype), rtol=0, atol=0)
+            torch.testing.assert_close(a, b, rtol=0, atol=0)
         cs, ms = co[2:], mo[2:]
         for pos in range(1, 10):
             args = (torch.tensor([[pos]]), torch.tensor([pos]), torch.ones(1, dtype=torch.int16))
             co = chunk["target_decode"].model(*args, *cs)
             mo = mtp["target_decode"].model(*args, *ms)
+            assert co[2].dtype == mo[2].dtype == torch.float32
+            assert torch.any(co[2] != co[2].half().float())
             for a, b in zip(co, mo):
-                torch.testing.assert_close(a, b.to(a.dtype), rtol=0, atol=0)
+                torch.testing.assert_close(a, b, rtol=0, atol=0)
             cs, ms = co[1:], mo[1:]
 
 

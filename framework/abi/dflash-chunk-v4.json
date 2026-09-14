@@ -1,0 +1,99 @@
+{
+  "abi": "qwen35-dflash-chunk-v4",
+  "status": "host-contract-tested-awaiting-real-torchair-atc-and-device",
+  "factory": "qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs",
+  "required_graphs": [
+    "target_prefill",
+    "target_verify",
+    "draft"
+  ],
+  "optional_ordinary_graph": "target_decode",
+  "maximum_graph_count": 4,
+  "physical_rows": {
+    "target_prefill": 64,
+    "target_decode": 1,
+    "target_verify": 16,
+    "draft_context": 64,
+    "draft_noise": 16
+  },
+  "batch_size": 1,
+  "precision": "Target W8A8; Draft FP16; GDN recurrent cache FP32 for ordinary and DFlash inputs/outputs; conv and KV FP16",
+  "atc_precision_mode": "must_keep_origin_dtype (or precision_mode_v2=origin)",
+  "valid_rows": "INT16[1], call-local valid rows; never cumulative KV length",
+  "positions": "INT64[1] absolute committed start position",
+  "verify_policy": "first GDR -> Target Top1 -> first-mismatch acceptance -> second GDR effective_length=a+1 -> complete state outputs",
+  "verify_host_outputs": [
+    "target_top1 INT64[1,16]",
+    "accepted_count INT64[1]"
+  ],
+  "verify_device_outputs": [
+    "features FP16[1,64,20480] right-padded",
+    "all Target states after a+1 inputs",
+    "verify_discard_t<layer>_recurrent: 24 raw first-pass FP32[1,32,128,128] outputs, appended in linear-layer order"
+  ],
+  "verify_state_output_policy": "raw_fp32_device_only_discard_first_pass_commit_second_pass",
+  "verify_discard_policy": "output_final_state=True; independent reusable device buffers; no host allocation, H2D/D2H, reset clearing, cache input, or current/next swap; only second-pass state is committed",
+  "verify_discard_buffer_bytes": 50331648,
+  "verify_output_count": 91,
+  "verify_discard_export_audit": "air/verify_chunk/verify-discard-outputs.json: raw first-pass GDR state reaches each declared GE NetOutput slot before AIR save",
+  "commit_capsules": "internal graph intermediates; no separate OM or host transfer",
+  "draft_policy": "feature projection + append committed context KV + one parallel proposal block; runtime K controls visible noise keys in every attention layer",
+  "proposal_count": "INT16[1], 1..15; C++ sends min(max_draft_tokens, remaining_output_tokens, 15)",
+  "draft_outputs": [
+    "draft_top1 INT64[1,15], first K valid, unused tail zero",
+    "six-layer committed-context KV"
+  ],
+  "cache_policy": "logical capacity C, multiple of 64, 64 <= C <= 32704; physical C+64 reserves scratch; prompt_length+max_new_tokens <= C",
+  "target_kv_update": "CacheUpdate in paged layout; prefill one aligned 64-row page; decode one row; verify 16 chained single-row writes with per-row block/offset",
+  "target_cache_update_air_nodes": {
+    "target_prefill": 16,
+    "target_decode": 16,
+    "target_verify": 256
+  },
+  "draft_kv_update": "ScatterElements in dense [B,H,C,D] context cache; 12 writes",
+  "runtime_policy": "load selected models once; persistent current/next device banks; complete verify before atomic host publication; errors invalidate request until reset",
+  "single_mode_loading": {
+    "dflash": [
+      "target_prefill",
+      "target_verify",
+      "draft"
+    ],
+    "ordinary": [
+      "target_prefill",
+      "target_decode"
+    ]
+  },
+  "ordered_tensor_shapes": "derived from loaded modules; frozen in AIR metadata.tensor_abi and deployment-manifest.json",
+  "runtime_input_abi": "public-tensor-storage-identity-v1; normalize GE Data.index and physical Data order; require PASS audit with static serialized shapes before ATC",
+  "target_gates": [
+    "receiver all_seq_lengths_q INT64 static capacity, absent pse_shift, and runtime causal/valid-prefix mask",
+    "custom GE operators and exact Ascend310P ATC variant available",
+    "real AIR/OM hashes",
+    "native ordinary vs OM ordinary vs DFlash zero token-ID/EOS mismatches",
+    "zero/partial/all acceptance, valid_rows=1, long prompt, cross-block cache",
+    "ten stable successful target repetitions after three warmups"
+  ],
+  "performance_limitations": [
+    "fixed gears execute padding",
+    "early prompt chunks run Draft for KV initialization and discard proposals",
+    "Draft dense scatter and current/next OM state buffers can still involve full-cache copies",
+    "verify uses per-row CacheUpdate until multi-row cross-page ABI is validated",
+    "separate OMs do not automatically share weight allocations"
+  ],
+  "verify_gdr": "chunk",
+  "recurrent_state_dtype": "float32",
+  "ordinary_state_policy": "ordinary Chunk GDR prefill/decode preserves FP32 state without FP16 round trip",
+  "common_graphs": [
+    "target_prefill",
+    "target_decode",
+    "draft"
+  ],
+  "shared_bundle_om_files": [
+    "prefill.om",
+    "decode.om",
+    "draft.om",
+    "verify_chunk.om",
+    "verify_mtp.om"
+  ],
+  "shared_bundle_policy": "two route manifests in one directory reference three identical common artifacts; source/configuration/ABI/ATC identity and options must match"
+}

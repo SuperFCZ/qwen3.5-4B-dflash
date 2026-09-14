@@ -103,19 +103,49 @@ def test_native_mtp_commits_exact_prefix_without_second_gdr(native_source, rows,
         assert block.compute_dflash_chunk_commit(1)[1].dtype == torch.float32
 
 
-def test_mtp_does_not_change_ordinary_dispatch_or_rounding(native_source):
+def test_routes_share_ordinary_dispatch_and_preserve_fp32(native_source):
     block, calls, _ = native_source
     other = copy.deepcopy(block)
     other.dflash_verify_gdr = "chunk"
-    state = (torch.randn(1, 48, 4).half(), torch.randn(1, 1, 16, 16).half())
+    state = (torch.randn(1, 48, 4).half(), torch.randn(1, 1, 16, 16))
     hidden = torch.randn(1, 1, 32).half()
     valid = torch.ones(1, dtype=torch.int16)
     with torch.inference_mode():
         a = block(hidden, tuple(t.clone() for t in state), gdr_effective_length=valid)
         b = other(hidden, tuple(t.clone() for t in state), gdr_effective_length=valid)
     assert [c[0] for c in calls] == ["chunk", "chunk"]
-    assert a[1][1].dtype == torch.float16
+    assert a[1][1].dtype == torch.float32
+    assert not torch.equal(a[1][1], a[1][1].half().float())
     torch.testing.assert_close(a, b, rtol=0, atol=0)
+
+
+def test_original_model_matches_ordinary_rollback_path_with_fp32_cache(native_source):
+    block, calls, scope = native_source
+    path = Path(__file__).resolve().parents[1] / "models/modeling_qwen3_5_hiai_nd.py"
+    tree = ast.parse(path.read_text())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Qwen3_5GatedDeltaNet")
+    forward = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "forward")
+    exec(compile(ast.Module(body=[forward], type_ignores=[]), str(path), "exec",
+                 flags=__future__.annotations.compiler_flag), scope)
+    original_forward = scope["forward"]
+    other = copy.deepcopy(block)
+    state = (torch.randn(1, 48, 4).half(), torch.randn(1, 1, 16, 16) * 0.03)
+    expected_state = tuple(t.clone() for t in state)
+    with torch.inference_mode():
+        for _ in range(9):
+            hidden = torch.randn(1, 1, 32).half()
+            length = torch.ones(1, dtype=torch.int16)
+            actual, state = original_forward(block, hidden, state, gdr_effective_length=length)
+            expected, expected_state = other(hidden, expected_state, gdr_effective_length=length)
+            torch.testing.assert_close((actual, state), (expected, expected_state), rtol=0, atol=0)
+            assert state[1].dtype == torch.float32
+            assert not torch.equal(state[1], state[1].half().float())
+        # Both model entry points reject an old FP16 cache before a GDR call.
+        for entry in (lambda *a, **kw: original_forward(block, *a, **kw), other):
+            count = len(calls)
+            with pytest.raises(TypeError, match="FP32"):
+                entry(hidden, (state[0], state[1].half()), gdr_effective_length=length)
+            assert len(calls) == count
 
 
 def test_mtp_operator_missing_is_not_a_chunk_fallback(native_source):
@@ -142,9 +172,9 @@ def test_configure_route_refuses_pending_transactions(native_source):
     assert block.dflash_verify_gdr == "mtp"
 
 
-class MtpBridgeModel(FakeHIAIModel):
+class Fp32BridgeModel(FakeHIAIModel):
     def configure_dflash_verify_gdr(self, route):
-        assert route == "mtp"
+        assert route in ("chunk", "mtp")
 
     def commit_dflash_chunk_state(self, rows):
         result = super().commit_dflash_chunk_state(rows)
@@ -152,11 +182,12 @@ class MtpBridgeModel(FakeHIAIModel):
         return {0: (conv, recurrent + 0.00123)}
 
 
-def test_mtp_bridge_preserves_fp32_and_reports_selection_after_zero_acceptance():
-    model = MtpBridgeModel()
+@pytest.mark.parametrize("route", ["chunk", "mtp"])
+def test_bridge_preserves_fp32_after_zero_and_partial_acceptance(route):
+    model = Fp32BridgeModel()
     bridge = InternalDFlashTarget(FakeWrapper(model), device=torch.device("cpu"),
                                  dtype=torch.float16, kv_cache_max_len=192,
-                                 rollback_enabled=True, verify_gdr="mtp").eval()
+                                 rollback_enabled=True, verify_gdr=route).eval()
     bridge.begin_rollback(torch.ones(1, 63, dtype=torch.long))
     for rows, accepted in ((4, 0), (16, 14), (3, 2)):
         before = bridge._persistent_cursor
@@ -167,14 +198,15 @@ def test_mtp_bridge_preserves_fp32_and_reports_selection_after_zero_acceptance()
         assert state.dtype == torch.float32
         assert not torch.equal(state, state.half().float())
     audit = bridge.dflash_rollback_audit
-    assert audit["verify_gdr"] == "mtp" and audit["custom_gdr_mtp_required"]
-    assert audit["rollback_gdr_commit_layer_calls"] == 0
-    assert audit["rollback_mtp_state_select_layer_calls"] == 3
+    assert audit["verify_gdr"] == route
+    assert audit["custom_gdr_mtp_required"] == (route == "mtp")
+    assert audit["rollback_gdr_commit_layer_calls"] == (0 if route == "mtp" else 3)
+    assert audit["rollback_mtp_state_select_layer_calls"] == (3 if route == "mtp" else 0)
     bridge.verify_rollback(torch.ones(1, 4, dtype=torch.long))
     bridge.abort_rollback()
     assert bridge._persistent_state is None and model._pending_chunk is None
     bridge.begin_ordinary(torch.ones(1, 2, dtype=torch.long))
-    assert bridge._persistent_state[0][1].dtype == torch.float16
+    assert bridge._persistent_state[0][1].dtype == torch.float32
 
 
 @pytest.mark.parametrize("route", ["chunk", "mtp"])

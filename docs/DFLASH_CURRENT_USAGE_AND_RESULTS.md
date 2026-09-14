@@ -3,6 +3,8 @@
 以下为用户提供的 `prompt-suite-5son4ozl`，按允许输出差异策略重汇总为
 `prompt-summary-s4cu60r4`。Ascend 310P、Chunk 路线、W8A8 Target、确定性 FP16 Draft；
 8 条 prompt，每条生成 128 token，3 次预热 + 10 次测量，投机始终开启。
+**这是旧 Chunk v3、recurrent state 写回 FP16 的结果。** 新版原版/Chunk/MTP 统一 FP32，
+已有主机接口测试，真机重编和测量待执行；下表不能当成新版 FP32 的成绩。
 
 两种模式各自重复稳定，跨模式输出不同，状态为 `PASS_WITH_DIFFERENCES`；
 任务质量未评估。这是已有报告整理，没有新增设备实测。

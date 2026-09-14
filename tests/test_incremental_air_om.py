@@ -177,7 +177,7 @@ class TinyTarget(nn.Module):
     def _fresh_hybrid_cache(self, batch_size):
         assert batch_size == 1
         return [
-            (torch.zeros(1, 48, 4).half(), torch.zeros(1, 1, 16, 16).half()),
+            (torch.zeros(1, 48, 4).half(), torch.zeros(1, 1, 16, 16)),
             (torch.zeros(3, 1, 64, 16).half(), torch.zeros(3, 1, 64, 16).half()),
         ]
 
@@ -461,10 +461,11 @@ def test_verify_retains_raw_first_pass_outputs_but_commits_second_pass(valid_row
         raw = actual[9 + index]
         committed = actual[3 + 2 * layer + 1]
         initial = state[2 * layer + 1].float()
-        assert raw.dtype == torch.float32 and committed.dtype == torch.float16
+        assert raw.dtype == committed.dtype == torch.float32
         torch.testing.assert_close(raw, initial + valid_rows * 0.0137, rtol=0, atol=0)
-        torch.testing.assert_close(committed, (initial + (accepted + 1) * 0.0137).half(),
+        torch.testing.assert_close(committed, initial + (accepted + 1) * 0.0137,
                                    rtol=0, atol=0)
+        assert not torch.equal(committed, committed.half().float())
     for a, b in zip(state, frozen):
         torch.testing.assert_close(a, b, rtol=0, atol=0)
     calls = [n for n in ep.graph.nodes if n.target == gdr_output_fixture]
@@ -934,8 +935,9 @@ def chunk_bundle(tmp_path, monkeypatch, request):
         prefix = Path(
             next(s.split("=", 1)[1] for s in command if s.startswith("--output="))
         )
-        signature = by_name[prefix.name].metadata["tensor_abi"]
-        lines = ["FAKE_CHUNK " + prefix.name]
+        name = Path(next(x.split("=", 1)[1] for x in command if x.startswith("--model="))).stem
+        signature = by_name[name].metadata["tensor_abi"]
+        lines = ["FAKE_CHUNK " + name]
         for key, marker in (("inputs", "I"), ("outputs", "O")):
             for t in signature[key]:
                 lines.append(

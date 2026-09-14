@@ -318,7 +318,8 @@ def _compile_air_graph(
     if actual_hash != air_record["sha256"]:
         raise ValueError(f"AIR graph hash mismatch before ATC: {name}")
 
-    output_prefix = om_root / name
+    from .common_reuse import artifact_stem
+    output_prefix = om_root / artifact_stem(graph)
     command = [
         str(atc_path),
         "--mode=0",
@@ -405,17 +406,38 @@ def compile_air_bundle(
         graph["name"]: _graph_atc_args(arguments, name=graph["name"], incremental=incremental is not None)
         for graph in graphs
     }
+    from .common_reuse import artifact_stem, validate_common_compile, link_common_om
+    reused = None
+    if "common_reuse" in air_manifest:
+        atc_identity = atc_identity or _atc_identity(atc_path)
+        reused = validate_common_compile(
+            air_manifest, root, atc_path=atc_path, soc_version=exact_soc_version,
+            arguments=graph_arguments, identity=atc_identity,
+        )
     execute = runner or _default_runner
     om_root = root / "om"
-    if om_root.exists() and any(om_root.iterdir()):
+    shared_root = reused is not None and root == reused["path"].parent
+    suffix = "-" + incremental["verify_gdr"] if shared_root else ""
+    deployment_path = root / ("deployment-manifest" + suffix + ".json")
+    if deployment_path.exists():
+        raise FileExistsError(deployment_path)
+    if not shared_root and om_root.exists() and any(om_root.iterdir()):
         raise FileExistsError(f"OM output directory is not empty: {om_root}")
+    for graph in graphs:
+        if reused is None or graph["name"] not in reused["graphs"]:
+            output_path = om_root / (artifact_stem(graph) + ".om")
+            if output_path.exists():
+                raise FileExistsError(output_path)
     om_root.mkdir(parents=True, exist_ok=True)
     run_dir = Path(os.environ["AI_RUN_DIR"]).expanduser().resolve()
     log_root = run_dir / "log" / "dflash-atc"
     log_root.mkdir(parents=True, exist_ok=True)
+    log_root = Path(tempfile.mkdtemp(prefix=root.name + "-", dir=log_root))
 
     compiled = [
-        _compile_air_graph(
+        link_common_om(reused, graph, root, om_root)
+        if reused is not None and graph["name"] in reused["graphs"]
+        else _compile_air_graph(
             graph, root=root, om_root=om_root, log_root=log_root, atc_path=atc_path,
             exact_soc_version=exact_soc_version, arguments=graph_arguments[graph["name"]],
             execute=execute,
@@ -441,8 +463,9 @@ def compile_air_bundle(
             "precision_policy": "preserve_graph_dtypes" if incremental else "explicit_args_or_atc_default",
         },
         "graphs": compiled,
+        **({"common_reuse": air_manifest["common_reuse"]} if reused is not None else {}),
     }
-    output = atomic_write_json(root / "deployment-manifest.json", deployment)
+    output = atomic_write_json(deployment_path, deployment)
     deployment["manifest_path"] = str(output)
     return deployment
 

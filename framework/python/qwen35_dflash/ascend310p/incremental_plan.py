@@ -7,8 +7,10 @@ from pathlib import Path
 
 from .utils import contained_path, load_json_object, require_run_output, sha256_file
 
-ABI = "qwen35-dflash-chunk-v3"
-MTP_ABI = "qwen35-dflash-mtp-v1"
+LEGACY_CHUNK_ABI = "qwen35-dflash-chunk-v3"
+ABI = "qwen35-dflash-chunk-v4"
+LEGACY_MTP_ABI = "qwen35-dflash-mtp-v1"
+MTP_ABI = "qwen35-dflash-mtp-v2"
 VERIFY_GDR_ROUTES = ("chunk", "mtp")
 ATTENTION_EXPORT_POLICY = "receiver_adn_all_seq_lengths_q_static_capacity_causal_mask"
 DRAFT_LENGTH_POLICY = "anchor_plus_runtime_K_masked_in_every_attention_layer"
@@ -19,7 +21,8 @@ DTYPES = {"int64": 8, "int16": 2, "float16": 2, "float32": 4}
 
 
 def verify_gdr_route(contract):
-    route = {ABI: "chunk", MTP_ABI: "mtp"}.get(contract.get("abi"))
+    route = {LEGACY_CHUNK_ABI: "chunk", ABI: "chunk",
+             LEGACY_MTP_ABI: "mtp", MTP_ABI: "mtp"}.get(contract.get("abi"))
     if route is None or contract.get("verify_gdr", route) != route:
         raise ValueError("unsupported or inconsistent verification route/ABI")
     return route
@@ -136,6 +139,8 @@ def validate_incremental_bundle(graphs):
         )
     c = candidates[0]["metadata"]["incremental_contract"]
     route = verify_gdr_route(c)
+    if c["abi"] in (ABI, MTP_ABI) and c.get("recurrent_state_dtype") != "float32":
+        raise ValueError("Current incremental ABI requires FP32 recurrent state")
     if c.get("block_size") != 16 or c.get("prefill_rows") != 64:
         raise ValueError("unsupported incremental ABI; regenerate AIR/OM and rebuild the C++ runner")
     if c.get("draft_length_policy") != DRAFT_LENGTH_POLICY:
@@ -179,10 +184,10 @@ def validate_incremental_bundle(graphs):
         raise ValueError("state partition is inconsistent")
     if len(c["capsules"]) != len(gdn) // 2 * (7 if route == "chunk" else 2):
         raise ValueError("GDR capsule count differs from linear layer count")
-    if route == "mtp":
+    if route == "mtp" or c["abi"] == ABI:
         states = {t["name"]: t for t in c["target_states"]}
         if any(states[n]["dtype"] != "float32" for n in gdn[1::2]):
-            raise ValueError("MTP requires committed recurrent state in FP32")
+            raise ValueError("Current Chunk/MTP ABI requires committed recurrent state in FP32")
     output_policy = VERIFY_STATE_OUTPUT_POLICY if route == "chunk" else MTP_STATE_OUTPUT_POLICY
     if (
         c.get("verify_state_output_policy") != output_policy

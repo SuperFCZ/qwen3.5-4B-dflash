@@ -288,7 +288,7 @@ class AclChunkExecutor::Impl {
         device_id(device), share_workspace(share_workspace) {
     Require(device >= 0, "negative device ID");
     std::cerr << "[chunk-runtime] verify_gdr="
-              << (plan.abi == "qwen35-dflash-mtp-v1" ? "mtp" : "chunk")
+              << (plan.abi == "qwen35-dflash-mtp-v1" || plan.abi == "qwen35-dflash-mtp-v2" ? "mtp" : "chunk")
               << " abi=" << plan.abi << '\n';
     try {
       LogProcessIdentity();

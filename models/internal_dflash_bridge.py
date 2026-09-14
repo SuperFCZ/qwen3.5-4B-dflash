@@ -372,10 +372,7 @@ class InternalDFlashTarget(nn.Module):
                 else "same_round_start_state_second_chunk_effective_length_a_plus_1"
             ),
             "custom_gdr_mtp_required": self.verify_gdr == "mtp",
-            "persistent_gdn_state": (
-                "scalar_conv_fp16_recurrent_fp32_after_mtp_commit" if self.verify_gdr == "mtp"
-                else "scalar_conv_fp16_recurrent_original_receiver_dtype"
-            ),
+            "persistent_gdn_state": "scalar_conv_fp16_recurrent_fp32_all_routes",
             "persistent_call_synchronization_policy": (
                 "same_device_stream_dependencies_no_per_call_host_barrier"
             ),
@@ -689,7 +686,7 @@ class InternalDFlashTarget(nn.Module):
                         linear_key_head_dim,
                         linear_value_head_dim,
                     ),
-                    dtype=self.requested_dtype,
+                    dtype=torch.float32,
                     device=self.requested_device,
                 )
                 result.append((conv_state, recurrent_state))
@@ -1070,13 +1067,9 @@ class InternalDFlashTarget(nn.Module):
                     raise TypeError("chunk commit conv state changed dtype")
                 if recurrent_state.dtype != torch.float32:
                     raise TypeError("chunk commit recurrent state must use FP32")
-                # Chunk keeps the receiver's cache boundary (normally FP16).
-                # MTP retains the selected bank's FP32 values across rounds.
-                updated[index] = (
-                    conv_state,
-                    recurrent_state if self.verify_gdr == "mtp"
-                    else recurrent_state.to(old_recurrent.dtype),
-                )
+                if old_recurrent.dtype != torch.float32:
+                    raise TypeError("persistent recurrent cache must use FP32")
+                updated[index] = (conv_state, recurrent_state)
         except Exception:
             self._rollback_invalid = True
             raise

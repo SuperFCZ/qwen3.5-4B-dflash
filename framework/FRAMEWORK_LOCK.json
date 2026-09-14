@@ -12,7 +12,8 @@
     "draft_attention_matmul_dtype": "float16 by default; float32 reference via factory config",
     "draft_attention_softmax_dtype": "float32",
     "draft_attention_matmul_result": "cast to float32; direct FP32 accumulation/output and Cube execution require ATC/device verification",
-    "lm_head": "Target W8A8; Draft FP16"
+    "lm_head": "Target W8A8; Draft FP16",
+    "recurrent_cache": "FP32 in ordinary/Chunk/MTP; conv and KV remain FP16"
   },
   "input_identity": {
     "repository_source": "verify every SOURCE_LOCK.json file/hash pair before checkpoint load",
@@ -164,8 +165,8 @@
   "claim_boundary": "Host and fake-ACL tests do not prove AIR export, OM conversion, physical 310P correctness, or latency. Those gates require the real locked target environment.",
   "incremental_graphs": {
     "factory": "qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs",
-    "abi": "qwen35-dflash-chunk-v3",
-    "contract_file": "framework/abi/dflash-chunk-v3.json",
+    "abi": "qwen35-dflash-chunk-v4",
+    "contract_file": "framework/abi/dflash-chunk-v4.json",
     "dflash_oms": [
       "target_prefill",
       "target_verify",
@@ -176,7 +177,7 @@
     "target_kv_update": "CacheUpdate_paged_aligned_prefill_per_row_decode_verify",
     "draft_kv_update": "ScatterElements_dense_context",
     "commit": "acceptance and accepted+1 second GDR are internal to target_verify",
-    "state": "explicit FP16 persistent GDN/conv/KV; FP32 GDR accumulator; current/next device banks and logical cursor",
+    "state": "FP32 persistent GDN recurrent; FP16 conv/KV; current/next device banks and logical cursor",
     "verify_state_output_policy": "raw_fp32_device_only_discard_first_pass_commit_second_pass",
     "verify_discard_outputs": "24 raw FP32 GDR first-pass states in independent device-only buffers; 50331648 bytes; never committed or transferred to host",
     "status": "HOST_VERIFIED_DEVICE_GATES_PENDING",
@@ -239,7 +240,16 @@
         "precision_policy": "FP32 input/unit gamma; normalize, cast to input dtype, multiply effective weight"
       }
     ],
-    "draft_length_policy": "runtime proposal_count=K, every attention layer masks block keys after anchor+K, unused output tail zero"
+    "draft_length_policy": "runtime proposal_count=K, every attention layer masks block keys after anchor+K, unused output tail zero",
+    "mtp_abi": "qwen35-dflash-mtp-v2",
+    "mtp_contract_file": "framework/abi/dflash-mtp-v2.json",
+    "shared_pair_om_files": [
+      "prefill.om",
+      "decode.om",
+      "draft.om",
+      "verify_chunk.om",
+      "verify_mtp.om"
+    ]
   },
   "profiling": {
     "collector": "msprof dynamic CLI",

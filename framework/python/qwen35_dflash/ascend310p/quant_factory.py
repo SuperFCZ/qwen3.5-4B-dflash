@@ -682,9 +682,9 @@ def create_quant_recompute_graph(
         from .incremental import incremental_graph_specs
 
         metadata.update({
-            "factory_id": ("qwen3.5-4b-quant-w8a8-dflash-mtp-v1"
+            "factory_id": ("qwen3.5-4b-quant-w8a8-dflash-mtp-v2"
                            if config.get("verify_gdr", "chunk") == "mtp"
-                           else "qwen3.5-4b-quant-w8a8-dflash-chunk-v3"),
+                           else "qwen3.5-4b-quant-w8a8-dflash-chunk-v4"),
             "verify_gdr": config.get("verify_gdr", "chunk"),
             "gdr_effective_length_contract": "INT16[1] explicit call-local valid rows",
             "claim_boundary": "Explicit-state candidate; real TorchAir/ATC and device parity gates required.",

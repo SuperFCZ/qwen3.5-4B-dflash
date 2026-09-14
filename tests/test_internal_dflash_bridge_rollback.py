@@ -252,7 +252,7 @@ def main() -> None:
     assert state is not None
     assert float(state[0][0][0, 0, 0]) == 10.0
     assert float(state[0][1][0, 0, 0, 0]) == 100.0
-    assert state[0][1].dtype == torch.float16
+    assert state[0][1].dtype == torch.float32
 
     # K changes from 2 proposals to 1. The next verify starts from the scalar
     # state committed by the second original-GDR chunk call.

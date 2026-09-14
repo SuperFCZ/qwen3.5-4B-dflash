@@ -8,7 +8,7 @@ cd "$AI_RUN_DIR"
 ```
 
 配置里的 `VERIFY_GDR=chunk|mtp` 自动选择对应的 `DEPLOYMENT_MANIFEST`。
-两个 manifest 填实际已编译路径；切换参数不会把已有 Chunk OM 转成 MTP。
+两个 manifest 填实际已编译路径；新版共用同一目录里的 3 个公共 OM，各自引用自己的 Verify。
 首次部署见文末[导出与编译](#导出与编译)。`QUANT_MODE` 只控制原生推理，OM 精度由编译产物决定。
 
 ## 多 prompt 测试
@@ -95,7 +95,10 @@ OM Verify 已包含接受判断和状态提交；此采集是单阶段窗口，�
 先完成 [Torch-NPU 首次准备](DFLASH_RUN_AND_VALIDATE.md#首次准备)和 W8A8 配置。
 还需匹配版本的 TorchAir、ATC、AscendCL、CMake/C++17；MTP 路线需要对应设备算子和 GE 注册。
 在环境配置中填写实际 `ATC_BIN`、`SOC_VERSION` 和 `KV_CAPACITY=2048` 后重新 `source`。
-下列命令使用未占用的产物目录，已部署用户保留原配置。
+新版普通模型与 DFlash 的 recurrent state 都改为 FP32，conv/KV 保持 FP16。
+旧 FP16 状态 OM 不能仅靠改配置升级；需重新导出、编译并重建 runner。
+下列命令使用新的 `artifacts-fp32` 目录；已有 `factory.json` 且容量足够、
+`include_ordinary_decode=true`，可直接从第 1 步开始。
 
 ```bash
 cd "$AI_RUN_DIR"
@@ -126,7 +129,7 @@ with (run / "factory.json").open("x") as f:
 PY
 ```
 
-下面四步分别执行，每步成功并返回命令提示符后再继续。只用一种路线时，执行对应的两步即可。
+下面四步分别执行，每步成功并返回命令提示符后再继续。
 `export-air` 的 PASS 表示 AIR 导出完成；`compile-om` 的 PASS 和对应目录下的
 `deployment-manifest.json` 才表示整套 OM 编译完成，单个 `.om` 文件不能代表整套完成。
 
@@ -136,41 +139,50 @@ PY
 "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p export-air \
   --factory qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs \
   --factory-config "$AI_RUN_DIR/factory.json" --verify-gdr chunk \
-  --bundle-dir "$AI_RUN_DIR/artifacts-chunk"
+  --bundle-dir "$AI_RUN_DIR/artifacts-fp32"
 ```
 
 **2. 编译 Chunk OM**
 
 ```bash
 "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p compile-om \
-  --air-manifest "$AI_RUN_DIR/artifacts-chunk/air-manifest.json" \
+  --air-manifest "$AI_RUN_DIR/artifacts-fp32/air-manifest.json" \
   --atc "$ATC_BIN" --soc-version "$SOC_VERSION"
 ```
 
-**3. 导出 MTP AIR**
+**3. 只导出 MTP Verify，复用公共图**
 
 ```bash
 "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p export-air \
   --factory qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs \
   --factory-config "$AI_RUN_DIR/factory.json" --verify-gdr mtp \
-  --bundle-dir "$AI_RUN_DIR/artifacts-mtp"
+  --reuse-common-from "$AI_RUN_DIR/artifacts-fp32/deployment-manifest.json" \
+  --bundle-dir "$AI_RUN_DIR/artifacts-fp32"
 ```
 
-**4. 编译 MTP OM**
+**4. 只编译 MTP Verify**
 
 ```bash
 "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p compile-om \
-  --air-manifest "$AI_RUN_DIR/artifacts-mtp/air-manifest.json" \
+  --air-manifest "$AI_RUN_DIR/artifacts-fp32/air-manifest-mtp.json" \
   --atc "$ATC_BIN" --soc-version "$SOC_VERSION"
 ```
 
-当前 ATC 输出会被收集，每张图结束后才写入 `$AI_RUN_DIR/log/dflash-atc/<图名>.log`；
+完成后 `artifacts-fp32/om/` 只有 **5 个文件**：
+`prefill.om`、`decode.om`、`draft.om`、`verify_chunk.om`、`verify_mtp.om`。
+两个部署清单分别是同目录的 `deployment-manifest.json`（Chunk）和
+`deployment-manifest-mtp.json`（MTP）。将环境配置的两个 manifest 路径改为这两个文件，重新 `source`，
+再执行上面的[双路线多长度测试](#多长度与双路线测试)。公共图不重复编译、不复制存储。
+
+复用要求两次导出使用同一源码、权重、配置（仅 `verify_gdr` 不同）、工具链及编译选项；不匹配会报错。
+只用 MTP 时可向空目录导出，省略 `--reuse-common-from`，随后编译该目录的 `air-manifest.json`。
+
+当前 ATC 输出会被收集，每张图结束后才写入 `$AI_RUN_DIR/log/dflash-atc/<本次编译目录>/<图名>.log`；
 编译期间可能长时间没有终端输出，不能仅据此判断卡死。
 编译默认给 Draft 设置 `--deterministic=1`；详见[漂移问题](DFLASH_CURRENT_USAGE_AND_RESULTS.md#deterministic-与-fc-漂移)。
 
-中断后：已有 PASS 的 `deployment-manifest.json` 无需重编；已有 AIR 且 `om/` 未创建或为空时，
-可只重跑对应的编译命令。若 `om/` 非空但没有部署清单，当前不支持自动续编；保留原产物，
-改用新 bundle 目录导出和编译，并更新环境配置中的 manifest 路径。
+中断后：对应路线已有 PASS 部署清单则无需重编。首次编译的 `om/` 为空，或增补 MTP 时尚未生成
+`verify_mtp.om`，可重跑对应编译命令；若已有未完成的 OM，不会覆盖或自动续编，请保留原产物并使用新目录。
 
 **5. 构建 runner**
 
@@ -216,8 +228,8 @@ PY
 ```
 
 分别执行上面的四步，将两条导出命令中的 `factory.json` 换为 `factory-lengths.json`，
-四条命令中的 `artifacts-chunk` / `artifacts-mtp` 换为尚未使用的
-`artifacts-lengths-chunk` / `artifacts-lengths-mtp`；完成后更新环境配置中的两个 manifest 路径并重新 `source`。
+所有 `artifacts-fp32` 换为尚未使用的 `artifacts-fp32-lengths`；
+完成后更新环境配置中的两个 manifest 路径并重新 `source`。
 容量变大可能增加显存和耗时，两条路线须使用同一容量重新比较。
 
 </details>

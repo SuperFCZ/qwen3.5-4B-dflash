@@ -42,13 +42,14 @@ OM Draft 的 QK/PV 矩阵乘默认 FP16，缩放、Mask、Softmax 为 FP32；
 |---|---|---|
 | 每个 GDN 层的验证 | 第一遍 Chunk 计算整块输出 | 一次 MTP 计算整块输出和逐行 state bank |
 | 接受 a 个候选后 | 从初始状态重算 a+1 行 | 选择 bank 第 a 槽 |
-| 跨轮 recurrent state | FP16 | FP32 |
+| 跨轮 recurrent state | FP32 | FP32 |
 | 第二遍 GDR | 有 | 无 |
-| OM ABI | `qwen35-dflash-chunk-v3` | `qwen35-dflash-mtp-v1` |
+| OM ABI | `qwen35-dflash-chunk-v4` | `qwen35-dflash-mtp-v2` |
 
 GDN 状态压缩了历史，不能靠截短 KV 长度撤销拒绝的 token，因此需要重算或选取中间状态。
 MTP 输入的旧状态选择值固定为 0，当前轮接受数用于选择输出 bank；二者含义不同。
-普通 prefill/decode 继续使用 Chunk 及原有 FP16 舍入。
+普通 prefill/decode 使用原有 Chunk 算子，recurrent state 的初始化、存储、传递统一为 FP32，取消 FP16 写回。
+Torch-NPU 和 AIR/OM 均采用这一规则；权重、conv 和 KV 的精度保持现有设置。
 
 Torch-NPU 使用实际 `T=K+1` 行；OM 固定 16 行，通过有效长度限制接受和提交。
 MTP bank 在 OM 内消费；原生提交复制所选状态，避免跨轮保留整块 bank。
@@ -58,15 +59,22 @@ MTP bank 在 OM 内消费；原生提交复制所选状态，避免跨轮保留�
 
 | OM | 用途 | 加载模式 |
 |---|---|---|
-| `target_prefill` | 64 行物理块处理 prompt | 普通、DFlash |
-| `target_decode` | 单行 greedy decode | 普通 |
-| `draft` | 特征投影、KV 追加、并行候选 | DFlash |
-| `target_verify` | 验证、接受判断、状态提交 | DFlash |
+| `prefill.om` | 64 行物理块处理 prompt | 普通、DFlash |
+| `decode.om` | 单行 greedy decode | 仅普通 |
+| `draft.om` | 特征投影、KV 追加、并行候选 | DFlash |
+| `verify_chunk.om` | Chunk 两遍验证、接受判断、状态提交 | DFlash Chunk |
+| `verify_mtp.om` | MTP 验证、接受判断、选择状态 | DFlash MTP |
 
-普通模式加载 2 图，DFlash 加载 3 图；共用 prefill，无独立 commit OM。
+普通模式加载 2 图，DFlash 加载 3 图；无独立 commit OM。
+一个目录存 5 个 OM，两个路线清单直接引用同一份 Prefill、Decode、Draft。
+运行时角色名仍为 `target_prefill`、`target_decode`、`draft`、`target_verify`，由清单映射到对应文件。
 C++ 在设备上维护 KV、conv、recurrent state；低显存模式分组加载，并共享串行 workspace。
 Chunk Verify 保留 24 份 FP32 discard state 输出（48 MiB），不回传 CPU、不进入缓存；
 这是已有设备上避免单输出 GDR 性能退化的处理。
+
+Recurrent state 不是 KV cache：batch=1、24 层 `[1,32,128,128]`，单份 FP32 共 48 MiB，
+FP16 为 24 MiB，与序列长度无关。C++ 的 current/next 两份采用 FP32 比 FP16 多 48 MiB；
+不会增大 KV cache。此前 FP16 写回尚无独立实测收益，新版 FP32 的精度与速度需重新测量。
 
 ## 加速如何衡量
 

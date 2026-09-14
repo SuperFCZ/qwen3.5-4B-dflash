@@ -9,6 +9,7 @@ cd "$AI_RUN_DIR"
 
 路径、提示词、输出长度和量化选项统一修改该文件。首次安装见文末[首次准备](#首次准备)，
 OM 测试见 [OM/C++ 使用](GDR_CHUNK_AIR_OM.md)。
+新版普通、Chunk、MTP 均保留 FP32 recurrent state；无需新增 dtype 参数，conv/KV 精度保持现有设置。
 
 ## 运行 DFlash
 

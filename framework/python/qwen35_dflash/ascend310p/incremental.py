@@ -235,7 +235,9 @@ class AirGdn(nn.Module):
         g = -base.A_log.float().exp() * F.softplus(
             base.in_proj_a(x).float() + base.dt_bias
         )
-        initial = recurrent.float()
+        if recurrent.dtype != torch.float32:
+            raise TypeError("GDR recurrent cache must be FP32")
+        initial = recurrent
         if self.mtp:
             # The graph boundary carries an already committed scalar state.
             # Seed the input bank, then select slot 0 with INT8 zero. accepted_tokens is
@@ -264,9 +266,9 @@ class AirGdn(nn.Module):
                 output_final_state=True,
                 use_qk_l2norm_in_kernel=True,
             )
-            # Ordinary prefill/decode keep their original FP16 cache rounding,
-            # including in an MTP bundle whose shared state storage is FP32.
-            committed_final = final.to(torch.float16).to(recurrent.dtype)
+            if final.dtype != torch.float32:
+                raise TypeError("GDR recurrent output must be FP32")
+            committed_final = final
             capsule = (query, key, value, g, beta, initial, bank)
         z = base.in_proj_z(x).reshape(-1, base.head_v_dim)
         output = base.norm(output.reshape(-1, base.head_v_dim), z).reshape(
@@ -275,7 +277,7 @@ class AirGdn(nn.Module):
         return (
             base.out_proj(output),
             prefix_state(bank, valid_rows),
-            committed_final.to(recurrent.dtype),
+            committed_final,
             capsule,
             final,
         )
@@ -443,7 +445,9 @@ class TargetCommitGraph(nn.Module):
                 output_final_state=True,
                 use_qk_l2norm_in_kernel=True,
             )
-            result.extend((prefix_state(bank, committed_rows), final.to(bank.dtype)))
+            if final.dtype != torch.float32:
+                raise TypeError("GDR committed recurrent state must be FP32")
+            result.extend((prefix_state(bank, committed_rows), final))
         return tuple(result)
 
 
@@ -627,11 +631,10 @@ def incremental_graph_specs(
     state = tuple(t for pair in target._fresh_hybrid_cache(batch_size=1) for t in pair)
     names, gdn_names, kv_names, capsules, capsule_names = [], [], [], [], []
     layers = target.dflash_execution_model.language_model.layers
-    if verify_gdr == "mtp":
-        state = tuple(
-            tensor.float() if i % 2 == 1 and layers[i // 2].block_type == "linear_attention"
-            else tensor for i, tensor in enumerate(state)
-        )
+    state = tuple(
+        tensor.float() if i % 2 == 1 and layers[i // 2].block_type == "linear_attention"
+        else tensor for i, tensor in enumerate(state)
+    )
     for index, layer in enumerate(layers):
         linear = layer.block_type == "linear_attention"
         pair = [
@@ -703,7 +706,8 @@ def incremental_graph_specs(
         "capsules": [tensor_spec(n, t) for n, t in zip(capsule_names, capsules)],
         "vocab_size": draft.config.vocab_size,
         "feature_width": draft.config.feature_size,
-        "state_policy": ("in-graph-acceptance-two-pass-gdr-atomic-fp16-state-output"
+        "recurrent_state_dtype": "float32",
+        "state_policy": ("in-graph-acceptance-two-pass-gdr-atomic-fp32-state-output"
                          if verify_gdr == "chunk" else "in-graph-mtp-bank-select-fp32-recurrent"),
         "verify_state_output_policy": (VERIFY_STATE_OUTPUT_POLICY if verify_gdr == "chunk"
                                        else MTP_STATE_OUTPUT_POLICY),

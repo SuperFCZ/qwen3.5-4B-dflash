@@ -57,8 +57,8 @@ Draft 使用 FP16 embedding、LM head 和主体；公开 embedding getter 保留
 
 ## 3. OM 有序输入/输出
 
-ABI 标识为 `qwen35-dflash-chunk-v3`，合同见
-[图与状态合同](../framework/abi/dflash-chunk-v3.json)。所有图固定 batch=1。
+ABI 标识为 `qwen35-dflash-chunk-v4`，合同见
+[图与状态合同](../framework/abi/dflash-chunk-v4.json)。所有图固定 batch=1。
 实际 tensor 顺序、dtype、shape 由加载后的模型推导，并冻结在 manifest 的
 `metadata.tensor_abi` 中。不要通过文件名猜测输入顺序。
 
@@ -71,7 +71,7 @@ ABI 标识为 `qwen35-dflash-chunk-v3`，合同见
 | `input_ids` | INT64 `[1,R]` | prefill R=64；decode R=1；verify R=16 |
 | `start_position` | INT64 `[1]` | 已提交前缀之后的绝对起始位置 |
 | `valid_rows` | INT16 `[1]` | 本次物理 R 行中的有效行数，1..R |
-| `t0_*` 到 `t31_*` | FP16，依层结构确定 | 每层 conv/recurrent 或 paged key/value 状态 |
+| `t0_*` 到 `t31_*` | recurrent 为 FP32；conv/key/value 为 FP16 | 每层 conv/recurrent 或 paged key/value 状态 |
 
 输出顺序：
 
@@ -93,7 +93,7 @@ prefill/decode Top1 对应本次最后一个有效输入行。verify 输入为 `
 4. 选择对应 conv state，输出 committed features 和完整 Target 状态；随后附加第一遍 GDR 的原始 FP32 state。
 
 第二遍 GDR 所需的中间量留在图内，没有独立 commit OM，也不回传主机。
-GDR 累加及算子 initial/final state 使用 FP32；OM 之间持久保存的 recurrent state 为 FP16。
+GDR 累加、initial/final state 及 OM 之间持久保存、传递的 recurrent state 全部使用 FP32。
 
 附加输出命名为 `verify_discard_t<layer>_recurrent`，按线性注意力层的顺序排列，
 每份为 FP32 `[1,32,128,128]`。它们直接来自第一遍 GDR 的第二个输出，
@@ -107,7 +107,7 @@ C++ 为每份 discard state 分配独立、持久的设备缓冲区，共 48 MiB
 变化还取决于 ATC 的图内内存规划。普通模式只加载 prefill/decode，不分配这些缓冲区。
 
 导出器在 GE 保存前检查这些输出确实连接到第一遍 GDR 的 raw state，
-生成 `air/target_verify/verify-discard-outputs.json`。该报告证明保存前的输出连接；
+生成 `air/verify_chunk/verify-discard-outputs.json`。该报告证明保存前的输出连接；
 实际 OM 缓冲区由 C++ 加载时的逐输出 dtype/shape/bytes 校验和分配保证。
 接口版本必须与 runner 一致；使用新的空 bundle 目录导出 AIR、编译 OM，并重建 runner。
 
@@ -192,9 +192,11 @@ Draft 的 RMSNorm 使用同一个自定义前端，其余计算使用 Tensor 算
 完整前缀工厂按其实际缓存路径声明算子依赖。
 默认 Chunk 路径的 verify 和 commit 都使用 `ChunkGatedDeltaRule`。
 增量工厂可用 `--verify-gdr mtp` 改为一次 `GatedDeltaRuleMTP` 加图内状态选择；
-MTP 使用 `qwen35-dflash-mtp-v1` ABI，每层输出 FP32 `[1,16,32,128,128]` state bank，
+MTP 使用 `qwen35-dflash-mtp-v2` ABI，每层输出 FP32 `[1,16,32,128,128]` state bank，
 在图内选择第 a 槽提交，外部不输出 bank 或 Chunk 的 24 份 discard state。
-普通路径保留 FP16 舍入，MTP Verify 保留 FP32 recurrent state；两种 ABI 的图不能混装。
+普通、Chunk Verify、MTP Verify 均保留 FP32 recurrent state。使用 `--reuse-common-from` 时，
+导出器校验源码、配置、公共 tensor ABI、工具链身份，编译器核对 ATC 选项，允许两个路线清单
+引用同一份 Prefill/Decode/Draft；一个目录共 5 个 OM。旧 v3/v1 只兼容读取，不能通过重命名升级精度。
 路线对照见 [架构](DFLASH_ARCHITECTURE.md#chunk-两遍与-mtp)，切换见 [使用命令](GDR_CHUNK_AIR_OM.md)。
 
 卷积状态窗口使用静态切片加 `stack`，不调用 TorchAir 尚未实现 GE converter 的

@@ -49,6 +49,17 @@ def _module_version(module_name: str) -> str | None:
     return None if value is None else str(value)
 
 
+def _spec_header(spec):
+    return {
+        "name": spec.name, "role": spec.role, "dynamic": bool(spec.dynamic),
+        "model_class": f"{type(spec.model).__module__}.{type(spec.model).__qualname__}",
+        "input_names": list(spec.input_names), "output_names": list(spec.output_names),
+        "example_args": [_tensor_record(item) for item in spec.example_args],
+        "example_kwargs": {n: _tensor_record(v) for n, v in spec.example_kwargs.items()},
+        "metadata": dict(spec.metadata),
+    }
+
+
 def _normalize_specs(value: Any) -> tuple[AirGraphSpec, ...]:
     if isinstance(value, AirGraphSpec):
         specs = (value,)
@@ -72,12 +83,25 @@ def export_air_bundle(
     bundle_dir: str | Path,
     *,
     torchair_module: Any | None = None,
+    reuse_common_from: str | Path | None = None,
 ) -> dict[str, Any]:
     """Export every graph from ``factory`` and retain a hash-complete manifest."""
 
     root = require_run_output(bundle_dir)
-    if root.exists() and any(root.iterdir()):
+    from .common_reuse import (
+        COMMON, artifact_stem, load_common_source, validate_common_export,
+        link_common_air, reuse_record,
+    )
+    reused = (load_common_source(reuse_common_from, factory=factory,
+                              config=factory_config, destination=root)
+              if reuse_common_from is not None else None)
+    shared_root = reused is not None and root == reused["path"].parent
+    if not shared_root and root.exists() and any(root.iterdir()):
         raise FileExistsError(f"AIR bundle directory is not empty: {root}")
+    suffix = "-" + str(factory_config.get("verify_gdr", "chunk")) if shared_root else ""
+    manifest_path = root / ("air-manifest" + suffix + ".json")
+    if manifest_path.exists():
+        raise FileExistsError(manifest_path)
     torchair = torchair_module
     if torchair is None:
         try:
@@ -100,13 +124,33 @@ def export_air_bundle(
          "output_names": list(spec.output_names), "metadata": dict(spec.metadata)}
         for spec in specs
     ])
+    environment = {
+        "python": platform.python_version(), "torch": str(torch.__version__),
+        "torch_npu": _module_version("torch_npu"),
+        "torchair": str(getattr(torchair, "__version__", "unknown")),
+    }
+    if reused is not None:
+        validate_common_export(
+            reused, {s.name: _spec_header(s) for s in specs if s.name in COMMON}, environment,
+        )
+    for spec in specs:
+        if reused is None or spec.name not in reused["graphs"]:
+            graph_dir = root / "air" / (artifact_stem(_spec_header(spec))
+                                       if spec.name == "target_verify" else spec.name)
+            if graph_dir.exists():
+                raise FileExistsError(f"AIR graph output already exists: {graph_dir}")
     root.mkdir(parents=True, exist_ok=True)
     air_root = root / "air"
-    air_root.mkdir()
+    air_root.mkdir(exist_ok=shared_root)
 
     graphs: list[dict[str, Any]] = []
     for spec in specs:
-        graph_dir = air_root / spec.name
+        if reused is not None and spec.name in reused["graphs"]:
+            graphs.append(link_common_air(reused, _spec_header(spec), root))
+            continue
+        # Common graph directories retain their original names for payload validation.
+        graph_dir = air_root / (artifact_stem(_spec_header(spec))
+                                if spec.name == "target_verify" else spec.name)
         graph_dir.mkdir()
         custom_op_sessions = [
             prepare_custom_op_export(item, torchair) for item in spec.custom_ops
@@ -167,18 +211,7 @@ def export_air_bundle(
         )
         graphs.append(
             {
-                "name": spec.name,
-                "role": spec.role,
-                "dynamic": bool(spec.dynamic),
-                "model_class": f"{type(spec.model).__module__}.{type(spec.model).__qualname__}",
-                "input_names": list(spec.input_names),
-                "output_names": list(spec.output_names),
-                "example_args": [_tensor_record(item) for item in spec.example_args],
-                "example_kwargs": {
-                    name: _tensor_record(item)
-                    for name, item in spec.example_kwargs.items()
-                },
-                "metadata": dict(spec.metadata),
+                **_spec_header(spec),
                 **({"runtime_input_abi": runtime_input_abi}
                    if runtime_input_abi is not None else {}),
                 "custom_op_audit": custom_op_audit,
@@ -199,15 +232,11 @@ def export_air_bundle(
         "status": "PASS",
         "factory": factory_name,
         "factory_config": dict(factory_config),
-        "environment": {
-            "python": platform.python_version(),
-            "torch": str(torch.__version__),
-            "torch_npu": _module_version("torch_npu"),
-            "torchair": str(getattr(torchair, "__version__", "unknown")),
-        },
+        "environment": environment,
+        **({"common_reuse": reuse_record(reused)} if reused is not None else {}),
         "operator_preflight": preflight,
         "graphs": graphs,
     }
-    manifest_path = atomic_write_json(root / "air-manifest.json", manifest)
+    manifest_path = atomic_write_json(manifest_path, manifest)
     manifest["manifest_path"] = str(manifest_path)
     return manifest

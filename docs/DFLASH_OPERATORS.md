@@ -263,8 +263,8 @@ QLinear 对齐。
 5. 按收益依次评估 Draft GQA/Top-1、Target Top-1、CacheUpdate、W8A8 fused linear。
 6. 每替换一个算子，重新跑完整 state 门禁和 ordinary/DFlash strict-greedy 零差异。
 
-持久化 recurrent state 的 shape 为 `[B,32,128,128]`。GDR final state 是 FP32；bridge 在发布
-时复用 ordinary receiver 已有的 persistent cache dtype 边界（当前为 FP16），确保测到的
-chunk/recurrent 差异不混入新的状态存储口径。T=16 的 conv prefix windows 约 24 MiB/24 层，
-Q/K/V/g/beta capsule 约 9 MiB/24 层，另有 FP32 round-start state 快照。实际峰值必须用设备
-profile 统计；若要实验 FP32 persistent state，应作为单独精度分支并重跑 ordinary 对照。
+持久化 recurrent state 为 `[B,32,128,128]`，普通模型和两条 DFlash 路线统一使用 FP32，
+不再降成 FP16 写回。batch=1 时 24 层单份合计 48 MiB，旧 FP16 为 24 MiB；
+它与序列长度无关，也不是 attention 的 KV cache。FP16 缓存尚无独立速度收益证据。
+T=16 的 conv prefix windows 约 24 MiB/24 层，Q/K/V/g/beta capsule 约 9 MiB/24 层，
+另有 FP32 round-start state 快照。实际峰值及新版性能仍需设备测量。

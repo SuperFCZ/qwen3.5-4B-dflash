@@ -6,11 +6,11 @@ The ordinary path and default Chunk verification path call the receiver's
 GDN state per layer, runs ``K + 1`` rows (anchor plus proposals) provisionally,
 then calls the same chunk GDR a second time with ``effective_length=a+1`` after
 the Target has accepted ``a`` proposals.  Only the second call's FP32 final
-state is eligible for commit; the bridge applies the ordinary receiver's
-persistent-state dtype boundary before publication.  The optional MTP verifier
+state is eligible for commit; the bridge preserves FP32 when publishing the
+persistent state. The optional MTP verifier
 uses ``npu_gated_delta_rule_mtp`` once and retains its FP32 per-row state bank;
 commit selects the accepted prefix without a second GDR call. Ordinary calls
-always retain the original Chunk path and FP16 state rounding.
+always use the ordinary Chunk path and retain FP32 recurrent state.
 
 Chunk retains a per-layer commit capsule containing the GDR inputs,
 round-start recurrent state, and causal-conv prefix states. MTP retains the
@@ -1111,6 +1111,8 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         batch_size, seq_len, _ = hidden_states.shape
         conv_state = cache_params[0]
         recurrent_state = cache_params[1]
+        if recurrent_state.dtype != torch.float32:
+            raise TypeError("GDN recurrent cache must be FP32")
         if not isinstance(dflash_chunk_verify, bool):
             raise TypeError("dflash_chunk_verify must be a bool")
         if self._dflash_chunk_commit_capsule is not None:
@@ -1161,7 +1163,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
                     f"{expected_recurrent}, "
                     f"got {tuple(recurrent_state.shape)}"
                 )
-            initial_recurrent_state = recurrent_state.to(torch.float32).clone()
+            initial_recurrent_state = recurrent_state.clone()
             mixed_qkv, next_conv_state_bank = torch_dflash_causal_conv1d_chunk(
                 mixed_qkv,
                 conv_state,
@@ -1197,7 +1199,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         gdr_initial_state = (
             initial_recurrent_state
             if initial_recurrent_state is not None
-            else recurrent_state.to(torch.float32)
+            else recurrent_state
         )
         if dflash_chunk_verify and self.dflash_verify_gdr == "mtp":
             core_attn_out, recurrent_bank = run_dflash_mtp_gdr(
@@ -1224,9 +1226,9 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             )
             if tuple(last_recurrent_state.shape) != tuple(gdr_initial_state.shape):
                 raise ValueError("chunk GDR returned an invalid recurrent-state shape")
+            if last_recurrent_state.dtype != torch.float32:
+                raise TypeError("GDR recurrent state must use FP32")
             if dflash_chunk_verify:
-                if last_recurrent_state.dtype != torch.float32:
-                    raise TypeError("DFlash chunk GDR state must use FP32")
                 assert initial_recurrent_state is not None
                 assert next_conv_state_bank is not None
                 self._dflash_chunk_commit_capsule = (
@@ -1235,7 +1237,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
                 )
                 recurrent_state = last_recurrent_state
             else:
-                recurrent_state = last_recurrent_state.to(torch.float16)
+                recurrent_state = last_recurrent_state
         core_attn_out = core_attn_out.reshape(-1, self.head_v_dim)
         z = z.reshape(-1, self.head_v_dim)
         core_attn_out = self.norm(core_attn_out, z)

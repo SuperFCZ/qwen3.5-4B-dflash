@@ -73,7 +73,8 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
   std::string word;
   ChunkPlan result;
   Require(static_cast<bool>(input >> result.abi) &&
-              (result.abi == "qwen35-dflash-chunk-v3" || result.abi == "qwen35-dflash-mtp-v1"),
+              (result.abi == "qwen35-dflash-chunk-v3" || result.abi == "qwen35-dflash-mtp-v1" ||
+               result.abi == "qwen35-dflash-chunk-v4" || result.abi == "qwen35-dflash-mtp-v2"),
           "invalid chunk plan ABI; regenerate AIR/OM and rebuild the C++ runner");
   Require(static_cast<bool>(input >> word >> result.capacity >>
                             result.vocabulary) &&
@@ -116,13 +117,14 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
     }
     Require(word == "end" && !graph.inputs.empty() && !graph.outputs.empty(),
             "incomplete graph plan");
-    ValidateVerifyDiscardOutputs(graph, result.abi == "qwen35-dflash-mtp-v1");
-    if (result.abi == "qwen35-dflash-mtp-v1") {
+    const bool mtp = result.abi == "qwen35-dflash-mtp-v1" || result.abi == "qwen35-dflash-mtp-v2";
+    ValidateVerifyDiscardOutputs(graph, mtp);
+    if (mtp || result.abi == "qwen35-dflash-chunk-v4") {
       auto validate_recurrent = [](const auto& specs) {
         for (const auto& spec : specs) {
           if (spec.name.size() >= 10 &&
               spec.name.compare(spec.name.size() - 10, 10, "_recurrent") == 0)
-            Require(spec.dtype == "float32", "MTP committed recurrent state must be FP32");
+            Require(spec.dtype == "float32", "committed recurrent state must be FP32");
         }
       };
       validate_recurrent(graph.inputs);

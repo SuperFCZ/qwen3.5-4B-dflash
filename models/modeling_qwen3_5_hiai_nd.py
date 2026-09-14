@@ -941,6 +941,8 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         batch_size, seq_len, _ = hidden_states.shape
         conv_state = cache_params[0]
         recurrent_state = cache_params[1]
+        if recurrent_state.dtype != torch.float32:
+            raise TypeError("GDN recurrent cache must be FP32")
         mixed_qkv = self.in_proj_qkv(hidden_states).transpose(1, 2)
         z = self.in_proj_z(hidden_states).reshape(
             batch_size, seq_len, -1, self.head_v_dim
@@ -985,12 +987,14 @@ class Qwen3_5GatedDeltaNet(nn.Module):
                 beta=beta,
                 effective_length=gdr_effective_length,
                 chunk_size=1 if seq_len == 1 else 64,
-                initial_state=recurrent_state.to(torch.float32),
+                initial_state=recurrent_state,
                 output_final_state=True,
                 use_qk_l2norm_in_kernel=True,
             )
         )
-        recurrent_state.copy_(last_recurrent_state.to(torch.float16))
+        if last_recurrent_state.dtype != torch.float32:
+            raise TypeError("GDR recurrent output must be FP32")
+        recurrent_state.copy_(last_recurrent_state)
         core_attn_out = core_attn_out.reshape(-1, self.head_v_dim)
         z = z.reshape(-1, self.head_v_dim)
         core_attn_out = self.norm(core_attn_out, z)
