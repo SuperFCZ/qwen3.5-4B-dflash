@@ -180,7 +180,7 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "ff56d2362c7c863287e90a37892b004f462a310de5a9d9c8e384b6349a64a499"
+        "source_sha256": "472558c443971e2524d177137e2d9a3c1b5d7567b4969eb11b0eb9fe357b31bf"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -520,7 +520,7 @@
       },
       {
         "source_file": "docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md",
-        "source_sha256": "2b6ba829d555b82a0a1c51025c4c88c632b4f24003b706521a55a2157286c869"
+        "source_sha256": "5937e096a2891536e65b6d90aae6f6292635f9a172932b24de2b1d2224bab966"
       },
       {
         "source_file": "framework/abi/dflash-mtp-v1.json",
@@ -580,7 +580,7 @@
       },
       {
         "source_file": "config/prompts_long_1k.json",
-        "source_sha256": "dd74c6383e3f48643994e63d204031329be6cefc923b01180220715097335868"
+        "source_sha256": "23ca736bc49e4c96648eca767fc01fb36d4c91a40bc9f1118943986bca1ecd53"
       }
     ],
     "supported_abis": [
@@ -619,16 +619,20 @@
           998,
           1001,
           1008,
-          975,
+          978,
           984,
           1004,
           1024,
-          971,
-          1004,
-          979,
-          960
+          980,
+          1022,
+          1007,
+          987
         ],
-        "policy": "full prompts, no truncation or repetition padding; runtime records actual input_tokens and checks input plus output against capacity"
+        "policy": "six Chinese-language tasks (including English-to-Chinese translation) and six English-language tasks; complete prompts without truncation or repetition padding; runtime records actual input_tokens and checks input plus output against capacity",
+        "language_distribution": {
+          "zh_tasks": 6,
+          "en_tasks": 6
+        }
       },
       "default_verify_gdr": "both",
       "selection": "--prompt-group all|short|long; --verify-gdr chunk|mtp|both; repeatable --prompt-id; one or more --lengths; --warmup and --repetitions; only selected manifests are required and read",

@@ -14,7 +14,7 @@ cd "$AI_RUN_DIR"
 ## 统一测试：短 / 1K 上下文、Chunk / MTP、多长度
 
 默认 **8 条短 prompt + 12 条约 1K 输入 prompt**，每模式 **1 轮预热 + 3 轮测量**。
-原有四条长 prompt 保留，新增数学核算、代码修复、技术翻译、结构化抽取、方案比较、事件排序、规则判断和创作。
+长输入包括 **6 条中文任务（含英译中）+ 6 条英文任务**，覆盖分析、检索、规划、数学、代码、翻译、抽取、比较、事件排序、规则和创作。
 两种输入共用下面一条命令；投机始终开启，低内存模式先测全部普通模式，再测全部 DFlash。
 
 首次升级需重建 C++ runner 才支持可调轮数，**不用因此重新编译 OM**。
@@ -44,7 +44,7 @@ cd "$AI_RUN_DIR"
 
 上面是 20 条 × 2 路线 × 1 长度，共 40 个组合；改成三个长度就是 120 个。
 省略 `--lengths` 则测试 32、64、128、256、512、1024 六个输出上限。
-两条路线使用相同完整输入，必须都能容纳输入加输出；内置长输入含聊天模板为 **960–1024 token**，
+两条路线使用相同完整输入，必须都能容纳输入加输出；内置长输入含聊天模板为 **978–1024 token**，
 配 1024 输出需要容量 2048。运行时再用当前 tokenizer 检查，提前 EOS 按实际输出计数。
 
 自定义输入仍可用 `--prompts /path/prompts.json`：
@@ -68,14 +68,14 @@ cd "$AI_RUN_DIR"
 | long_zh_qa | 跨段检索 | 998 |
 | long_zh_plan | 约束规划 | 1001 |
 | long_en_analysis | 英文分析 | 1008 |
-| long_zh_math | 数学核算 | 975 |
+| long_en_math | 英文数学核算 | 978 |
 | long_zh_code | 代码修复 | 984 |
 | long_zh_translate | 技术翻译 | 1004 |
 | long_zh_extract | 结构化抽取 | 1024 |
-| long_zh_compare | 方案比较 | 971 |
-| long_zh_timeline | 事件排序 | 1004 |
-| long_zh_rules | 规则判断 | 979 |
-| long_zh_story | 约束创作 | 960 |
+| long_en_compare | 英文方案比较 | 980 |
+| long_en_timeline | 英文事件排序 | 1022 |
+| long_en_rules | 英文规则判断 | 1007 |
+| long_en_story | 英文约束创作 | 987 |
 
 长度使用锁定的 Qwen tokenizer 和默认聊天模板；[完整文本](../config/prompts_long_1k.json)。
 1K 指输入上下文，`--lengths` 指输出上限。

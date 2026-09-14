@@ -32,6 +32,7 @@ zh_plan 为 **0.73×**，接受率 6.67%，每轮仅产出 1.95 token。
 
 ## 长 prompt：1K 输入 / 128 输出
 
+长测试集包含 6 条中文任务和 6 条英文任务；下表为已收到的 4 条实测，其余结果待补。
 运行 `gdr-lengths-3a3e3701`，4 条 prompt，均生成 128 token，状态为 `PASS_WITH_DIFFERENCES`。
 
 | Prompt | 输入 token | 接受 / 提出 | 接受率 | token/投机轮 | DFlash tok/s | 加速比 |
