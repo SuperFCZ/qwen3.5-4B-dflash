@@ -1,9 +1,8 @@
 # DFlash 源码索引
 
 本目录实现 Qwen3.5-4B 的 persistent incremental DFlash、ordinary 对照、量化和阶段采集。
-运行时先阅读 [Python NPU 从零运行手册](../../docs/DFLASH_RUN_AND_VALIDATE.md)，
-按环境、checkpoint、receiver、验证、benchmark、msprof 的顺序执行。
-AIR/OM/C++ 部署见 [部署手册](../../docs/GDR_CHUNK_AIR_OM.md)。
+运行命令见 [Torch-NPU 使用](../../docs/DFLASH_RUN_AND_VALIDATE.md)与
+[OM/C++ 使用](../../docs/GDR_CHUNK_AIR_OM.md)。
 
 ## 1. 运行、调度和采集
 
@@ -39,12 +38,12 @@ Draft attention 读取已提交 KV、本轮追加 KV 和 transient block；成�
 | `modeling_qwen3_5_dflash.py` | CPU/CUDA feature-enabled Target |
 | `../modeling_qwen3_5_hiai_nd.py` | NPU ordinary Target |
 | `../modeling_qwen3_5_hiai_nd_dflash_rollback.py` | NPU rollback Target |
-| `../internal_dflash_bridge.py` | GDN state、两遍 chunk GDR commit 和 paged-KV cursor |
+| `../internal_dflash_bridge.py` | GDN state、Chunk 重算或 MTP bank 选择、paged-KV cursor |
 | `../export_model_wrapper_qwen3_5_dflash_rollback.py` | receiver wrapper 的 chunk transaction adapter |
 | `dflash_target_features.py` | 八层 Target feature 合同 |
 
-Prompt、verify 和 accepted-prefix commit 使用接受 `INT16[B] effective_length` 的
-`npu_chunk_gated_delta_rule`。verify 的第二遍 GDR 从本轮初始 state 按 `accepted+1` 提交。
+默认 Chunk 使用 `INT16[B] effective_length`，第二遍从初始 state 按 `accepted+1` 提交。
+`--verify-gdr mtp` 改为一次原生 MTP 加 FP32 bank 选择；普通 prefill/decode 仍使用 Chunk。
 causal-conv 使用 NPU Tensor 公式实现，接口与优化候选见[算子清单](../../docs/DFLASH_OPERATORS.md)。
 
 ## 4. Target W8A8

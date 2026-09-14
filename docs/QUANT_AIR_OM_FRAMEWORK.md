@@ -1,6 +1,6 @@
 # AIR/OM/C++ 接口参考
 
-从环境准备开始的完整命令见 [AIR/OM/C++ 从零部署](GDR_CHUNK_AIR_OM.md)。本文集中说明
+运行和导出命令见 [OM/C++ 使用](GDR_CHUNK_AIR_OM.md)。本文集中说明
 配置、产物和运行时边界，供执行步骤时查阅。范围为 batch=1、W8A8 Target、FP16 Draft、
 strict greedy 的显式状态增量图。
 
@@ -192,7 +192,10 @@ Draft 的 RMSNorm 使用同一个自定义前端，其余计算使用 Tensor 算
 完整前缀工厂按其实际缓存路径声明算子依赖。
 默认 Chunk 路径的 verify 和 commit 都使用 `ChunkGatedDeltaRule`。
 增量工厂可用 `--verify-gdr mtp` 改为一次 `GatedDeltaRuleMTP` 加图内状态选择；
-MTP 依赖、独立 ABI 和切换命令见 [验证路径手册](GDR_VERIFY_ROUTES.md)。
+MTP 使用 `qwen35-dflash-mtp-v1` ABI，每层输出 FP32 `[1,16,32,128,128]` state bank，
+在图内选择第 a 槽提交，外部不输出 bank 或 Chunk 的 24 份 discard state。
+普通路径保留 FP16 舍入，MTP Verify 保留 FP32 recurrent state；两种 ABI 的图不能混装。
+路线对照见 [架构](DFLASH_ARCHITECTURE.md#chunk-两遍与-mtp)，切换见 [使用命令](GDR_CHUNK_AIR_OM.md)。
 
 卷积状态窗口使用静态切片加 `stack`，不调用 TorchAir 尚未实现 GE converter 的
 `aten.unfold.default`。卷积宽度 K=4 时只构造四个移位切片，得到

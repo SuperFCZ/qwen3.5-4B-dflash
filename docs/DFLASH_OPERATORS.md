@@ -2,8 +2,8 @@
 
 本文描述 Python NPU strict-greedy rollback 的算子依赖、Tensor 实现和性能候选。AIR/OM/C++
 的融合 verify/commit 与显式 I/O 见 [框架接口](QUANT_AIR_OM_FRAMEWORK.md)。
-Torch-NPU 直接推理和增量 OM 均可选择 GDR MTP 路径；它的 FP32 bank、注册接口和
-`--verify-gdr` 命令见 [两条验证路径](GDR_VERIFY_ROUTES.md)。以下 Python eager
+Torch-NPU 直接推理和增量 OM 均可选择 GDR MTP 路径；FP32 bank 与状态提交见
+[流程与架构](DFLASH_ARCHITECTURE.md#chunk-两遍与-mtp)。以下 Python eager
 rollback 的依赖结论仍按 Chunk 路径描述。
 
 下面区分当前 rollback 能否运行、去掉生产 golden 还缺什么、性能优化可能

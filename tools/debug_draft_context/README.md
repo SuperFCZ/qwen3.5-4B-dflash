@@ -164,6 +164,6 @@ kernel 身份；稳定的 FC 对照也不代替完整 Draft 重放与 ordinary g
 和冻结输入 `d93cec20f36f2c515cff4e0a8ab02a596dca916c69dba27db2b08b87a3e3f006`。
 这支持将确定性开关用于完整 Draft 的下一轮验证，仍不能识别具体 split-K/atomic kernel。
 编译器现在默认只给增量 Draft 加 `--deterministic=1`；已有 AIR/OM 可用部署手册的
-[`recompile-draft-om`](../../docs/GDR_CHUNK_AIR_OM.md#只重编已有套件的-draft启用确定性计算)
+[`recompile-draft-om`](../../docs/GDR_CHUNK_AIR_OM.md#导出与编译)
 入口只重编 Draft，保留三个 Target OM。随后运行完整 Draft 重放和多 prompt 配对测试。
 编译成功或该 FC 对照通过，都不代替完整 Draft 与普通生成的一致性检查。
