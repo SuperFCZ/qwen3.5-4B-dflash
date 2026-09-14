@@ -31,9 +31,9 @@ source /absolute/path/dflash-env.sh
 | 了解 Draft → Verify → Commit | [流程与架构](docs/DFLASH_ARCHITECTURE.md) |
 | 查看已有速度、接受率、deterministic 漂移问题 | [结果与已知问题](docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md) |
 
-已有 Chunk 设备报告：8 条 prompt，各生成 128 token，整体 **1.50×** 加速、
-接受率 **20.69%**；其中 7 条更快，1 条变慢。允许输出差异，各模式重复稳定，
-任务质量未评估。MTP 和更长输出的设备结果待测。
+Chunk 实测：短 prompt 生成 32 / 64 / 128 token 的接受率为 **29.69% / 25.94% / 20.94%**，
+三个长度均有 7 条更快、1 条更慢。约 1K 输入、128 输出的接受率为 **19.00%**，加速比 **0.98～1.22×**。
+允许输出差异，任务质量未评估；256 / 512 / 1024 输出及 MTP 结果待补。
 
 <details>
 <summary>开发参考</summary>

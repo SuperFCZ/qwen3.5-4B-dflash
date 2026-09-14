@@ -164,7 +164,7 @@
     "files": [
       {
         "source_file": "README.md",
-        "source_sha256": "5a50d5c2a17cc88c2b5ac615aa304d063b8f670219d576e18624b37ecf657c92"
+        "source_sha256": "e66d6c8efaa2ad9118f88a7eacf1bc5a831e06ef7b5c9bdb0ff6d21419510486"
       },
       {
         "source_file": "config/gdr_chunk_air_om_factory.example.json",
@@ -520,7 +520,7 @@
       },
       {
         "source_file": "docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md",
-        "source_sha256": "4ddf516778630e4296bb0a3980bb74802af4d41fd07c74cd766795a879cae922"
+        "source_sha256": "2b6ba829d555b82a0a1c51025c4c88c632b4f24003b706521a55a2157286c869"
       },
       {
         "source_file": "framework/abi/dflash-mtp-v1.json",

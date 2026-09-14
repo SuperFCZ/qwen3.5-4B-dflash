@@ -1,14 +1,38 @@
 # 结果与已知问题
 
-记录用户提供的实测日志与报告。两组均允许普通 / DFlash 输出不同，任务质量未评估；
-整理文档不代表新增设备测量。
+以下为用户提供的 Chunk 实测：最多 15 个候选，3 次预热 + 10 次测量，low-memory，
+允许普通 / DFlash 输出不同。任务质量未评估，整理文档未新增设备测量。
 
-## 1K 输入 / 128 输出：Chunk
+## 短 prompt：32 / 64 / 128 输出
 
-运行 `gdr-lengths-3a3e3701`：4 条完整长 prompt，`--verify-gdr chunk --lengths 128`，
-最多 15 个候选，3 次预热 + 10 次测量，low-memory、always-on，允许输出差异。
-四条均生成 128 token，以 `max_new_tokens` 结束；子套件均为 `PASS_WITH_DIFFERENCES`。
-日志未展示本次 OM 的 ABI、recurrent state dtype 和编译选项，暂不据此标注 FP32 实测。
+运行 `gdr-lengths-ng09f5zx`，8 条 prompt，输入 28～59 token。各条均达到输出上限。
+
+| 输出 token | 接受 / 提出（10 次测量合计） | 加权接受率 | 严格一致 / 允许差异（条） |
+|---|---:|---:|---:|
+| 32 | 2010 / 6770 | 29.69% | 3 / 5 |
+| 64 | 3920 / 15110 | 25.94% | 1 / 7 |
+| 128 | 7670 / 36630 | 20.94% | 0 / 8 |
+
+各格为 **接受率 / DFlash tok/s / 加速比**。
+
+| Prompt | 输入 token | 32 输出 | 64 输出 | 128 输出 |
+|---|---:|---|---|---|
+| zh_explain | 28 | 48.28% / 71.46 / 2.58× | 38.69% / 63.78 / 2.26× | 25.83% / 49.20 / 1.73× |
+| zh_plan | 29 | 7.21% / 20.39 / 0.74× | 6.85% / 20.39 / 0.72× | 6.67% / 20.76 / 0.73× |
+| math | 47 | 50.00% / 59.05 / 2.14× | 33.33% / 53.74 / 1.90× | 37.02% / 65.54 / 2.31× |
+| code | 46 | 25.25% / 43.86 / 1.59× | 30.86% / 46.47 / 1.65× | 24.04% / 47.37 / 1.67× |
+| translate | 59 | 48.28% / 71.08 / 2.57× | 65.91% / 100.76 / 3.57× | 37.24% / 65.51 / 2.31× |
+| summary | 59 | 27.59% / 38.88 / 1.41× | 18.00% / 34.73 / 1.23× | 17.60% / 36.08 / 1.27× |
+| en_explain | 34 | 62.22% / 71.38 / 2.59× | 47.83% / 70.16 / 2.49× | 26.05% / 47.38 / 1.67× |
+| creative | 42 | 38.24% / 50.35 / 1.82× | 29.70% / 46.46 / 1.65× | 22.48% / 44.29 / 1.56× |
+
+三个长度均有 7 条更快、1 条更慢。128 输出时 math、translate 为 **2.31×**；
+zh_plan 为 **0.73×**，接受率 6.67%，每轮仅产出 1.95 token。
+整体接受率随输出预算降低，各任务并非单调下降；末轮候选缩短也会改变接受率分母。
+
+## 长 prompt：1K 输入 / 128 输出
+
+运行 `gdr-lengths-3a3e3701`，4 条 prompt，均生成 128 token，状态为 `PASS_WITH_DIFFERENCES`。
 
 | Prompt | 输入 token | 接受 / 提出 | 接受率 | token/投机轮 | DFlash tok/s | 加速比 |
 |---|---:|---:|---:|---:|---:|---:|
@@ -18,136 +42,52 @@
 | long_en_analysis 英文分析 | 1008 | 930 / 4870 | 19.10% | 3.63 | 25.16 | 1.11× |
 
 加权接受率 **3700 / 19470 = 19.00%**，3 条更快，中文摘要略慢。
-加速比为普通 / DFlash 模型循环时延中位数之比，包含 prefill，排除模型加载与预热。
-**整体总时间加速比、普通 Decode / Draft / Verify 的 ms/call 暂缺**：
-外层汇总误报 `fake ACL cannot supply matrix device measurements`，显示 0/4 和 N/A；
-上表取自已完成的子套件日志，汇总问题见文末。
 
-**为什么比短 prompt 加速小：** 接受率与旧短 prompt 的 20.69% 相近，但计时还包含处理上下文的成本。
-本次每条输入需要 16 个 64-row prefill 块；DFlash 在前 15 块还调用完整 `draft.om` 建立上下文 KV，
-这些调用产生的候选丢弃，耗时计入模型循环、候选数不计入接受率。
-这一额外开销已从 [Prefill 实现](../framework/runtime/cpp/src/acl_chunk.cpp)确认；
-具体占比仍需读取分项计时。两组 prompt 和部署信息不同，不能将全部差距归因于上下文长度。
+每条输入需要 16 个 64-row Prefill 块。DFlash 在前 15 块还调用完整 Draft 建立上下文 KV，
+耗时计入模型循环，丢弃的候选不计入接受率。[Prefill 实现](../framework/runtime/cpp/src/acl_chunk.cpp)
+这会增加长输入成本；具体占比缺少分项计时。长短两组任务和部署信息不同，不能直接隔离长度影响。
 
-<details>
-<summary>按生成位置的接受率与报告位置</summary>
+## 计时口径与待补数据
 
-| Prompt | [0,32) | [32,64) | [64,96) | [96,128) |
-|---|---:|---:|---:|---:|
-| long_zh_summary | 16.30% | 17.78% | 12.78% | 14.78% |
-| long_zh_qa | 23.81% | 13.33% | 33.33% | 37.88% |
-| long_zh_plan | 34.67% | 12.78% | 15.56% | 25.53% |
-| long_en_analysis | 36.00% | 13.33% | 14.67% | 22.68% |
-
-按整轮起点归档，不拆跨区间轮次；末段提出候选较少，接受率分母也随之变化。
-首个输出分叉位置（从 0 编号）依次为 22、17、31、30；各模式内部均通过 3+10 重复性检查。
-
-子套件：`$AI_RUN_DIR/gdr-lengths-3a3e3701/chunk-128/prompt-suite-y3ynevf0/`。
-`summary.json` 保存各 prompt 指标，`generations.txt` 保存文字，
-`runner-batch.json.cases/*.json` 保存每次 `latency_ms.prefill/decode` 和 `stage_ms`。
-外层 `gdr-lengths-3a3e3701/summary.json`、`cases.csv` 当前未完成有效汇总。
-
-</details>
-
-## 短 prompt / 128 输出：旧 Chunk v3
-
-以下为用户提供的 `prompt-suite-5son4ozl`，按允许输出差异策略重汇总为
-`prompt-summary-s4cu60r4`。Ascend 310P、Chunk 路线、W8A8 Target、确定性 FP16 Draft；
-8 条 prompt，每条生成 128 token，3 次预热 + 10 次测量，投机始终开启。
-**这是旧 Chunk v3、recurrent state 写回 FP16 的结果。** 新版原版/Chunk/MTP 统一 FP32，
-已有主机接口测试，绑定新版 ABI 与编译产物的设备结果尚待核验；下表不能当成新版 FP32 的成绩。
-
-两种模式各自重复稳定，跨模式输出不同，状态为 `PASS_WITH_DIFFERENCES`；
-任务质量未评估。
-
-普通模型约 **29 tok/s**，生成 128 token 用时 **4405～4421 ms**（中位数）。
-
-| Prompt | DFlash tok/s | 吞吐增幅 | 加速比 | DFlash 128 token ms | 接受率 | token/投机轮 |
-|---|---:|---:|---:|---:|---:|---:|
-| zh_explain 中文解释 | 46.04 | +58.41% | 1.58× | 2781.29 | 22.61% | 4.10 |
-| zh_plan 中文规划 | 21.75 | -25.01% | 0.75× | 5893.52 | 6.39% | 1.92 |
-| math 数学 | 69.35 | +139.51% | 2.39× | 1846.56 | 38.30% | 6.35 |
-| code 代码 | 43.28 | +49.41% | 1.50× | 2954.61 | 21.16% | 3.85 |
-| translate 翻译 | 73.83 | +155.05% | 2.55× | 1734.48 | 38.85% | 6.68 |
-| summary 摘要 | 38.67 | +33.49% | 1.34× | 3305.12 | 18.00% | 3.43 |
-| en_explain 英文解释 | 46.07 | +59.05% | 1.59× | 2779.94 | 22.59% | 4.10 |
-| creative 中文创作 | 56.78 | +96.03% | 1.96× | 2256.16 | 29.77% | 5.08 |
-
-整体 **28.98 → 43.49 tok/s，1.50075× 加速**，7 条更快、1 条变慢。
-加权接受率 **7580 / 36630 = 20.69%**；已接受候选占最终输出 **74.02%**，两者分母不同。
-整体加速按总模型时间之比计算，不平均各行倍数；加载、模式切换不计入模型循环。
-表内加速比使用时延中位数，吞吐增幅按全部测量的 tok/s 计算。
-
-## Prefill、Decode、Draft、Verify 时延
-
-| 项目 | 当前数据 / 读取位置 |
-|---|---|
-| 旧短 prompt 普通全程摊销 | 约 34.4～34.5 ms/token，含 prefill，不能当成纯 decode |
-| 普通 / DFlash 完整 Prefill 阶段 | 各自 `measurements[].latency_ms.prefill`；每次生成一个值 |
-| 普通 / DFlash Prefill 图 ms/call | 各自 `measurements[].stage_ms.target_prefill[]` |
-| 普通 Decode 图 ms/call | 原始 ordinary `measurements[].stage_ms.target_decode[]` |
-| Draft 图 ms/call | 原始 dflash `measurements[].stage_ms.draft[]` |
-| Verify 图 ms/call | 原始 dflash `measurements[].stage_ms.target_verify[]` |
-
-目前提供的两组日志均未展示这些分项计时，**暂缺单独实测值**。
-[统一测试](GDR_CHUNK_AIR_OM.md)已修复外层汇总，并展示完整阶段与图调用时延；
-历史子报告也可重新汇总读取已有分项。需要算子级热点时使用 [msprof](GDR_CHUNK_AIR_OM.md#msprof)。
-
-`stage_ms` 为同步 OM 调用墙钟时间，包含必要的数据绑定、传输和同步；
-Verify 包含图内状态提交，不能再加一份 commit。长 prompt 的 Draft 调用还可能包括
-prefill 中的 KV 初始化。以上均区别于纯 kernel 时间。
-
-## 长度增加后的接受率
-
-旧短 prompt 的同一次 128-token 运行，按整轮起点分段：
-
-| Prompt | [0,32) | [32,64) | [64,96) | [96,128) |
-|---|---:|---:|---:|---:|
-| zh_explain | 48.33% | 17.04% | 24.17% | 14.04% |
-| zh_plan | 7.56% | 5.88% | 3.67% | 10.34% |
-| math | 37.33% | 21.90% | 53.33% | 62.96% |
-| code | 20.83% | 22.86% | 17.33% | 27.03% |
-| translate | 51.67% | 100.00% | 26.67% | 23.47% |
-| summary | 20.00% | 11.67% | 14.67% | 46.00% |
-| en_explain | 51.67% | 20.83% | 12.73% | 23.75% |
-| creative | 33.33% | 46.67% | 14.81% | 44.26% |
-
-并非统一随长度下降：math 后段提高，zh_plan 从开头就低。
-跨区间的轮次不拆分；末段候选缩短也会改变接受率分母。
-已有独立 32-token 测试的全套接受率为 29.33%；不能直接相减两次计数推算后 96 token。
-**256/512/1024 和 MTP 的设备结果待测。**
+- 接受率 = 接受候选 / 提出候选，统计正式测量，排除预热。
+- 加速比 = 普通 / DFlash 模型循环时延中位数，包含 Prefill，排除加载与预热。
+- **分项时延暂缺**：普通 Prefill、Decode，以及 DFlash Prefill、Draft、Verify。
+  整体总时间加速比也未提供，不由 tok/s 或各行倍数反推。
+- **256 / 512 / 1024 输出及 MTP 尚无本轮结果**。日志未提供 OM 哈希、ABI 或 state dtype。
+- 子套件均通过各模式独立重复性检查。短 prompt 外层 32/64 显示 `FAIL`，原因未展示；
+  128 外层状态未展示。长 prompt 外层误报 fake ACL，因此这些矩阵尚无有效总汇总。
+  [统一测试](GDR_CHUNK_AIR_OM.md)已修复 fake ACL 字段读取，并输出分项时延，默认 1 次预热 + 3 次测量。
 
 ## deterministic 与 FC 漂移
 
-已定位到 Draft 上下文投影 **`draft.fc(features)`，FP16 Linear 20480 → 2560**。
-固定同一 AIR、权重、输入，各运行 20 次：
+已定位到 **`draft.fc(features)`，FP16 Linear 20480 → 2560**。
+固定同一 AIR、权重和输入，各执行 20 次：
 
 | 路径 | 关闭时变化次数 | 开启时变化次数 | 开关 |
 |---|---:|---:|---|
-| Torch-NPU native FC | 19/20 | 0/20 | `torch.use_deterministic_algorithms(False/True, warn_only=False)` |
+| Torch-NPU FC | 19/20 | 0/20 | `torch.use_deterministic_algorithms(False/True, warn_only=False)` |
 | AIR/OM FC | 19/20 | 0/20 | ATC `--deterministic=0/1`，需重编 OM |
 
-det0 样例是少量元素的 1 FP16 ULP 变化，可传播到 norm、KV 和候选。
-冻结 FC 输出后的 AdnRmsNorm / Tensor norm 均稳定且逐位一致，冻结 norm 后的 V projection 也稳定。
-**没有证据归因于 AdnRmsNorm；具体 split-K/atomic kernel 尚未确定。**
+关闭时样例出现少量 1 FP16 ULP 变化，可传播到 norm、KV 和候选。
+冻结 FC 输出后，两种 RMSNorm 均稳定且逐位一致；冻结 norm 后 V projection 也稳定。
+尚未确定具体 kernel，不能归因于 AdnRmsNorm。
 
-- Python 开关只影响原生执行，不修改已有 OM；原生推理入口未承诺默认开启该开关。
-- `compile-om` 默认只给 Draft 补 `--deterministic=1`，实际配置看 manifest 的 `graphs[].atc_command`。
-- 公共 `--atc-arg=--deterministic=0` 会覆盖 Draft 默认并传给所有待编译图。
-- 开启确定性解决了该 FC 探针的重复性；不同模式间仍有舍入差异，也不保证 decode/verify 一致。
-- 确定性开关的独立性能代价尚未做同范围 A/B 测量。
+`compile-om` 默认只给 Draft 加 `--deterministic=1`；
+显式 `--atc-arg=--deterministic=0` 会覆盖该默认值并传给所有待编译图。
+Python 开关不影响已有 OM。确定性解决了 FC 探针重复性，但不保证 Decode/Verify 输出一致；
+该开关的独立性能代价、低接受率和输出分叉的完整原因仍待定位。
+[FC 探针命令](../tools/debug_draft_context/README.md)
 
-旧部署使用[只重编 Draft 命令](GDR_CHUNK_AIR_OM.md#导出与编译)；
-探针复现见[FC 调试工具](../tools/debug_draft_context/README.md)。
+<details>
+<summary>原始报告目录</summary>
 
-## 其他已知问题
+各目录位于运行时的 `$AI_RUN_DIR` 下，包含 `summary.json`、`generations.txt` 和逐次测量报告。
 
-- **多长度外层误报 fake ACL（已修复）**：C++ 把 `fake_acl` 写在批次索引中，单个 prompt 子报告没有此字段。
-  新版从批次索引核验该标志，并匹配子报告路径、模型哈希；仍拒绝 fake ACL。
-  上述旧外层报告保留当时的失败状态，未重新执行设备测量。新版统一测试会打印两种模式的完整 Prefill 阶段及各 OM 分项时延。
-- **普通 decode 与 verify 输出分叉**：已观察到，尚未分离数值路径与状态更新的影响。
-- **低接受率**：zh_plan 仅 6.39%，实际慢于普通模型；暂未定位统一根因。
-- **Chunk 单输出性能退化**：历史单 GDR 约 22～29 ms，双输出约 0.26～0.27 ms；
-  当前保留 discard 输出。此数字不代表整张 Verify 时延。
-- **零接受后停投机**：已改为 always_on，本套关闭事件为 0。
-- **后续验证**：双路线长输出、任务质量，以及冻结同一状态下的 decode/verify 和 Draft KV 对照。
+| 测试 | 目录 |
+|---|---|
+| 短 / 32 | `gdr-lengths-ng09f5zx/chunk-32/prompt-suite-ft5jjazv/` |
+| 短 / 64 | `gdr-lengths-ng09f5zx/chunk-64/prompt-suite-q4dibwtp/` |
+| 短 / 128 | `gdr-lengths-ng09f5zx/chunk-128/prompt-suite-ki5odl8f/` |
+| 长 / 128 | `gdr-lengths-3a3e3701/chunk-128/prompt-suite-y3ynevf0/` |
+
+</details>
