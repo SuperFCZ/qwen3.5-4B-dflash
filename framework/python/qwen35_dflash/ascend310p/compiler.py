@@ -154,6 +154,9 @@ def compile_air_bundle(
         if not isinstance(graph, Mapping):
             raise TypeError("AIR graph manifest entry must be an object")
         name = str(graph["name"])
+        if graph.get("constant_inputs"):
+            from .draft_constants import verify_constant_inputs
+            verify_constant_inputs(dict(graph), root)
         custom_op_audit = _validated_custom_op_audit(graph)
         air_record = graph["air"]
         payload_records = graph.get("payload_files")
@@ -202,6 +205,9 @@ def compile_air_bundle(
                 "role": graph["role"],
                 "input_names": list(graph.get("input_names", [])),
                 "output_names": list(graph.get("output_names", [])),
+                "constant_inputs": list(graph.get("constant_inputs", [])),
+                "constant_inputs_table": graph.get("constant_inputs_table"),
+                "metadata": dict(graph.get("metadata", {})),
                 "custom_op_audit": custom_op_audit,
                 "air": dict(air_record),
                 "om": file_record(om_path, relative_to=root),

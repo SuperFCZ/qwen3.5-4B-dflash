@@ -657,6 +657,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("ordinary", "dflash"), required=True)
     parser.add_argument("--target-dir", required=True)
     parser.add_argument("--draft-dir", required=True)
+    parser.add_argument("--draft-quantization", choices=("fp16", "w8a16", "w4a16"), default="fp16")
     parser.add_argument(
         "--target-factory",
         default=DEFAULT_NPU_TARGET_FACTORY,
@@ -789,10 +790,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     _legacy._emit_progress(args.progress, "benchmark_checkpoint_audit_begin", {})
-    draft_checkpoint = require_official_dflash_checkpoint(
-        args.draft_dir,
-        verify_model_hash=True,
-    )
+    if args.draft_quantization == "fp16":
+        draft_checkpoint = require_official_dflash_checkpoint(args.draft_dir, verify_model_hash=True)
+    else:
+        from .draft_quantization import require_draft_checkpoint
+        draft_checkpoint = require_draft_checkpoint(args.draft_dir, args.draft_quantization)
     _legacy._emit_progress(args.progress, "benchmark_target_load_begin", {})
     target, target_route = _load_transactional_target(args, dtype=dtype)
     draft_memory_preflight = _legacy._draft_device_memory_preflight(
@@ -815,7 +817,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         ops=ops,
         device=args.device,
         dtype=dtype,
+        draft_quantization=args.draft_quantization,
     )
+    if args.draft_quantization != "fp16":
+        from .draft_quantization import configure_target_for_draft
+        configure_target_for_draft(target, draft.config)
     adapter = Qwen35DFlashRollbackAdapter(target, draft)
     _device_synchronize(adapter.device)
 
@@ -906,6 +912,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "source_identity": source_identity_after,
         "target_checkpoint": target_checkpoint,
         "draft_checkpoint": draft_checkpoint,
+        "draft_quantization": args.draft_quantization,
+        "draft_quantization_audit": getattr(draft, "draft_quantization_audit", {"variant": "fp16"}),
         "draft_memory_preflight": draft_memory_preflight,
         "ops_backend": backend,
         "operator_fallback_enabled": False,

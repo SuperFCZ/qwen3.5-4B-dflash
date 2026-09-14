@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 import torch
 
 from .contracts import AirGraphSpec
+from .draft_constants import write_constant_inputs
 from .custom_op_export import audit_custom_op_export, prepare_custom_op_export
 from .utils import atomic_write_json, file_record, require_run_output, resolve_callable
 
@@ -98,6 +99,7 @@ def export_air_bundle(
     for spec in specs:
         graph_dir = air_root / spec.name
         graph_dir.mkdir()
+        constant_inputs = write_constant_inputs(spec, graph_dir, root)
         custom_op_sessions = [
             prepare_custom_op_export(item, torchair) for item in spec.custom_ops
         ]
@@ -144,6 +146,7 @@ def export_air_bundle(
                 },
                 "metadata": dict(spec.metadata),
                 "custom_op_audit": custom_op_audit,
+                **constant_inputs,
                 "air": air_record,
                 "payload_files": records,
             }

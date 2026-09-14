@@ -6,14 +6,14 @@ Qwen3.5-4B persistent DFlash rollback，并支持同一套代码在两种 Target
 
 - 默认 FP16：不传量化参数；
 - Target W8A8 dynamic：追加 `--config ... --quant_mode enable`；
-- Draft 始终使用官方 Qwen3.5-4B-DFlash checkpoint 和 FP16 执行路径。
+- Draft 可选择原 FP16、发布的 W8A16 或 GPTQ W4A16 checkpoint，见 [Draft 量化](docs/DRAFT_QUANTIZATION.md)。
 
 当前版本已经避免在每轮验证时重算不断增长的历史前缀。它是 strict-greedy、batch 1 的
 Qwen3.5 DFlash port，不是 z-lab/dflash 全部 generation API 的逐行复制，也尚未取得 Ascend
 310P 端到端加速结论。
 
 `framework/quant-air-om` 分支在这份 `quant` 实现上增加了独立部署层：用现有 W8A8 Target
-和 FP16 Draft 导出 TorchAir AIR，通过 ATC 生成 OM，并由 C++ AscendCL runner 加载 OM、
+和所选精度的 Draft 导出 TorchAir AIR，通过 ATC 生成 OM，并由 C++ AscendCL runner 加载 OM、
 循环生成 token。入口和完整验证方法见
 [基于 quant 的 AIR/OM/C++ 框架](docs/QUANT_AIR_OM_FRAMEWORK.md)。第一版 OM 使用静态完整前缀
 重算来冻结功能 ABI；现有 persistent rollback 仍是后续增量 OM 状态 ABI 的语义基线。
@@ -29,7 +29,7 @@ Qwen3.5 DFlash port，不是 z-lab/dflash 全部 generation API 的逐行复制�
 | 接受 | 只提交最长连续匹配前缀；提交行数为 `1 + accepted` |
 | CPU/CUDA rollback | 恢复 round-start cache/state，再逐 token 重放 anchor 与已接受 proposal |
 | NPU rollback | 原 GDR chunk verify + `accepted+1` 二次 chunk state commit + conv golden + paged-KV logical cursor |
-| 量化 | 只量化 Target Linear 和 Target 输入 embedding；Draft embedding、LM head 和主体保持 FP16 |
+| 量化 | Target W8A8 独立开启；Draft 主体可选 FP16/W8A16/W4A16，共享 embedding/LM head 保持 FP16 |
 | 正确性 | `validate` 用独立 ordinary incremental session 做 token/EOS/stop-reason 零差异门禁 |
 
 ```mermaid

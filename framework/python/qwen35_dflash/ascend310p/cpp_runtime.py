@@ -244,8 +244,8 @@ def _resolve_integrated_om(
     graph = dict(matches[0])
     if graph.get("role") != "generation-recompute":
         raise ValueError("C++ runner graph role must be generation-recompute")
-    if list(graph.get("input_names", [])) != ["input_ids", "attention_mask"]:
-        raise ValueError("C++ runner OM input order differs from the locked ABI")
+    from .draft_constants import verify_constant_inputs
+    verify_constant_inputs(graph, manifest_path.parent)
     if list(graph.get("output_names", [])) != ["target_top1", "draft_top1"]:
         raise ValueError("C++ runner OM output order differs from the locked ABI")
     record = graph.get("om")
@@ -298,6 +298,8 @@ def validate_cpp_runner_report(
     device_id: int,
     max_new_tokens: int,
     max_draft_tokens: int,
+    constant_input_names: Sequence[str] = (),
+    constant_inputs_sha256: str = "",
 ) -> None:
     if report.get("status") != "PASS" or report.get("runner_id") != CPP_RUNNER_ID:
         raise RuntimeError("C++ ACL runner did not produce a passing known report")
@@ -319,12 +321,16 @@ def validate_cpp_runner_report(
     if protocol.get("warmup") != 3 or protocol.get("repetitions") != 10:
         raise RuntimeError("C++ runner protocol is not the locked 3+10")
     abi = report.get("abi", {})
-    if abi.get("input_names") != ["input_ids", "attention_mask"]:
+    if abi.get("input_names") != ["input_ids", "attention_mask", *constant_input_names]:
         raise RuntimeError("C++ runner input ABI differs")
     if abi.get("output_names") != ["target_top1", "draft_top1"]:
         raise RuntimeError("C++ runner output ABI differs")
-    if str(abi.get("dtype", "")).lower() != "int64":
+    expected_dtype = "mixed" if constant_input_names else "int64"
+    if str(abi.get("dtype", "")).lower() != expected_dtype:
         raise RuntimeError("C++ runner ABI dtype differs")
+    if (report.get("constant_inputs_sha256", "") != constant_inputs_sha256
+            or report.get("constant_input_count", 0) != len(constant_input_names)):
+        raise RuntimeError("C++ runner compressed Draft identity differs")
     ordinary = report.get("ordinary")
     dflash = report.get("dflash")
     if not isinstance(ordinary, Mapping) or not isinstance(dflash, Mapping):
@@ -409,6 +415,13 @@ def run_cpp_pair(
         "--device-id",
         str(int(device_id)),
     ]
+    from .draft_constants import verify_constant_inputs
+    constants_table = verify_constant_inputs(graph, Path(deployment_manifest).resolve().parent)
+    constants_hash = ""
+    if constants_table is not None:
+        constants_hash = graph["constant_inputs_table"]["sha256"]
+        command.extend(["--constant-inputs", str(constants_table),
+                        "--constant-inputs-sha256", constants_hash])
     start_ns = time.perf_counter_ns()
     result = execute(
         command,
@@ -433,6 +446,8 @@ def run_cpp_pair(
         device_id=device_id,
         max_new_tokens=max_new_tokens,
         max_draft_tokens=max_draft_tokens,
+        constant_input_names=graph.get("input_names", [])[2:],
+        constant_inputs_sha256=constants_hash,
     )
     run_root = Path(os.environ["AI_RUN_DIR"]).expanduser().resolve()
     air_record = deployment.get("air_manifest")
@@ -452,7 +467,10 @@ def run_cpp_pair(
         "artifacts": {str(graph["name"]): str(om_record["sha256"])},
         "state_policy": "recompute committed prefixes",
         "host_hot_path": "AscendCL C++",
+        "draft_quantization": graph.get("metadata", {}).get("draft_quantization", "fp16"),
     }
+    if constants_hash:
+        report["backend_metadata"]["artifacts"][str(graph["name"]) + ":draft-constants"] = constants_hash
     report["control_plane"] = {
         "process_wall_ms": (end_ns - start_ns) / 1_000_000.0,
         "runner": {

@@ -1,5 +1,8 @@
 # 基于 `quant` 分支的 AIR → OM → C++ token 推理框架
 
+本量化分支增加了 [W8A16 / GPTQ W4A16 Draft](DRAFT_QUANTIZATION.md)。下面的两输入
+ABI 适用于默认 FP16 Draft；量化 Draft 的 72 个只读权重输入及 runner 1.1.0 要求见该指南。
+
 ## 1. 目标和边界
 
 本框架直接建立在远端 `quant` 分支提交
@@ -9,7 +12,7 @@
 - Target Linear 使用 `models.dflash_v1.original_quant.quant_model` 转成原有 W8A8
   `QLinear`；
 - Target embedding 使用量化 YAML 指向的 INT8 weight 与 FP32 row scale；
-- Target 输出边界、Draft、共享 embedding 和 LM head 保持 FP16；
+- Target 输出边界、Draft 激活、共享 embedding 和 LM head 保持 FP16；Draft 权重可选三种精度；
 - Draft 使用本分支现有 `models.dflash_v1.modeling_dflash.DFlashDraftModel`；
 - greedy 接受规则保持 ordinary Target 权威，token ID、EOS 和 stop reason 必须零差异。
 
@@ -520,7 +523,7 @@ assert report["ordinary"]["stable_generated_token_ids"] == \
 - 物理设备和 device ID；
 - CANN、driver、firmware；
 - Target/Draft/量化输入 manifest；
-- Target W8A8、Draft FP16；
+- 相同的 Target W8A8 和 Draft 权重精度；
 - 静态 gear；
 - prompt token IDs、输出 token IDs、EOS；
 - concurrency=1；

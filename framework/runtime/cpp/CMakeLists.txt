@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(qwen35_dflash_acl_runner VERSION 1.0.0 LANGUAGES CXX)
+project(qwen35_dflash_acl_runner VERSION 1.1.0 LANGUAGES CXX)
 
 option(QWEN35_DFLASH_BUILD_ACL_RUNNER "Build the AscendCL executable" ON)
 option(QWEN35_DFLASH_BUILD_TESTS "Build host-only scheduler tests" ON)
@@ -75,6 +75,11 @@ if(QWEN35_DFLASH_BUILD_TESTS)
   add_library(qwen35_dflash_fake_acl STATIC tests/fake_acl/fake_acl.cpp)
   target_include_directories(qwen35_dflash_fake_acl PUBLIC tests/fake_acl)
   target_compile_options(qwen35_dflash_fake_acl PRIVATE -Wall -Wextra -Wpedantic)
+  add_executable(qwen35_dflash_constant_tests tests/test_constant_inputs.cpp src/acl_executor.cpp)
+  target_link_libraries(qwen35_dflash_constant_tests PRIVATE qwen35_dflash_core qwen35_dflash_fake_acl)
+  target_compile_options(qwen35_dflash_constant_tests PRIVATE -Wall -Wextra -Wpedantic)
+  add_test(NAME qwen35_dflash_constant_tests COMMAND qwen35_dflash_constant_tests
+           "${CMAKE_CURRENT_BINARY_DIR}/constant-tests")
 
   add_executable(qwen35_dflash_acl_runner_fake
     src/acl_executor.cpp

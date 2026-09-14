@@ -829,7 +829,8 @@ class InternalDFlashTarget(nn.Module):
             result: dict[str, Tensor] = {"logits": logits}
             if output_dflash_features:
                 assert features is not None
-                expected_features = (1, sequence_length, FEATURE_WIDTH)
+                feature_width = getattr(getattr(self, "dflash_target_feature_spec", None), "feature_size", FEATURE_WIDTH)
+                expected_features = (1, sequence_length, feature_width)
                 if tuple(features.shape) != expected_features:
                     raise ValueError(
                         "persistent HIAI features must have shape "
@@ -1204,7 +1205,8 @@ class InternalDFlashTarget(nn.Module):
             }
             if output_dflash_features:
                 assert features is not None
-                expected_features = (1, execution_length, FEATURE_WIDTH)
+                feature_width = getattr(getattr(self, "dflash_target_feature_spec", None), "feature_size", FEATURE_WIDTH)
+                expected_features = (1, execution_length, feature_width)
                 if tuple(features.shape) != expected_features:
                     raise ValueError(
                         "HIAI dflash_features shape must be "

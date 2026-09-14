@@ -1,6 +1,6 @@
 {
-  "schema_version": 3,
-  "framework_id": "qwen3.5-4b-quant-air-om-ascendcl-v3",
+  "schema_version": 4,
+  "framework_id": "qwen3.5-4b-draft-quantized-air-om-ascendcl-v4",
   "repository_base": {
     "branch": "quant",
     "revision": "28f93e784a2beed87020a80bd93c8788754eab1c"
@@ -8,7 +8,7 @@
   "precision": {
     "target": "W8A8 dynamic QLinear with FP16 output",
     "target_embedding": "INT8 weight times FP32 row scale to FP16",
-    "draft": "FP16",
+    "draft": "selectable fp16 (legacy 6-layer), w8a16 RTN or w4a16 GPTQ (pinned 5-layer); FP16 activations",
     "lm_head": "FP16"
   },
   "input_identity": {
@@ -21,19 +21,49 @@
     "name": "quant_dflash_recompute",
     "role": "generation-recompute",
     "inputs": [
-      {"name": "input_ids", "dtype": "int64", "shape": [1, "S"]},
-      {"name": "attention_mask", "dtype": "int64", "shape": [1, "S"]}
+      {
+        "name": "input_ids",
+        "dtype": "int64",
+        "shape": [
+          1,
+          "S"
+        ]
+      },
+      {
+        "name": "attention_mask",
+        "dtype": "int64",
+        "shape": [
+          1,
+          "S"
+        ]
+      }
     ],
     "outputs": [
-      {"name": "target_top1", "dtype": "int64", "shape": [1, "S"]},
-      {"name": "draft_top1", "dtype": "int64", "shape": [1, 15]}
+      {
+        "name": "target_top1",
+        "dtype": "int64",
+        "shape": [
+          1,
+          "S"
+        ]
+      },
+      {
+        "name": "draft_top1",
+        "dtype": "int64",
+        "shape": [
+          1,
+          15
+        ]
+      }
     ],
     "shape_policy": "static S divisible by 64 and at most 32767; right-padded valid prefix",
     "gdr_effective_length": {
       "external_om_input": false,
       "source": "count nonzero attention_mask rows along S inside the graph",
       "dtype": "int16",
-      "shape": ["B"],
+      "shape": [
+        "B"
+      ],
       "semantics": "call-local logical valid rows; not physical S, cumulative KV length, or MTP accepted_tokens"
     },
     "custom_operator_export": {
@@ -47,7 +77,24 @@
       "lowering": "one registered GE operator; no Tensor decomposition",
       "preservation_gate": "converter call count must be positive and dynamo.pbtxt GE-node count must cover every converter call"
     },
-    "state_policy": "recompute committed prefix"
+    "state_policy": "recompute committed prefix",
+    "optional_constant_inputs": {
+      "variants": [
+        "w8a16",
+        "w4a16"
+      ],
+      "count": 72,
+      "ordered_after": [
+        "input_ids",
+        "attention_mask"
+      ],
+      "types": [
+        "int8 or uint8 packed weights",
+        "float16 group=128 scales"
+      ],
+      "storage": "bundle constant-inputs.tsv and .bin payloads; SHA-256 locked; upload once at model load",
+      "compiler_policy": "explicit Data inputs prevent dense FP16 constant folding"
+    }
   },
   "compiler": {
     "exporter": "TorchAir dynamo_export",
@@ -63,7 +110,8 @@
     "execute": "aclmdlExecuteAsync",
     "memory": "persistent pinned host and device buffers",
     "synchronization": "one stream synchronization per OM invocation",
-    "generation": "ordinary greedy and strict-greedy DFlash"
+    "generation": "ordinary greedy and strict-greedy DFlash",
+    "minimum_runner_for_quantized_draft": "1.1.0"
   },
   "correctness_gate": {
     "token_id_mismatches": 0,
@@ -71,5 +119,9 @@
     "warmup": 3,
     "measured_repetitions": 10
   },
-  "claim_boundary": "Host and fake-ACL tests do not prove AIR export, OM conversion, physical 310P correctness, or latency. Those gates require the real locked target environment."
+  "claim_boundary": "Host and fake-ACL tests do not prove AIR export, OM conversion, physical 310P correctness, or latency. Those gates require the real locked target environment.",
+  "draft_quantization_branch_base": {
+    "branch": "feature/gdr-chunk-verify",
+    "revision": "8c44da7"
+  }
 }

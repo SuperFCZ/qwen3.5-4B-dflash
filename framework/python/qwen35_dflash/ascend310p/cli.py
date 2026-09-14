@@ -46,10 +46,18 @@ def _print(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 
+def _factory_config(args: argparse.Namespace) -> dict:
+    config = _config(args.factory_config)
+    variant = getattr(args, "draft_quantization", None)
+    if variant is not None:
+        config["draft_quantization"] = variant
+    return config
+
+
 def command_export(args: argparse.Namespace) -> int:
     payload = export_air_bundle(
         args.factory,
-        _config(args.factory_config),
+        _factory_config(args),
         args.bundle_dir,
     )
     _print(payload)
@@ -74,7 +82,7 @@ def command_build(args: argparse.Namespace) -> int:
     exact_soc_version = validate_soc_version(args.soc_version)
     exported = export_air_bundle(
         args.factory,
-        _config(args.factory_config),
+        _factory_config(args),
         args.bundle_dir,
     )
     payload = compile_air_bundle(
@@ -115,14 +123,14 @@ def command_probe(args: argparse.Namespace) -> int:
     torch.set_num_threads(max(1, int(args.threads)))
     factory = resolve_callable(args.factory)
     load_start = time.perf_counter_ns()
-    value = factory(_config(args.factory_config))
+    value = factory(_factory_config(args))
     specs = (value,) if isinstance(value, AirGraphSpec) else tuple(value)
     if len(specs) != 1 or specs[0].role != "generation-recompute":
         raise ValueError("PyTorch probe requires one generation-recompute graph")
     spec = specs[0]
-    if spec.input_names != ("input_ids", "attention_mask"):
+    if spec.input_names[:2] != ("input_ids", "attention_mask"):
         raise ValueError("PyTorch probe graph has an incompatible input ABI")
-    example_ids, example_mask = spec.example_args
+    example_ids, example_mask = spec.example_args[:2]
     if len(tokens) > example_ids.shape[1]:
         raise ValueError("probe tokens exceed the graph's fixed sequence gear")
     input_ids = example_ids.clone()
@@ -135,7 +143,7 @@ def command_probe(args: argparse.Namespace) -> int:
     _synchronize_tensor_device(input_ids)
     forward_start = time.perf_counter_ns()
     with torch.inference_mode():
-        target_top1, draft_top1 = spec.model(input_ids, attention_mask)
+        target_top1, draft_top1 = spec.model(input_ids, attention_mask, *spec.example_args[2:])
     _synchronize_tensor_device(input_ids)
     forward_end = time.perf_counter_ns()
     if target_top1.dtype != torch.long or draft_top1.dtype != torch.long:
@@ -256,7 +264,7 @@ def command_infer_cpp(args: argparse.Namespace) -> int:
 def command_run_e2e(args: argparse.Namespace) -> int:
     payload = run_target_pipeline(
         factory=args.factory,
-        factory_config=_config(args.factory_config),
+        factory_config=_factory_config(args),
         bundle_dir=args.bundle_dir,
         soc_version=args.soc_version,
         atc_bin=args.atc,
@@ -280,7 +288,7 @@ def command_run_e2e(args: argparse.Namespace) -> int:
 def command_run_e2e_cpp(args: argparse.Namespace) -> int:
     payload = run_cpp_target_pipeline(
         factory=args.factory,
-        factory_config=_config(args.factory_config),
+        factory_config=_factory_config(args),
         bundle_dir=args.bundle_dir,
         soc_version=args.soc_version,
         atc_bin=args.atc,
@@ -469,6 +477,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_e2e_cpp.add_argument("--max-draft-tokens", type=int, default=15)
     run_e2e_cpp.add_argument("--report-dir", type=Path, required=True)
     run_e2e_cpp.set_defaults(handler=command_run_e2e_cpp, model_asset_id=None)
+    for command_parser in subparsers.choices.values():
+        if any(action.dest == "factory_config" for action in command_parser._actions):
+            command_parser.add_argument("--draft-quantization", choices=("fp16", "w8a16", "w4a16"),
+                                        help="override the factory Draft precision; draft_dir must match")
     return parser
 
 

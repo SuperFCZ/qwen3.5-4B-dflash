@@ -217,8 +217,12 @@ def _require_collector_constructor(function: ast.FunctionDef) -> None:
             "Qwen3_5TextModel.forward must construct one DFlashFeatureCollector"
         )
     call = calls[0]
-    if not call.args or not _is_name(
-        call.args[0], "QWEN35_4B_DFLASH_TARGET_FEATURES"
+    selected_spec = ast.parse(
+        'getattr(self, "dflash_target_feature_spec", QWEN35_4B_DFLASH_TARGET_FEATURES)', mode="eval"
+    ).body
+    if not call.args or not (
+        _is_name(call.args[0], "QWEN35_4B_DFLASH_TARGET_FEATURES")
+        or ast.dump(call.args[0]) == ast.dump(selected_spec)
     ):
         raise HiaiFeatureContractError(
             "DFlashFeatureCollector must use QWEN35_4B_DFLASH_TARGET_FEATURES"

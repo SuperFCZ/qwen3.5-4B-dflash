@@ -718,8 +718,16 @@ class DFlashDraftModel(nn.Module):
         ops: DFlashOps | None = None,
         device: str | torch.device = "cpu",
         dtype: torch.dtype = torch.bfloat16,
+        draft_quantization: str = "fp16",
     ) -> "DFlashDraftModel":
         from .dflash_weights import load_dflash_weights
+
+        if draft_quantization != "fp16":
+            from .draft_quantization import load_quantized_draft
+            return load_quantized_draft(
+                cls, model_dir, variant=draft_quantization,
+                ops=ops, device=device, dtype=dtype,
+            )
 
         config = Qwen35DFlashConfig.from_pretrained(model_dir)
         mismatches = audit_official_4b_dflash_config(config)

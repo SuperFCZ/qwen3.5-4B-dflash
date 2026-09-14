@@ -66,6 +66,7 @@ class AirGraphSpec:
     compiler_config: Any | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
     custom_ops: tuple[CustomOpExportSpec, ...] = ()
+    constant_input_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not _GRAPH_NAME.fullmatch(self.name):
@@ -90,6 +91,10 @@ class AirGraphSpec:
             raise ValueError("AIR input names must be unique")
         if len(set(self.output_names)) != len(self.output_names):
             raise ValueError("AIR output names must be unique")
+        if self.constant_input_names:
+            if (len(self.example_args) != len(self.input_names)
+                    or self.input_names[2:] != self.constant_input_names):
+                raise ValueError("constant inputs must follow the two token inputs in ABI order")
         if not isinstance(self.custom_ops, tuple):
             raise TypeError("AirGraphSpec.custom_ops must be a tuple")
         if not all(isinstance(item, CustomOpExportSpec) for item in self.custom_ops):

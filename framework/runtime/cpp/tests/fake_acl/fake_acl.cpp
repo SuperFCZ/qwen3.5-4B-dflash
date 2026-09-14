@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <map>
+#include <string>
 #include <vector>
 
 struct aclDataBuffer {
@@ -21,6 +23,13 @@ namespace {
 
 constexpr std::size_t kSequenceLength = 32;
 constexpr std::size_t kDraftWidth = 15;
+std::map<void*, std::size_t> host_uploads;
+
+bool Quantized() { return std::getenv("QWEN35_FAKE_DRAFT_CONSTANTS") != nullptr; }
+bool W4() {
+  const char* mode = std::getenv("QWEN35_FAKE_DRAFT_CONSTANTS");
+  return mode != nullptr && std::string(mode) == "w4a16";
+}
 
 aclError SetDims(aclmdlIODims* dimensions, std::int64_t width) {
   if (dimensions == nullptr) {
@@ -94,6 +103,7 @@ aclError aclrtMalloc(void** device_ptr, std::size_t size, aclrtMemMallocPolicy) 
 }
 
 aclError aclrtFree(void* device_ptr) {
+  host_uploads.erase(device_ptr);
   std::free(device_ptr);
   return ACL_SUCCESS;
 }
@@ -103,12 +113,13 @@ aclError aclrtMemcpyAsync(
     std::size_t destination_max,
     const void* source,
     std::size_t count,
-    aclrtMemcpyKind,
+    aclrtMemcpyKind kind,
     aclrtStream) {
   if (destination == nullptr || source == nullptr || count > destination_max) {
     return 1;
   }
   std::memcpy(destination, source, count);
+  if (kind == ACL_MEMCPY_HOST_TO_DEVICE) ++host_uploads[destination];
   return ACL_SUCCESS;
 }
 
@@ -130,10 +141,12 @@ aclError aclmdlDestroyDesc(aclmdlDesc* description) {
 }
 
 aclError aclmdlGetDesc(aclmdlDesc*, std::uint32_t) { return ACL_SUCCESS; }
-std::size_t aclmdlGetNumInputs(const aclmdlDesc*) { return 2; }
+std::size_t aclmdlGetNumInputs(const aclmdlDesc*) { return Quantized() ? 4 : 2; }
 std::size_t aclmdlGetNumOutputs(const aclmdlDesc*) { return 2; }
 
 aclError aclmdlGetInputDims(const aclmdlDesc*, std::size_t index, aclmdlIODims* dims) {
+  if (Quantized() && index == 2) return SetDims(dims, W4() ? 64 : 128);
+  if (Quantized() && index == 3) return SetDims(dims, 1);
   return index < 2 ? SetDims(dims, kSequenceLength) : 1;
 }
 
@@ -146,6 +159,8 @@ aclError aclmdlGetOutputDims(
 }
 
 aclDataType aclmdlGetInputDataType(const aclmdlDesc*, std::size_t index) {
+  if (Quantized() && index == 2) return W4() ? ACL_UINT8 : ACL_INT8;
+  if (Quantized() && index == 3) return ACL_FLOAT16;
   return index < 2 ? ACL_INT64 : ACL_DT_UNDEFINED;
 }
 
@@ -154,6 +169,8 @@ aclDataType aclmdlGetOutputDataType(const aclmdlDesc*, std::size_t index) {
 }
 
 std::size_t aclmdlGetInputSizeByIndex(const aclmdlDesc*, std::size_t index) {
+  if (Quantized() && index == 2) return W4() ? 64 : 128;
+  if (Quantized() && index == 3) return 2;
   return index < 2 ? kSequenceLength * sizeof(std::int64_t) : 0;
 }
 
@@ -199,9 +216,15 @@ aclError aclmdlExecuteAsync(
     const aclmdlDataset* input,
     aclmdlDataset* output,
     aclrtStream) {
-  if (input == nullptr || output == nullptr || input->buffers.size() != 2 ||
+  if (input == nullptr || output == nullptr || input->buffers.size() != (Quantized() ? 4 : 2) ||
       output->buffers.size() != 2) {
     return 1;
+  }
+  if (Quantized()) {
+    const auto* weights = static_cast<const unsigned char*>(input->buffers[2]->data);
+    const auto* scale = static_cast<const unsigned char*>(input->buffers[3]->data);
+    if (weights[0] != (W4() ? 0x89 : 1) || scale[0] != 0 || scale[1] != 0x38 ||
+        host_uploads[input->buffers[2]->data] != 1 || host_uploads[input->buffers[3]->data] != 1) return 2;
   }
   const auto* ids = static_cast<const std::int64_t*>(input->buffers[0]->data);
   const auto* mask = static_cast<const std::int64_t*>(input->buffers[1]->data);

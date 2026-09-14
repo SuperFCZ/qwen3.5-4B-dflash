@@ -102,6 +102,7 @@ class _AclModel:
         self.output_dataset: Any | None = None
         self.inputs: list[_Binding] = []
         self.outputs: list[_Binding] = []
+        self.constant_names: set[str] = set()
         try:
             self.model_id = _value_and_ret(
                 acl.mdl.load_from_file(str(path)), "acl.mdl.load_from_file"
@@ -216,8 +217,22 @@ class _AclModel:
             raise
         return dataset, bindings
 
+    def load_constants(self, records: list[dict], root: Path) -> None:
+        for record in records:
+            binding = self.inputs[record["index"]]
+            if (binding.name != record["name"] or binding.shape != tuple(record["shape"])
+                    or binding.dtype != np.dtype(record["dtype"]) or binding.size != record["bytes"]):
+                raise ValueError("compressed Draft OM constant ABI differs")
+            value = np.fromfile(contained_path(root, record["path"]), dtype=binding.dtype)
+            value = value.reshape(binding.shape)
+            _check(self.acl.rt.memcpy(binding.pointer, binding.size,
+                                     self.acl.util.numpy_to_ptr(value), value.nbytes,
+                                     int(getattr(self.acl, "ACL_MEMCPY_HOST_TO_DEVICE", 1))),
+                   "acl.rt.memcpy(constant)")
+            self.constant_names.add(binding.name)
+
     def run(self, inputs: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
-        expected = {binding.name for binding in self.inputs}
+        expected = {binding.name for binding in self.inputs} - self.constant_names
         actual = set(inputs)
         if actual != expected:
             raise ValueError(
@@ -226,6 +241,8 @@ class _AclModel:
             )
         host_inputs: list[np.ndarray] = []
         for binding in self.inputs:
+            if binding.name in self.constant_names:
+                continue
             value = np.asarray(inputs[binding.name])
             if value.dtype != binding.dtype:
                 raise TypeError(
@@ -328,6 +345,9 @@ class AclOmRuntime:
             if not isinstance(graphs, list) or not graphs:
                 raise ValueError("deployment manifest contains no OM graphs")
             for graph in graphs:
+                if graph.get("constant_inputs"):
+                    from .draft_constants import verify_constant_inputs
+                    verify_constant_inputs(graph, self.root)
                 name = str(graph["name"])
                 if name in self.models:
                     raise ValueError(f"deployment manifest repeats OM graph name: {name}")
@@ -342,6 +362,7 @@ class AclOmRuntime:
                     input_names=tuple(str(item) for item in graph.get("input_names", [])),
                     output_names=tuple(str(item) for item in graph.get("output_names", [])),
                 )
+                self.models[name].load_constants(graph.get("constant_inputs", []), self.root)
         except BaseException:
             self.close()
             raise
@@ -360,6 +381,7 @@ class AclOmRuntime:
                 "dtype": str(item.dtype),
             }
             for item in model.inputs
+            if item.name not in model.constant_names
         )
 
     def graph_outputs(self, name: str) -> tuple[dict[str, Any], ...]:
@@ -385,10 +407,14 @@ class AclOmRuntime:
             _check(operation(), "acl.rt.synchronize_device")
 
     def artifact_hashes(self) -> dict[str, str]:
-        return {
+        result = {
             str(graph["name"]): str(graph["om"]["sha256"])
             for graph in self.manifest.get("graphs", [])
         }
+        for graph in self.manifest.get("graphs", []):
+            if graph.get("constant_inputs_table"):
+                result[str(graph["name"]) + ":draft-constants"] = graph["constant_inputs_table"]["sha256"]
+        return result
 
     def close(self) -> None:
         for model in reversed(tuple(self.models.values())):

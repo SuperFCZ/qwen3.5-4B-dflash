@@ -1052,7 +1052,7 @@ class Qwen3_5TextModel(Qwen3_5PreTrainedModel):
         dflash_collector = None
         if output_dflash_features:
             dflash_collector = DFlashFeatureCollector(
-                QWEN35_4B_DFLASH_TARGET_FEATURES,
+                getattr(self, "dflash_target_feature_spec", QWEN35_4B_DFLASH_TARGET_FEATURES),
                 enabled=True,
                 detach=True,
                 clone=True,

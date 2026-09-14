@@ -440,7 +440,12 @@ class Qwen35DFlashFullPrefixAdapter:
         if target.training or draft.training:
             raise ValueError("target and draft must both be in eval mode")
         if require_official_config:
-            mismatches = audit_official_4b_dflash_config(draft.config)
+            if getattr(draft, "draft_quantization", "fp16") != "fp16":
+                from .draft_quantization import require_loaded_quantized_draft
+                require_loaded_quantized_draft(draft)
+                mismatches = []
+            else:
+                mismatches = audit_official_4b_dflash_config(draft.config)
             if mismatches:
                 raise ValueError(
                     "draft config is not the locked official Qwen3.5-4B-DFlash "
@@ -2088,6 +2093,8 @@ def _draft_device_memory_preflight(
     parameter_bytes = int(parameter_count) * torch.empty(
         (), dtype=dtype
     ).element_size()
+    if "resident_weight_bytes" in checkpoint:
+        parameter_bytes = int(checkpoint["resident_weight_bytes"])
     safety_bytes = 512 * 1024 * 1024
     required_free_bytes = parameter_bytes + safety_bytes
     backend = getattr(torch, requested.type, None)

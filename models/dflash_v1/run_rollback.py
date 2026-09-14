@@ -48,6 +48,7 @@ def _parser():
         "state, T=K+1 verification, rollback, and bounded commit"
     )
     parser.set_defaults(target_factory=None, hiai_source=None)
+    parser.add_argument("--draft-quantization", choices=("fp16", "w8a16", "w4a16"), default="fp16")
     parser.add_argument(
         "--execution-mode",
         choices=("validate", "dflash"),
@@ -97,6 +98,8 @@ def _rollback_runtime_identity(package_dir: Path) -> dict[str, object]:
         "adapter": package_dir / "dflash_rollback_adapter.py",
         "draft_modeling": package_dir / "modeling_dflash.py",
         "draft_npu_ops": package_dir / "dflash_ascend310p_ops.py",
+        "draft_quantization": package_dir / "draft_quantization.py",
+        "draft_config": package_dir / "dflash_config.py",
         "runner": package_dir / "run_rollback.py",
         "npu_runner": package_dir / "run_npu.py",
         "target_quant_contract": package_dir / "target_quant.py",
@@ -267,10 +270,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "draft_checkpoint_audit_begin",
         {"verify_model_sha256": True},
     )
-    draft_checkpoint = require_official_dflash_checkpoint(
-        args.draft_dir,
-        verify_model_hash=True,
-    )
+    if args.draft_quantization == "fp16":
+        draft_checkpoint = require_official_dflash_checkpoint(args.draft_dir, verify_model_hash=True)
+    else:
+        from .draft_quantization import require_draft_checkpoint
+        draft_checkpoint = require_draft_checkpoint(args.draft_dir, args.draft_quantization)
     checkpoint_audit_seconds = perf_counter() - checkpoint_audit_started
     _legacy._emit_progress(
         args.progress,
@@ -315,9 +319,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         ops=ops,
         device=args.device,
         dtype=dtype,
+        draft_quantization=args.draft_quantization,
     )
     _synchronize_device(args.device)
     draft_load_seconds = perf_counter() - draft_load_started
+    if args.draft_quantization != "fp16":
+        from .draft_quantization import configure_target_for_draft
+        configure_target_for_draft(target, draft.config)
     adapter = Qwen35DFlashRollbackAdapter(target, draft)
     effective_block_size = (
         adapter.max_block_size
@@ -525,6 +533,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "target_checkpoint": target_checkpoint,
         "draft_dir": str(Path(args.draft_dir).expanduser().resolve()),
         "draft_checkpoint": draft_checkpoint,
+        "draft_quantization": args.draft_quantization,
+        "draft_quantization_audit": getattr(draft, "draft_quantization_audit", {"variant": "fp16"}),
         "draft_memory_preflight": draft_memory_preflight,
         "block_size": effective_block_size,
         "max_proposal_tokens": adapter.max_proposal_tokens,

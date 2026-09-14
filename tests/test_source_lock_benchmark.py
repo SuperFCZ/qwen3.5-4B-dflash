@@ -94,14 +94,19 @@ class BenchmarkSourceLockTests(unittest.TestCase):
         )
         self._assert_locked_files(runtime, pairs)
 
-    def test_lock_declares_rollback_target_only_quant_scope(self) -> None:
+    def test_lock_declares_independent_target_and_draft_quantization(self) -> None:
         lock = json.loads((REPOSITORY / "SOURCE_LOCK.json").read_text("utf-8"))
-        self.assertEqual(lock["schema_version"], 7)
-        self.assertIn("Target-only W8A8", lock["purpose"])
-        self.assertIn("two-pass chunk-GDR", lock["purpose"])
+        self.assertEqual(lock["schema_version"], 8)
+        self.assertIn("W8A16", lock["purpose"])
+        self.assertIn("GPTQ W4A16", lock["purpose"])
         self.assertIn("original multi-token GDR", lock["rollback_runtime"]["policy"])
         self.assertIn("do not require GDR-MTP", lock["rollback_runtime"]["policy"])
-        self.assertIn("Draft stays FP16", lock["rollback_runtime"]["policy"])
+        self.assertIn("independently selectable", lock["rollback_runtime"]["policy"])
+        self.assertEqual(lock["draft_quantization"]["variants"], ["fp16", "w8a16", "w4a16"])
+        self.assertEqual(lock["draft_quantization"]["branch_base"], "feature/gdr-chunk-verify")
+        for section in (lock["draft_quantization"], lock["quantized_om_sources"]):
+            pairs = tuple((key, key[:-5] + "_sha256") for key in section if key.endswith("_file"))
+            self._assert_locked_files(section, pairs)
 
 
 if __name__ == "__main__":

@@ -1242,7 +1242,7 @@ class Qwen3_5TextModel(Qwen3_5PreTrainedModel):
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
         dflash_collector = DFlashFeatureCollector(
-            QWEN35_4B_DFLASH_TARGET_FEATURES,
+            getattr(self, "dflash_target_feature_spec", QWEN35_4B_DFLASH_TARGET_FEATURES),
             enabled=output_dflash_features,
             detach=True,
             clone=True,

@@ -1,6 +1,7 @@
 {
   "target_dir": "/ABSOLUTE/PATH/Qwen3.5-4B",
   "draft_dir": "/ABSOLUTE/PATH/Qwen3.5-4B-DFlash",
+  "draft_quantization": "fp16",
   "quant_config": "/ABSOLUTE/PATH/qwen3.5.yaml",
   "input_manifest": "/ABSOLUTE/RUN/PATH/quant-input-manifest.json",
   "receiver_models_dir": "/ABSOLUTE/PATH/qwen35-runtime/models",

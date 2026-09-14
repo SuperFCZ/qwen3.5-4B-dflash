@@ -7,7 +7,8 @@ second target implementation:
 * ``models.dflash_v1.original_quant.quant_model`` installs the original W8A8
   ``QLinear`` modules;
 * the YAML-declared INT8 embedding and FP32 scales feed the Target;
-* ``models.dflash_v1.modeling_dflash.DFlashDraftModel`` remains FP16.
+* ``DFlashDraftModel`` selects the locked FP16, W8A16 or GPTQ W4A16 Draft;
+  activations and the shared embedding/head remain FP16.
 
 The first OM route is a fixed-gear, full-prefix recompute graph.  It is the
 smallest state-safe ABI that a C/C++ AscendCL host can call directly.  The
@@ -41,7 +42,7 @@ from .integrated import (
 
 
 QUANT_BASE_REVISION = "28f93e784a2beed87020a80bd93c8788754eab1c"
-QUANT_GRAPH_FACTORY_ID = "qwen3.5-4b-quant-w8a8-dflash-recompute-v3"
+QUANT_GRAPH_FACTORY_ID = "qwen3.5-4b-quant-w8a8-dflash-recompute-v4"
 _TARGET_GDN_CHUNK = 64
 _GDR_EFFECTIVE_LENGTH_MAX = torch.iinfo(torch.int16).max
 _DTYPES = {"float16": torch.float16}
@@ -381,6 +382,9 @@ def create_quant_recompute_graph(
     if dtype_name not in _DTYPES:
         raise ValueError("quant AIR export supports Target/Draft float16 only")
     dtype = _DTYPES[dtype_name]
+    draft_quantization = str(config.get("draft_quantization", "fp16"))
+    if draft_quantization not in ("fp16", "w8a16", "w4a16"):
+        raise ValueError("draft_quantization must be fp16, w8a16 or w4a16")
     device = str(config.get("device", "npu:0"))
     if not device.startswith("npu"):
         raise ValueError("formal quant AIR export requires an explicit NPU device")
@@ -444,7 +448,11 @@ def create_quant_recompute_graph(
         raise RuntimeError("torch_npu is required for quant AIR export") from error
 
     from models.dflash_v1.modeling_dflash import DFlashDraftModel
+    from models.dflash_v1.draft_quantization import configure_target_for_draft, require_draft_checkpoint
     from models.internal_dflash_bridge import load_qwen35_target
+
+    if draft_quantization != "fp16":
+        require_draft_checkpoint(draft_dir, draft_quantization)
 
     with _quant_environment(
         quant_config=quant_config,
@@ -473,7 +481,10 @@ def create_quant_recompute_graph(
         ops=AirDFlashOps(),
         device=device,
         dtype=dtype,
+        draft_quantization=draft_quantization,
     ).eval()
+    if draft_quantization != "fp16":
+        configure_target_for_draft(target, draft.config)
     enable_padded_draft_context(draft)
     target_adapter = QuantFullPrefixExportTarget(target).eval()
     pad_token_id = int(config.get("pad_token_id", 0))
@@ -484,7 +495,9 @@ def create_quant_recompute_graph(
         "target_precision": "W8A8 dynamic QLinear with FP16 outputs",
         "target_quant_mode": "w8a8_dynamic",
         "target_embedding": "INT8 weight * FP32 row scale -> FP16",
-        "draft_precision": "FP16",
+        "draft_precision": draft_quantization.upper(),
+        "draft_quantization": draft_quantization,
+        "draft_quantization_audit": getattr(draft, "draft_quantization_audit", {"variant": "fp16"}),
         "draft_dtype": dtype_name,
         "dtype": dtype_name,
         "target_checkpoint_manifest_sha256": locked_inputs["group_sha256"][
@@ -522,8 +535,9 @@ def create_quant_recompute_graph(
             "separate later optimization"
         ),
     }
+    from .draft_constants import expose_draft_constants
     return (
-        integrated_recompute_graph_spec(
+        expose_draft_constants(integrated_recompute_graph_spec(
             target_adapter,
             draft,
             max_sequence_length=max_sequence_length,
@@ -533,7 +547,7 @@ def create_quant_recompute_graph(
             name=str(config.get("name", "quant_dflash_recompute")),
             metadata=metadata,
             custom_ops=(adn_rms_norm_export,),
-        ),
+        )),
     )
 
 

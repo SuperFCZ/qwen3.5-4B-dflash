@@ -31,6 +31,8 @@ using qwen35::dflash::PairedBenchmarkResult;
 struct Arguments {
   std::filesystem::path model;
   std::string model_sha256;
+  std::filesystem::path constant_inputs;
+  std::string constant_inputs_sha256;
   std::filesystem::path output;
   std::vector<std::int64_t> prompt_token_ids;
   std::vector<std::int64_t> eos_token_ids;
@@ -47,6 +49,8 @@ void Usage(std::ostream& stream) {
       << "Usage: qwen35_dflash_acl_runner [options]\n"
       << "  --model PATH                 hash-locked integrated OM\n"
       << "  --model-sha256 HEX           expected OM SHA-256\n"
+      << "  --constant-inputs PATH       compressed Draft input table\n"
+      << "  --constant-inputs-sha256 HEX expected table SHA-256\n"
       << "  --output PATH                paired JSON report\n"
       << "  --prompt-token-ids CSV       non-empty pretokenized prompt\n"
       << "  --eos-token-ids CSV          optional EOS token IDs\n"
@@ -187,6 +191,8 @@ Arguments ParseArguments(int argc, char** argv) {
   Arguments result;
   result.model = TakeRequired(&values, "model");
   result.model_sha256 = TakeRequired(&values, "model-sha256");
+  result.constant_inputs = TakeOptional(&values, "constant-inputs", "");
+  result.constant_inputs_sha256 = TakeOptional(&values, "constant-inputs-sha256", "");
   result.output = TakeRequired(&values, "output");
   result.prompt_token_ids = ParseTokenIds(
       TakeRequired(&values, "prompt-token-ids"), false, "prompt-token-ids");
@@ -379,9 +385,16 @@ void WriteReport(
          << arguments.device_id << ",\"model\":{\"path\":\""
          << JsonEscape(std::filesystem::absolute(arguments.model).string())
          << "\",\"sha256\":\"" << arguments.model_sha256 << "\"},"
-         << "\"abi\":{\"input_names\":[\"input_ids\",\"attention_mask\"],"
+         << "\"constant_inputs_sha256\":\"" << JsonEscape(arguments.constant_inputs_sha256) << "\","
+         << "\"constant_input_count\":" << executor.constant_inputs().size() << ","
+         << "\"abi\":{\"input_names\":[\"input_ids\",\"attention_mask\"";
+  for (const auto& constant : executor.constant_inputs()) {
+    output << ",\"" << JsonEscape(constant.name) << "\"";
+  }
+  output << "],"
          << "\"output_names\":[\"target_top1\",\"draft_top1\"],"
-         << "\"dtype\":\"int64\",\"sequence_length\":"
+         << "\"dtype\":\"" << (executor.constant_inputs().empty() ? "int64" : "mixed")
+         << "\",\"sequence_length\":"
          << executor.sequence_length() << ",\"draft_width\":"
          << executor.draft_width() << "},\"protocol\":{\"warmup\":"
          << arguments.warmup << ",\"repetitions\":"
@@ -449,7 +462,8 @@ int main(int argc, char** argv) {
     }
 
     const auto load_start = std::chrono::steady_clock::now();
-    qwen35::dflash::AclExecutor executor(arguments.model, arguments.device_id);
+    auto constants = qwen35::dflash::ReadConstantInputs(arguments.constant_inputs, arguments.constant_inputs_sha256);
+    qwen35::dflash::AclExecutor executor(arguments.model, arguments.device_id, std::move(constants));
     const auto load_end = std::chrono::steady_clock::now();
     qwen35::dflash::GenerationOptions options;
     options.pad_token_id = arguments.pad_token_id;

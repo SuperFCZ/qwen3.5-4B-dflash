@@ -51,6 +51,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--target-dir", required=True)
     parser.add_argument("--draft-dir", required=True)
+    parser.add_argument("--draft-quantization", choices=("fp16", "w8a16", "w4a16"), default="fp16",
+                        help="select the pinned Draft checkpoint and compressed weight precision")
     parser.add_argument(
         "--target-factory",
         default=DEFAULT_TARGET_FACTORY,
@@ -266,6 +268,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.target_dir,
         "--draft-dir",
         args.draft_dir,
+        "--draft-quantization",
+        args.draft_quantization,
         "--target-factory",
         args.target_factory,
         "--npu-layout",

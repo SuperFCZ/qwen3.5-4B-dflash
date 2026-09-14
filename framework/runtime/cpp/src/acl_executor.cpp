@@ -1,9 +1,12 @@
 #include "qwen35_dflash/acl_executor.hpp"
+#include "qwen35_dflash/sha256.hpp"
 
 #include <acl/acl.h>
 
 #include <algorithm>
 #include <cstring>
+#include <fstream>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -124,10 +127,72 @@ void ReleaseBuffer(Buffer* buffer) noexcept {
 
 }  // namespace
 
+std::vector<ConstantInput> ReadConstantInputs(
+    const std::filesystem::path& table, const std::string& sha256) {
+  if (table.empty() && sha256.empty()) return {};
+  if (table.empty() || sha256.empty() || Sha256File(table) != sha256) {
+    throw std::runtime_error("constant input table SHA-256 mismatch");
+  }
+  std::ifstream input(table);
+  std::string line;
+  if (!std::getline(input, line) || line != "qwen35-draft-constants-v1") {
+    throw std::runtime_error("unsupported constant input table");
+  }
+  const auto root = std::filesystem::canonical(table.parent_path());
+  std::set<std::string> names;
+  std::vector<ConstantInput> result;
+  while (std::getline(input, line)) {
+    std::istringstream row(line);
+    std::vector<std::string> fields;
+    std::string field;
+    while (std::getline(row, field, '\t')) fields.push_back(field);
+    if (fields.size() != 6 || !names.insert(fields[0]).second) {
+      throw std::runtime_error("invalid constant input record");
+    }
+    ConstantInput item;
+    item.name = fields[0];
+    if (item.name.rfind("draft_weight_", 0) != 0) {
+      throw std::runtime_error("invalid constant input name");
+    }
+    item.dtype = fields[1];
+    const std::size_t width = item.dtype == "float16" ? 2 :
+        (item.dtype == "int8" || item.dtype == "uint8" ? 1 : 0);
+    if (width == 0) throw std::runtime_error("unsupported constant dtype");
+    std::istringstream dimensions(fields[2]);
+    std::size_t bytes = width;
+    while (std::getline(dimensions, field, ',')) {
+      std::size_t used = 0;
+      const auto dim = std::stoll(field, &used);
+      if (used != field.size() || dim <= 0 ||
+          bytes > static_cast<std::size_t>(-1) / static_cast<std::size_t>(dim)) {
+        throw std::runtime_error("invalid constant input shape");
+      }
+      item.shape.push_back(dim);
+      bytes *= static_cast<std::size_t>(dim);
+    }
+    if (item.shape.size() != 2 || fields[3] != std::to_string(bytes)) {
+      throw std::runtime_error("constant input byte size differs from shape");
+    }
+    item.bytes = bytes;
+    item.sha256 = fields[4];
+    const std::filesystem::path relative(fields[5]);
+    if (relative.is_absolute()) throw std::runtime_error("constant path must be relative");
+    item.path = std::filesystem::canonical(root / relative);
+    const auto within = item.path.lexically_relative(root);
+    if (within.empty() || *within.begin() == ".." ||
+        std::filesystem::file_size(item.path) != bytes || Sha256File(item.path) != item.sha256) {
+      throw std::runtime_error("constant input payload integrity check failed");
+    }
+    result.push_back(std::move(item));
+  }
+  if (result.empty()) throw std::runtime_error("constant input table is empty");
+  return result;
+}
+
 class AclExecutor::Impl {
  public:
-  Impl(const std::filesystem::path& model_path, int device_id)
-      : device_id_(device_id) {
+  Impl(const std::filesystem::path& model_path, int device_id, std::vector<ConstantInput> constants)
+      : device_id_(device_id), constants_(std::move(constants)) {
     if (device_id < 0) {
       throw std::invalid_argument("device ID must be non-negative");
     }
@@ -162,6 +227,7 @@ class AclExecutor::Impl {
 
   std::size_t sequence_length() const noexcept { return sequence_length_; }
   std::size_t draft_width() const noexcept { return draft_width_; }
+  const std::vector<ConstantInput>& constant_inputs() const noexcept { return constants_; }
 
   const GraphOutputs& Execute(
       const std::vector<std::int64_t>& prefix,
@@ -181,7 +247,8 @@ class AclExecutor::Impl {
     std::copy(prefix.begin(), prefix.end(), input_ids);
     std::fill_n(attention_mask, prefix.size(), 1);
 
-    for (const Buffer& input : inputs_) {
+    for (std::size_t index = 0; index < 2; ++index) {
+      const Buffer& input = inputs_[index];
       Check(
           aclrtMemcpyAsync(
               input.device,
@@ -220,9 +287,9 @@ class AclExecutor::Impl {
 
  private:
   void ValidateAndAllocate() {
-    if (aclmdlGetNumInputs(description_) != 2 ||
+    if (aclmdlGetNumInputs(description_) != 2 + constants_.size() ||
         aclmdlGetNumOutputs(description_) != 2) {
-      throw std::runtime_error("integrated OM must have exactly two inputs and outputs");
+      throw std::runtime_error("integrated OM input count differs from constants ABI or output count is not two");
     }
     const auto ids_shape = Shape(description_, 0, true);
     const auto mask_shape = Shape(description_, 1, true);
@@ -266,6 +333,30 @@ class AclExecutor::Impl {
       Check(
           aclmdlAddDatasetBuffer(output_dataset_, outputs_.back().data),
           "aclmdlAddDatasetBuffer(output)");
+    }
+    for (std::size_t offset = 0; offset < constants_.size(); ++offset) {
+      const auto& item = constants_[offset];
+      const std::size_t index = offset + 2;
+      const auto dtype = item.dtype == "float16" ? ACL_FLOAT16 :
+          (item.dtype == "int8" ? ACL_INT8 : ACL_UINT8);
+      if (Shape(description_, index, true) != item.shape ||
+          aclmdlGetInputDataType(description_, index) != dtype ||
+          aclmdlGetInputSizeByIndex(description_, index) != item.bytes) {
+        throw std::runtime_error("compressed Draft OM input shape/dtype/bytes mismatch");
+      }
+      inputs_.push_back(AllocateBuffer(item.bytes));
+      auto& buffer = inputs_.back();
+      Check(aclmdlAddDatasetBuffer(input_dataset_, buffer.data), "aclmdlAddDatasetBuffer(constant)");
+      std::ifstream file(item.path, std::ios::binary);
+      if (!file.read(static_cast<char*>(buffer.host), static_cast<std::streamsize>(item.bytes)) ||
+          file.peek() != std::char_traits<char>::eof() || Sha256File(item.path) != item.sha256) {
+        throw std::runtime_error("constant input changed before device upload");
+      }
+      Check(aclrtMemcpyAsync(buffer.device, item.bytes, buffer.host, item.bytes,
+                            ACL_MEMCPY_HOST_TO_DEVICE, stream_), "aclrtMemcpyAsync(constant)");
+      Check(aclrtSynchronizeStream(stream_), "aclrtSynchronizeStream(constant)");
+      Check(aclrtFreeHost(buffer.host), "aclrtFreeHost(constant)");
+      buffer.host = nullptr;
     }
     graph_outputs_.target_top1.resize(sequence_length_);
     graph_outputs_.draft_top1.resize(draft_width_);
@@ -328,6 +419,7 @@ class AclExecutor::Impl {
   aclmdlDataset* input_dataset_ = nullptr;
   aclmdlDataset* output_dataset_ = nullptr;
   std::vector<Buffer> inputs_;
+  std::vector<ConstantInput> constants_;
   std::vector<Buffer> outputs_;
   std::size_t sequence_length_ = 0;
   std::size_t draft_width_ = 0;
@@ -336,8 +428,12 @@ class AclExecutor::Impl {
 
 AclExecutor::AclExecutor(
     const std::filesystem::path& model_path,
-    int device_id)
-    : impl_(std::make_unique<Impl>(model_path, device_id)) {}
+    int device_id, std::vector<ConstantInput> constants)
+    : impl_(std::make_unique<Impl>(model_path, device_id, std::move(constants))) {}
+
+const std::vector<ConstantInput>& AclExecutor::constant_inputs() const noexcept {
+  return impl_->constant_inputs();
+}
 
 AclExecutor::~AclExecutor() = default;
 AclExecutor::AclExecutor(AclExecutor&&) noexcept = default;
