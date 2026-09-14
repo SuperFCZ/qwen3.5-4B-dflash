@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the same prompt suite across output budgets and Chunk/MTP OM verifiers."""
+"""Run selected prompts and output budgets with Chunk, MTP, or both OM verifiers."""
 from __future__ import annotations
 
 import argparse
@@ -121,6 +121,8 @@ def read_cell(summary_path, route, length, prompts):
 
 def compare_routes(cells, lengths):
     """Compare matched prompts only, retaining own-output token/time denominators."""
+    if not set(ROUTES).issubset({cell["verify_gdr"] for cell in cells}):
+        return []
     result = []
     for length in lengths:
         groups = {}
@@ -176,14 +178,15 @@ def render(summary):
         "Measured calls exclude warmups and startup. Draft includes any Draft calls during multi-chunk prefill.",
         "Verify includes commit inside the selected OM. ms/call is synchronized graph-call time, not kernel time.",
         "Budgets are upper limits: EOS can end generation early. Actual tokens and stop reasons are in cases.csv/JSON.",
-        "", "| Max new tokens | Matched prompts | MTP/Chunk throughput | MTP speedup vs Chunk by model time |",
-        "|---:|---:|---:|---:|",
     ]
-    for row in summary["route_comparison"]:
-        lines.append(
-            f"| {row['max_new_tokens']} | {len(row['matched_prompt_ids'])} | "
-            f"{number(row['mtp_over_chunk_throughput'])} | {number(row['mtp_over_chunk_model_time_speedup'])} |")
-    lines += ["", "Cross-route comparisons use matched prompts and each route's own output. Quality is not evaluated."]
+    if summary["route_comparison"]:
+        lines += ["", "| Max new tokens | Matched prompts | MTP/Chunk throughput | MTP speedup vs Chunk by model time |",
+                  "|---:|---:|---:|---:|"]
+        for row in summary["route_comparison"]:
+            lines.append(
+                f"| {row['max_new_tokens']} | {len(row['matched_prompt_ids'])} | "
+                f"{number(row['mtp_over_chunk_throughput'])} | {number(row['mtp_over_chunk_model_time_speedup'])} |")
+        lines += ["", "Cross-route comparisons use matched prompts and each route's own output. Quality is not evaluated."]
     for cell in summary["cells"]:
         if cell.get("error"):
             lines += ["", f"- {cell['verify_gdr']}/{cell['max_new_tokens']}: {cell['error']}"]
@@ -224,18 +227,25 @@ def prepare(args, root):
         raise ValueError("lengths must be distinct positive output budgets")
     if args.device_id < 0 or not 1 <= args.max_draft_tokens <= 15:
         raise ValueError("invalid device or proposal limit")
+    selection = getattr(args, "verify_gdr", "both")
+    if selection not in (*ROUTES, "both"):
+        raise ValueError("verify-gdr must be chunk, mtp, or both")
+    routes = ROUTES if selection == "both" else (selection,)
+    for route in routes:
+        if getattr(args, route + "_deployment_manifest", None) is None:
+            raise ValueError(f"--{route}-deployment-manifest is required for --verify-gdr {selection}")
+    prompts = suite.load_prompts(args.prompts, args.prompt_id)
     args.runner_config = (args.runner_config or args.run_dir / "runner.json").resolve()
     identity = validate_cpp_runner_options(json.loads(args.runner_config.read_text()), args.device_id)
     args.runner = resolve_cpp_runner(args.runner)
     tokenizer, tokenizer_source = load_tokenizer(model_dir=args.model_dir)
-    prompts = suite.load_prompts(args.prompts, args.prompt_id)
     for prompt in prompts:
         prompt["prompt_token_ids"] = tokenize_prompt(tokenizer, prompt["prompt"], chat=args.chat)
         prompt["input_tokens"] = len(prompt["prompt_token_ids"])
     required_capacity = math.ceil(
         (max(len(p["prompt_token_ids"]) for p in prompts) + max(args.lengths)) / 64) * 64
     bundles = {}
-    for route in ROUTES:
+    for route in routes:
         manifest = getattr(args, route + "_deployment_manifest").expanduser().resolve()
         plan, deployment, contract = write_incremental_plan(manifest, root / (route + "-plan.txt"), verify_gdr=route)
         eos = args.eos_token_id or [248044]
@@ -249,7 +259,7 @@ def prepare(args, root):
                 if len(tokens) + length > contract["capacity"]:
                     raise ValueError(f"{route}/{prompt['id']}: prompt {len(tokens)} + budget {length} "
                                      f"exceeds capacity {contract['capacity']}; no device jobs started. "
-                                     f"Export both routes with max_sequence_length >= {required_capacity}")
+                                     f"Export the selected route(s) with max_sequence_length >= {required_capacity}")
         bundles[route] = {
             "manifest": str(manifest), "manifest_sha256": sha256_file(manifest),
             "plan": str(plan), "plan_sha256": sha256_file(plan),
@@ -257,13 +267,15 @@ def prepare(args, root):
             "om_sha256": {graph["name"]: graph["om"]["sha256"] for graph in deployment["graphs"]},
             "atc_commands": {graph["name"]: graph["atc_command"] for graph in deployment["graphs"]},
         }
-    if bundles["chunk"]["vocab_size"] != bundles["mtp"]["vocab_size"]:
-        raise ValueError("Chunk/MTP vocabularies differ")
-    if bundles["chunk"]["capacity"] != bundles["mtp"]["capacity"]:
-        raise ValueError("Chunk/MTP logical KV capacities differ; export matching capacities for this comparison")
+    if len(routes) == 2:
+        if bundles["chunk"]["vocab_size"] != bundles["mtp"]["vocab_size"]:
+            raise ValueError("Chunk/MTP vocabularies differ")
+        if bundles["chunk"]["capacity"] != bundles["mtp"]["capacity"]:
+            raise ValueError("Chunk/MTP logical KV capacities differ; export matching capacities for this comparison")
     atomic_write_json(root / "prompts.json", prompts)
     return {
-        "schema_version": 1, "status": "PREPARED", "lengths": args.lengths, "prompts": prompts,
+        "schema_version": 1, "status": "PREPARED", "routes": list(routes),
+        "lengths": args.lengths, "prompts": prompts,
         "minimum_required_capacity": required_capacity,
         "bundles": bundles, "runtime_identity": identity, "tokenizer_source": tokenizer_source,
         "runner": {"path": str(args.runner), "sha256": sha256_file(args.runner)},
@@ -273,12 +285,12 @@ def prepare(args, root):
             "chat": args.chat, "eos_token_ids": args.eos_token_id or [248044],
             "output_comparison": "allow_output_differences" if args.allow_output_differences else "strict",
             "dflash_speculation_policy": "always_on", "low_memory": args.low_memory,
-            "order": "length order, Chunk then MTP; separate C++ process per cell; models reused across prompts",
+            "order": f"length order, {' then '.join(routes)}; separate C++ process per cell; models reused across prompts",
         },
         "quality_evaluation": "NOT_RUN", "formal_latency_evidence": False,
         "scope": "output-budget/route experiment; each mode generates its own output; initialization excluded from model-loop metrics",
         "cells": [{"verify_gdr": route, "max_new_tokens": length, "status": "NOT_RUN"}
-                  for length in args.lengths for route in ROUTES],
+                  for length in args.lengths for route in routes],
     }
 
 
@@ -289,7 +301,9 @@ def run(args):
     os.environ["AI_RUN_DIR"] = str(args.run_dir)
     root = require_run_output(Path(tempfile.mkdtemp(prefix="gdr-lengths-", dir=args.run_dir)))
     print(f"Output: {root}", flush=True)
-    summary = prepare(args, root)  # All routes/lengths checked before the first model load.
+    summary = prepare(args, root)  # Selected routes/lengths checked before the first model load.
+    print(f"Selected routes: {', '.join(summary['routes'])}; lengths: {', '.join(map(str, summary['lengths']))}; "
+          f"prompts: {', '.join(p['id'] for p in summary['prompts'])}", flush=True)
     atomic_write_json(root / "request.json", summary)
     summary["status"] = "PREPARED" if args.plan_only else "RUNNING"
     save(root, summary)
@@ -356,18 +370,24 @@ def parser():
                         required=not os.environ.get("CPP_RUNNER"))
     result.add_argument("--runner-config", type=Path)
     result.add_argument("--model-dir", type=Path, required=True)
-    result.add_argument("--chunk-deployment-manifest", type=Path, required=True)
-    result.add_argument("--mtp-deployment-manifest", type=Path, required=True)
-    result.add_argument("--lengths", type=int, nargs="+", default=list(DEFAULT_LENGTHS))
-    result.add_argument("--prompts", type=Path)
-    result.add_argument("--prompt-id", action="append")
+    result.add_argument("--verify-gdr", choices=(*ROUTES, "both"), default="both",
+                        help="select chunk, mtp, or both (default); only selected manifests are required")
+    result.add_argument("--chunk-deployment-manifest", type=Path,
+                        help="required when --verify-gdr is chunk or both")
+    result.add_argument("--mtp-deployment-manifest", type=Path,
+                        help="required when --verify-gdr is mtp or both")
+    result.add_argument("--lengths", type=int, nargs="+", default=list(DEFAULT_LENGTHS),
+                        help="one or more output budgets, e.g. --lengths 512")
+    result.add_argument("--prompts", type=Path, help="prompt JSON; defaults to the 8 built-in short prompts")
+    result.add_argument("--prompt-id", action="append",
+                        help="test only this ID from --prompts or the built-in suite; repeat to select several")
     result.add_argument("--chat", action=argparse.BooleanOptionalAction, default=True)
     result.add_argument("--eos-token-id", type=int, action="append")
     result.add_argument("--device-id", type=int, default=0)
     result.add_argument("--max-draft-tokens", type=int, default=15)
     result.add_argument("--low-memory", action="store_true")
     result.add_argument("--allow-output-differences", action="store_true")
-    result.add_argument("--plan-only", action="store_true", help="validate all cells without loading/executing device models")
+    result.add_argument("--plan-only", action="store_true", help="validate selected cells without loading/executing device models")
     return result
 
 

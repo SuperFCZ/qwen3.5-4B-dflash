@@ -84,6 +84,7 @@ def test_default_grid_includes_512_and_1024():
         "--run-dir", "/run", "--runner", "/runner", "--model-dir", "/model",
         "--chunk-deployment-manifest", "/chunk.json", "--mtp-deployment-manifest", "/mtp.json"])
     assert args.lengths == [32, 64, 128, 256, 512, 1024]
+    assert args.verify_gdr == "both"
 
 
 def test_plan_only_checks_both_routes_and_all_budgets(matrix_args, monkeypatch):
@@ -98,6 +99,72 @@ def test_plan_only_checks_both_routes_and_all_budgets(matrix_args, monkeypatch):
     assert report["bundles"]["chunk"]["abi"] != report["bundles"]["mtp"]["abi"]
     assert all(c["status"] == "NOT_RUN" for c in report["cells"])
     assert report["formal_latency_evidence"] is False
+
+
+@pytest.mark.parametrize("route,prompt_id,long_context", [
+    ("chunk", "math", False), ("mtp", "long_zh_qa", True),
+])
+def test_single_prompt_length_and_route_launch_only_requested_case(
+        matrix_args, monkeypatch, route, prompt_id, long_context):
+    # Exercise the public CLI and real orchestration, with a host-only fake runner.
+    # The tokenizer fixture is deliberately small; this does not measure 1K NPU performance.
+    monkeypatch.delenv("ASCEND310P_SIMULATION_ONLY", raising=False)
+    monkeypatch.delenv("PROFILING_MODE", raising=False)
+    monkeypatch.setenv("QWEN35_FAKE_ACCEPT", "15")
+    argv = [
+        "--run-dir", str(matrix_args.run_dir), "--runner", str(matrix_args.runner),
+        "--runner-config", str(matrix_args.runner_config), "--model-dir", str(matrix_args.model_dir),
+        "--verify-gdr", route, f"--{route}-deployment-manifest",
+        str(getattr(matrix_args, route + "_deployment_manifest")),
+        "--lengths", "64", "--prompt-id", prompt_id, "--eos-token-id", "63",
+        "--low-memory", "--allow-output-differences",
+    ]
+    prompts = matrix.REPO / "config/prompts_long_1k.json" if long_context else None
+    if prompts:
+        argv += ["--prompts", str(prompts)]
+    assert matrix.run(matrix.parser().parse_args(argv)) == 1  # Fake ACL is rejected as device evidence.
+    root, = matrix_args.run_dir.glob("gdr-lengths-*")
+    report = json.loads((root / "summary.json").read_text())
+    assert report["routes"] == [route]
+    assert list(report["bundles"]) == [route]
+    assert len(report["cells"]) == 1
+    cell, = report["cells"]
+    assert (cell["verify_gdr"], cell["max_new_tokens"]) == (route, 64)
+    assert [p["id"] for p in report["prompts"]] == [prompt_id]
+    assert report["prompts"][0]["prompt"] == matrix.suite.load_prompts(prompts, [prompt_id])[0]["prompt"]
+    assert [row["id"] for row in cell["cases"]] == [prompt_id]
+    assert "fake ACL" in cell["cases"][0]["error"]
+    assert report["route_comparison"] == []
+    assert "MTP/Chunk throughput" not in (root / "summary.md").read_text()
+    assert len(list(csv.DictReader((root / "cases.csv").open()))) == 1
+    assert not (root / (next(r for r in matrix.ROUTES if r != route) + "-plan.txt")).exists()
+
+
+@pytest.mark.parametrize("route", matrix.ROUTES)
+def test_plan_only_ignores_unselected_manifest(matrix_args, monkeypatch, route):
+    matrix_args.verify_gdr = route
+    matrix_args.plan_only = True
+    other = next(r for r in matrix.ROUTES if r != route)
+    setattr(matrix_args, other + "_deployment_manifest", matrix_args.run_dir / "does-not-exist.json")
+    monkeypatch.setattr(matrix.suite, "run", no_execution)
+    assert matrix.run(matrix_args) == 0
+    root, = matrix_args.run_dir.glob("gdr-lengths-*")
+    report = json.loads((root / "request.json").read_text())
+    assert [(c["verify_gdr"], c["max_new_tokens"]) for c in report["cells"]] == [
+        (route, 32), (route, 64)]
+    assert list(report["bundles"]) == [route]
+
+
+@pytest.mark.parametrize("selection,missing", [("both", "mtp"), ("chunk", "chunk"), ("mtp", "mtp")])
+def test_missing_selected_manifest_fails_before_tokenizer_or_device(matrix_args, monkeypatch, selection, missing):
+    from qwen35_dflash.ascend310p import workflow
+
+    matrix_args.verify_gdr = selection
+    setattr(matrix_args, missing + "_deployment_manifest", None)
+    monkeypatch.setattr(workflow, "load_tokenizer", lambda **kwargs: pytest.fail("must validate route selection first"))
+    monkeypatch.setattr(matrix.suite, "run", no_execution)
+    with pytest.raises(ValueError, match=f"--{missing}-deployment-manifest is required"):
+        matrix.run(matrix_args)
 
 
 @pytest.mark.parametrize("matrix_args", [2048], indirect=True)

@@ -35,6 +35,14 @@ cd "$AI_RUN_DIR"
 
 ## 多长度与双路线测试
 
+默认同时测 Chunk、MTP；下列参数可以组合：
+
+| 选择 | 参数 |
+|---|---|
+| 只测 Chunk / MTP | `--verify-gdr chunk` / `--verify-gdr mtp`；两条都测用 `both`（默认） |
+| 只测一个输出长度 | `--lengths 512` |
+| 只测一条 prompt | `--prompt-id math`；可重复参数选择多条 |
+
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
   --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
@@ -45,7 +53,8 @@ cd "$AI_RUN_DIR"
   --low-memory --allow-output-differences
 ```
 
-- 两套模型须有相同容量，并容纳 `prompt tokens + max_new_tokens`；短 prompt 套件建议 2048。
+- 只测一条路线时，只需提供该路线的 `--*-deployment-manifest`，另一份清单不读取、不加载。
+- 双路线模型须有相同容量；所选路线均须容纳 `prompt tokens + max_new_tokens`，短 prompt 套件建议 2048。
 - 加 `--plan-only` 只检查清单、哈希和容量，不执行设备模型。旧 512 容量 OM 需扩容重导出。
 - 6 个长度 × 2 条路线 × 8 条 prompt，共 96 个组合，按组串行运行；提前 EOS 按实际长度统计。
 - `gdr-lengths-*/summary.md` 汇总接受率、加速、普通 Decode / Draft / Verify 的 ms/call；
@@ -56,6 +65,7 @@ cd "$AI_RUN_DIR"
 [内置长 prompt](../config/prompts_long_1k.json)共 4 条：中文摘要、跨段检索、约束规划、英文分析。
 使用锁定的 Qwen tokenizer 和默认聊天模板，输入分别为 **983、998、1001、1008 token**；
 运行报告的 `Input tokens` / `input_tokens` 会记录当前 tokenizer 的实际长度。
+对应 ID：`long_zh_summary`、`long_zh_qa`、`long_zh_plan`、`long_en_analysis`。
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
@@ -70,7 +80,10 @@ cd "$AI_RUN_DIR"
 
 共 24 个组合；两条路线使用相同的完整输入。这里 1K 指输入长度，`--lengths` 指输出上限。
 这组输入加 1024 输出可放入容量 2048；更换 tokenizer 后仍以启动前的容量检查为准。
-只测当前路线时，给上面的 `benchmark_prompts.py` 命令加同一个 `--prompts` 参数即可。
+只测“1K 跨段检索 × 输出 512 × MTP”：上面命令增加
+`--prompt-id long_zh_qa --verify-gdr mtp`，并把 `--lengths 128 512 1024` 改成 `--lengths 512`；
+可省略 `--chunk-deployment-manifest`。仍执行普通 / DFlash 各 3 次预热、10 次测量。
+`benchmark_prompts.py` 也支持同一个 `--prompts` 和 `--prompt-id`，路线由所给部署清单决定。
 
 ## 查看文字、接受率和重新汇总
 
