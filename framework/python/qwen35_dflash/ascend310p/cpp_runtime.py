@@ -271,8 +271,13 @@ def _validate_mode_report(
     generation_mode: str,
     warmup: int = 3,
     repetitions: int = 10,
+    require_repeatability: bool = False,
+    max_new_tokens: int | None = None,
+    eos_token_ids: Sequence[int] = (),
 ) -> None:
-    if report.get("status") != "PASS":
+    from .repeatability import repeatability_observation, representative_output
+
+    if report.get("status") not in ("PASS", "PASS_WITH_OBSERVATIONS"):
         raise RuntimeError(f"C++ {name} report is not passing")
     if report.get("generation_mode") != generation_mode:
         raise RuntimeError(f"C++ {name} generation mode differs")
@@ -282,15 +287,37 @@ def _validate_mode_report(
     measurements = report.get("measurements")
     if not isinstance(measurements, list) or len(measurements) != repetitions:
         raise RuntimeError(f"C++ {name} report must retain {repetitions} raw measurements")
-    stable_tokens = [int(item) for item in report.get("stable_generated_token_ids", [])]
-    stable_stop = report.get("stable_stop_reason")
-    if not stable_tokens:
-        raise RuntimeError(f"C++ {name} report generated no token")
     for measurement in measurements:
-        if measurement.get("generated_token_ids") != stable_tokens:
-            raise RuntimeError(f"C++ {name} repetitions are not token-stable")
-        if measurement.get("stop_reason") != stable_stop:
-            raise RuntimeError(f"C++ {name} repetitions have different stop reasons")
+        tokens, stop = measurement.get("generated_token_ids"), measurement.get("stop_reason")
+        if (not isinstance(tokens, list) or not tokens
+                or any(type(t) is not int or t < 0 for t in tokens)
+                or stop not in ("eos", "max_new_tokens")
+                or (max_new_tokens is not None and len(tokens) > max_new_tokens)
+                or any(t in eos_token_ids for t in tokens[:-1])
+                or (stop == "eos" and tokens[-1] not in eos_token_ids)
+                or (stop == "max_new_tokens" and
+                    (len(tokens) != max_new_tokens or tokens[-1] in eos_token_ids))):
+            raise RuntimeError(f"C++ {name} measurement has invalid output length/EOS termination")
+    observation = repeatability_observation(report)
+    expected, stop = representative_output(report)
+    if "repeatability" not in report and (
+            report.get("stable_generated_token_ids") != expected
+            or report.get("stable_stop_reason") != stop):
+        raise RuntimeError(f"C++ {name} saved reference differs from measurement 0")
+    if "representative_generated_token_ids" in report and (
+            report["representative_generated_token_ids"] != expected
+            or report.get("representative_stop_reason") != stop
+            or report.get("representative_repetition") != 0):
+        raise RuntimeError(f"C++ {name} representative output differs from measurement 0")
+    if "repeatability" in report:
+        drift = observation["status"] == "DRIFT_OBSERVED"
+        if (report["repeatability"] != observation
+                or report["status"] != ("PASS_WITH_OBSERVATIONS" if drift else "PASS")
+                or report.get("stable_generated_token_ids") != (None if drift else expected)
+                or report.get("stable_stop_reason") != (None if drift else stop)):
+            raise RuntimeError(f"C++ {name} repeatability metadata disagrees with measurements")
+    if require_repeatability and observation["differences"]:
+        raise RuntimeError(f"C++ {name} repetitions are not token-stable/EOS-stable")
 
 
 def validate_cpp_runner_report(
@@ -307,6 +334,7 @@ def validate_cpp_runner_report(
     allow_output_differences: bool = False,
     warmup: int = 3,
     repetitions: int = 10,
+    require_repeatability: bool = False,
 ) -> None:
     if type(warmup) is not int or warmup < 0 or type(repetitions) is not int or repetitions <= 0:
         raise ValueError("warmup must be non-negative and repetitions must be positive integers")
@@ -315,7 +343,7 @@ def validate_cpp_runner_report(
         and report.get("status") == "FAIL"
         and report.get("failure_stage") == "ordinary_dflash_parity"
     )
-    if (report.get("status") != "PASS" and not allowed_parity_failure) or report.get("runner_id") != CPP_RUNNER_ID:
+    if (report.get("status") not in ("PASS", "PASS_WITH_OBSERVATIONS") and not allowed_parity_failure) or report.get("runner_id") != CPP_RUNNER_ID:
         raise RuntimeError("C++ ACL runner did not produce a passing known report")
     if report.get("cpu_fallback") is not False:
         raise RuntimeError("C++ target report indicates CPU fallback")
@@ -363,33 +391,39 @@ def validate_cpp_runner_report(
     if not isinstance(ordinary, Mapping) or not isinstance(dflash, Mapping):
         raise RuntimeError("C++ runner omitted paired mode reports")
     _validate_mode_report(
-        "ordinary", ordinary, generation_mode="ordinary-greedy", warmup=warmup, repetitions=repetitions
+        "ordinary", ordinary, generation_mode="ordinary-greedy", warmup=warmup, repetitions=repetitions,
+        require_repeatability=require_repeatability, max_new_tokens=max_new_tokens,
+        eos_token_ids=report.get("eos_token_ids", [])
     )
     _validate_mode_report(
-        "DFlash", dflash, generation_mode="dflash-strict-greedy", warmup=warmup, repetitions=repetitions
+        "DFlash", dflash, generation_mode="dflash-strict-greedy", warmup=warmup, repetitions=repetitions,
+        require_repeatability=require_repeatability, max_new_tokens=max_new_tokens,
+        eos_token_ids=report.get("eos_token_ids", [])
     )
+    from .repeatability import representative_output, repeatability_observation
+    expected, expected_stop = representative_output(ordinary)
+    actual, actual_stop = representative_output(dflash)
+    drift = any(repeatability_observation(mode)["differences"] for mode in (ordinary, dflash))
+    if report.get("status") == "PASS_WITH_OBSERVATIONS" and not drift:
+        raise RuntimeError("C++ runner observation status has no observed drift")
     if allow_output_differences:
-        # This policy accepts only cross-mode numerical/output differences.
-        # Both modes must satisfy the requested repeat counts and all identity checks.
-        expected, actual = ordinary["stable_generated_token_ids"], dflash["stable_generated_token_ids"]
         mismatches = sum(
             i >= len(expected) or i >= len(actual) or expected[i] != actual[i]
             for i in range(max(len(expected), len(actual)))
         )
-        eos_mismatches = int(ordinary["stable_stop_reason"] != dflash["stable_stop_reason"])
+        eos_mismatches = int(expected_stop != actual_stop)
         parity_status = "FAIL" if mismatches or eos_mismatches else "PASS"
         parity = report.get("ordinary_parity", {})
-        if (report.get("status") != parity_status
+        expected_status = "PASS_WITH_OBSERVATIONS" if drift and parity_status == "PASS" else parity_status
+        if (report.get("status") not in (parity_status, expected_status)
                 or parity.get("status") != parity_status
                 or parity.get("token_id_mismatches") != mismatches
                 or parity.get("eos_mismatches") != eos_mismatches):
             raise RuntimeError("C++ runner parity metadata disagrees with saved outputs")
         return
-    if ordinary.get("stable_generated_token_ids") != dflash.get(
-        "stable_generated_token_ids"
-    ):
+    if expected != actual:
         raise RuntimeError("C++ DFlash tokens differ from ordinary authority")
-    if ordinary.get("stable_stop_reason") != dflash.get("stable_stop_reason"):
+    if expected_stop != actual_stop:
         raise RuntimeError("C++ DFlash EOS/stop reason differs from ordinary authority")
     parity = report.get("ordinary_parity", {})
     if (
@@ -563,15 +597,18 @@ def write_cpp_prompt_report(
     detokenize_ms: float,
     generated_text: str,
 ) -> dict[str, Any]:
+    from .repeatability import representative_output
+
     result = dict(payload)
     result["report_kind"] = "cpp-ascendcl-paired-target"
     result["prompt"] = prompt
     result["chat"] = bool(chat)
     result["tokenizer_source"] = dict(tokenizer_source)
     result["output"] = {
-        "token_ids": list(result["dflash"]["stable_generated_token_ids"]),
+        "token_ids": list(representative_output(result["dflash"])[0]),
         "text": generated_text,
-        "stop_reason": str(result["dflash"]["stable_stop_reason"]),
+        "stop_reason": str(representative_output(result["dflash"])[1]),
+        "measurement_repetition": 0,
     }
     result["host_text_stage_ms"] = {
         "tokenize": float(tokenize_ms),

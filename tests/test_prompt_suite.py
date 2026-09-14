@@ -238,7 +238,7 @@ def test_wrapper_records_requests_and_rejects_fake_acl_as_device_evidence(chunk_
     root, = list(tmp_path.glob("prompt-suite-*"))
     request = json.loads((root / "request.json").read_text())
     assert [p["prompt_token_ids"] for p in request["prompts"]] == [[4, 3], [4, 15]]
-    assert "--deterministic=1" in request["draft_atc_command"]
+    assert "--deterministic=0" in request["draft_atc_command"]
     assert (request["warmup"], request["repetitions"]) == (1, 3)
     raw_index = json.loads((root / "runner-batch.json").read_text())
     for case in raw_index["cases"]:

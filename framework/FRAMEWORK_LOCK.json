@@ -162,6 +162,13 @@
     "warmup": 3,
     "measured_repetitions": 10
   },
+  "benchmark_defaults": {
+    "draft_atc_deterministic": 0,
+    "warmup": 1,
+    "measured_repetitions": 3,
+    "repeatability_policy": "observe and retain metrics; drift is not formal correctness evidence",
+    "output_comparison": "representative measured repetition 0; cross-mode differences require allow-output-differences"
+  },
   "claim_boundary": "Host and fake-ACL tests do not prove AIR export, OM conversion, physical 310P correctness, or latency. Those gates require the real locked target environment.",
   "incremental_graphs": {
     "factory": "qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs",

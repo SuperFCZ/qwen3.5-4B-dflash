@@ -17,7 +17,7 @@ cd "$AI_RUN_DIR"
 长输入包括 **6 条中文任务（含英译中）+ 6 条英文任务**，覆盖分析、检索、规划、数学、代码、翻译、抽取、比较、事件排序、规则和创作。
 两种输入共用下面一条命令；投机始终开启，低内存模式先测全部普通模式，再测全部 DFlash。
 
-首次升级需重建 C++ runner 才支持可调轮数，**不用因此重新编译 OM**。
+更新后重建 C++ runner，使多轮漂移只记录、不报错；已有 OM 要切换 deterministic 时才需重编 Draft。
 已有构建目录且指向当前源码时执行 `cmake --build "$(dirname "$CPP_RUNNER")" --parallel 4`；
 首次构建见文末第 5 步。
 
@@ -57,7 +57,8 @@ cd "$AI_RUN_DIR"
 另列完整 Prefill / Decode 阶段耗时；DFlash Prefill 包含构建上下文的 Draft 调用，不能与图调用表重复相加。
 统计均排除预热、模型加载和请求重置，缺失分项显示 N/A。
 每组子目录的 `generations.txt` 保存文字输出，`runner-batch.json.cases/` 保存逐轮原始记录。
-`--allow-output-differences` 接受跨模式输出差异，仍检查指定轮数内的稳定性；去掉则严格比较 token/EOS。
+`--allow-output-differences` 接受跨模式输出差异；去掉则比较两模式第 0 次正式输出的 token/EOS。
+多轮漂移独立记录为 `DRIFT_OBSERVED`，不导致测试失败；结果完整性、设备执行错误仍报错。
 
 <details>
 <summary>12 条长 prompt 的 ID 和实际输入长度</summary>
@@ -215,7 +216,8 @@ PY
 
 当前 ATC 输出会被收集，每张图结束后才写入 `$AI_RUN_DIR/log/dflash-atc/<本次编译目录>/<图名>.log`；
 编译期间可能长时间没有终端输出，不能仅据此判断卡死。
-编译默认给 Draft 设置 `--deterministic=1`；详见[漂移问题](DFLASH_CURRENT_USAGE_AND_RESULTS.md#deterministic-与-fc-漂移)。
+Draft 默认 `--deterministic=0`（关闭）；已有 OM 不会随代码更新自动改变，需重编。
+多轮输出不一致只记录 `DRIFT_OBSERVED`，继续统计接受率和时延；详见[漂移问题](DFLASH_CURRENT_USAGE_AND_RESULTS.md#deterministic-与-fc-漂移)。
 
 中断后：对应路线已有 PASS 部署清单则无需重编。首次编译的 `om/` 为空，或增补 MTP 时尚未生成
 `verify_mtp.om`，可重跑对应编译命令；若已有未完成的 OM，不会覆盖或自动续编，请保留原产物并使用新目录。
@@ -271,15 +273,20 @@ PY
 </details>
 
 <details>
-<summary>只重编已有 Draft，开启 deterministic</summary>
+<summary>只重编 Draft，选择 deterministic（默认关闭）</summary>
 
 ```bash
 "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p recompile-draft-om \
   --deployment-manifest "$DEPLOYMENT_MANIFEST" --atc "$ATC_BIN" \
-  --output "${DEPLOYMENT_MANIFEST%/*}/deployment-manifest-deterministic.json"
+  --deterministic 0 \
+  --output "${DEPLOYMENT_MANIFEST%/*}/deployment-manifest-det0.json"
 ```
 
 新清单必须与原清单同目录、文件名未被使用；三个 Target OM 保持原文件。
 把环境配置中的 `CHUNK_DEPLOYMENT_MANIFEST` 或 `MTP_DEPLOYMENT_MANIFEST` 改为新清单，重新 `source`。
+开启时将 `0` 改为 `1`，输出文件名也改为未使用的名称；省略参数默认为 `0`。
+更新后按第 5 步重建 C++ runner，多轮漂移会显示变化轮数、token 差异数和首个差异位置，
+标为 `PASS_WITH_OBSERVATIONS` 并保留各轮结果。接受率、吞吐和时延使用全部正式轮次；
+普通模型与 DFlash 的输出比较仍由 `--allow-output-differences` 控制。
 
 </details>

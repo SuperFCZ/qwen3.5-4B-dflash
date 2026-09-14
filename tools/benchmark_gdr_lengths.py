@@ -190,12 +190,18 @@ def render(summary):
                                     phase_timings=agg.get("phase_timings", {})))
     lines += [
         "", "Acceptance is accepted/proposed; time speedup is sum ordinary model time / sum DFlash model time.",
-        "Each row uses only prompts admitted by the selected comparison policy and requested repeatability checks.",
+        "Each row uses completed measurements admitted by the comparison policy; repeated-run drift is reported.",
         "Measured calls exclude warmups and startup. Draft includes any Draft calls during multi-chunk prefill.",
         "Verify includes commit inside the selected OM. ms/call is synchronized graph-call time, not kernel time.",
         "Budgets are upper limits: EOS can end generation early. Actual tokens and stop reasons are in cases.csv/JSON.",
     ]
     lines += ["", suite.render_timings(timing_rows, measured_only=False).rstrip()]
+    observations = suite.render_repeatability([
+        dict(row, id=f"{cell['verify_gdr']}/{cell['max_new_tokens']}/{row['id']}")
+        for cell in summary["cells"] for row in cell.get("cases", [])
+    ])
+    if observations:
+        lines += ["", observations.rstrip()]
     if summary["route_comparison"]:
         lines += ["", "| Max new tokens | Matched prompts | MTP/Chunk throughput | MTP speedup vs Chunk by model time |",
                   "|---:|---:|---:|---:|"]
@@ -308,6 +314,7 @@ def prepare(args, root):
             "prompt_group": getattr(args, "prompt_group", "all"),
             "chat": args.chat, "eos_token_ids": args.eos_token_id or [248044],
             "output_comparison": "allow_output_differences" if args.allow_output_differences else "strict",
+            "repeatability_policy": "observe",
             "dflash_speculation_policy": "always_on", "low_memory": args.low_memory,
             "order": f"length order, {' then '.join(routes)}; separate C++ process per cell; models reused across prompts",
         },
@@ -378,8 +385,7 @@ def run(args):
         print(f"Interrupted; saved completed cells in {root / 'summary.json'}", flush=True)
         return 130
     good = all(cell["status"] in suite.MEASURED_STATUSES for cell in summary["cells"])
-    summary["status"] = ("PASS_WITH_DIFFERENCES" if any(
-        cell["status"] == "PASS_WITH_DIFFERENCES" for cell in summary["cells"]) else "PASS") if good else "FAIL_OR_INCOMPLETE"
+    summary["status"] = suite.measured_status(summary["cells"]) if good else "FAIL_OR_INCOMPLETE"
     save(root, summary)
     print(render(summary), flush=True)
     print(f"Summary: {root / 'summary.json'}\nPer-prompt metrics: {root / 'cases.csv'}", flush=True)

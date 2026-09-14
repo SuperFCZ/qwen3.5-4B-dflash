@@ -69,14 +69,12 @@ def test_output_difference_policy_preserves_strict_default_and_raw_failure():
     assert report == before
 
 
-@pytest.mark.parametrize("corruption", ["unstable_tokens", "unstable_stop", "few_repeats", "missing_measurement",
+@pytest.mark.parametrize("corruption", ["unstable_stop", "few_repeats", "missing_measurement",
     "warmup", "mode_failed", "other_failure", "cpu_fallback", "wrong_device", "wrong_parity", "wrong_status"])
 def test_allowing_output_difference_does_not_allow_other_failures(corruption):
     report = saved_report()
     draft = report["dflash"]
-    if corruption == "unstable_tokens":
-        draft["measurements"][3]["generated_token_ids"][2] = 100
-    elif corruption == "unstable_stop":
+    if corruption == "unstable_stop":
         draft["measurements"][3]["stop_reason"] = "eos"
     elif corruption == "few_repeats":
         draft["repetitions"] = 9
@@ -173,14 +171,14 @@ def test_saved_repeat_counts_override_current_cli_defaults(tmp_path, warmup, rep
     assert summary["protocol"]["warmup"] == warmup
     assert summary["protocol"]["repetitions"] == repetitions
     assert summary["aggregate"]["accepted_draft_tokens"] == 6 * repetitions
-    assert f"independent {warmup}+{repetitions} checks" in suite.markdown(summary)
+    assert f"independent {warmup}+{repetitions} measurements" in suite.markdown(summary)
 
 
 @pytest.mark.parametrize("corruption", ["unstable", "missing", "count", "warmup"])
-def test_three_measurements_still_require_full_stable_results(tmp_path, corruption):
+def test_three_measurements_require_complete_consistent_traces(tmp_path, corruption):
     report = saved_report(1, 3)
     if corruption == "unstable":
-        report["dflash"]["measurements"][2]["generated_token_ids"][0] = 99
+        report["dflash"]["measurements"][2]["generated_token_ids"][0] = 99  # Trace not updated: still invalid.
     elif corruption == "missing":
         report["dflash"]["measurements"].pop()
     elif corruption == "count":

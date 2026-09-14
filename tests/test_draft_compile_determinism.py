@@ -16,11 +16,11 @@ from qwen35_dflash.ascend310p.utils import sha256_file
 pytestmark = pytest.mark.usefixtures("adn_rms_norm_cpu")
 
 
-def test_full_bundle_enables_draft_only(chunk_bundle):
+def test_full_bundle_defaults_draft_to_off(chunk_bundle):
     deployment = json.loads(chunk_bundle.read_text())
     for graph in deployment["graphs"]:
         flags = [x for x in graph["atc_command"] if x.startswith("--deterministic")]
-        assert flags == (["--deterministic=1"] if graph["name"] == "draft" else [])
+        assert flags == (["--deterministic=0"] if graph["name"] == "draft" else [])
         assert "--precision_mode=must_keep_origin_dtype" in graph["atc_command"]
         assert all(x in graph["atc_command"] for x in deployment["compiler"]["graph_extra_args"][graph["name"]])
 
@@ -47,7 +47,8 @@ def frozen_files(directory):
 
 
 @pytest.mark.parametrize("old_mode", [None, "--deterministic=0", "--deterministic=1"])
-def test_recompile_only_draft_reuses_targets_and_creates_loadable_manifest(chunk_bundle, tmp_path, old_mode):
+@pytest.mark.parametrize("new_mode", [None, 0, 1])
+def test_recompile_only_draft_reuses_targets_and_creates_loadable_manifest(chunk_bundle, tmp_path, old_mode, new_mode):
     old = json.loads(chunk_bundle.read_text())
     draft = next(graph for graph in old["graphs"] if graph["name"] == "draft")
     draft["atc_command"] = [s for s in draft["atc_command"] if not s.startswith("--deterministic")]
@@ -66,10 +67,13 @@ def test_recompile_only_draft_reuses_targets_and_creates_loadable_manifest(chunk
         return subprocess.CompletedProcess(command, 0, "host test ATC")
 
     result = recompile_draft_om(chunk_bundle, output=output, atc_bin="/bin/true",
-                                runner=fake_atc, atc_identity="HOST_TEST")
+                                runner=fake_atc, atc_identity="HOST_TEST",
+                                **({} if new_mode is None else {"deterministic": new_mode}))
     assert len(calls) == 1
     command, cwd = calls[0]
-    assert command.count("--deterministic=1") == 1 and "--deterministic=0" not in command
+    mode = 0 if new_mode is None else new_mode
+    assert command.count(f"--deterministic={mode}") == 1 and f"--deterministic={1-mode}" not in command
+    assert result["recompilation"]["deterministic"] == mode
     assert "--precision_mode=must_keep_origin_dtype" in command and "--log=info" in command
     assert f"--model={chunk_bundle.parent / draft['air']['path']}" in command
     assert cwd == (chunk_bundle.parent / draft['air']['path']).parent
@@ -127,7 +131,7 @@ def test_atc_failure_retains_original_bundle_and_publishes_no_manifest(chunk_bun
         recompile_draft_om(chunk_bundle, output=output, atc_bin="/bin/true", runner=fail, atc_identity="HOST_TEST")
     assert not output.exists()
     assert all(path.read_bytes() == contents for path, contents in before.items())
-    assert list(chunk_bundle.parent.glob("draft-deterministic-*/log/draft.log"))
+    assert list(chunk_bundle.parent.glob("draft-det0-*/log/draft.log"))
 
 
 def test_cli_accepts_draft_recompile_without_requiring_export_or_soc(monkeypatch):
@@ -137,3 +141,16 @@ def test_cli_accepts_draft_recompile_without_requiring_export_or_soc(monkeypatch
                                       "--output", "new.json", "--atc", "/declared/atc"])
     assert args.handler is command_recompile_draft
     assert args.atc == Path("/declared/atc")
+    assert args.deterministic == 0
+    args = build_parser().parse_args(["recompile-draft-om", "--deployment-manifest", "original.json",
+                                     "--output", "new.json", "--deterministic", "1"])
+    assert args.deterministic == 1
+
+
+@pytest.mark.parametrize("mode", [-1, 2, True, "0"])
+def test_invalid_recompile_setting_is_rejected_before_atc(chunk_bundle, mode):
+    calls = []
+    with pytest.raises(ValueError, match="deterministic"):
+        recompile_draft_om(chunk_bundle, output=chunk_bundle.with_name("invalid.json"),
+                          deterministic=mode, runner=lambda *args: calls.append(args))
+    assert not calls

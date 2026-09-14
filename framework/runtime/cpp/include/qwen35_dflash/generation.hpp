@@ -89,6 +89,9 @@ struct BenchmarkResult {
   GenerationMode mode = GenerationMode::kOrdinary;
   std::size_t warmup = 0;
   std::size_t repetitions = 0;
+  bool repeatable = true;
+  // Representative output from measured repetition 0. The JSON stable_*
+  // fields are null when repeatable is false.
   std::vector<std::int64_t> stable_generated_token_ids;
   std::string stable_stop_reason;
   Distribution prefill_ms;
@@ -96,6 +99,7 @@ struct BenchmarkResult {
   Distribution model_total_ms;
   std::vector<GenerationMeasurement> measurements;
   std::size_t total_graph_calls = 0;
+  std::size_t total_generated_tokens = 0;
   std::size_t total_drafted_tokens = 0;
   std::size_t total_accepted_draft_tokens = 0;
   std::size_t total_rejected_draft_tokens = 0;

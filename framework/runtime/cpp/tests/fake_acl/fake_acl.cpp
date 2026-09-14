@@ -161,6 +161,11 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
       *static_cast<std::int64_t*>(out.at("accepted_count")->data) = std::getenv("QWEN35_FAKE_BAD_ACCEPT") ? 0 : static_cast<std::int64_t>(accepted);
     } else {
       predictions[0] = (ids[valid - 1] + 1) % 64;
+      // Change one generation, keeping the state cursor/ABI valid.
+      const char* repeat_drift = std::getenv("QWEN35_FAKE_PREFILL_DRIFT_CALL");
+      if (model.role == "target_prefill" && repeat_drift &&
+          call_number == static_cast<std::size_t>(std::atoi(repeat_drift)))
+        predictions[0] = (predictions[0] + 7) % 64;
       if (variation == model.role + "_output" && profiled)
         predictions[0] = (predictions[0] + 7) % 64;
     }

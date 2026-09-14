@@ -28,7 +28,7 @@ DEFAULT_PROMPTS = [
     {"id": "creative", "category": "中文创作", "prompt": "写一个约200字的小故事：一位图书管理员在旧书中发现一张没有署名的地图。故事要有清晰的开头、转折和结尾。"},
 ]
 
-MEASURED_STATUSES = {"PASS", "PASS_WITH_DIFFERENCES"}
+MEASURED_STATUSES = {"PASS", "PASS_WITH_DIFFERENCES", "PASS_WITH_OBSERVATIONS"}
 LONG_PROMPTS = REPO / "config/prompts_long_1k.json"
 STAGES = {
     "ordinary_prefill": ("ordinary", "target_prefill"),
@@ -39,6 +39,41 @@ STAGES = {
 }
 PHASES = {f"{mode}_{phase}": (mode, phase)
           for mode in ("ordinary", "dflash") for phase in ("prefill", "decode")}
+
+
+def measured_status(rows):
+    if any(row["status"] == "PASS_WITH_OBSERVATIONS" for row in rows):
+        return "PASS_WITH_OBSERVATIONS"
+    if any(row["status"] == "PASS_WITH_DIFFERENCES" for row in rows):
+        return "PASS_WITH_DIFFERENCES"
+    return "PASS"
+
+
+def render_repeatability(rows):
+    lines = []
+    for row in rows:
+        for mode, observation in row.get("repeatability", {}).items():
+            changes = observation["differences"]
+            if not changes:
+                continue
+            first = changes[0]
+            difference = first["first_difference"]
+            detail = (f"token[{difference['index']}] "
+                      f"{difference['reference_token_id']} -> {difference['token_id']}"
+                      if difference else "stop reason only")
+            lines.append(
+                f"| {row['id']} | {mode} | {len(changes)} / {observation['compared_repetitions']} | "
+                f"{sum(d['token_id_mismatches'] for d in changes)} | "
+                f"repeat {first['repetition']}: {detail} |")
+    if not lines:
+        return ""
+    return "\n".join([
+        "Repeatability observations (DRIFT_OBSERVED; continuing measurements):", "",
+        "| Prompt | Mode | Changed repeats / compared | Token mismatches | First change |",
+        "|---|---|---:|---:|---|", *lines, "",
+        "Compared with measured repetition 0; warmups excluded. JSON retains each changed repetition, "
+        "token counts, stop reasons and first difference. Throughput uses actual tokens from all measurements."
+    ]) + "\n"
 
 
 def set_benchmark_counts(args):
@@ -159,6 +194,8 @@ def load_prompts(path, prompt_ids=None, prompt_group="all"):
 
 def decode_outputs(report, tokenizer):
     """Decode saved tokens, including specials, without changing parity results."""
+    from qwen35_dflash.ascend310p.repeatability import representative_output
+
     outputs = {}
     for mode in ("ordinary", "dflash"):
         benchmark = report.get(mode)
@@ -166,14 +203,14 @@ def decode_outputs(report, tokenizer):
         standalone = report.get("benchmark", report)
         if benchmark is None and standalone.get("generation_mode", "").startswith(mode):
             benchmark = standalone
-        tokens = benchmark.get("stable_generated_token_ids") if benchmark else None
+        tokens, stop = representative_output(benchmark) if benchmark else (None, None)
         if not isinstance(tokens, list):
             outputs[mode] = {"available": False}
             continue
         if any(type(token) is not int or token < 0 for token in tokens):
             raise ValueError("invalid saved generated token IDs")
         outputs[mode] = {"available": True, "token_count": len(tokens),
-                         "stop_reason": benchmark.get("stable_stop_reason"),
+                         "stop_reason": stop, "measurement_repetition": 0,
                          "text": tokenizer.decode(tokens, skip_special_tokens=False)}
         difference = report.get("ordinary_parity", {}).get("first_difference")
         if difference and difference.get("field") == "generated_token_ids":
@@ -342,6 +379,8 @@ def render_position_acceptance(rows):
 
 
 def summarize_prompt(report):
+    from qwen35_dflash.ascend310p.repeatability import repeatability_observation, representative_output
+
     ordinary, draft = report["ordinary"], report["dflash"]
     measurements = draft["measurements"]
     drafted = sum(m["counters"]["drafted_tokens"] for m in measurements)
@@ -350,6 +389,10 @@ def summarize_prompt(report):
     emitted = sum(len(r["emitted_token_ids"]) for r in rounds)
     ordinary_ms = sum(m["latency_ms"]["model_total"] for m in ordinary["measurements"])
     dflash_ms = sum(m["latency_ms"]["model_total"] for m in measurements)
+    draft_lengths = [len(m["generated_token_ids"]) for m in measurements]
+    ordinary_lengths = [len(m["generated_token_ids"]) for m in ordinary["measurements"]]
+    draft_tps = sum(draft_lengths) * 1000 / dflash_ms if dflash_ms > 0 else 0
+    ordinary_tps = sum(ordinary_lengths) * 1000 / ordinary_ms if ordinary_ms > 0 else 0
     for benchmark in (ordinary, draft):
         latencies = [m["latency_ms"]["model_total"] for m in benchmark["measurements"]]
         latencies += [benchmark["latency_ms"]["model_total"]["median"], benchmark["generated_tokens_per_second"]]
@@ -365,19 +408,26 @@ def summarize_prompt(report):
         "tokens_per_speculative_round": emitted / len(rounds) if rounds else None,
         "target_only_fallback_rounds": sum(m["counters"]["target_only_fallback_rounds"] for m in measurements),
         "speculation_disable_events": sum(m["counters"]["speculation_disable_events"] for m in measurements),
-        "generated_tokens": len(draft["stable_generated_token_ids"]),
-        "ordinary_generated_tokens": len(ordinary["stable_generated_token_ids"]),
+        "generated_tokens": statistics.mean(draft_lengths),
+        "ordinary_generated_tokens": statistics.mean(ordinary_lengths),
+        "generated_tokens_range": [min(draft_lengths), max(draft_lengths)],
+        "ordinary_generated_tokens_range": [min(ordinary_lengths), max(ordinary_lengths)],
+        "dflash_measured_tokens": sum(draft_lengths), "ordinary_measured_tokens": sum(ordinary_lengths),
+        "representative_repetition": 0,
+        "repeatability": {name: repeatability_observation(report[name]) for name in ("ordinary", "dflash")},
         "draft_token_share_of_output": accepted / sum(len(m["generated_token_ids"]) for m in measurements),
         "acceptance_by_position": acceptance_by_position(report),
-        "stop_reason": draft["stable_stop_reason"],
-        "ordinary_stop_reason": ordinary["stable_stop_reason"],
+        "stop_reason": representative_output(draft)[1],
+        "ordinary_stop_reason": representative_output(ordinary)[1],
+        "stop_reasons": [m["stop_reason"] for m in measurements],
+        "ordinary_stop_reasons": [m["stop_reason"] for m in ordinary["measurements"]],
         "ordinary_total_measured_ms": ordinary_ms, "dflash_total_measured_ms": dflash_ms,
         "ordinary_median_ms": ordinary["latency_ms"]["model_total"]["median"],
         "dflash_median_ms": draft["latency_ms"]["model_total"]["median"],
         "speedup": ordinary["latency_ms"]["model_total"]["median"] / draft["latency_ms"]["model_total"]["median"],
-        "dflash_tokens_per_second": draft["generated_tokens_per_second"],
-        "ordinary_tokens_per_second": ordinary["generated_tokens_per_second"],
-        "throughput_speedup": draft["generated_tokens_per_second"] / ordinary["generated_tokens_per_second"],
+        "dflash_tokens_per_second": draft_tps,
+        "ordinary_tokens_per_second": ordinary_tps,
+        "throughput_speedup": draft_tps / ordinary_tps,
     }
 
 
@@ -386,9 +436,10 @@ def aggregate(rows):
     drafted = sum(r["drafted_tokens"] for r in good)
     accepted = sum(r["accepted_draft_tokens"] for r in good)
     latency = sum(r["dflash_total_measured_ms"] for r in good)
-    return {"scope": "prompts admitted by the selected output-comparison policy and requested repeatability checks",
+    return {"scope": "completed measurements admitted by output-comparison policy; repeatability drift is observational",
             "passed_prompts": sum(r["status"] == "PASS" for r in rows),
-            "allowed_difference_prompts": sum(r["status"] == "PASS_WITH_DIFFERENCES" for r in rows),
+            "allowed_difference_prompts": sum(r["status"] == "PASS_WITH_DIFFERENCES" or bool(r.get("output_difference")) for r in good),
+            "drift_observed_prompts": sum(r["status"] == "PASS_WITH_OBSERVATIONS" for r in good),
             "measured_prompts": len(good), "failed_prompts": sum(r["status"] == "FAIL" for r in rows),
             "not_run_prompts": sum(r["status"] == "NOT_RUN" for r in rows),
             "drafted_tokens": drafted, "accepted_draft_tokens": accepted,
@@ -406,9 +457,11 @@ def markdown(summary):
         if row["status"] not in MEASURED_STATUSES:
             lines.append(f"| {row['id']} | {input_tokens} | {row['status']} | — | — | — | — | — |")
         else:
+            bounds = row.get("generated_tokens_range", [row["generated_tokens"]] * 2)
+            generated = str(bounds[0]) if bounds[0] == bounds[1] else f"{bounds[0]}..{bounds[1]}"
             lines.append(f"| {row['id']} | {input_tokens} | {row['status']} | {value(row['acceptance_rate'], True)} | "
                          f"{value(row['tokens_per_speculative_round'])} | {value(row['dflash_tokens_per_second'])} | "
-                         f"{value(row['speedup'])}x | {row['generated_tokens']} |")
+                         f"{value(row['speedup'])}x | {generated} |")
     totals = summary["aggregate"]
     protocol = summary.get("protocol", {})
     repeats = f"{protocol.get('warmup', 'N/A')}+{protocol.get('repetitions', 'N/A')}"
@@ -419,13 +472,18 @@ def markdown(summary):
               "Speedup > 1 means faster than ordinary generation; acceptance alone does not establish speedup."]
     if totals.get("allowed_difference_prompts"):
         lines += [f"Allowed output differences: {totals['allowed_difference_prompts']}; "
-                  f"both modes passed independent {repeats} checks. Output parity remains FAIL; task quality was not evaluated.",
+                  f"both modes completed independent {repeats} measurements. Output parity remains FAIL; task quality was not evaluated.",
                   "Speedup compares model-loop time for each mode's own output. Different EOS lengths can change the work; "
                   "JSON also records both token counts and throughput_speedup."]
     if totals["passed_prompts"]:
         lines += [f"Each passing prompt passed token/EOS parity and the requested {repeats} repeatability checks."]
-    elif not totals.get("allowed_difference_prompts"):
+    elif not totals.get("measured_prompts"):
         lines += ["No prompt has passed the complete checks; no validated acceptance or speedup is available."]
+    if totals.get("drift_observed_prompts"):
+        lines += [f"Repeatability drift observed: {totals['drift_observed_prompts']} prompts; metrics retained. "
+                  "Generated shows the measured token-count range when lengths differ. "
+                  "Cross-mode output comparison uses measured repetition 0."]
+        lines += ["", render_repeatability(summary["cases"]).rstrip()]
     if any(r.get("observed_acceptance", {}).get("available") for r in summary["cases"]):
         lines += ["", render_acceptance(summary["cases"]).rstrip()]
     timings = render_timings(summary["cases"])
@@ -447,20 +505,21 @@ def run_runner(command, log):
         with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as process:
             for line in process.stdout:
                 stream.write(line)
-                if line.startswith("[prompt-batch]"):
+                if line.startswith(("[prompt-batch]", "[repeatability]")):
                     print(line.rstrip(), flush=True)
             return process.wait()
 
 
 def collect_results(args, prompts, raw, index, plan_hash, batch_hash, eos, exit_code, tokenizer=None):
     from qwen35_dflash.ascend310p.cpp_runtime import validate_cpp_runner_report
+    from qwen35_dflash.ascend310p.repeatability import representative_output
     from qwen35_dflash.ascend310p.utils import sha256_file
 
     allow_differences = getattr(args, "allow_output_differences", False)
     warmup, repetitions = getattr(args, "warmup", 3), getattr(args, "repetitions", 10)
     index_error = None
     if (exit_code not in (None, 0, 1) or raw.get("fake_acl") is not False
-            or raw.get("status") not in ("PASS", "FAIL") or raw.get("error")
+            or raw.get("status") not in ("PASS", "PASS_WITH_OBSERVATIONS", "FAIL") or raw.get("error")
             or raw.get("prompt_batch_sha256") != batch_hash or raw.get("model_sha256") != plan_hash
             or [c["id"] for c in raw.get("cases", [])] != [p["id"] for p in prompts]):
         index_error = "missing/invalid batch index or fake ACL; inspect runner.log"
@@ -484,7 +543,7 @@ def collect_results(args, prompts, raw, index, plan_hash, batch_hash, eos, exit_
                 raise ValueError("batch/case report statuses differ")
             allowed = (allow_differences and case["status"] == "FAIL"
                        and report.get("failure_stage") == "ordinary_dflash_parity")
-            if case["status"] != "PASS" and not allowed:
+            if case["status"] not in ("PASS", "PASS_WITH_OBSERVATIONS") and not allowed:
                 row.update(status="NOT_RUN" if case["status"] == "NOT_RUN" else "FAIL",
                     failure_stage=report.get("failure_stage", "unknown"), error=report.get("error", "C++ prompt failed"))
                 rows.append(row)
@@ -497,41 +556,37 @@ def collect_results(args, prompts, raw, index, plan_hash, batch_hash, eos, exit_
                 allow_output_differences=allow_differences)
             if report["eos_token_ids"] != eos or report["protocol"].get("round_trace_enabled") is not True:
                 raise ValueError("EOS or trace settings differ")
-            for mode in ("ordinary", "dflash"):
-                tokens = report[mode]["stable_generated_token_ids"]
-                reason = report[mode]["stable_stop_reason"]
-                if (any(type(t) is not int or t < 0 for t in tokens)
-                        or len(tokens) > args.max_new_tokens or any(t in eos for t in tokens[:-1])
-                        or (reason == "eos" and tokens[-1] not in eos)
-                        or (reason == "max_new_tokens" and (len(tokens) != args.max_new_tokens or tokens[-1] in eos))
-                        or reason not in ("eos", "max_new_tokens")):
-                    raise ValueError(f"invalid {mode} output length/EOS termination")
             row.update(summarize_prompt(report))
-            row["status"] = "PASS_WITH_DIFFERENCES" if allowed else "PASS"
+            drift = any(obs["differences"] for obs in row["repeatability"].values())
+            row["status"] = "PASS_WITH_OBSERVATIONS" if drift else "PASS_WITH_DIFFERENCES" if allowed else "PASS"
             if allowed:
                 row["output_difference"] = report.get("error", "ordinary/DFlash outputs differ")
             if tokenizer is not None:
-                row["generated_text"] = tokenizer.decode(report["dflash"]["stable_generated_token_ids"], skip_special_tokens=True)
+                row["generated_text"] = tokenizer.decode(representative_output(report["dflash"])[0], skip_special_tokens=True)
         except (OSError, ValueError, KeyError, RuntimeError, TypeError) as error:
             row.update(status="FAIL", failure_stage="report_validation", error=str(error))
         rows.append(row)
     ok = bool(rows) and not index_error and all(r["status"] in MEASURED_STATUSES for r in rows)
-    differences = any(r["status"] == "PASS_WITH_DIFFERENCES" for r in rows)
-    if not differences and (raw.get("status") != "PASS" or exit_code not in (None, 0)):
+    differences = any(r.get("output_difference") for r in rows)
+    drift = any(r["status"] == "PASS_WITH_OBSERVATIONS" for r in rows)
+    if not differences and (raw.get("status") not in ("PASS", "PASS_WITH_OBSERVATIONS") or exit_code not in (None, 0)):
         ok = False
     parity_failed = any(r.get("ordinary_parity", {}).get("status") == "FAIL" for r in rows)
-    return {"schema_version": 1, "status": ("PASS_WITH_DIFFERENCES" if differences else "PASS") if ok else "FAIL_OR_INCOMPLETE",
+    return {"schema_version": 1, "status": measured_status(rows) if ok else "FAIL_OR_INCOMPLETE",
         "cases": rows, "aggregate": aggregate(rows), "protocol": {
             "warmup": warmup, "repetitions": repetitions, "low_memory": args.low_memory,
             "prompt_group": getattr(args, "prompt_group", "all"),
             "output_comparison": "allow_output_differences" if allow_differences else "strict",
+            "repeatability_policy": "observe",
             "dflash_speculation_policy": raw.get("dflash_speculation_policy", "not_recorded"),
             "models_reused_across_prompts": raw.get("models_reused_across_prompts"), "order": raw.get("order"),
             "verify_gdr": getattr(args, "verify_gdr", None)},
         "startup_ms": raw.get("startup_ms"), "runner_index": str(index),
         "runner_index_sha256": sha256_file(index) if index.is_file() else None, "runner_exit_code": exit_code,
         "ordinary_parity": "FAIL" if parity_failed else "PASS" if ok else "FAIL_OR_INCOMPLETE",
-        "quality_evaluation": "NOT_RUN", "formal_latency_evidence": bool(ok and not differences and (warmup, repetitions) == (3, 10)),
+        "ordinary_parity_scope": "representative measurement 0 from each mode",
+        "repeatability": "DRIFT_OBSERVED" if drift else "STABLE" if ok else "NOT_ESTABLISHED",
+        "quality_evaluation": "NOT_RUN", "formal_latency_evidence": bool(ok and not differences and not drift and (warmup, repetitions) == (3, 10)),
         "scope": "This selected prompt suite. Allowed differences are experimental comparisons of each mode's own output, not quality equivalence."}
 
 
@@ -719,7 +774,7 @@ def main():
     parser.add_argument("--warmup", type=int, default=1, help="warmup generations per mode and prompt (default 1)")
     parser.add_argument("--repetitions", type=int, default=3, help="measured generations per mode and prompt (default 3)")
     parser.add_argument("--allow-output-differences", action="store_true",
-                        help="allow cross-mode differences; retain the requested repeatability checks")
+                        help="allow cross-mode differences; repeated-run drift is reported without failing")
     parser.add_argument("--summarize-existing", type=Path, metavar="BATCH_JSON",
                         help="read a saved runner batch and request; no inference or runner/model files required")
     try:

@@ -77,7 +77,8 @@ def command_compile(args: argparse.Namespace) -> int:
 
 
 def command_recompile_draft(args: argparse.Namespace) -> int:
-    _print(recompile_draft_om(args.deployment_manifest, output=args.output, atc_bin=args.atc))
+    _print(recompile_draft_om(args.deployment_manifest, output=args.output,
+                            atc_bin=args.atc, deterministic=args.deterministic))
     return 0
 
 
@@ -265,7 +266,8 @@ def command_infer_cpp(args: argparse.Namespace) -> int:
     payload["control_plane"]["target_preflight"] = file_record(
         preflight_log, relative_to=run_root
     )
-    generated = [int(item) for item in payload["dflash"]["stable_generated_token_ids"]]
+    from .repeatability import representative_output
+    generated = [int(item) for item in representative_output(payload["dflash"])[0]]
     detokenize_start = time.perf_counter_ns()
     text_output = tokenizer.decode(generated, skip_special_tokens=True)
     detokenize_end = time.perf_counter_ns()
@@ -386,12 +388,14 @@ def build_parser() -> argparse.ArgumentParser:
     compile_parser.set_defaults(handler=command_compile)
 
     recompile = subparsers.add_parser(
-        "recompile-draft-om", help="enable deterministic Draft compilation and reuse hash-locked Target OMs"
+        "recompile-draft-om", help="recompile Draft (deterministic=0 by default) and reuse hash-locked Target OMs"
     )
     recompile.add_argument("--deployment-manifest", type=Path, required=True)
     recompile.add_argument("--output", type=Path, required=True, help="new manifest beside the existing one")
     recompile.add_argument("--atc", type=Path, default=os.environ.get("ASCEND310P_ATC_BIN"))
     recompile.set_defaults(handler=command_recompile_draft)
+    recompile.add_argument("--deterministic", type=int, choices=(0, 1), default=0,
+                           help="Draft ATC deterministic setting: 0 off (default), 1 on")
 
     build = subparsers.add_parser("build-om", help="export AIR and compile every graph")
     build.add_argument("--factory", required=True, help="module:function graph factory")

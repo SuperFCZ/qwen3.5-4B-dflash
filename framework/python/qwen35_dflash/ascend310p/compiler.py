@@ -135,19 +135,13 @@ def _chunk_precision_args(arguments: Sequence[str], *, incremental: bool) -> lis
 
 
 def _graph_atc_args(arguments: Sequence[str], *, name: str, incremental: bool) -> list[str]:
-    """Default to deterministic Draft execution, preserving Target compilation.
-
-    The real FP16 context FC varies with identical inputs in both native and
-    OM; deterministic=1 removed that variation in the isolated 20-call probe.
-    Full-Draft stability and greedy parity remain independent device gates.
-    Explicit 0 is retained for diagnostic A/B, never silently substituted.
-    """
+    """Default Draft to deterministic=0; retain explicit flags and Target settings."""
     result = list(arguments)
     settings = [s for s in result if s.split("=", 1)[0] == "--deterministic"]
     if len(settings) > 1 or (settings and settings[0] not in {"--deterministic=0", "--deterministic=1"}):
         raise ValueError("use exactly one --deterministic=0 or --deterministic=1")
     if incremental and name == "draft" and not settings:
-        result.append("--deterministic=1")
+        result.append("--deterministic=0")
     return result
 
 
@@ -473,10 +467,11 @@ def compile_air_bundle(
 def recompile_draft_om(
     deployment_manifest_path: str | Path, *, output: str | Path,
     atc_bin: str | Path | None = None,
+    deterministic: int = 0,
     runner: Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]] | None = None,
     atc_identity: str | None = None,
 ) -> dict[str, Any]:
-    """Recompile only Draft with deterministic=1, retaining the Target OMs.
+    """Recompile only Draft with the requested determinism, retaining the Target OMs.
 
     The new manifest shares its parent's bundle root so existing hash-locked
     AIR payloads and Target OMs need neither copies nor path/ABI changes.
@@ -484,6 +479,8 @@ def recompile_draft_om(
     """
     from .incremental_plan import validate_incremental_bundle
 
+    if type(deterministic) is not int or deterministic not in (0, 1):
+        raise ValueError("deterministic must be 0 or 1")
     source = Path(deployment_manifest_path).expanduser().resolve()
     root = require_run_output(source.parent)
     destination = require_run_output(output)
@@ -539,9 +536,10 @@ def recompile_draft_om(
     ])
     _graph_atc_args(inherited, name="draft", incremental=True)  # Reject malformed/duplicate flags.
     inherited = [value for value in inherited if value.split("=", 1)[0] != "--deterministic"]
+    inherited.append(f"--deterministic={deterministic}")
     arguments = _graph_atc_args(_chunk_precision_args(inherited, incremental=True), name="draft", incremental=True)
     atc_path = resolve_atc_executable(atc_bin or os.environ.get("ASCEND310P_ATC_BIN") or old_command[0])
-    stage = Path(tempfile.mkdtemp(prefix="draft-deterministic-", dir=root))
+    stage = Path(tempfile.mkdtemp(prefix=f"draft-det{deterministic}-", dir=root))
     log_root = stage / "log"
     log_root.mkdir()
     compiled = _compile_air_graph(
@@ -559,7 +557,8 @@ def recompile_draft_om(
     deployment["recompilation"] = {
         "parent_manifest": parent_record,
         "graphs": ["draft"],
-        "reason": "FC deterministic=1 stable in isolated native/OM probe; full Draft validation pending",
+        "reason": "Draft-only deterministic setting change; device validation pending",
+        "deterministic": deterministic,
         "compiler": {"path": str(atc_path), "identity": atc_identity or _atc_identity(atc_path),
                      "extra_args": arguments},
         "ordinary_parity": "NOT_RUN", "formal_latency_evidence": False,

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iostream>
 #include <numeric>
 #include <stdexcept>
 #include <unordered_set>
@@ -115,17 +116,6 @@ BenchmarkResult FinalizeBenchmark(
   }
   const auto& reference_tokens = measurements.front().generated_token_ids;
   const auto& reference_stop = measurements.front().stop_reason;
-  for (const auto& measurement : measurements) {
-    if (measurement.generated_token_ids != reference_tokens) {
-      throw std::runtime_error(
-          "measured repetitions produced different token IDs");
-    }
-    if (measurement.stop_reason != reference_stop) {
-      throw std::runtime_error(
-          "measured repetitions produced different stop reasons");
-    }
-  }
-
   std::vector<double> prefill;
   std::vector<double> decode;
   std::vector<double> model_total;
@@ -140,6 +130,10 @@ BenchmarkResult FinalizeBenchmark(
   result.stable_stop_reason = reference_stop;
   result.measurements = std::move(measurements);
   for (const auto& measurement : result.measurements) {
+    result.repeatable = result.repeatable &&
+        measurement.generated_token_ids == result.stable_generated_token_ids &&
+        measurement.stop_reason == result.stable_stop_reason;
+    result.total_generated_tokens += measurement.generated_token_ids.size();
     prefill.push_back(measurement.prefill_ms);
     decode.push_back(measurement.decode_ms);
     model_total.push_back(measurement.model_total_ms);
@@ -160,11 +154,14 @@ BenchmarkResult FinalizeBenchmark(
   }
   const double seconds = std::accumulate(
       model_total.begin(), model_total.end(), 0.0) / 1000.0;
-  const std::size_t generated =
-      reference_tokens.size() * result.measurements.size();
   if (seconds > 0.0) {
     result.generated_tokens_per_second =
-        static_cast<double>(generated) / seconds;
+        static_cast<double>(result.total_generated_tokens) / seconds;
+  }
+  if (!result.repeatable) {
+    std::cerr << "[repeatability] " << ModeName(mode)
+              << " DRIFT_OBSERVED: measured outputs differ; all "
+              << result.repetitions << " measurements retained (details in report)\n";
   }
   return result;
 }

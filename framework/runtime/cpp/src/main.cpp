@@ -442,8 +442,8 @@ void WriteRound(std::ostream& output, const qwen35::dflash::GenerationRound& rou
   output << '}';
 }
 
-// The final tokens are repeatable within each mode, but the proposal trace may
-// vary. Locate the first divergence in measurement 0, never align round numbers
+// Locate the first cross-mode divergence in representative measurement 0.
+// Repeatability is reported separately; never align round numbers
 // across ordinary (one token) and DFlash (several tokens) execution.
 void WriteRoundLocation(std::ostream& output, const BenchmarkResult& result, std::size_t token_index) {
   if (!result.measurements.empty()) {
@@ -542,21 +542,72 @@ void WriteMeasurement(
   output << '}';
 }
 
+const char* BenchmarkStatus(const BenchmarkResult& value) {
+  return value.repeatable ? "PASS" : "PASS_WITH_OBSERVATIONS";
+}
+
+void WriteRepeatability(std::ostream& output, const BenchmarkResult& value) {
+  output << "{\"status\":\"" << (value.repeatable ? "STABLE" : "DRIFT_OBSERVED")
+         << "\",\"reference_repetition\":0,\"compared_repetitions\":"
+         << value.measurements.size() - 1 << ",\"differences\":[";
+  bool first = true;
+  const auto& expected = value.stable_generated_token_ids;
+  for (std::size_t r = 1; r < value.measurements.size(); ++r) {
+    const auto& m = value.measurements[r];
+    const auto& actual = m.generated_token_ids;
+    std::size_t count = 0, index = 0;
+    for (std::size_t i = 0; i < std::max(expected.size(), actual.size()); ++i) {
+      if (i < expected.size() && i < actual.size() && expected[i] == actual[i]) continue;
+      if (count == 0) index = i;
+      ++count;
+    }
+    const bool stop_changed = m.stop_reason != value.stable_stop_reason;
+    if (!count && !stop_changed) continue;
+    if (!first) output << ',';
+    first = false;
+    output << "{\"repetition\":" << r << ",\"token_id_mismatches\":" << count
+           << ",\"reference_token_count\":" << expected.size()
+           << ",\"token_count\":" << actual.size()
+           << ",\"stop_reason_changed\":" << (stop_changed ? "true" : "false")
+           << ",\"reference_stop_reason\":\"" << JsonEscape(value.stable_stop_reason)
+           << "\",\"stop_reason\":\"" << JsonEscape(m.stop_reason)
+           << "\",\"first_difference\":";
+    if (count) {
+      output << "{\"index\":" << index << ",\"reference_token_id\":";
+      if (index < expected.size()) output << expected[index]; else output << "null";
+      output << ",\"token_id\":";
+      if (index < actual.size()) output << actual[index]; else output << "null";
+      output << '}';
+    } else output << "null";
+    output << '}';
+  }
+  output << "]}";
+}
+
 void WriteBenchmark(std::ostream& output, const BenchmarkResult& value) {
-  output << "{\"status\":\"PASS\",\"generation_mode\":\""
+  output << "{\"status\":\"" << BenchmarkStatus(value) << "\",\"generation_mode\":\""
          << qwen35::dflash::ModeName(value.mode) << "\",\"warmup\":"
          << value.warmup << ",\"repetitions\":" << value.repetitions
-         << ",\"stable_generated_token_ids\":";
+         << ",\"representative_repetition\":0,\"representative_generated_token_ids\":";
   WriteTokenIds(output, value.stable_generated_token_ids);
-  output << ",\"stable_stop_reason\":\""
-         << JsonEscape(value.stable_stop_reason) << "\",\"latency_ms\":{";
+  output << ",\"representative_stop_reason\":\"" << JsonEscape(value.stable_stop_reason)
+         << "\",\"stable_generated_token_ids\":";
+  if (value.repeatable) WriteTokenIds(output, value.stable_generated_token_ids);
+  else output << "null";
+  output << ",\"stable_stop_reason\":";
+  if (value.repeatable) output << '\"' << JsonEscape(value.stable_stop_reason) << '\"';
+  else output << "null";
+  output << ",\"repeatability\":";
+  WriteRepeatability(output, value);
+  output << ",\"latency_ms\":{";
   output << "\"prefill\":";
   WriteDistribution(output, value.prefill_ms);
   output << ",\"decode\":";
   WriteDistribution(output, value.decode_ms);
   output << ",\"model_total\":";
   WriteDistribution(output, value.model_total_ms);
-  output << "},\"totals\":{\"graph_calls\":" << value.total_graph_calls
+  output << "},\"totals\":{\"generated_tokens\":" << value.total_generated_tokens
+         << ",\"graph_calls\":" << value.total_graph_calls
          << ",\"drafted_tokens\":" << value.total_drafted_tokens
          << ",\"accepted_draft_tokens\":"
          << value.total_accepted_draft_tokens
@@ -584,12 +635,13 @@ void WriteReport(
     double unload_ms = 0.0,
     const std::string& error = {}) {
   const bool pass = result.token_id_mismatches == 0 && result.eos_mismatches == 0;
+  const bool stable = result.ordinary.repeatable && result.dflash.repeatable;
   const double speedup = result.dflash.model_total_ms.median > 0.0
                              ? result.ordinary.model_total_ms.median /
                                    result.dflash.model_total_ms.median
                              : 0.0;
   output << std::setprecision(17)
-         << "{\"schema_version\":1,\"status\":\"" << (pass ? "PASS" : "FAIL") << "\","
+         << "{\"schema_version\":1,\"status\":\"" << (pass ? (stable ? "PASS" : "PASS_WITH_OBSERVATIONS") : "FAIL") << "\","
          << "\"scope\":\"AscendCL C++ paired OM model loop\","
          << "\"runner_id\":\"qwen35-dflash-ascendcl-cpp-v1\","
          << "\"runner_version\":\""
@@ -616,6 +668,7 @@ void WriteReport(
               : "alternating ordinary/DFlash in one loaded process") << "\","
          << "\"low_memory\":" << (arguments.low_memory ? "true" : "false") << ','
          << "\"dflash_speculation_policy\":\"always_on\","
+         << "\"repeatability_policy\":\"observe\","
          << "\"max_resident_models\":" << (arguments.model_kind == "chunk"
               ? (arguments.low_memory ? 3 : 4) : 1) << ','
          << "\"synchronization\":\"one aclrtSynchronizeStream after queued H2D, execute, D2H\","
@@ -635,11 +688,13 @@ void WriteReport(
   WriteBenchmark(output, result.ordinary);
   output << ",\"dflash\":";
   WriteBenchmark(output, result.dflash);
+  if (!stable && pass) output << ",\"formal_latency_evidence\":false";
   if (!pass) {
     output << ",\"failure_stage\":\"ordinary_dflash_parity\",\"formal_latency_evidence\":false,\"error\":\""
            << JsonEscape(error.empty() ? "DFlash output differs from the ordinary greedy authority" : error) << '"';
   }
-  output << ",\"ordinary_parity\":{\"status\":\"" << (pass ? "PASS" : "FAIL") << "\","
+  output << ",\"ordinary_parity\":{\"scope\":\"representative measurement 0 from each mode\","
+         << "\"status\":\"" << (pass ? "PASS" : "FAIL") << "\","
          << "\"token_id_mismatches\":" << result.token_id_mismatches
          << ",\"eos_mismatches\":" << result.eos_mismatches
          << ",\"first_difference\":";
@@ -771,13 +826,17 @@ bool RunPromptBatch(const Arguments& arguments, qwen35::dflash::GraphExecutor& e
       records[i].elapsed_ms += elapsed(start);
     }
   }
-  bool ok = true;
+  bool ok = true, drift_observed = false;
   std::ostringstream cases;
   for (std::size_t i = 0; i < records.size(); ++i) {
     const auto& item = arguments.prompt_batch[i];
     auto& record = records[i];
     const bool pass = record.error.empty() && record.paired.has_value();
-    const char* status = pass ? "PASS" : record.not_run ? "NOT_RUN" : "FAIL";
+    const char* status = pass ? (
+        record.paired->ordinary.repeatable && record.paired->dflash.repeatable
+        ? "PASS" : "PASS_WITH_OBSERVATIONS") : record.not_run ? "NOT_RUN" : "FAIL";
+    if (record.paired) drift_observed = drift_observed ||
+        !record.paired->ordinary.repeatable || !record.paired->dflash.repeatable;
     ok = ok && pass;
     auto single = arguments;
     single.prompt_token_ids = item.tokens;
@@ -805,7 +864,8 @@ bool RunPromptBatch(const Arguments& arguments, qwen35::dflash::GraphExecutor& e
   }
   const bool fake = std::string(QWEN35_DFLASH_RUNNER_VERSION).find("fake-acl") != std::string::npos;
   std::ostringstream report;
-  report << std::setprecision(17) << "{\"schema_version\":1,\"status\":\"" << (ok ? "PASS" : "FAIL")
+  report << std::setprecision(17) << "{\"schema_version\":1,\"status\":\""
+         << (ok ? (drift_observed ? "PASS_WITH_OBSERVATIONS" : "PASS") : "FAIL")
          << "\",\"runner_version\":\"" << JsonEscape(QWEN35_DFLASH_RUNNER_VERSION)
          << "\",\"fake_acl\":" << (fake ? "true" : "false")
          << ",\"prompt_batch_sha256\":\"" << arguments.prompt_batch_sha256
@@ -890,7 +950,8 @@ int main(int argc, char** argv) {
       const auto mode = arguments.mode == "dflash" ? qwen35::dflash::GenerationMode::kDFlash : qwen35::dflash::GenerationMode::kOrdinary;
       const auto result = qwen35::dflash::Benchmark(*executor, arguments.prompt_token_ids, mode, options, arguments.warmup, arguments.repetitions);
       std::ostringstream report;
-      report << std::setprecision(17) << "{\"schema_version\":1,\"status\":\"PASS\",\"scope\":\"single-mode execution; no ordinary parity claim\",\"runner_version\":\""
+      report << std::setprecision(17) << "{\"schema_version\":1,\"status\":\"" << BenchmarkStatus(result)
+             << "\",\"scope\":\"single-mode execution; no ordinary parity claim\",\"runner_version\":\""
              << JsonEscape(QWEN35_DFLASH_RUNNER_VERSION) << "\",\"model_kind\":\"" << arguments.model_kind
              << "\",\"cpu_fallback\":false,\"device_id\":" << arguments.device_id
              << ",\"model_sha256\":\"" << arguments.model_sha256 << "\",\"prompt_token_ids\":";

@@ -567,7 +567,8 @@ def run_cpp_target_pipeline(
     payload["control_plane"]["air_manifest"] = file_record(
         Path(exported["manifest_path"]), relative_to=run_root
     )
-    generated = [int(item) for item in payload["dflash"]["stable_generated_token_ids"]]
+    from .repeatability import representative_output
+    generated = [int(item) for item in representative_output(payload["dflash"])[0]]
     detokenize_start = time.perf_counter_ns()
     generated_text = tokenizer.decode(generated, skip_special_tokens=True)
     detokenize_end = time.perf_counter_ns()
