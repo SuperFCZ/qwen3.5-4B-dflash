@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import csv
 import json
 import math
 import os
@@ -16,6 +18,8 @@ import time
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(REPO / "framework/python"), str(REPO)]
+
+from tools import offline_datasets
 
 DEFAULT_PROMPTS = [
     {"id": "zh_explain", "category": "中文解释", "prompt": "请用通俗的中文解释什么是机器学习，并用一个生活中的例子说明训练和推理的区别。"},
@@ -190,6 +194,17 @@ def load_prompts(path, prompt_ids=None, prompt_group="all"):
     if not result:
         raise ValueError(f"no prompts in selected group {prompt_group}; custom JSON may specify group: short or long")
     return result
+
+
+def load_inputs(args):
+    # Matrix cells use the already frozen text/provenance, even if external files change.
+    if getattr(args, "_prepared_inputs", None) is not None:
+        return copy.deepcopy(args._prepared_inputs)
+    if offline_datasets.selected(args):
+        return offline_datasets.load(args)
+    if getattr(args, "num_questions", None) is not None or getattr(args, "dataset_field", "question") != "question":
+        raise ValueError("--num-questions/--dataset-field require --dataset-dir or --dataset-files")
+    return load_prompts(args.prompts, getattr(args, "prompt_id", None), getattr(args, "prompt_group", "all")), []
 
 
 def decode_outputs(report, tokenizer):
@@ -447,6 +462,148 @@ def aggregate(rows):
             "total_model_time_speedup": sum(r["ordinary_total_measured_ms"] for r in good) / latency if latency else None}
 
 
+def aggregate_metrics(rows):
+    totals = aggregate(rows)
+    good = [row for row in rows if row["status"] in MEASURED_STATUSES]
+    rounds = sum(row["speculative_rounds"] for row in good)
+    totals["tokens_per_speculative_round"] = (
+        sum(row["tokens_emitted_in_speculative_rounds"] for row in good) / rounds if rounds else None)
+    for mode in ("ordinary", "dflash"):
+        tokens = sum(row[mode + "_measured_tokens"] for row in good)
+        elapsed = sum(row[mode + "_total_measured_ms"] for row in good)
+        totals[mode + "_measured_tokens"] = tokens
+        totals[mode + "_tokens_per_second"] = tokens * 1000 / elapsed if elapsed else None
+    ordinary_tps, dflash_tps = (totals[mode + "_tokens_per_second"] for mode in ("ordinary", "dflash"))
+    totals["throughput_speedup"] = dflash_tps / ordinary_tps if ordinary_tps and dflash_tps else None
+    totals["both_modes_reached_budget"] = sum(
+        row["generated_tokens"] == row["ordinary_generated_tokens"] == row.get("max_new_tokens") for row in good)
+    totals["stage_ms_per_call"] = {}
+    for stage in STAGES:
+        values = [row["stage_timings"][stage] for row in good]
+        missing = [row["id"] for row in good if not row["stage_timings"][stage]["available"]]
+        if not values or missing:
+            totals["stage_ms_per_call"][stage] = {"available": False, "missing_prompt_ids": missing}
+        else:
+            calls = sum(value["calls"] for value in values)
+            elapsed = math.fsum(value["total_ms"] for value in values)
+            measurements = sum(value["measurements"] for value in values)
+            totals["stage_ms_per_call"][stage] = {
+                "available": True, "calls": calls, "total_ms": elapsed,
+                "mean_ms": elapsed / calls if calls else None,
+                "measurements": measurements,
+                "mean_total_ms_per_generation": elapsed / measurements if measurements else None,
+            }
+    totals["phase_timings"] = {}
+    for phase in PHASES:
+        values = [row.get("phase_timings", {}).get(phase, {}) for row in good]
+        if not values or any(not value.get("available") for value in values):
+            totals["phase_timings"][phase] = {"available": False}
+            continue
+        measurements = sum(value["measurements"] for value in values)
+        elapsed = math.fsum(value["total_ms"] for value in values)
+        totals["phase_timings"][phase] = {"available": True, "measurements": measurements,
+                                         "total_ms": elapsed, "mean_ms": elapsed / measurements}
+    return totals
+
+
+def dataset_results(summary):
+    """One row per source file, route and output budget; never average percentages."""
+    cells = summary.get("cells", [dict(summary, verify_gdr=summary.get("protocol", {}).get("verify_gdr"))])
+    result = []
+    for cell in cells:
+        for dataset in summary.get("datasets", []):
+            rows = [r for r in cell.get("cases", []) if r.get("dataset_id") == dataset["id"]]
+            totals = aggregate_metrics(rows)
+            totals["not_run_prompts"] += max(0, dataset["selected_samples"] - len(rows))
+            complete = len(rows) == dataset["selected_samples"] and all(r["status"] in MEASURED_STATUSES for r in rows)
+            status = measured_status(rows) if complete else "FAIL_OR_INCOMPLETE"
+            if not rows:
+                status = cell.get("status", "NOT_RUN")
+                if status in MEASURED_STATUSES:
+                    status = "FAIL_OR_INCOMPLETE"
+            if cell.get("error"):
+                status = "FAIL_OR_INCOMPLETE"
+            result.append({**totals, "dataset_id": dataset["id"], "dataset_file": dataset["name"],
+                           "dataset_sha256": dataset["sha256"], "total_samples": dataset["total_samples"],
+                           "selected_samples": dataset["selected_samples"], "status": status,
+                           "verify_gdr": cell.get("verify_gdr"), "max_new_tokens": cell.get("max_new_tokens"),
+                           "error": cell.get("error")})
+    return result
+
+
+def render_datasets(results):
+    def number(value, percent=False):
+        return "N/A" if value is None else f"{value:.2%}" if percent else f"{value:.2f}"
+    lines = ["Acceptance by dataset file:", "",
+             "| Dataset file | GDR | Max new tokens | Status | Measured / selected | Accepted / proposed | Acceptance | Tokens / round | Ordinary tok/s | DFlash tok/s | Speedup |",
+             "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|"]
+    timing_rows = []
+    for row in results:
+        name = row["dataset_file"].replace("|", "\\|").replace("\n", " ")
+        lines.append(f"| {name} | {row['verify_gdr']} | {row['max_new_tokens']} | {row['status']} | "
+                     f"{row['measured_prompts']} / {row['selected_samples']} | "
+                     f"{row['accepted_draft_tokens']} / {row['drafted_tokens']} | "
+                     f"{number(row['weighted_acceptance_rate'], True)} | "
+                     f"{number(row['tokens_per_speculative_round'])} | "
+                     f"{number(row['ordinary_tokens_per_second'])} | {number(row['dflash_tokens_per_second'])} | "
+                     f"{number(row['total_model_time_speedup'])} |")
+        timing_rows.append(dict(id=f"{row['verify_gdr']}/{row['max_new_tokens']}/{name}",
+                                stage_timings=row["stage_ms_per_call"], phase_timings=row["phase_timings"]))
+    lines += ["", "Acceptance = sum accepted / sum proposed; speedup = sum ordinary time / sum DFlash time.",
+              "Only admitted measurements contribute; measured/selected exposes incomplete files. Warmups and startup excluded.",
+              "Each mode generates its own output. Task accuracy is not evaluated; repeated-run drift remains observable.",
+              "", render_timings(timing_rows, measured_only=False).rstrip()]
+    for row in results:
+        if row["drift_observed_prompts"]:
+            lines += ["", f"- {row['dataset_file']} / {row['verify_gdr']} / {row['max_new_tokens']}: "
+                      f"DRIFT_OBSERVED in {row['drift_observed_prompts']} questions; "
+                      "per-repetition token/EOS differences retained in the per-file JSON."]
+    return "\n".join(lines) + "\n"
+
+
+def write_dataset_reports(root, summary):
+    """Write both the cross-file table and each file's own metrics/case references."""
+    if not summary.get("datasets"):
+        return
+    from qwen35_dflash.ascend310p.utils import atomic_write_json
+
+    results = summary["dataset_results"] = dataset_results(summary)
+    fields = ["dataset_id", "dataset_file", "dataset_sha256", "verify_gdr", "max_new_tokens", "status",
+              "total_samples", "selected_samples", "measured_prompts", "failed_prompts", "not_run_prompts",
+              "allowed_difference_prompts", "drift_observed_prompts",
+              "accepted_draft_tokens", "drafted_tokens", "weighted_acceptance_rate", "tokens_per_speculative_round",
+              "ordinary_measured_tokens", "dflash_measured_tokens", "ordinary_tokens_per_second", "dflash_tokens_per_second",
+              "total_model_time_speedup", "throughput_speedup",
+              *[stage + "_ms_per_call" for stage in STAGES],
+              *[stage + "_ms_per_generation" for stage in STAGES],
+              *[phase + "_phase_ms_per_generation" for phase in PHASES]]
+    with (root / "datasets.csv").open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        for result in results:
+            row = {key: result.get(key) for key in fields}
+            for stage in STAGES:
+                value = result["stage_ms_per_call"][stage]
+                row[stage + "_ms_per_call"] = value.get("mean_ms")
+                row[stage + "_ms_per_generation"] = value.get("mean_total_ms_per_generation")
+            for phase in PHASES:
+                row[phase + "_phase_ms_per_generation"] = result["phase_timings"][phase].get("mean_ms")
+            writer.writerow(row)
+    cases = [r for c in summary.get("cells", [summary]) for r in c.get("cases", [])]
+    for dataset in summary["datasets"]:
+        # IDs are generated by the loader, but saved requests may have been edited.
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", dataset["id"]):
+            raise ValueError("unsafe dataset ID in saved request")
+        directory = root / "datasets" / dataset["id"]
+        directory.mkdir(parents=True, exist_ok=True)
+        selected = [r for r in results if r["dataset_id"] == dataset["id"]]
+        payload = {"schema_version": 1, "dataset": dataset, "protocol": summary.get("protocol", {}),
+                   "results": selected, "cases": [r for r in cases if r.get("dataset_id") == dataset["id"]],
+                   "quality_evaluation": "NOT_RUN", "source_summary": str(root / "summary.json")}
+        atomic_write_json(directory / "summary.json", payload)
+        (directory / "summary.md").write_text(render_datasets(selected), encoding="utf-8")
+
+
 def markdown(summary):
     def value(number, percent=False):
         return "N/A" if number is None else f"{number * 100:.2f}%" if percent else f"{number:.2f}"
@@ -497,6 +654,8 @@ def markdown(summary):
                       + row["error"].replace("\n", " ")]
         elif row.get("output_difference"):
             lines += ["", f"- {row['id']} (allowed output difference): " + row["output_difference"].replace("\n", " ")]
+    if summary.get("dataset_results"):
+        lines += ["", render_datasets(summary["dataset_results"]).rstrip()]
     return "\n".join(lines) + "\n"
 
 
@@ -525,7 +684,8 @@ def collect_results(args, prompts, raw, index, plan_hash, batch_hash, eos, exit_
         index_error = "missing/invalid batch index or fake ACL; inspect runner.log"
     rows = []
     for i, prompt in enumerate(prompts):
-        row = {**prompt, "input_tokens": len(prompt["prompt_token_ids"]), "status": "FAIL"}
+        row = {**prompt, "input_tokens": len(prompt["prompt_token_ids"]), "status": "FAIL",
+               "max_new_tokens": args.max_new_tokens, "verify_gdr": getattr(args, "verify_gdr", None)}
         try:
             if index_error:
                 raise RuntimeError(index_error)
@@ -593,9 +753,10 @@ def collect_results(args, prompts, raw, index, plan_hash, batch_hash, eos, exit_
 def write_summary(root, summary):
     from qwen35_dflash.ascend310p.utils import atomic_write_json
 
+    write_dataset_reports(root, summary)
     atomic_write_json(root / "summary.json", summary)
     (root / "summary.md").write_text(markdown(summary), encoding="utf-8")
-    print(markdown(summary), flush=True)
+    print(render_datasets(summary["dataset_results"]) if summary.get("datasets") else markdown(summary), flush=True)
     print(f"Summary: {root / 'summary.json'}", flush=True)
     if any("decoded_outputs" in row for row in summary["cases"]):
         (root / "generations.txt").write_text(render_outputs(summary["cases"]), encoding="utf-8")
@@ -626,7 +787,7 @@ def summarize_existing(args):
 
     prompts = request["prompts"]
     names = [p["id"] for p in prompts]
-    if not 1 <= len(names) <= 64 or len(set(names)) != len(names) or any(
+    if not names or len(set(names)) != len(names) or any(
             not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name) for name in names):
         raise ValueError("invalid saved prompt IDs")
     plan = index.parent / Path(argument("--model")).name
@@ -661,6 +822,7 @@ def summarize_existing(args):
         tokenizer, _ = load_tokenizer(model_dir=args.model_dir)
     summary = collect_results(stored, prompts, raw, index, plan_hash, batch_hash, eos, None, tokenizer)
     summary.update(request=str(request_path), process_wall_seconds=None,
+        datasets=request.get("datasets", []), max_new_tokens=stored.max_new_tokens,
         reanalysis={"source_index_sha256": sha256_file(index), "source_request_sha256": sha256_file(request_path),
                     "script_sha256": sha256_file(Path(__file__)), "device_execution": "NOT_RUN",
                     "source_reports_modified": False, "limits_source": "saved request, not CLI defaults"})
@@ -671,6 +833,8 @@ def summarize_existing(args):
 
 def run(args):
     if getattr(args, "summarize_existing", None):
+        if offline_datasets.selected(args) or getattr(args, "num_questions", None) is not None:
+            raise ValueError("--summarize-existing uses saved dataset selection; do not supply dataset inputs")
         return summarize_existing(args)
     from qwen35_dflash.ascend310p.cpp_runtime import resolve_cpp_runner, validate_cpp_runner_options
     from qwen35_dflash.ascend310p.generation import tokenize_prompt
@@ -689,7 +853,7 @@ def run(args):
     if args.device_id < 0 or not 1 <= args.max_draft_tokens <= 15 or args.max_new_tokens <= 0:
         raise ValueError("invalid device/token limits")
     set_benchmark_counts(args)
-    prompts = load_prompts(args.prompts, getattr(args, "prompt_id", None), getattr(args, "prompt_group", "all"))
+    prompts, datasets = load_inputs(args)
     manifest = (args.deployment_manifest or run_dir / "artifacts/deployment-manifest.json").resolve()
     config = json.loads((args.runner_config or run_dir / "runner.json").read_text())
     identity = validate_cpp_runner_options(config, args.device_id)
@@ -697,6 +861,8 @@ def run(args):
     help_result = subprocess.run([str(executable), "--help"], capture_output=True, text=True)
     if help_result.returncode or "--prompt-batch" not in help_result.stdout:
         raise RuntimeError("rebuild the C++ runner: --prompt-batch support is required")
+    if len(prompts) > 64 and "unlimited prompt count" not in help_result.stdout:
+        raise RuntimeError("rebuild the C++ runner for offline datasets with more than 64 prompts (no OM recompilation needed)")
     if (args.warmup, args.repetitions) != (3, 10) and "positive; default 10" not in help_result.stdout:
         raise RuntimeError("rebuild the C++ runner for configurable --warmup/--repetitions (no OM recompilation needed)")
     root = require_run_output(Path(tempfile.mkdtemp(prefix="prompt-suite-", dir=run_dir)))
@@ -713,7 +879,10 @@ def run(args):
         tokens = tokenize_prompt(tokenizer, item["prompt"], chat=args.chat)
         if (not tokens or len(tokens) + args.max_new_tokens > contract["capacity"]
                 or any(token < 0 or token >= contract["vocab_size"] for token in tokens)):
-            raise ValueError(f"prompt {item['id']} exceeds vocabulary/context limit; shorten it or reduce max-new-tokens")
+            raise ValueError(f"{offline_datasets.prompt_label(item)}: input {len(tokens)} + output budget {args.max_new_tokens} "
+                             f"exceeds vocabulary/context limit (capacity {contract['capacity']}); no device jobs started")
+        if "prompt_token_ids" in item and item["prompt_token_ids"] != tokens:
+            raise ValueError(f"{offline_datasets.prompt_label(item)}: tokenization changed since matrix preflight")
         item["prompt_token_ids"] = tokens
         item["input_tokens"] = len(tokens)
     batch = root / "prompts.txt"
@@ -729,7 +898,7 @@ def run(args):
         "--warmup", str(args.warmup), "--repetitions", str(args.repetitions), "--trace-rounds"]
     if args.low_memory:
         command.append("--low-memory")
-    request = {"schema_version": 1, "prompts": prompts, "chat": args.chat, "eos_token_ids": eos,
+    request = {"schema_version": 1, "prompts": prompts, "datasets": datasets, "chat": args.chat, "eos_token_ids": eos,
         "prompt_group": getattr(args, "prompt_group", "all"),
         "warmup": args.warmup, "repetitions": args.repetitions,
         "verify_gdr": args.verify_gdr, "incremental_abi": contract["abi"],
@@ -748,7 +917,8 @@ def run(args):
     process_wall_seconds = time.monotonic() - start
     raw = json.loads(index.read_text()) if index.exists() else {}
     summary = collect_results(args, prompts, raw, index, plan_hash, batch_hash, eos, exit_code, tokenizer)
-    summary.update(request=str(root / "request.json"), process_wall_seconds=process_wall_seconds)
+    summary.update(request=str(root / "request.json"), process_wall_seconds=process_wall_seconds,
+                   datasets=datasets, max_new_tokens=args.max_new_tokens)
     return write_summary(root, summary)
 
 
@@ -761,6 +931,7 @@ def main():
                         help="require the selected compiled route; omitted: read manifest")
     parser.add_argument("--runner-config", type=Path)
     parser.add_argument("--model-dir", type=Path, help="required for inference; optional for decoding saved outputs")
+    offline_datasets.add_arguments(parser)
     parser.add_argument("--prompts", type=Path, help="custom JSON; default: 8 short + 12 long (~1K input) prompts")
     parser.add_argument("--prompt-group", choices=("all", "short", "long"), default="all",
                         help="select all (default), short, or long inputs; custom JSON can specify group")

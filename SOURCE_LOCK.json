@@ -164,7 +164,7 @@
     "files": [
       {
         "source_file": "README.md",
-        "source_sha256": "26141f73057668609efa364968ad3250545c6db2883b6d865318da1faca7080d"
+        "source_sha256": "1f9c98afa14614badf70b3080268fb3f653d48663248c640f208f3af9a2b864f"
       },
       {
         "source_file": "config/gdr_chunk_air_om_factory.example.json",
@@ -180,7 +180,7 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "7ac174ad84769c9aeb3d0aca5bba362d85a83d30b8677bb10ea1d71e4d78fc43"
+        "source_sha256": "c9b0272436ba18d554e5f0879d618a7052e40799f5e94578640741fbcb925a15"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -296,7 +296,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/CMakeLists.txt",
-        "source_sha256": "8fa6f96fbe1905846de4bb25591c344cc4367f96d9ae9979c9158c948e136e98"
+        "source_sha256": "54bdafc0a90b70ba7124ee6d5cd40dc5b25f64424cc077e4fe54a97eee453acf"
       },
       {
         "source_file": "framework/runtime/cpp/include/qwen35_dflash/acl_executor.hpp",
@@ -336,7 +336,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/src/main.cpp",
-        "source_sha256": "3c4aa630067f10ff0e8908922bc63cf15e252af6086641eba44796de12c1e7f5"
+        "source_sha256": "51004ca7402e21d2b100a79fed94c52f1e61aa02fe6ed3d5c5801df2b9471b99"
       },
       {
         "source_file": "framework/runtime/cpp/src/sha256.cpp",
@@ -500,7 +500,7 @@
       },
       {
         "source_file": "tools/benchmark_prompts.py",
-        "source_sha256": "6289c725b688396ca2a04a5a2313c93facb47d7e995579d7ec3260dd056996ce"
+        "source_sha256": "5edd52fd230c4e4d32a0ccb30826d6606f88efecfbb719a23df48446c9397525"
       },
       {
         "source_file": "tests/test_prompt_suite.py",
@@ -532,7 +532,7 @@
       },
       {
         "source_file": "tools/benchmark_gdr_lengths.py",
-        "source_sha256": "c39d4b0c2921c183bf7ce8af52f1b675205b1fad5911b5d699795d78913dd526"
+        "source_sha256": "66c1c52cd3d8ab2619125a5df61118fc9986a4d8dab812990a8f7ded16262b75"
       },
       {
         "source_file": "tests/test_gdr_length_matrix.py",
@@ -585,6 +585,14 @@
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/repeatability.py",
         "source_sha256": "8e2ad2ebd61aa0f8c6c22abd0ebc99adb504088128d9c22e738317e4921f05c3"
+      },
+      {
+        "source_file": "tests/test_offline_datasets.py",
+        "source_sha256": "7bfbe4be7b9014f07752a3eee5ec5a0ebc505a9b4ff78977b41a6c045dc9795d"
+      },
+      {
+        "source_file": "tools/offline_datasets.py",
+        "source_sha256": "d76f01304283391fb368a99f3821be195ed1ef8a3053822b6031586ee10df67e"
       }
     ],
     "supported_abis": [

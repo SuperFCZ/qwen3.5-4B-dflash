@@ -70,7 +70,7 @@ void Usage(std::ostream& stream) {
       << "  --low-memory                 chunk paired: measure ordinary, unload, then DFlash\n"
       << "  --output PATH                paired JSON report\n"
       << "  --prompt-token-ids CSV       non-empty pretokenized prompt\n"
-      << "  --prompt-batch PATH          chunk paired: run all prompts in one loaded process\n"
+      << "  --prompt-batch PATH          chunk paired: run all prompts in one loaded process (unlimited prompt count)\n"
       << "  --prompt-batch-sha256 HEX    expected batch file hash; replaces --prompt-token-ids\n"
       << "  --eos-token-ids CSV          optional EOS token IDs\n"
       << "  --pad-token-id ID            default 0\n"
@@ -262,7 +262,7 @@ Arguments ParseArguments(int argc, char** argv) {
       std::string id, csv, extra;
       if (!(row >> id >> std::quoted(csv)) || (row >> extra) || id.empty() || id.size() > 64 ||
           id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != std::string::npos ||
-          !ids.emplace(id, true).second || result.prompt_batch.size() >= 64)
+          !ids.emplace(id, true).second)
         throw std::invalid_argument("invalid/duplicate prompt batch row");
       result.prompt_batch.push_back({id, ParseTokenIds(csv, false, "batch tokens")});
     }

@@ -25,47 +25,7 @@ stage_timings = suite.stage_timings
 
 
 def aggregate_cases(rows):
-    totals = suite.aggregate(rows)
-    good = [row for row in rows if row["status"] in suite.MEASURED_STATUSES]
-    rounds = sum(row["speculative_rounds"] for row in good)
-    totals["tokens_per_speculative_round"] = (
-        sum(row["tokens_emitted_in_speculative_rounds"] for row in good) / rounds if rounds else None)
-    for mode in ("ordinary", "dflash"):
-        tokens = sum(row[mode + "_measured_tokens"] for row in good)
-        elapsed = sum(row[mode + "_total_measured_ms"] for row in good)
-        totals[mode + "_measured_tokens"] = tokens
-        totals[mode + "_tokens_per_second"] = tokens * 1000 / elapsed if elapsed else None
-    ordinary_tps, dflash_tps = (totals[mode + "_tokens_per_second"] for mode in ("ordinary", "dflash"))
-    totals["throughput_speedup"] = dflash_tps / ordinary_tps if ordinary_tps and dflash_tps else None
-    totals["both_modes_reached_budget"] = sum(
-        row["generated_tokens"] == row["ordinary_generated_tokens"] == row["max_new_tokens"] for row in good)
-    totals["stage_ms_per_call"] = {}
-    for stage in STAGES:
-        values = [row["stage_timings"][stage] for row in good]
-        missing = [row["id"] for row in good if not row["stage_timings"][stage]["available"]]
-        if not values or missing:
-            totals["stage_ms_per_call"][stage] = {"available": False, "missing_prompt_ids": missing}
-        else:
-            calls = sum(value["calls"] for value in values)
-            elapsed = math.fsum(value["total_ms"] for value in values)
-            measurements = sum(value["measurements"] for value in values)
-            totals["stage_ms_per_call"][stage] = {
-                "available": True, "calls": calls, "total_ms": elapsed,
-                "mean_ms": elapsed / calls if calls else None,
-                "measurements": measurements,
-                "mean_total_ms_per_generation": elapsed / measurements if measurements else None,
-            }
-    totals["phase_timings"] = {}
-    for phase in suite.PHASES:
-        values = [row.get("phase_timings", {}).get(phase, {}) for row in good]
-        if not values or any(not value.get("available") for value in values):
-            totals["phase_timings"][phase] = {"available": False}
-            continue
-        measurements = sum(value["measurements"] for value in values)
-        elapsed = math.fsum(value["total_ms"] for value in values)
-        totals["phase_timings"][phase] = {"available": True, "measurements": measurements,
-                                         "total_ms": elapsed, "mean_ms": elapsed / measurements}
-    return totals
+    return suite.aggregate_metrics(rows)
 
 
 def read_cell(summary_path, route, length, prompts):
@@ -78,6 +38,8 @@ def read_cell(summary_path, route, length, prompts):
     for item, expected in zip(summary["cases"], prompts):
         if item.get("prompt_token_ids") != expected["prompt_token_ids"]:
             raise ValueError("tokenized prompts differ between matrix cells")
+        if any(item.get(key) != expected.get(key) for key in ("dataset_id", "dataset_file", "dataset_line")):
+            raise ValueError("saved suite dataset provenance differs from matrix request")
         row = dict(item, verify_gdr=route, max_new_tokens=length,
                    input_tokens=len(expected["prompt_token_ids"]), group=expected.get("group", "custom"))
         if row["status"] in suite.MEASURED_STATUSES:
@@ -158,6 +120,16 @@ def compare_routes(cells, lengths):
 
 
 def render(summary):
+    if summary.get("datasets"):
+        protocol = summary["protocol"]
+        lines = [f"Warmup per mode/question: {protocol['warmup']}; measured repetitions: {protocol['repetitions']}.", "",
+                 suite.render_datasets(suite.dataset_results(summary)).rstrip()]
+        for cell in summary["cells"]:
+            if cell.get("error"):
+                lines += ["", f"- {cell['verify_gdr']}/{cell['max_new_tokens']}: {cell['error']}"]
+        lines += ["", "Per-file reports: datasets/<dataset-id>/summary.json and summary.md; file table: datasets.csv.",
+                  "Question text, source line, token counts and raw report paths are retained in the JSON reports."]
+        return "\n".join(lines) + "\n"
     def number(value, percent=False):
         return "N/A" if value is None else f"{value:.2%}" if percent else f"{value:.2f}"
 
@@ -220,10 +192,11 @@ def render(summary):
 
 def save(root, summary):
     summary["route_comparison"] = compare_routes(summary["cells"], summary["lengths"])
+    suite.write_dataset_reports(root, summary)
     atomic_write_json(root / "summary.json", summary)
     (root / "summary.md").write_text(render(summary), encoding="utf-8")
     fields = [
-        "verify_gdr", "max_new_tokens", "id", "group", "input_tokens", "status", "acceptance_rate",
+        "verify_gdr", "max_new_tokens", "id", "dataset_id", "dataset_file", "dataset_line", "group", "input_tokens", "status", "acceptance_rate",
         "tokens_per_speculative_round", "generated_tokens", "ordinary_generated_tokens",
         "stop_reason", "ordinary_stop_reason", "dflash_tokens_per_second",
         "ordinary_tokens_per_second", "speedup", "throughput_speedup",
@@ -263,7 +236,7 @@ def prepare(args, root):
     for route in routes:
         if getattr(args, route + "_deployment_manifest", None) is None:
             raise ValueError(f"--{route}-deployment-manifest is required for --verify-gdr {selection}")
-    prompts = suite.load_prompts(args.prompts, args.prompt_id, getattr(args, "prompt_group", "all"))
+    prompts, datasets = suite.load_inputs(args)
     args.runner_config = (args.runner_config or args.run_dir / "runner.json").resolve()
     identity = validate_cpp_runner_options(json.loads(args.runner_config.read_text()), args.device_id)
     args.runner = resolve_cpp_runner(args.runner)
@@ -286,7 +259,7 @@ def prepare(args, root):
                 raise ValueError(f"invalid tokens for {prompt['id']}")
             for length in args.lengths:
                 if len(tokens) + length > contract["capacity"]:
-                    raise ValueError(f"{route}/{prompt['id']}: prompt {len(tokens)} + budget {length} "
+                    raise ValueError(f"{route}/{suite.offline_datasets.prompt_label(prompt)}: prompt {len(tokens)} + budget {length} "
                                      f"exceeds capacity {contract['capacity']}; no device jobs started. "
                                      f"Export the selected route(s) with max_sequence_length >= {required_capacity}")
         bundles[route] = {
@@ -304,7 +277,7 @@ def prepare(args, root):
     atomic_write_json(root / "prompts.json", prompts)
     return {
         "schema_version": 1, "status": "PREPARED", "routes": list(routes),
-        "lengths": args.lengths, "prompts": prompts,
+        "lengths": args.lengths, "prompts": prompts, "datasets": datasets,
         "minimum_required_capacity": required_capacity,
         "bundles": bundles, "runtime_identity": identity, "tokenizer_source": tokenizer_source,
         "runner": {"path": str(args.runner), "sha256": sha256_file(args.runner)},
@@ -333,8 +306,10 @@ def run(args):
     root = require_run_output(Path(tempfile.mkdtemp(prefix="gdr-lengths-", dir=args.run_dir)))
     print(f"Output: {root}", flush=True)
     summary = prepare(args, root)  # Selected routes/lengths checked before the first model load.
+    selection = (f"{len(summary['prompts'])} questions from " + ", ".join(d["name"] for d in summary["datasets"])
+                 if summary.get("datasets") else ", ".join(p["id"] for p in summary["prompts"]))
     print(f"Selected routes: {', '.join(summary['routes'])}; lengths: {', '.join(map(str, summary['lengths']))}; "
-          f"prompts: {', '.join(p['id'] for p in summary['prompts'])}", flush=True)
+          f"prompts: {selection}", flush=True)
     atomic_write_json(root / "request.json", summary)
     summary["status"] = "PREPARED" if args.plan_only else "RUNNING"
     save(root, summary)
@@ -356,6 +331,8 @@ def run(args):
             options.max_new_tokens = length
             options.prompts = root / "prompts.json"
             options.summarize_existing = None
+            if summary.get("datasets"):
+                options._prepared_inputs = (summary["prompts"], summary["datasets"])
             try:
                 if sha256_file(options.deployment_manifest) != summary["bundles"][route]["manifest_sha256"]:
                     raise ValueError("deployment manifest changed since matrix preflight")
@@ -408,6 +385,7 @@ def parser():
                         help="required when --verify-gdr is mtp or both")
     result.add_argument("--lengths", type=int, nargs="+", default=list(DEFAULT_LENGTHS),
                         help="one or more output budgets, e.g. --lengths 512")
+    suite.offline_datasets.add_arguments(result)
     result.add_argument("--prompts", type=Path, help="custom JSON; default: 8 short + 12 long (~1K input) prompts")
     result.add_argument("--prompt-group", choices=("all", "short", "long"), default="all",
                         help="select all (default), short, or long inputs; custom JSON can specify group")

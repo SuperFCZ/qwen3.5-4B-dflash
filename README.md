@@ -28,6 +28,7 @@ source /absolute/path/dflash-env.sh
 |---|---|
 | 直接运行 Torch-NPU，切换 Chunk / MTP | [Torch-NPU 使用](docs/DFLASH_RUN_AND_VALIDATE.md) |
 | 运行 OM：短 + 1K 输入统一测试、Chunk/MTP、多长度、分项时延 | [OM/C++ 使用](docs/GDR_CHUNK_AIR_OM.md) |
+| 读取离线 JSONL/JSON 测试集，按文件统计接受率和时延 | [离线测试集](docs/GDR_CHUNK_AIR_OM.md#离线开源测试集) |
 | 了解 Draft → Verify → Commit | [流程与架构](docs/DFLASH_ARCHITECTURE.md) |
 | 查看已有速度、接受率、deterministic 漂移问题 | [结果与已知问题](docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md) |
 

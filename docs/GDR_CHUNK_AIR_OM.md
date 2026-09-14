@@ -83,6 +83,38 @@ cd "$AI_RUN_DIR"
 
 </details>
 
+## 离线开源测试集
+
+直接读取 GPU 测试使用的 `gsm8k.jsonl`、`math500.jsonl`、`humaneval.jsonl` 等文件，
+每行 `{"question":"完整问题"}`；也支持相同记录组成的 JSON 数组。不会联网下载数据。
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
+  --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
+  --runner-config "$RUNNER_CONFIG" --model-dir "$TARGET_DIR" \
+  --chunk-deployment-manifest "$CHUNK_DEPLOYMENT_MANIFEST" \
+  --mtp-deployment-manifest "$MTP_DEPLOYMENT_MANIFEST" \
+  --dataset-dir /absolute/path/datasets --num-questions 10 \
+  --verify-gdr both --lengths 128 --warmup 1 --repetitions 3 \
+  --max-draft-tokens "$MAX_DRAFT_TOKENS" --device-id "$DEVICE_ID" \
+  --low-memory --allow-output-differences
+```
+
+- `--num-questions 10`：**每个文件**取前 10 条；省略则读取全部，保持文件顺序。
+- 只测指定文件：将 `--dataset-dir ...` 替换成 `--dataset-files /path/gsm8k.jsonl /path/math500.jsonl`。
+- 文本字段为 `prompt` 时增加 `--dataset-field prompt`；默认使用 `question`，不把答案字段加入输入。
+- 单路线、多长度、`--plan-only` 仍可用。离线文件替代内置 prompt，不与 `--prompts`、short/long 或 prompt ID 筛选混用。
+
+每个**文件 × 路线 × 输出长度**单独汇总接受率、接受/提议数、每轮 token、吞吐、加速比，
+以及普通 Prefill/Decode、DFlash Prefill/Draft/Verify 时延。
+查看 `gdr-lengths-*/datasets.csv`，或 `datasets/<数据集ID>/summary.md`、`summary.json`；
+逐题结果在 `cases.csv`，文件哈希和样本行号随报告保存。接受率是总接受数/总提议数，排除预热。
+这些是推理效率指标，不是 GSM8K 正确率或 HumanEval pass@1。
+
+同一长度、路线下所有文件复用一次模型加载。超过 64 条需更新并重建 C++ runner；无需重编 OM。
+先用少量样本检查；文件格式和全部所选输入的容量会在设备运行前校验，不会静默跳过或截短问题。
+`benchmark_prompts.py` 也支持上述离线参数，输出上限使用 `--max-new-tokens`。
+
 ## 查看文字、接受率和重新汇总
 
 在环境配置中填写 `SAVED_BATCH`（已有 `runner-batch.json` 的路径），重新 `source` 后执行：
