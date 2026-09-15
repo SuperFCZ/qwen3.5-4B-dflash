@@ -1,5 +1,8 @@
 # Draft W8A16 / GPTQ W4A16
 
+内网 clone 后先按 [快速指南](DRAFT_QUANTIZATION_QUICKSTART.md)配置和运行；本文保留权重合同、
+实现细节及证据范围。快速指南沿用 `gdr-chunk-verify` 的外置环境配置方式。
+
 本分支从 `feature/gdr-chunk-verify` 的 `8c44da7` 创建。`run_npu`、
 `benchmark_npu` 和 AIR/OM 工厂均接受 `draft_quantization=fp16|w8a16|w4a16`。
 默认 `fp16` 保留旧 checkpoint；量化版本直接导入指定发布者的固定权重，

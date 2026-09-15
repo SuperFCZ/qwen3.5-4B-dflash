@@ -1,8 +1,11 @@
 # Qwen3.5-4B DFlash rollback
 
-`feature/gdr-chunk-verify` 从 quant/AIR 框架分支演进，使用原 chunk GDR 实现
-Qwen3.5-4B persistent DFlash rollback，并支持同一套代码在两种 Target
-精度下运行：
+`feature/draft-quantization` 基于 `gdr-chunk-verify` 的 `8c44da7`，增加发布的
+W8A16 / GPTQ W4A16 Draft。内网 clone 后按
+[Draft 量化快速指南](docs/DRAFT_QUANTIZATION_QUICKSTART.md)配置环境、运行 Torch-NPU、
+编译并验证 OM。真实 310P 结果待内网验证。
+
+原 chunk GDR 的 persistent DFlash rollback 保持可用，Target 精度独立选择：
 
 - 默认 FP16：不传量化参数；
 - Target W8A8 dynamic：追加 `--config ... --quant_mode enable`；
@@ -23,7 +26,7 @@ Qwen3.5 DFlash port，不是 z-lab/dflash 全部 generation API 的逐行复制�
 | 环节 | 当前行为 |
 | --- | --- |
 | Prompt | Target 按最多 64 个真实 token 分块 prefill；原 GDR 接收本次真实行数 `effective_length` |
-| Draft | 官方 6 层、69 tensor；维护逐层 committed KV cache，只计算新增 feature 与当前 block |
+| Draft | FP16 为原 6 层；W8A16/W4A16 为发布的 5 层；按所选层数维护 committed KV cache |
 | `block_size` | 包含 1 个 anchor；`B=16` 表示最多 15 个 proposal，Target verify 总行数最多 16 |
 | Target verify | 一次输入 `[anchor, d1, ..., dK]`，不附带历史前缀 |
 | 接受 | 只提交最长连续匹配前缀；提交行数为 `1 + accepted` |
@@ -111,6 +114,7 @@ embedding_scale_path: /data/qwen35-w8a8/embedding_scale.bin
 
 | 文档 | 内容 |
 | --- | --- |
+| [Draft 量化快速指南](docs/DRAFT_QUANTIZATION_QUICKSTART.md) | 内网配置、权重准备、Torch-NPU、OM/C++ 和回传结果 |
 | [当前架构](docs/DFLASH_ARCHITECTURE.md) | token/feature/cache/state 流程，以及与锁定官方 DFlash 的差异 |
 | [自定义算子](docs/DFLASH_OPERATORS.md) | 已有、生产必需、条件新增和性能优化算子的功能与 I/O |
 | [运行与验证](docs/DFLASH_RUN_AND_VALIDATE.md) | CPU/CUDA/NPU、W8A8、benchmark、msprof 和报告门禁 |

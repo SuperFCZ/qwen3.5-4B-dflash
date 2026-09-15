@@ -34,7 +34,7 @@ ordinary greedy 与 strict-greedy DFlash 逐 token 生成
 [Draft 量化指南](../docs/DRAFT_QUANTIZATION.md)。旧两输入 FP16 bundle 继续兼容；
 量化 bundle 要求支持只读权重输入的 runner 1.1.0。
 
-当前第一版 OM 使用固定 gear 的完整前缀重算，以先冻结可验证的两输入/两输出 ABI。它确实由
+当前第一版 OM 使用固定 gear 的完整前缀重算：FP16 为两输入/两输出，量化 Draft 另有 72 个只读输入。它确实由
 C++ 调用 OM 完成 token 推理，但尚未把 `quant` 分支已有的 persistent rollback cache/state
 转成显式 OM I/O。因此它是功能基线，不应在真实测量前声称已达到闭源框架时延。
 

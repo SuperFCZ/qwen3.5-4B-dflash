@@ -136,7 +136,7 @@
     "contract_file": "config/npu_benchmark_v1.json",
     "contract_sha256": "b5fdd64b1eaea44b3f53452bc260cf62de53ca38b1fcd8699bf4f9e358d99c76",
     "documentation_file": "docs/DFLASH_RUN_AND_VALIDATE.md",
-    "documentation_sha256": "164828a55c204691a534184ec58d144b709df2bb2769ed42bb3979db85e6b197",
+    "documentation_sha256": "6cc1ca7126ff0211ac768bc816b6a4fd05f6167d60dd44e70d074eca6a1b98ed",
     "policy": "strict-greedy gate before timing; original main inference.py and both rollback modes use an equal 32-token budget; quantized ordinary and DFlash use the exact same original YAML and resolved artifacts; rollback ordinary remains the scheduler-control baseline; rollback prefill uses block-aligned real-token chunks and rollback verify/accepted+1 commit uses two original-GDR chunk calls; separate ordinary/dflash processes; synchronized unprofiled 3+10 baseline; cumulative counters separated from resettable session state; copied-source content identity without VCS metadata; msprof diagnostic only with MSTX disabled by default and explicit opt-in; no CPU fallback"
   },
   "draft_quantization": {
@@ -155,7 +155,13 @@
     "source_2_file": "tools/validate_draft_quantization.py",
     "source_2_sha256": "d49f37cea4463dcd9afcd3b5a00e414708f47f30f2645a9ef1c12be5d597a53b",
     "source_3_file": "docs/DRAFT_QUANTIZATION.md",
-    "source_3_sha256": "0823fafe66632f775ae3a88160e9603113ff1ea4ddffc443747ee98edff461f2"
+    "source_3_sha256": "8f160acce715b5c58a679a327713c9054fb71029433a0322f517a7e2b44b1c27",
+    "quickstart_file": "docs/DRAFT_QUANTIZATION_QUICKSTART.md",
+    "quickstart_sha256": "89190f8a271ca32d726f94ccbcf10f40d8ee8e2434ec21e00c9d35d797a5378b",
+    "environment_example_file": "config/draft_quantization_env.sh.example",
+    "environment_example_sha256": "8c72d8beef2a87617b233b7e33244ed4e27a3882417c1aa6447f1fe1cb4dfa5e",
+    "receiver_bootstrap_file": "tools/python-bootstrap/sitecustomize.py",
+    "receiver_bootstrap_sha256": "e68b19bc84dc7499ab114ace2a1b5a9a6516fb830aa4dbfd79c235f000f2b295"
   },
   "quantized_om_sources": {
     "source_0_file": "framework/python/qwen35_dflash/ascend310p/contracts.py",

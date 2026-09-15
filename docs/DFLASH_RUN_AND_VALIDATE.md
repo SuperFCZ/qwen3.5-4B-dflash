@@ -3,6 +3,9 @@
 本文只保留可执行命令、报告门禁和性能口径。算法见[当前架构](DFLASH_ARCHITECTURE.md)，算子
 见[自定义算子清单](DFLASH_OPERATORS.md)。
 
+W8A16 / GPTQ W4A16 Draft 的独立 clone 配置和运行步骤见
+[Draft 量化快速指南](DRAFT_QUANTIZATION_QUICKSTART.md)。以下未指定 Draft 精度的例子默认使用原 FP16 Draft。
+
 ## 1. 证据分级
 
 | 结论 | 最低证据 |
@@ -28,8 +31,9 @@ python -m pip install "transformers==5.14.1" safetensors huggingface-hub
 export PYTHONDONTWRITEBYTECODE=1
 ```
 
-入口会检查 Draft config、6 层/69 tensor、shape/dtype/hash，以及 Target/Draft 共享权重、device 和
-dtype。`block_size` 包含 anchor，范围 2..16；B=16 对应 K=15、T=16。
+入口会检查所选 Draft 的 config、tensor 合同、shape/dtype/hash，以及 Target/Draft 共享权重、
+device 和 dtype。默认 FP16 为 6 层/69 tensor，量化 Draft 为各自锁定的 5 层 checkpoint。
+`block_size` 包含 anchor，范围 2..16；B=16 对应 K=15、T=16。
 
 ## 3. CPU/CUDA
 
@@ -191,7 +195,8 @@ ordinary S=1、rollback S=1 和 embedding lookup，但不替代整网 DFlash 门
   --quant_mode enable
 ```
 
-Target Linear/输入 embedding 走 W8A8，Draft embedding、LM head 和 6 层主体保持 FP16。整网
+Target Linear/输入 embedding 走 W8A8，Draft embedding 和 LM head 保持 FP16；Draft 主体精度由
+`--draft-quantization fp16|w8a16|w4a16` 独立选择。整网
 validate 比较的是“同一个 W8A8 Target 的 ordinary 与 DFlash”；若还要求 W8A8 与 FP16 token
 一致，需要另做 ordinary 精度对照。
 

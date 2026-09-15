@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# 复制到源码之外，填写实际路径后使用 source 加载；沿用 gdr-chunk-verify 的配置方式。
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "请在 Bash 中使用 source 加载此文件。" >&2
+    return 2 2>/dev/null || exit 2
+fi
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    echo "请使用 source 加载此文件。" >&2
+    exit 2
+fi
+
+export REPO_ROOT="/absolute/path/qwen3.5-4B-dflash"
+export MODEL_PYTHON="/absolute/path/npu-env/bin/python"
+export CANN_ROOT="/absolute/path/ascend-toolkit"
+export RECEIVER_ROOT="/absolute/path/qwen35-receiver"
+export TARGET_DIR="/absolute/path/Qwen3.5-4B"
+export DRAFT_VARIANT=w8a16                       # w8a16 / w4a16 / fp16
+export DRAFT_DIR="/absolute/path/drafts/$DRAFT_VARIANT"
+export AI_RUN_DIR="/absolute/path/runs/draft-$DRAFT_VARIANT-001"
+# AI_RUN_DIR 必须在源码之外；每次验证用新目录，workspace 用户使用分配的 run。
+
+export DEVICE_ID=0
+export PROMPT='The capital of France is'         # 本指南统一使用 raw prompt
+export QUANT_MODE=disable                       # Torch-NPU Target：disable=FP16，enable=W8A8
+export QUANT_CONFIG="/absolute/path/qwen35-w8a8.yaml"  # OM Target 使用此 W8A8 配置
+export ATC_BIN="$CANN_ROOT/bin/atc"
+export SOC_VERSION=Ascend310P3                   # 示例；改成实际设备的精确 SoC
+
+# 以下通常无需修改。沿用内网已匹配的 CANN、torch_npu 和自定义算子环境。
+source "$CANN_ROOT/set_env.sh" || return
+mkdir -p "$AI_RUN_DIR/reports" "$AI_RUN_DIR/log" "$AI_RUN_DIR/tmp" "$AI_RUN_DIR/cache" || return
+export RECEIVER_MODELS_DIR="$RECEIVER_ROOT/models"
+export PYTHONPATH="$REPO_ROOT:$REPO_ROOT/framework/python:$REPO_ROOT/tools/python-bootstrap:$RECEIVER_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONDONTWRITEBYTECODE=1
+export TOKENIZERS_PARALLELISM=false
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+export HF_HOME="$AI_RUN_DIR/cache/huggingface"
+export TORCH_HOME="$AI_RUN_DIR/cache/torch"
+export TORCHINDUCTOR_CACHE_DIR="$AI_RUN_DIR/cache/torchinductor"
+export TMPDIR="$AI_RUN_DIR/tmp"
+
+NPU_ARGS=(
+    --target-dir "$TARGET_DIR" --draft-dir "$DRAFT_DIR"
+    --draft-quantization "$DRAFT_VARIANT"
+    --kv-cache-max-len 2048 --device "npu:$DEVICE_ID"
+    --prompt "$PROMPT" --prompt-mode raw
+)
+QUANT_ARGS=()
+case "$QUANT_MODE" in
+    enable) QUANT_ARGS=(--config "$QUANT_CONFIG" --quant_mode enable) ;;
+    disable) ;;
+    *) echo "QUANT_MODE 必须是 enable 或 disable。" >&2; return 2 ;;
+esac

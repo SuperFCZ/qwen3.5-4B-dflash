@@ -1,5 +1,6 @@
 # 基于 `quant` 分支的 AIR → OM → C++ token 推理框架
 
+内网操作入口见 [Draft 量化快速指南](DRAFT_QUANTIZATION_QUICKSTART.md)。
 本量化分支增加了 [W8A16 / GPTQ W4A16 Draft](DRAFT_QUANTIZATION.md)。下面的两输入
 ABI 适用于默认 FP16 Draft；量化 Draft 的 72 个只读权重输入及 runner 1.1.0 要求见该指南。
 
@@ -127,15 +128,14 @@ gear。
 禁止用 CPU fallback 代替设备结论。仓库不保存 checkpoint、量化权重、AIR、OM、编译缓存、
 日志或性能报告。
 
-先确认代码分支确实基于 `quant`：
+在当前分支确认 `quant` 基线祖先关系（无需切换分支）：
 
 ```bash
-git switch framework/quant-air-om
 git merge-base --is-ancestor \
   28f93e784a2beed87020a80bd93c8788754eab1c HEAD
 ```
 
-第二条命令退出码必须为 0。
+命令退出码必须为 0。
 
 设置源码和外置运行目录。下面所有路径都必须替换成真实绝对路径：
 
@@ -234,7 +234,7 @@ cmake --build "$AI_RUN_DIR/build/cpp-host" --parallel
 ctest --test-dir "$AI_RUN_DIR/build/cpp-host" --output-on-failure
 ```
 
-通过标准：所有 Python 测试和两个 CTest 都通过。fake ACL 测试会编译生产
+通过标准：所有 Python 测试和 CTest 都通过。fake ACL 测试会编译生产
 `acl_executor.cpp`，但只证明 host 侧 buffer、调用顺序、scheduler 和 JSON 门禁。
 
 ### 5.2 量化 PyTorch 图探针
@@ -557,7 +557,7 @@ assert report["ordinary"]["stable_generated_token_ids"] == \
 | TorchAir graph break | 某个 Python/自定义 op 未被捕获 | 定位首个 graph break，补正式 converter；不要伪造 AIR |
 | ATC unsupported op | TorchAir 图中存在 ATC 不支持节点 | 保留算子名和编译日志，决定分解或正式自定义算子 |
 | generic `Ascend310P` rejected | SoC 身份不精确 | 从设备/ATC 支持列表填写真实 variant |
-| OM input/output count mismatch | 导出 ABI 漂移 | 必须恢复 2 input/2 output INT64 合同或版本化新 ABI |
+| OM input/output count mismatch | OM、manifest 或 runner 版本不匹配 | FP16 是 2 输入；W8A16/W4A16 是 2 动态 + 72 只读输入，均为 2 输出；使用同版本完整 bundle 和新 runner |
 | C++ OM hash mismatch | OM 被替换或 manifest 错配 | 使用同一次 build 的 OM 和 deployment manifest |
 | ordinary/DFlash token mismatch | 接受、correction、pad 或图语义错误 | 停止性能测试，定位首个 token 分叉 |
 | 延迟明显慢于闭源 | 完整前缀重算成为主瓶颈 | profile 后进入增量 OM state ABI，不要只优化 Python |
