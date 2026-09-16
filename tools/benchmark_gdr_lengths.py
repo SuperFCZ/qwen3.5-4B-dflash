@@ -7,6 +7,7 @@ import csv
 import json
 import math
 import os
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -124,6 +125,8 @@ def render(summary):
         protocol = summary["protocol"]
         lines = [f"Warmup per mode/question: {protocol['warmup']}; measured repetitions: {protocol['repetitions']}.", "",
                  suite.render_datasets(suite.dataset_results(summary)).rstrip()]
+        if len(summary.get("routes", [])) > 1:
+            lines += ["", "Ordinary is measured once per question/output budget and reused across both routes."]
         for cell in summary["cells"]:
             if cell.get("error"):
                 lines += ["", f"- {cell['verify_gdr']}/{cell['max_new_tokens']}: {cell['error']}"]
@@ -139,6 +142,8 @@ def render(summary):
     protocol = summary.get("protocol", {})
     lines += ["", f"Warmup per mode/prompt: {protocol.get('warmup', 'N/A')}; "
               f"measured repetitions: {protocol.get('repetitions', 'N/A')}."]
+    if len(summary.get("routes", [])) > 1:
+        lines += ["Ordinary is measured once per prompt/output budget and reused across both routes."]
     lines += ["", "Input tokens include the selected chat template; output budgets are listed separately.", "",
         "| Max new tokens | GDR | Group | Measured / prompts | Acceptance | Tokens / round | DFlash tok/s | Speedup vs ordinary |",
         "|---:|---|---|---:|---:|---:|---:|---:|",
@@ -219,6 +224,7 @@ def save(root, summary):
 
 
 def prepare(args, root):
+    from tools.ordinary_baseline import ordinary_contract
     from qwen35_dflash.ascend310p.cpp_runtime import resolve_cpp_runner, validate_cpp_runner_options
     from qwen35_dflash.ascend310p.generation import tokenize_prompt
     from qwen35_dflash.ascend310p.incremental_plan import write_incremental_plan
@@ -240,6 +246,10 @@ def prepare(args, root):
     args.runner_config = (args.runner_config or args.run_dir / "runner.json").resolve()
     identity = validate_cpp_runner_options(json.loads(args.runner_config.read_text()), args.device_id)
     args.runner = resolve_cpp_runner(args.runner)
+    if len(routes) > 1:
+        help_result = subprocess.run([str(args.runner), "--help"], capture_output=True, text=True)
+        if help_result.returncode or "dflash-only batch" not in help_result.stdout:
+            raise RuntimeError("rebuild the C++ runner for ordinary baseline reuse (no OM recompilation needed)")
     tokenizer, tokenizer_source = load_tokenizer(model_dir=args.model_dir)
     for prompt in prompts:
         prompt["prompt_token_ids"] = tokenize_prompt(tokenizer, prompt["prompt"], chat=args.chat)
@@ -268,12 +278,15 @@ def prepare(args, root):
             "abi": contract["abi"], "capacity": contract["capacity"], "vocab_size": contract["vocab_size"],
             "om_sha256": {graph["name"]: graph["om"]["sha256"] for graph in deployment["graphs"]},
             "atc_commands": {graph["name"]: graph["atc_command"] for graph in deployment["graphs"]},
+            "ordinary_contract": ordinary_contract(deployment, contract),
         }
     if len(routes) == 2:
         if bundles["chunk"]["vocab_size"] != bundles["mtp"]["vocab_size"]:
             raise ValueError("Chunk/MTP vocabularies differ")
         if bundles["chunk"]["capacity"] != bundles["mtp"]["capacity"]:
             raise ValueError("Chunk/MTP logical KV capacities differ; export matching capacities for this comparison")
+        if bundles["chunk"]["ordinary_contract"] != bundles["mtp"]["ordinary_contract"]:
+            raise ValueError("Chunk/MTP ordinary Prefill/Decode OM or tensor ABI differs; use shared ordinary models")
     atomic_write_json(root / "prompts.json", prompts)
     return {
         "schema_version": 1, "status": "PREPARED", "routes": list(routes),
@@ -289,6 +302,7 @@ def prepare(args, root):
             "output_comparison": "allow_output_differences" if args.allow_output_differences else "strict",
             "repeatability_policy": "observe",
             "dflash_speculation_policy": "always_on", "low_memory": args.low_memory,
+            "ordinary_baseline_policy": "once per prompt/output budget; reused across verification routes",
             "order": f"length order, {' then '.join(routes)}; separate C++ process per cell; models reused across prompts",
         },
         "quality_evaluation": "NOT_RUN", "formal_latency_evidence": False,
@@ -317,6 +331,7 @@ def run(args):
         print(f"Prepared {len(summary['cells'])} cells, {len(summary['prompts'])} prompts each; no device execution.")
         return 0
     started = time.monotonic()
+    baselines = {}
     try:
         for cell in summary["cells"]:
             route, length = cell["verify_gdr"], cell["max_new_tokens"]
@@ -334,12 +349,20 @@ def run(args):
             if summary.get("datasets"):
                 options._prepared_inputs = (summary["prompts"], summary["datasets"])
             try:
+                if route != summary["routes"][0]:
+                    if length not in baselines:
+                        raise RuntimeError("ordinary baseline unavailable; refusing to rerun ordinary for the second route")
+                    options._ordinary_baseline = baselines[length]
                 if sha256_file(options.deployment_manifest) != summary["bundles"][route]["manifest_sha256"]:
                     raise ValueError("deployment manifest changed since matrix preflight")
                 code = suite.run(options)
                 paths = list(cell_root.glob("prompt-suite-*/summary.json"))
                 if len(paths) != 1:
                     raise RuntimeError("expected exactly one saved prompt suite")
+                if route == summary["routes"][0]:
+                    baselines[length] = paths[0].parent / "runner-batch.json"
+                cell["ordinary_baseline"] = str(baselines[length])
+                cell["ordinary_baseline_reused"] = route != summary["routes"][0]
                 cell.update(read_cell(paths[0], route, length, summary["prompts"]))
                 cell["suite_exit_code"] = code
                 if code and cell["status"] in suite.MEASURED_STATUSES:

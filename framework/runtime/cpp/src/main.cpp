@@ -71,6 +71,7 @@ void Usage(std::ostream& stream) {
       << "  --output PATH                paired JSON report\n"
       << "  --prompt-token-ids CSV       non-empty pretokenized prompt\n"
       << "  --prompt-batch PATH          chunk paired: run all prompts in one loaded process (unlimited prompt count)\n"
+      << "                               also supports dflash-only batch for ordinary baseline reuse\n"
       << "  --prompt-batch-sha256 HEX    expected batch file hash; replaces --prompt-token-ids\n"
       << "  --eos-token-ids CSV          optional EOS token IDs\n"
       << "  --pad-token-id ID            default 0\n"
@@ -332,11 +333,13 @@ Arguments ParseArguments(int argc, char** argv) {
   if (!values.empty()) {
     throw std::invalid_argument("unknown option --" + values.begin()->first);
   }
-  if (result.low_memory && (result.model_kind != "chunk" || result.mode != "paired"))
-    throw std::invalid_argument("low-memory requires chunk paired mode without profiling");
-  if (!result.prompt_batch.empty() && (result.model_kind != "chunk" || result.mode != "paired" ||
+  if (result.low_memory && (result.model_kind != "chunk" ||
+      (result.mode != "paired" && (result.mode != "dflash" || result.prompt_batch.empty())) ||
+      !result.profile.stage.empty()))
+    throw std::invalid_argument("low-memory requires chunk paired mode or a dflash-only batch without profiling");
+  if (!result.prompt_batch.empty() && (result.model_kind != "chunk" || result.mode == "ordinary" ||
       result.debug_draft_replay || !result.profile.stage.empty()))
-    throw std::invalid_argument("prompt batch requires chunk paired mode without debug replay/profiling");
+    throw std::invalid_argument("prompt batch requires chunk paired/dflash mode without debug replay/profiling");
   if (result.pad_token_id < 0) {
     throw std::invalid_argument("pad-token-id must be non-negative");
   }
@@ -642,7 +645,8 @@ void WriteReport(
                              : 0.0;
   output << std::setprecision(17)
          << "{\"schema_version\":1,\"status\":\"" << (pass ? (stable ? "PASS" : "PASS_WITH_OBSERVATIONS") : "FAIL") << "\","
-         << "\"scope\":\"AscendCL C++ paired OM model loop\","
+         << "\"scope\":\"AscendCL C++ " << (arguments.mode == "dflash" ? "DFlash-only" : "paired")
+         << " OM model loop\","
          << "\"runner_id\":\"qwen35-dflash-ascendcl-cpp-v1\","
          << "\"runner_version\":\""
          << JsonEscape(QWEN35_DFLASH_RUNNER_VERSION) << "\","
@@ -663,14 +667,14 @@ void WriteReport(
          << executor.draft_width() << "},\"protocol\":{\"warmup\":"
          << arguments.warmup << ",\"repetitions\":"
          << arguments.repetitions
-         << ",\"order\":\"" << (arguments.low_memory
+         << ",\"order\":\"" << (arguments.mode == "dflash" ? "DFlash only; ordinary baseline external" : arguments.low_memory
               ? "ordinary then DFlash with model unload between modes"
               : "alternating ordinary/DFlash in one loaded process") << "\","
          << "\"low_memory\":" << (arguments.low_memory ? "true" : "false") << ','
          << "\"dflash_speculation_policy\":\"always_on\","
          << "\"repeatability_policy\":\"observe\","
          << "\"max_resident_models\":" << (arguments.model_kind == "chunk"
-              ? (arguments.low_memory ? 3 : 4) : 1) << ','
+              ? (arguments.low_memory || arguments.mode == "dflash" ? 3 : 4) : 1) << ','
          << "\"synchronization\":\"one aclrtSynchronizeStream after queued H2D, execute, D2H\","
          << "\"model_load_excluded_from_latency\":true,"
          << "\"round_trace_enabled\":" << (arguments.trace_rounds ? "true" : "false") << ","
@@ -684,10 +688,17 @@ void WriteReport(
          << arguments.max_draft_tokens << "},\"startup_ms\":{\"acl_and_model_load\":"
          << load_ms << ",\"paired_benchmark_wall\":" << benchmark_wall_ms
          << ",\"mode_switch_unload\":" << unload_ms
-         << "},\"ordinary\":";
-  WriteBenchmark(output, result.ordinary);
+         << '}';
+  if (arguments.mode != "dflash") {
+    output << ",\"ordinary\":";
+    WriteBenchmark(output, result.ordinary);
+  }
   output << ",\"dflash\":";
   WriteBenchmark(output, result.dflash);
+  if (arguments.mode == "dflash") {
+    output << ",\"ordinary_parity\":{\"status\":\"NOT_RUN\"},\"formal_latency_evidence\":false}";
+    return;
+  }
   if (!stable && pass) output << ",\"formal_latency_evidence\":false";
   if (!pass) {
     output << ",\"failure_stage\":\"ordinary_dflash_parity\",\"formal_latency_evidence\":false,\"error\":\""
@@ -754,10 +765,15 @@ bool RunPromptBatch(const Arguments& arguments, qwen35::dflash::GraphExecutor& e
   const auto dflash = qwen35::dflash::GenerationMode::kDFlash;
   for (std::size_t i = 0; i < records.size(); ++i) {
     const auto& item = arguments.prompt_batch[i];
-    std::cerr << "[prompt-batch] " << item.id << " start mode=" << (arguments.low_memory ? "ordinary" : "paired") << '\n';
+    std::cerr << "[prompt-batch] " << item.id << " start mode="
+              << (arguments.mode == "dflash" ? "dflash" : arguments.low_memory ? "ordinary" : "paired") << '\n';
     const auto start = std::chrono::steady_clock::now();
     try {
-      if (arguments.low_memory) {
+      if (arguments.mode == "dflash") {
+        auto result = qwen35::dflash::Benchmark(executor, item.tokens, dflash, options,
+                                               arguments.warmup, arguments.repetitions);
+        records[i].paired = PairedBenchmarkResult{BenchmarkResult{}, std::move(result), 0, 0};
+      } else if (arguments.low_memory) {
         records[i].ordinary = qwen35::dflash::Benchmark(executor, item.tokens, ordinary, options,
                                                        arguments.warmup, arguments.repetitions);
         std::ostringstream saved;
@@ -774,14 +790,15 @@ bool RunPromptBatch(const Arguments& arguments, qwen35::dflash::GraphExecutor& e
       std::cerr << "[prompt-batch] " << item.id << " FAIL: " << error.what() << '\n';
     } catch (const std::exception& error) {
       records[i].error = error.what();
-      records[i].failure_stage = arguments.low_memory ? "ordinary_benchmark" : "paired_benchmark";
+      records[i].failure_stage = arguments.mode == "dflash" ? "dflash_benchmark" :
+          arguments.low_memory ? "ordinary_benchmark" : "paired_benchmark";
       std::cerr << "[prompt-batch] " << item.id << " FAIL: " << error.what() << '\n';
     }
     records[i].elapsed_ms = elapsed(start);
   }
   double unload_ms = 0;
   std::string batch_error;
-  if (arguments.low_memory) {
+  if (arguments.low_memory && arguments.mode == "paired") {
     auto& chunk = dynamic_cast<qwen35::dflash::AclChunkExecutor&>(executor);
     auto start = std::chrono::steady_clock::now();
     std::string switching_stage = "mode_switch_unload";
@@ -851,6 +868,12 @@ bool RunPromptBatch(const Arguments& arguments, qwen35::dflash::GraphExecutor& e
              << "\",\"error\":\"" << JsonEscape(record.error)
              << "\",\"ordinary_parity\":{\"status\":\"NOT_RUN\"},\"formal_latency_evidence\":false";
       if (record.ordinary) {
+        report << ",\"cpu_fallback\":false,\"device_id\":" << arguments.device_id
+               << ",\"model\":{\"sha256\":\"" << arguments.model_sha256
+               << "\"},\"prompt_token_ids\":";
+        WriteTokenIds(report, item.tokens);
+        report << ",\"eos_token_ids\":";
+        WriteTokenIds(report, arguments.eos_token_ids);
         report << ",\"ordinary\":";
         WriteBenchmark(report, *record.ordinary);
       }
@@ -872,7 +895,8 @@ bool RunPromptBatch(const Arguments& arguments, qwen35::dflash::GraphExecutor& e
          << "\",\"model_sha256\":\"" << arguments.model_sha256
          << "\",\"models_reused_across_prompts\":true,\"low_memory\":" << (arguments.low_memory ? "true" : "false")
          << ",\"dflash_speculation_policy\":\"always_on\""
-         << ",\"order\":\"" << (arguments.low_memory ? "all ordinary prompts then all DFlash prompts" : "paired ordinary/DFlash per prompt")
+         << ",\"order\":\"" << (arguments.mode == "dflash" ? "DFlash only; ordinary baseline external" :
+             arguments.low_memory ? "all ordinary prompts then all DFlash prompts" : "paired ordinary/DFlash per prompt")
          << "\",\"startup_ms\":{\"acl_and_model_load\":" << load_ms << ",\"mode_switch_unload\":" << unload_ms
          << "},\"cases\":[" << cases.str() << ']';
   if (!batch_error.empty()) report << ",\"error\":\"" << JsonEscape(batch_error) << '"';
@@ -900,7 +924,8 @@ int main(int argc, char** argv) {
     std::unique_ptr<qwen35::dflash::GraphExecutor> executor;
     if (arguments.model_kind == "chunk") {
       executor = std::make_unique<qwen35::dflash::AclChunkExecutor>(
-          arguments.model, arguments.device_id, arguments.low_memory ? "ordinary" : arguments.mode,
+          arguments.model, arguments.device_id,
+          arguments.low_memory && arguments.mode == "paired" ? "ordinary" : arguments.mode,
           arguments.debug_draft_workspace != "private");
     } else {
       executor = std::make_unique<qwen35::dflash::AclExecutor>(arguments.model, arguments.device_id);

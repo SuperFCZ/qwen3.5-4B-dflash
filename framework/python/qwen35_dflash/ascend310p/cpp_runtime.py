@@ -367,7 +367,8 @@ def validate_cpp_runner_report(
         raise RuntimeError("C++ runner low-memory mode differs from the request")
     if low_memory and (
         not chunk_abi
-        or protocol.get("order") != "ordinary then DFlash with model unload between modes"
+        or protocol.get("order") not in (
+            "ordinary then DFlash with model unload between modes", "saved ordinary baseline then DFlash")
         or protocol.get("max_resident_models") != 3
     ):
         raise RuntimeError("C++ runner low-memory protocol differs")

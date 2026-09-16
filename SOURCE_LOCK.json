@@ -180,7 +180,7 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "c9b0272436ba18d554e5f0879d618a7052e40799f5e94578640741fbcb925a15"
+        "source_sha256": "386f8420c5d8431be97c2d927a3a44af0b64e3eabe74290ce75c42ab8771c7c3"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -240,7 +240,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/cpp_runtime.py",
-        "source_sha256": "e41da69c29fd37987e2d20ec98811a749b87cb7a9a905e9f43fdd774cf45d547"
+        "source_sha256": "ff06e05b1d73de1cf1f1962827d0f458eb32f16ba2f2e90b06aef0f6e23edc78"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/custom_op_export.py",
@@ -296,7 +296,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/CMakeLists.txt",
-        "source_sha256": "54bdafc0a90b70ba7124ee6d5cd40dc5b25f64424cc077e4fe54a97eee453acf"
+        "source_sha256": "7c2a3bf34a59632e8c1b3cf0fc30b8cc5a79f7323e44a3fa211b0047c465c95d"
       },
       {
         "source_file": "framework/runtime/cpp/include/qwen35_dflash/acl_executor.hpp",
@@ -336,7 +336,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/src/main.cpp",
-        "source_sha256": "51004ca7402e21d2b100a79fed94c52f1e61aa02fe6ed3d5c5801df2b9471b99"
+        "source_sha256": "93da892869b54253915723a5a925db3fa1f6f58211ab802384b23ae2317adf01"
       },
       {
         "source_file": "framework/runtime/cpp/src/sha256.cpp",
@@ -500,7 +500,7 @@
       },
       {
         "source_file": "tools/benchmark_prompts.py",
-        "source_sha256": "5edd52fd230c4e4d32a0ccb30826d6606f88efecfbb719a23df48446c9397525"
+        "source_sha256": "96f00e667b912ab7bada7e395c2c2af7d1afbe4f8914d8e3c8e2f606bdab8d01"
       },
       {
         "source_file": "tests/test_prompt_suite.py",
@@ -532,7 +532,7 @@
       },
       {
         "source_file": "tools/benchmark_gdr_lengths.py",
-        "source_sha256": "66c1c52cd3d8ab2619125a5df61118fc9986a4d8dab812990a8f7ded16262b75"
+        "source_sha256": "3b62e492189e20c3c5f8a9b82c20095ef92ae95cc867bfc14b98b50486eb009c"
       },
       {
         "source_file": "tests/test_gdr_length_matrix.py",
@@ -593,6 +593,14 @@
       {
         "source_file": "tools/offline_datasets.py",
         "source_sha256": "d76f01304283391fb368a99f3821be195ed1ef8a3053822b6031586ee10df67e"
+      },
+      {
+        "source_file": "tools/ordinary_baseline.py",
+        "source_sha256": "108c6c3bba81e1a58d2327f55d7100e394fa4e547b68cbc50eee5c4707bea740"
+      },
+      {
+        "source_file": "tests/test_ordinary_baseline.py",
+        "source_sha256": "a08fd637158ba5c7d70e94d1fc5fec0a3c361dce2527486455b68893dffdce6f"
       }
     ],
     "supported_abis": [

@@ -632,6 +632,8 @@ def markdown(summary):
                   f"both modes completed independent {repeats} measurements. Output parity remains FAIL; task quality was not evaluated.",
                   "Speedup compares model-loop time for each mode's own output. Different EOS lengths can change the work; "
                   "JSON also records both token counts and throughput_speedup."]
+    if summary.get("ordinary_baseline"):
+        lines += ["Ordinary measurements are reused from the first verification route; only DFlash ran in this cell."]
     if totals["passed_prompts"]:
         lines += [f"Each passing prompt passed token/EOS parity and the requested {repeats} repeatability checks."]
     elif not totals.get("measured_prompts"):
@@ -746,7 +748,8 @@ def collect_results(args, prompts, raw, index, plan_hash, batch_hash, eos, exit_
         "ordinary_parity": "FAIL" if parity_failed else "PASS" if ok else "FAIL_OR_INCOMPLETE",
         "ordinary_parity_scope": "representative measurement 0 from each mode",
         "repeatability": "DRIFT_OBSERVED" if drift else "STABLE" if ok else "NOT_ESTABLISHED",
-        "quality_evaluation": "NOT_RUN", "formal_latency_evidence": bool(ok and not differences and not drift and (warmup, repetitions) == (3, 10)),
+        "quality_evaluation": "NOT_RUN", "formal_latency_evidence": bool(ok and not differences and not drift
+            and not raw.get("ordinary_baseline") and (warmup, repetitions) == (3, 10)),
         "scope": "This selected prompt suite. Allowed differences are experimental comparisons of each mode's own output, not quality equivalence."}
 
 
@@ -776,6 +779,9 @@ def summarize_existing(args):
     request_path = index.parent / "request.json"
     request = json.loads(request_path.read_text())
     raw = json.loads(index.read_text())
+    if request.get("ordinary_baseline"):
+        from tools import ordinary_baseline
+        ordinary_baseline.validate_saved(index, request)
     command = request["command"]
 
     def argument(name, default=None):
@@ -822,6 +828,7 @@ def summarize_existing(args):
         tokenizer, _ = load_tokenizer(model_dir=args.model_dir)
     summary = collect_results(stored, prompts, raw, index, plan_hash, batch_hash, eos, None, tokenizer)
     summary.update(request=str(request_path), process_wall_seconds=None,
+        ordinary_baseline=request.get("ordinary_baseline"),
         datasets=request.get("datasets", []), max_new_tokens=stored.max_new_tokens,
         reanalysis={"source_index_sha256": sha256_file(index), "source_request_sha256": sha256_file(request_path),
                     "script_sha256": sha256_file(Path(__file__)), "device_execution": "NOT_RUN",
@@ -841,6 +848,7 @@ def run(args):
     from qwen35_dflash.ascend310p.incremental_plan import write_incremental_plan
     from qwen35_dflash.ascend310p.utils import atomic_write_json, require_run_output, sha256_file
     from qwen35_dflash.ascend310p.workflow import load_tokenizer
+    from tools import ordinary_baseline
 
     if args.runner is None or args.model_dir is None:
         raise ValueError("running inference requires --runner and --model-dir")
@@ -865,6 +873,9 @@ def run(args):
         raise RuntimeError("rebuild the C++ runner for offline datasets with more than 64 prompts (no OM recompilation needed)")
     if (args.warmup, args.repetitions) != (3, 10) and "positive; default 10" not in help_result.stdout:
         raise RuntimeError("rebuild the C++ runner for configurable --warmup/--repetitions (no OM recompilation needed)")
+    baseline = getattr(args, "_ordinary_baseline", None)
+    if baseline and "dflash-only batch" not in help_result.stdout:
+        raise RuntimeError("rebuild the C++ runner for ordinary baseline reuse (no OM recompilation needed)")
     root = require_run_output(Path(tempfile.mkdtemp(prefix="prompt-suite-", dir=run_dir)))
     print(f"Output: {root}", flush=True)
     plan, deployment, contract = write_incremental_plan(
@@ -889,10 +900,11 @@ def run(args):
     batch.write_text("QWEN35_PROMPT_BATCH_V1\n" + "".join(
         f"{p['id']} \"{','.join(map(str, p['prompt_token_ids']))}\"\n" for p in prompts))
     index = root / "runner-batch.json"
+    execution_index = root / "runner-dflash.json" if baseline else index
     plan_hash, batch_hash = sha256_file(plan), sha256_file(batch)
-    command = [str(executable), "--model-kind", "chunk", "--mode", "paired", "--model", str(plan),
+    command = [str(executable), "--model-kind", "chunk", "--mode", "dflash" if baseline else "paired", "--model", str(plan),
         "--model-sha256", plan_hash, "--prompt-batch", str(batch), "--prompt-batch-sha256", batch_hash,
-        "--output", str(index), "--eos-token-ids", ",".join(map(str, eos)),
+        "--output", str(execution_index), "--eos-token-ids", ",".join(map(str, eos)),
         "--pad-token-id", str(identity["pad_token_id"]), "--device-id", str(args.device_id),
         "--max-new-tokens", str(args.max_new_tokens), "--max-draft-tokens", str(args.max_draft_tokens),
         "--warmup", str(args.warmup), "--repetitions", str(args.repetitions), "--trace-rounds"]
@@ -905,19 +917,27 @@ def run(args):
         "allow_output_differences": getattr(args, "allow_output_differences", False),
         "max_new_tokens": args.max_new_tokens, "max_draft_tokens": args.max_draft_tokens,
         "runtime_identity": identity, "tokenizer_source": tokenizer_source,
+        "ordinary_contract": ordinary_baseline.ordinary_contract(deployment, contract),
         "script_sha256": sha256_file(Path(__file__)),
         "runner": {"path": str(executable), "sha256": sha256_file(executable)},
         "deployment_manifest": {"path": str(manifest), "sha256": sha256_file(manifest)},
         "om_sha256": {g["name"]: g["om"]["sha256"] for g in deployment["graphs"]},
         "draft_atc_command": next(g["atc_command"] for g in deployment["graphs"] if g["name"] == "draft"),
         "command": command, "model_load_policy": "reuse models across all prompts"}
+    if baseline:
+        request["ordinary_baseline"] = ordinary_baseline.snapshot(baseline, request)
+        print(f"[prompt-batch] reuse ordinary baseline: {baseline}; running DFlash only", flush=True)
     atomic_write_json(root / "request.json", request)
     start = time.monotonic()
     exit_code = run_runner(command, root / "runner.log")
     process_wall_seconds = time.monotonic() - start
+    if baseline and execution_index.exists():
+        ordinary_baseline.merge(index, execution_index, request)
+        atomic_write_json(root / "request.json", request)
     raw = json.loads(index.read_text()) if index.exists() else {}
     summary = collect_results(args, prompts, raw, index, plan_hash, batch_hash, eos, exit_code, tokenizer)
     summary.update(request=str(root / "request.json"), process_wall_seconds=process_wall_seconds,
+                   ordinary_baseline=request.get("ordinary_baseline"),
                    datasets=datasets, max_new_tokens=args.max_new_tokens)
     return write_summary(root, summary)
 
