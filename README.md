@@ -32,8 +32,9 @@ source /absolute/path/dflash-env.sh
 | 了解 Draft → Verify → Commit | [流程与架构](docs/DFLASH_ARCHITECTURE.md) |
 | 查看已有速度、接受率、deterministic 漂移问题 | [结果与已知问题](docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md) |
 
-Chunk 生成 **128 token** 实测（1 次预热 + 3 次测量）：短输入接受率 **20.94%**、加速 **1.48×**；
-约 1K 输入接受率 **16.85%**、加速 **1.05×**。20 条合计加速 **1.17×**，允许输出差异，任务质量未评估。
+开源数据集 Chunk 测试（输出上限 **512 token**）：5 个文件、2563 条问题，加权接受率 **26.77%**；
+按用户日志汇总估算整体加速 **1.91×**，数学类 **2.05–2.11×**、代码类 **1.60–1.64×**。
+允许输出差异，任务质量未评估；[详细结果与 128 token 对比](docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md#开源数据集输出上限-512-token)。
 
 <details>
 <summary>开发参考</summary>
