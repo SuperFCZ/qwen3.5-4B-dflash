@@ -138,21 +138,52 @@ cd "$AI_RUN_DIR"
 
 ## msprof
 
+只采集选中的 OM 阶段，不跑完整生成。下面定义一次快捷命令，参数依次为 **路线、模式、阶段**。
+`--prompt-report` 改成实际存在的单条报告；示例使用短输入 `zh_explain`。
+
 ```bash
-for MODE in ordinary dflash; do
+profile_om() {
+  local manifest="$CHUNK_DEPLOYMENT_MANIFEST"
+  if [[ "$1" == mtp ]]; then manifest="$MTP_DEPLOYMENT_MANIFEST"; fi
   "$MODEL_PYTHON" -B "$REPO_ROOT/tools/profile_om.py" \
     --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
-    --deployment-manifest "$DEPLOYMENT_MANIFEST" \
+    --deployment-manifest "$manifest" --verify-gdr "$1" \
     --prompt-report "${SAVED_BATCH}.cases/zh_explain.json" \
-    --profile-mode "$MODE" --profile-stage all --device-id "$DEVICE_ID" \
-    --max-new-tokens "$MAX_NEW_TOKENS" --max-draft-tokens "$MAX_DRAFT_TOKENS" --profile-warmup 3
-done
+    --profile-mode "$2" --profile-stage "$3" --device-id "$DEVICE_ID" \
+    --max-new-tokens 16 --max-draft-tokens 15 --profile-warmup 0
+}
 ```
 
-普通模式各采一次 prefill、decode；DFlash 各采一次 prefill、draft、verify。
-单项将 `all` 改为 `decode`、`draft` 或 `verify`，并选择对应模式。
-查看 `capture/all-stage-summary.csv` 和 `capture/all-operator-types.csv`。
-OM Verify 已包含接受判断和状态提交；此采集是单阶段窗口，不是完整生成总时延。
+单项测试，选一行执行：
+
+| OM | 命令 |
+|---|---|
+| Prefill | `profile_om chunk ordinary prefill` |
+| Decode | `profile_om chunk ordinary decode` |
+| Draft | `profile_om chunk dflash draft` |
+| Verify Chunk | `profile_om chunk dflash verify` |
+| Verify MTP | `profile_om mtp dflash verify` |
+
+**全选五个 OM**：公共的 Prefill、Decode、Draft 各采一次，两条 Verify 分别采集。
+
+```bash
+(
+  set -e
+  profile_om chunk ordinary all
+  profile_om chunk dflash draft
+  profile_om chunk dflash verify
+  profile_om mtp dflash verify
+)
+```
+
+`all` 只展开当前模式：ordinary 为 Prefill/Decode，dflash 为 Prefill/Draft/Verify，**不会自动切换 Chunk/MTP**。
+`--profile-warmup 0` 不预热；改为 `1` 则在窗口外预热一次。输出上限 `16` 用于设置 15 个候选的预算，不会跑满生成。
+Decode/Draft/Verify 的窗口只含一次对应 OM 调用，必要的 Prefill、缓存和候选准备在窗口外执行。
+Prefill 采集整个输入：含聊天模板不超过 64 token 时一次 OM 调用，约 1K 输入则约 16 次。
+
+每次输出到终端打印的 `Output` 目录，查看 `capture/<stage>-stage-summary.csv`、
+`capture/<stage>-operator-types.csv` 和 `capture/<stage>-hotspots.txt`，`<stage>` 为所选阶段或 `all`。
+Verify 包含接受判断和图内状态提交；msprof 时延是采集窗口耗时，不是完整生成时延。
 
 ## 导出与编译
 

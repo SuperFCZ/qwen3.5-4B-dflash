@@ -360,6 +360,8 @@ OM 命令使用 `tools/profile_om.py --profile-mode ordinary|dflash --profile-st
 指定 `--run-dir`、`--runner` 和 `--deployment-manifest` 即可自动生成匹配的加载计划并采集。
 每次创建独立输出目录并记录清单、runner hash；单阶段将 `all` 替换为所需阶段。
 准备计划使用模型 Python 环境，采集由 C++ runner 执行。
+`all` 只展开当前模式，不会切换 Chunk/MTP；两条 Verify 须分别指定对应的 deployment manifest 和
+`--verify-gdr chunk|mtp`。五个 OM 各采一次的命令见 [OM 使用手册](GDR_CHUNK_AIR_OM.md#msprof)。
 
 统一 wrapper 为 `tools/run_msprof.sh`。C++ 使用 `--profile-backend cpp`，
 普通模式选 `--profile-mode ordinary --profile-stage prefill|decode|all`，DFlash 选
@@ -369,6 +371,8 @@ OM 命令使用 `tools/profile_om.py --profile-mode ordinary|dflash --profile-st
 每个阶段从同一个 prompt 重建状态，窗口外完成预热。`all` 复用一个应用进程，
 逐阶段各开一次独立窗口。C++ verify 的窗口包含所选 GDR 路径、Top1 和接受/提交计算：
 Chunk 为两遍 GDR，MTP 为一次 GDR MTP 加 bank Gather。
+Decode、Draft、Verify 的窗口各含一次 OM 调用，输入准备在窗口外完成。
+Prefill 窗口包含完整输入的所有 64-token 块；要测一次 Prefill OM，输入须不超过 64 token（含聊天模板）。
 
 Python NPU 支持更细的投影、输入准备、Top1、接受/提交和联合窗口，完整范围见
 [Python NPU 手册](DFLASH_RUN_AND_VALIDATE.md)。两个后端均由 msprof 动态 PID CLI 控制，
