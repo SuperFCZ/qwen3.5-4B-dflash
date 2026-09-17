@@ -16,7 +16,7 @@ ATTENTION_EXPORT_POLICY = "receiver_adn_all_seq_lengths_q_static_capacity_causal
 DRAFT_LENGTH_POLICY = "anchor_plus_runtime_K_masked_in_every_attention_layer"
 VERIFY_STATE_OUTPUT_POLICY = "raw_fp32_device_only_discard_first_pass_commit_second_pass"
 MTP_STATE_OUTPUT_POLICY = "internal_fp32_bank_gather_accepted_slot"
-ROLES = ("target_prefill", "target_decode", "target_verify", "draft")
+ROLES = ("target_prefill", "target_decode", "target_verify", "draft", "draft_context")
 DTYPES = {"int64": 8, "int16": 2, "float16": 2, "float32": 4}
 
 
@@ -118,11 +118,10 @@ def expected_signatures(c):
         ],
         "outputs": [descriptor("draft_top1", "int64", [1, 15]), *drafts],
     }
-    if c.get("draft_context_rows", 64) == 16:
-        result["draft_context"] = {
-            "inputs": [feature(64), start, valid, *drafts],
-            "outputs": drafts,
-        }
+    result["draft_context"] = {
+        "inputs": [feature(64), start, valid, *drafts],
+        "outputs": drafts,
+    }
     return result
 
 
@@ -134,12 +133,11 @@ def validate_incremental_bundle(graphs):
         return None
     names = {g["name"] for g in graphs}
     c = candidates[0]["metadata"]["incremental_contract"]
-    context_rows = c.get("draft_context_rows", 64)
-    if type(context_rows) is not int or context_rows not in (16, 64):
-        raise ValueError("draft_context_rows must be 16 or 64")
-    if context_rows == 16 and c.get("draft_prefill_policy") != "context_only64_then_draft16":
+    if type(c.get("draft_context_rows")) is not int or c["draft_context_rows"] != 16:
+        raise ValueError("incremental Draft requires draft_context_rows=16; regenerate AIR/OM in a new bundle directory")
+    if c.get("draft_prefill_policy") != "context_only64_then_draft16":
         raise ValueError("compact Draft needs the context-only prefill policy")
-    roles = set(ROLES) | ({"draft_context"} if context_rows == 16 else set())
+    roles = set(ROLES)
     required = roles - {"target_decode"}
     if (
         len(candidates) != len(graphs)
@@ -147,8 +145,7 @@ def validate_incremental_bundle(graphs):
         or names not in (roles, required)
     ):
         raise ValueError(
-            "incremental bundle needs prefill, verify, draft, optional ordinary decode, "
-            "and draft_context exactly when draft_context_rows=16"
+            "incremental bundle needs prefill, verify, draft, draft_context and optional ordinary decode"
         )
     c = candidates[0]["metadata"]["incremental_contract"]
     route = verify_gdr_route(c)
@@ -255,7 +252,7 @@ def write_incremental_plan(deployment_manifest, output, *, mode="paired", verify
     if output.exists():
         raise FileExistsError(output)
     lines = [c["abi"], f"capacity {c['capacity']} {c['vocab_size']}"]
-    for name in (*ROLES, *(("draft_context",) if c.get("draft_context_rows", 64) == 16 else ())):
+    for name in ROLES:
         if name == "target_decode" and mode == "dflash":
             continue
         graph = next(g for g in graphs if g["name"] == name)

@@ -6,17 +6,19 @@
   "required_graphs": [
     "target_prefill",
     "target_verify",
-    "draft"
+    "draft",
+    "draft_context"
   ],
   "optional_ordinary_graph": "target_decode",
-  "maximum_graph_count": 4,
+  "maximum_graph_count": 5,
   "batch_size": 1,
   "physical_rows": {
     "target_prefill": 64,
     "target_decode": 1,
     "target_verify": 16,
     "draft_context": 64,
-    "draft_noise": 16
+    "draft_noise": 16,
+    "draft_feature_projection": 16
   },
   "precision": "Target W8A8; Draft FP16; GDN recurrent cache FP32 for ordinary and DFlash inputs/outputs; conv and KV FP16",
   "ordinary_state_policy": "ordinary Chunk GDR prefill/decode preserves FP32 state without FP16 round trip",
@@ -76,14 +78,20 @@
   "common_graphs": [
     "target_prefill",
     "target_decode",
-    "draft"
+    "draft",
+    "draft_context"
   ],
   "shared_bundle_om_files": [
     "prefill.om",
     "decode.om",
     "draft.om",
+    "draft_context.om",
     "verify_chunk.om",
     "verify_mtp.om"
   ],
-  "shared_bundle_policy": "two route manifests in one directory reference three identical common artifacts; source/configuration/ABI/ATC identity and options must match"
+  "shared_bundle_policy": "two route manifests in one directory reference four identical common artifacts; source/configuration/ABI/ATC identity and options must match",
+  "draft_context_rows": 16,
+  "draft_prefill_policy": "context_only64_then_draft16",
+  "draft_valid_rows": "INT16[1], 0..16 for draft; 1..64 for draft_context",
+  "draft_policy": "draft_context builds prompt KV only; draft projects up to 16 newly committed features and generates proposals in one call"
 }

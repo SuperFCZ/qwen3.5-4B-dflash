@@ -17,4 +17,4 @@ Qwen3.5-4B W8A8 Target + FP16 DFlash：TorchAir 导出 AIR，ATC 编译 OM，Asc
 生成流程见 [架构](../docs/DFLASH_ARCHITECTURE.md)，张量与接口细节见
 [AIR/OM 接口参考](../docs/QUANT_AIR_OM_FRAMEWORK.md)。
 
-旧 v3/v1 合同保留供旧产物读取；升级状态精度必须重新导出、编译，并使用新版 runner。
+增量部署必须包含 `draft_context`，生成 Draft 固定 16 行。单路线最多 5 张图，双路线共用 6 个 OM 文件。

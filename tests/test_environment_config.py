@@ -99,7 +99,7 @@ class EnvironmentConfigTests(unittest.TestCase):
         values = self.probe()
         self.assertEqual(values["receiver_marker"], "first receiver")
         self.assertEqual(values["DEPLOYMENT_MANIFEST"],
-                         str(self.run / "artifacts-fp32/deployment-manifest.json"))
+                         str(self.run / "artifacts/deployment-manifest.json"))
         self.assertEqual(values["BLOCK_SIZE"], "8")
         self.assertEqual(values["MAX_SEQUENCE_LENGTH"], "2048")
         self.assertEqual(values["MAX_NEW_TOKENS"], "512")
@@ -139,7 +139,7 @@ class EnvironmentConfigTests(unittest.TestCase):
         values = self.probe("source " + shlex.quote(str(first)) + "\n")
         self.assertEqual(values["VERIFY_GDR"], "mtp")
         self.assertEqual(values["BLOCK_SIZE"], "16")
-        self.assertTrue(values["DEPLOYMENT_MANIFEST"].endswith("artifacts-fp32/deployment-manifest-mtp.json"))
+        self.assertTrue(values["DEPLOYMENT_MANIFEST"].endswith("artifacts/deployment-manifest-mtp.json"))
         self.assertEqual(values["args"][-1], "--quant-boundary")
         self.assertEqual(values["receiver_marker"], "second receiver")
         self.assertNotIn(str(self.receiver), values["PYTHONPATH"].split(":"))

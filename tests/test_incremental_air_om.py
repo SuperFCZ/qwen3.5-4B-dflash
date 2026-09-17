@@ -241,7 +241,7 @@ def mtp_gdr(query, key, value, g, beta, initial_state, accepted_tokens, **kwargs
     return torch.stack(outputs, dim=1).half(), torch.stack(bank, dim=1)
 
 
-def specs(include_ordinary_decode=True, cache_update=None, verify_gdr="chunk", draft_context_rows=64):
+def specs(include_ordinary_decode=True, cache_update=None, verify_gdr="chunk"):
     torch.manual_seed(42)
     target, draft = TinyTarget().eval(), draft_model()
     return incremental_graph_specs(
@@ -255,7 +255,6 @@ def specs(include_ordinary_decode=True, cache_update=None, verify_gdr="chunk", d
         cache_update=cache_update,
         include_ordinary_decode=include_ordinary_decode,
         verify_gdr=verify_gdr, gdr_mtp=mtp_gdr if verify_gdr == "mtp" else None,
-        draft_context_rows=draft_context_rows,
     )
 
 
@@ -304,13 +303,14 @@ def test_conv_chunk_preserves_output_and_every_committed_prefix(rows, dtype, wit
     torch.testing.assert_close(state, original_state, rtol=0, atol=0)
 
 
-def test_exactly_four_graphs_and_complete_signatures():
+def test_exactly_five_graphs_and_complete_signatures():
     values = specs()
     assert {s.name for s in values} == {
         "target_prefill",
         "target_decode",
         "target_verify",
         "draft",
+        "draft_context",
     }
     assert validate_incremental_bundle(manifest_graphs(values))["capacity"] == 128
     with torch.inference_mode():
@@ -329,7 +329,7 @@ def test_exactly_four_graphs_and_complete_signatures():
         validate_incremental_bundle(manifest_graphs(values)[:-1])
     pure = [g for g in manifest_graphs(values) if g["name"] != "target_decode"]
     assert validate_incremental_bundle(pure)["capacity"] == 128
-    assert len(specs(include_ordinary_decode=False)) == 3
+    assert len(specs(include_ordinary_decode=False)) == 4
 
 
 @pytest.mark.parametrize(
@@ -611,7 +611,7 @@ def test_draft_fused_context_matches_original_cached_draft_with_padding(proposal
     states = tuple(torch.zeros(1, 1, 192, 16).half() for _ in range(4))
     start = 0
     with torch.inference_mode():
-        for rows in (37, 4, 1, 16):
+        for rows in (16, 4, 1, 16):
             features = torch.randn(1, rows, 64).half()
             padded = F.pad(features, (0, 0, 0, 64 - rows), value=float("nan"))
             block = torch.tensor([[4] + [63] * proposal_count])
@@ -806,7 +806,7 @@ def test_target_gears_use_execution_head_and_draft_keeps_checkpoint_head():
             if spec.name == "draft":
                 assert spec.model.propose.head is draft_head
                 assert spec.model.propose.head.weight.dtype == torch.float16
-            else:
+            elif spec.name.startswith("target_"):
                 assert torch.all(spec.model(*spec.example_args)[0] == 7)
 
 
@@ -905,7 +905,7 @@ def test_draft_graph_exports_with_dynamic_context_length():
         assert all(n.args[0].meta["val"].dtype == torch.float32 for n in softmaxes)
         exported = program.module()
         args = list(spec.example_args)
-        args[2] = torch.tensor([37], dtype=torch.int16)
+        args[2] = torch.tensor([16], dtype=torch.int16)
         for count in (1, 7, 15):
             args[4] = torch.tensor([count], dtype=torch.int16)
             for lhs, rhs in zip(exported(*args), spec.model(*args)):
@@ -972,8 +972,8 @@ def test_fake_conversion_preserves_tensor_abi_and_hashes(chunk_bundle, tmp_path)
     plan, deployment, contract = write_incremental_plan(
         chunk_bundle, tmp_path / "chunk-plan.txt"
     )
-    assert plan.read_text().count("\ngraph ") == 4
-    assert len(deployment["graphs"]) == 4
+    assert plan.read_text().count("\ngraph ") == 5
+    assert len(deployment["graphs"]) == 5
     assert deployment["compiler"]["precision_policy"] == "preserve_graph_dtypes"
     for graph in deployment["graphs"]:
         assert "--precision_mode=must_keep_origin_dtype" in graph["atc_command"]
@@ -1073,7 +1073,7 @@ def test_cpp_reports_actual_om_descriptors_before_execute(
 @pytest.mark.parametrize("accepted,eos", [(0, []), (3, []), (15, []), (15, [7])])
 @pytest.mark.parametrize("low_memory", [False, True])
 @pytest.mark.parametrize("chunk_bundle", ["chunk", "mtp"], indirect=True)
-def test_cpp_four_om_roundtrip_with_fake_acl(
+def test_cpp_five_om_roundtrip_with_fake_acl(
     chunk_bundle, tmp_path, monkeypatch, accepted, eos, low_memory
 ):
     from qwen35_dflash.ascend310p.cpp_runtime import run_cpp_pair
@@ -1107,10 +1107,10 @@ def test_cpp_four_om_roundtrip_with_fake_acl(
         low_memory=low_memory,
     )
     assert result["ordinary_parity"]["token_id_mismatches"] == 0
-    assert result["abi"]["graph_count"] == 4
+    assert result["abi"]["graph_count"] == 5
     assert result["protocol"]["low_memory"] is low_memory
     assert result["protocol"]["dflash_speculation_policy"] == "always_on"
-    assert result["protocol"]["max_resident_models"] == (3 if low_memory else 4)
+    assert result["protocol"]["max_resident_models"] == (4 if low_memory else 5)
     assert result["protocol"]["order"] == (
         "ordinary then DFlash with model unload between modes" if low_memory
         else "alternating ordinary/DFlash in one loaded process"
@@ -1119,10 +1119,10 @@ def test_cpp_four_om_roundtrip_with_fake_acl(
     assert_cpp_resources_released(cleanup, log)
     loaded = [json.loads(line) for line in workspace.read_text().splitlines()]
     assert [r[0] for r in loaded] == (
-        ["target_decode", "target_prefill", "draft", "target_prefill", "target_verify"]
-        if low_memory else ["draft", "target_decode", "target_prefill", "target_verify"]
+        ["target_decode", "target_prefill", "draft", "draft_context", "target_prefill", "target_verify"]
+        if low_memory else ["draft", "draft_context", "target_decode", "target_prefill", "target_verify"]
     )
-    assert [r[3] for r in loaded] == ([1, 2, 1, 2, 3] if low_memory else [1, 2, 3, 4])
+    assert [r[3] for r in loaded] == ([1, 2, 1, 2, 3, 4] if low_memory else [1, 2, 3, 4, 5])
     groups = [loaded[:2], loaded[2:]] if low_memory else [loaded]
     for group in groups:
         assert len({r[1] for r in group}) == 1  # All models borrow one work buffer.
@@ -1140,8 +1140,8 @@ def test_cpp_four_om_roundtrip_with_fake_acl(
         assert all(r["proposed_token_ids"] for r in row["rounds"][1:])
         if accepted == 0:
             assert len(row["stage_ms"]["target_verify"]) == 39
-            # One additional Draft call primes KV for the first 64 prompt rows.
-            assert len(row["stage_ms"]["draft"]) == 40
+            assert len(row["stage_ms"]["draft_context"]) == 1
+            assert len(row["stage_ms"]["draft"]) == 39
             assert row["counters"]["drafted_tokens"] == sum(min(15, n) for n in range(1, 40))
             assert row["counters"]["accepted_draft_tokens"] == 0
     assert result["protocol"]["round_trace_enabled"] is True
@@ -1245,10 +1245,10 @@ def test_cpp_load_failure_reports_memory_before_any_execution(
     assert not output.exists() and not events.exists()
     assert f"aclmdlLoadFromFileWithMem failed: 245000 graph={failed_graph}" in result.stderr
     assert f"phase=load_failed graph={failed_graph}" in result.stderr
-    assert "loaded_models=" + ("0" if failed_graph == "draft" else "3") in result.stderr
+    assert "loaded_models=" + ("0" if failed_graph == "draft" else "4") in result.stderr
     # Even an OOM on the first model leaves the full selected set diagnosable.
     before_load = result.stderr.split("[chunk-runtime] load graph=", 1)[0]
-    for name in ("draft", "target_decode", "target_prefill", "target_verify"):
+    for name in ("draft", "draft_context", "target_decode", "target_prefill", "target_verify"):
         assert f"om-memory graph={name} query_status=0" in before_load
     assert "weight_bytes=5001682944 work_bytes=1048576" in before_load
     assert "pool=DDR query_status=0 free_bytes=unavailable" in result.stderr
@@ -1286,7 +1286,7 @@ def test_cpp_cleanup_logs_errors_and_continues_teardown(
     resources = json.loads(cleanup.read_text())
     for name, count in resources.items():
         if name == "live_models" and operation == "aclmdlUnload":
-            assert count == 3
+            assert count == 4
         elif name == "live_device_buffers" and operation == "aclmdlUnload":
             assert count == 1  # The fake driver refuses to free borrowed work memory.
         elif name == "live_device_buffers" and operation == "aclrtFree":
@@ -1333,9 +1333,9 @@ def test_pure_dflash_does_not_load_or_require_decode_om(
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert "loaded_models=3" in result.stderr
+    assert "loaded_models=4" in result.stderr
     assert "om-memory graph=target_decode" not in result.stderr
-    assert "selected_models=3" in result.stderr
+    assert "selected_models=4" in result.stderr
     if unavailable:
         assert "query_status=36 weight_bytes=unavailable work_bytes=unavailable" in result.stderr
         assert "pool=HBM query_status=35 free_bytes=unavailable" in result.stderr

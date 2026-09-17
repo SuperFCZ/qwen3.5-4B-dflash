@@ -89,7 +89,7 @@ def export_air_bundle(
 
     root = require_run_output(bundle_dir)
     from .common_reuse import (
-        COMMON, OPTIONAL_COMMON, artifact_stem, load_common_source, validate_common_export,
+        COMMON, artifact_stem, load_common_source, validate_common_export,
         link_common_air, reuse_record,
     )
     reused = (load_common_source(reuse_common_from, factory=factory,
@@ -131,7 +131,7 @@ def export_air_bundle(
     }
     if reused is not None:
         validate_common_export(
-            reused, {s.name: _spec_header(s) for s in specs if s.name in (*COMMON, *OPTIONAL_COMMON)}, environment,
+            reused, {s.name: _spec_header(s) for s in specs if s.name in COMMON}, environment,
         )
     for spec in specs:
         if reused is None or spec.name not in reused["graphs"]:

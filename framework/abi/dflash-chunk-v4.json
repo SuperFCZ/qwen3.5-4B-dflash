@@ -5,16 +5,18 @@
   "required_graphs": [
     "target_prefill",
     "target_verify",
-    "draft"
+    "draft",
+    "draft_context"
   ],
   "optional_ordinary_graph": "target_decode",
-  "maximum_graph_count": 4,
+  "maximum_graph_count": 5,
   "physical_rows": {
     "target_prefill": 64,
     "target_decode": 1,
     "target_verify": 16,
     "draft_context": 64,
-    "draft_noise": 16
+    "draft_noise": 16,
+    "draft_feature_projection": 16
   },
   "batch_size": 1,
   "precision": "Target W8A8; Draft FP16; GDN recurrent cache FP32 for ordinary and DFlash inputs/outputs; conv and KV FP16",
@@ -37,7 +39,7 @@
   "verify_output_count": 91,
   "verify_discard_export_audit": "air/verify_chunk/verify-discard-outputs.json: raw first-pass GDR state reaches each declared GE NetOutput slot before AIR save",
   "commit_capsules": "internal graph intermediates; no separate OM or host transfer",
-  "draft_policy": "feature projection + append committed context KV + one parallel proposal block; runtime K controls visible noise keys in every attention layer",
+  "draft_policy": "draft_context builds prompt KV only; draft projects up to 16 newly committed features and generates proposals in one call",
   "proposal_count": "INT16[1], 1..15; C++ sends min(max_draft_tokens, remaining_output_tokens, 15)",
   "draft_outputs": [
     "draft_top1 INT64[1,15], first K valid, unused tail zero",
@@ -56,7 +58,8 @@
     "dflash": [
       "target_prefill",
       "target_verify",
-      "draft"
+      "draft",
+      "draft_context"
     ],
     "ordinary": [
       "target_prefill",
@@ -75,7 +78,7 @@
   ],
   "performance_limitations": [
     "fixed gears execute padding",
-    "early prompt chunks run Draft for KV initialization and discard proposals",
+    "prompt KV initialization uses draft_context without proposal computation",
     "Draft dense scatter and current/next OM state buffers can still involve full-cache copies",
     "verify uses per-row CacheUpdate until multi-row cross-page ABI is validated",
     "separate OMs do not automatically share weight allocations"
@@ -86,14 +89,19 @@
   "common_graphs": [
     "target_prefill",
     "target_decode",
-    "draft"
+    "draft",
+    "draft_context"
   ],
   "shared_bundle_om_files": [
     "prefill.om",
     "decode.om",
     "draft.om",
+    "draft_context.om",
     "verify_chunk.om",
     "verify_mtp.om"
   ],
-  "shared_bundle_policy": "two route manifests in one directory reference three identical common artifacts; source/configuration/ABI/ATC identity and options must match"
+  "shared_bundle_policy": "two route manifests in one directory reference four identical common artifacts; source/configuration/ABI/ATC identity and options must match",
+  "draft_context_rows": 16,
+  "draft_prefill_policy": "context_only64_then_draft16",
+  "draft_valid_rows": "INT16[1], 0..16 for draft; 1..64 for draft_context"
 }

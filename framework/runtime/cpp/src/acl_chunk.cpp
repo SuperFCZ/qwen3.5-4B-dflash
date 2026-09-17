@@ -657,7 +657,7 @@ class AclChunkExecutor::Impl {
       feature_start = cursor;
       feature_rows = rows;
       cursor += rows;
-      if (draft && plan.graphs.count("draft_context")) {
+      if (draft) {
         // A full/large prompt chunk cannot enter the compact 16-row gear.
         // Cache-only execution skips proposal attention/MLP/head entirely.
         // Defer a final <=16-row chunk so the first Draft can append it itself.
@@ -670,9 +670,6 @@ class AclChunkExecutor::Impl {
           feature_start = cursor;
           feature_rows = 0;
         }
-      } else if (draft && offset + rows < ids.size()) {
-        // Compatibility path for the original combined 64-row Draft OM.
-        static_cast<void>(Propose(token, 15));
       }
     }
     return token;
@@ -680,9 +677,7 @@ class AclChunkExecutor::Impl {
   void PrepareDraft(std::int64_t anchor, std::size_t proposal_count) {
     Healthy();
     Require(proposal_count > 0 && proposal_count <= 15, "Draft proposal_count must be 1..15");
-    const bool compact = plan.graphs.count("draft_context");
-    Require(!pending && (feature_rows > 0 || compact) &&
-                feature_rows <= (compact ? 16 : 64) && draft_cursor == feature_start &&
+    Require(!pending && feature_rows <= 16 && draft_cursor == feature_start &&
                 feature_start + feature_rows == cursor,
             "Draft context cursor is inconsistent");
     Scalar("start_position", static_cast<std::int64_t>(feature_start));
@@ -846,8 +841,8 @@ class AclChunkExecutor::Impl {
               "debug KV physical capacities differ");
     }
     // Physical Draft KV includes a guard block beyond the request capacity.
-    const std::int64_t context_rows = plan.graphs.count("draft_context") ? 16 : 64;
-    Require(kv_start_signed >= 0 && kv_valid_signed >= (context_rows == 16 ? 0 : 1) &&
+    const std::int64_t context_rows = 16;
+    Require(kv_start_signed >= 0 && kv_valid_signed >= 0 &&
                 kv_valid_signed <= context_rows &&
                 static_cast<std::size_t>(kv_start_signed) + context_rows <= kv_capacity,
             "invalid debug KV row bounds");
@@ -1058,7 +1053,7 @@ class AclChunkExecutor::Impl {
            << ",\"snapshot_sha256\":" << DebugMap(frozen_hashes)
            << ",\"reference_token_ids\":" << DebugTokens(reference)
            << ",\"reference_output_sha256\":" << DebugMap(reference_outputs)
-           << ",\"kv_output_audit\":{\"version\":1,\"layout\":\"B,H,S,D\",\"abi\":{" << kv_abi.str()
+           << ",\"kv_output_audit\":{\"version\":1,\"context_rows\":16,\"layout\":\"B,H,S,D\",\"abi\":{" << kv_abi.str()
            << "},\"row_regions\":{" << kv_bounds.str()
            << "},\"reference_region_sha256\":{" << reference_kv_json.str()
            << "},\"saved_differences\":[" << saved_differences.str() << "]}"
@@ -1197,9 +1192,6 @@ std::int64_t AclChunkExecutor::Decode(std::int64_t anchor) {
 }
 bool AclChunkExecutor::HasOrdinaryDecode() const noexcept {
   return impl_->models.count("target_decode") != 0;
-}
-bool AclChunkExecutor::HasDraftContext() const noexcept {
-  return impl_->plan.graphs.count("draft_context") != 0;
 }
 std::size_t AclChunkExecutor::graph_calls() const noexcept {
   return impl_->calls;

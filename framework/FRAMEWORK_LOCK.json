@@ -177,10 +177,11 @@
     "dflash_oms": [
       "target_prefill",
       "target_verify",
-      "draft"
+      "draft",
+      "draft_context"
     ],
     "optional_ordinary_om": "target_decode",
-    "om_limit": 4,
+    "om_limit": 5,
     "target_kv_update": "CacheUpdate_paged_aligned_prefill_per_row_decode_verify",
     "draft_kv_update": "ScatterElements_dense_context",
     "commit": "acceptance and accepted+1 second GDR are internal to target_verify",
@@ -242,7 +243,8 @@
         "ge_op_type": "AdnRmsNorm",
         "alternative_ge_op_type": "RmsNorm",
         "minimum_air_occurrences": {
-          "draft": 32
+          "draft": 32,
+          "draft_context": 7
         },
         "precision_policy": "FP32 input/unit gamma; normalize, cast to input dtype, multiply effective weight"
       }
@@ -254,9 +256,12 @@
       "prefill.om",
       "decode.om",
       "draft.om",
+      "draft_context.om",
       "verify_chunk.om",
       "verify_mtp.om"
-    ]
+    ],
+    "draft_context_rows": 16,
+    "draft_prefill_policy": "context_only64_then_draft16"
   },
   "profiling": {
     "collector": "msprof dynamic CLI",

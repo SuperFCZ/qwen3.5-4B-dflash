@@ -20,7 +20,7 @@ def test_full_bundle_defaults_draft_to_off(chunk_bundle):
     deployment = json.loads(chunk_bundle.read_text())
     for graph in deployment["graphs"]:
         flags = [x for x in graph["atc_command"] if x.startswith("--deterministic")]
-        assert flags == (["--deterministic=0"] if graph["name"] == "draft" else [])
+        assert flags == (["--deterministic=0"] if graph["name"] in ("draft", "draft_context") else [])
         assert "--precision_mode=must_keep_origin_dtype" in graph["atc_command"]
         assert all(x in graph["atc_command"] for x in deployment["compiler"]["graph_extra_args"][graph["name"]])
 
@@ -69,7 +69,9 @@ def test_recompile_only_draft_reuses_targets_and_creates_loadable_manifest(chunk
     result = recompile_draft_om(chunk_bundle, output=output, atc_bin="/bin/true",
                                 runner=fake_atc, atc_identity="HOST_TEST",
                                 **({} if new_mode is None else {"deterministic": new_mode}))
-    assert len(calls) == 1
+    assert len(calls) == 2
+    for flags, _ in calls:
+        assert flags.count(f"--deterministic={0 if new_mode is None else new_mode}") == 1
     command, cwd = calls[0]
     mode = 0 if new_mode is None else new_mode
     assert command.count(f"--deterministic={mode}") == 1 and f"--deterministic={1-mode}" not in command
@@ -79,7 +81,7 @@ def test_recompile_only_draft_reuses_targets_and_creates_loadable_manifest(chunk
     assert cwd == (chunk_bundle.parent / draft['air']['path']).parent
     assert all(path.read_bytes() == contents for path, contents in before.items())
     for original, current in zip(old["graphs"], result["graphs"], strict=True):
-        if original["name"] != "draft":
+        if original["name"] not in ("draft", "draft_context"):
             assert original == current
         else:
             assert original["metadata"] == current["metadata"]
@@ -90,11 +92,11 @@ def test_recompile_only_draft_reuses_targets_and_creates_loadable_manifest(chunk
     assert result["recompilation"]["ordinary_parity"] == "NOT_RUN"
     assert result["recompilation"]["formal_latency_evidence"] is False
     plan, loaded, _ = write_incremental_plan(output, tmp_path / "new-plan.txt")
-    assert plan.read_text().count("\ngraph ") == 4
+    assert plan.read_text().count("\ngraph ") == 5
     assert loaded["graphs"] == result["graphs"]
     with pytest.raises(FileExistsError):
         recompile_draft_om(chunk_bundle, output=output, atc_bin="/bin/true", runner=fake_atc)
-    assert len(calls) == 1
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize("damage", ["target_om", "air_payload", "air_manifest", "metadata", "outside_output"])

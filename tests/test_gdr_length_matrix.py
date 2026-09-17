@@ -25,7 +25,6 @@ def matrix_args(tmp_path, monkeypatch, request):
 
     setting = getattr(request, "param", 128)
     capacity = setting.get("capacity", 128) if isinstance(setting, dict) else setting
-    context_rows = setting.get("draft_context_rows", 64) if isinstance(setting, dict) else 64
     original_specs = fixtures.incremental_graph_specs
     def sized_attention(*, query, key, value, atten_mask, **kwargs):
         q = query.reshape(1, 2, query.shape[-2], 16)
@@ -62,7 +61,7 @@ def matrix_args(tmp_path, monkeypatch, request):
         output = tmp_path / route
         output.mkdir()
         manifests[route] = chunk_bundle.__wrapped__(output, monkeypatch, SimpleNamespace(
-            param={"verify_gdr": route, "draft_context_rows": context_rows}))
+            param=route))
     config = tmp_path / "runner.json"
     config.write_text(json.dumps(dict(device_model="Ascend310P3-host-fixture", cann="fake",
                                      driver="fake", firmware="fake", runtime="fake-acl")))

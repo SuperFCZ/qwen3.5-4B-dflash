@@ -9,17 +9,17 @@ strict greedy 的显式状态增量图。
 ```text
 Target + Draft checkpoint + W8A8 输入 + receiver 加载器
     → 输入 manifest + factory.json
-    → TorchAir：四个 AIR 图及外置权重
-    → ATC：四个 OM + deployment-manifest.json
+    → TorchAir：五个 AIR 图及外置权重
+    → ATC：五个 OM + deployment-manifest.json
     → C++ AscendCL：普通/DFlash 生成
     → NPU ordinary token 对照
     → 时延报告和分阶段 msprof
 ```
 
-单模式 DFlash 加载 `target_prefill`、`target_verify`、`draft`；普通运行加载
-`target_prefill`、`target_decode`；默认 paired 同时加载四个，低显存 paired 最多同时加载三个。
+单模式 DFlash 加载 `target_prefill`、`target_verify`、`draft`、`draft_context`；普通运行加载
+`target_prefill`、`target_decode`；paired 同时加载五个，低显存 paired 最多同时加载四个。
 prefill 共用，verify 内部完成接受判断与状态提交。
-可选 `draft_context_rows=16` 另导出缓存构建图：DFlash 加载 4 图，paired 加载 5 图，低内存最多 4 图。
+Draft 固定使用 16 行生成图与 64 行缓存构建图，无导出模式开关。
 
 ## 2. 输入和导出配置
 
@@ -46,8 +46,7 @@ Draft 使用 FP16 embedding、LM head 和主体；公开 embedding getter 保留
 | `input_manifest` | `lock_quant_inputs.py` 生成的输入 manifest |
 | `receiver_models_dir` | 含 `export_model_wrapper_qwen3_5.py` 及其依赖的外部 models 目录 |
 | `max_sequence_length` | 逻辑 KV 容量 C，64 的倍数，64..32704 |
-| `include_ordinary_decode` | `true` 导出 4 图；`false` 只导出 DFlash 3 图 |
-| `draft_context_rows` | 默认 `64`；`16` 将生成阶段投影压到 16 行，并增加 `draft_context` 缓存构建图 |
+| `include_ordinary_decode` | `true` 导出 5 图；`false` 只导出 DFlash 4 图 |
 | `dtype` | `float16` |
 | `draft_attention_matmul_dtype` | 默认 `float16`：OM Draft 的 QK/PV 均用 FP16 输入；`float32` 用于精度/接受率基线对照 |
 | `device` | 例如 `npu:0` |
@@ -119,7 +118,7 @@ C++ 为每份 discard state 分配独立、持久的设备缓冲区，共 48 MiB
 |---|---|---|
 | `features` | FP16 `[1,64,20480]` | 本次需追加的 committed Target feature，右补齐 |
 | `start_position` | INT64 `[1]` | 这批 feature 在上下文中的起始位置 |
-| `valid_rows` | INT16 `[1]` | 有效 feature 行数，1..64 |
+| `valid_rows` | INT16 `[1]` | 有效 feature 行数，0..16 |
 | `anchor` | INT64 `[1]` | 当前已输出、尚未作为 Target 输入提交的 token |
 | `proposal_count` | INT16 `[1]` | 本轮实际草稿数 K，1..15，受请求设置和剩余输出预算约束 |
 | `d0_key,d0_value,...,d5_key,d5_value` | FP16 `[1,8,C+64,128]` | 6 层 committed-context KV |
@@ -130,8 +129,9 @@ C++ 为每份 discard state 分配独立、持久的设备缓冲区，共 48 MiB
 输出前 K 项有效，其余项为 0；不能用完整 block 的结果直接截断来替代短 block。
 用于 proposal 的 transient block KV 不作为 committed cache 输出。
 
-紧凑执行保持上述 64 行 features 接口，但 `draft.om` 只消费前 16 行，
-`valid_rows` 为 0..16；0 仅用于上下文已全部写入的首次候选生成，不增加可见 KV 长度。
+`draft.om` 保持 64 行 features 接口，只消费前 16 行；
+64 行用于共用 Prefill/Verify 特征缓冲区，最多 15 个候选由独立的 anchor/MASK block 生成。
+`valid_rows=0` 仅用于上下文已全部写入的首次候选生成，不增加可见 KV 长度。
 `draft_context.om` 输入为 `features,start_position,valid_rows,12 个 Draft KV`，
 输出仅为 12 个更新后的 KV，`valid_rows` 为 1..64；不执行 proposal attention、MLP 或 LM head。
 缓存只比较有效前缀，未提交的 scratch 行不影响注意力。两张 Draft 图的 deterministic 设置同步切换。
@@ -164,7 +164,7 @@ InferShape/InferDataType 和 ATC 的实际编译结果。ATC 失败时异常附�
 
 | AIR 路径 | PyTorch 前端 | GE 节点与导出处理 |
 |---|---|---|
-| 三个 Target 图及 Draft 图 | `npu::adn_rms_norm` | 默认 `AdnRmsNorm`，输入名 `self`；显式选择 `RmsNorm` 时使用 `x` |
+| 三个 Target 图及两张 Draft 图 | `npu::adn_rms_norm` | 默认 `AdnRmsNorm`，输入名 `self`；显式选择 `RmsNorm` 时使用 `x` |
 | 三个 Target 图 | `npu::npu_dynamic_quant` | `DynamicQuant`；保留 TorchAir 内置 converter，审计 GE 节点 |
 | 三个 Target 图 | `qwen35_dflash::npu_quant_matmul_v4444` | `QuantBatchMatmulV4444`；专用捕获前端避免覆盖 TorchAir 的量化 matmul converter |
 | 三个 Target 图 | `npu::npu_chunk_gated_delta_rule` | `ChunkGatedDeltaRule`；Meta 覆盖 R=1/16/64，保留两个输出和 FP32 recurrent state |
@@ -204,7 +204,7 @@ MTP 使用 `qwen35-dflash-mtp-v2` ABI，每层输出 FP32 `[1,16,32,128,128]` st
 在图内选择第 a 槽提交，外部不输出 bank 或 Chunk 的 24 份 discard state。
 普通、Chunk Verify、MTP Verify 均保留 FP32 recurrent state。使用 `--reuse-common-from` 时，
 导出器校验源码、配置、公共 tensor ABI、工具链身份，编译器核对 ATC 选项，允许两个路线清单
-引用同一份 Prefill/Decode/Draft 和可选 Draft Context；默认 5 个 OM，紧凑执行 6 个。
+引用同一份 Prefill/Decode/Draft/Draft Context；两条路线共 6 个 OM。
 旧 v3/v1 只兼容读取，不能通过重命名升级精度。
 路线对照见 [架构](DFLASH_ARCHITECTURE.md#chunk-两遍与-mtp)，切换见 [使用命令](GDR_CHUNK_AIR_OM.md)。
 
@@ -311,10 +311,10 @@ ATC 的 `--soc-version` 同样要求设备支持的精确型号。
 | 5 | `prepare-chunk-plan` | `--deployment-manifest`、`--mode ordinary\|dflash\|paired`、`--output` | 单模式或配对计划 |
 
 `infer-cpp` 还支持 `--max-new-tokens`、`--max-draft-tokens`、`--device-id`。
-`--low-memory` 用于四图 chunk bundle：先完成普通模式的 3+10，再卸载模型和缓冲区，
-加载三图 DFlash 完成 3+10，最后执行相同的严格 token/EOS 对照。
+`--low-memory` 先按指定轮数完成普通模式，再卸载模型和缓冲区，
+加载四图 DFlash 完成测量，最后按指定策略比较 token/EOS。
 `run-e2e-cpp` 和直接 C++ 的 `--model-kind chunk --mode paired` 也支持该参数。
-报告记录 `protocol.low_memory=true`、分组顺序和 `max_resident_models`（默认 3，紧凑 Draft 为 4）；
+报告记录 `protocol.low_memory=true`、分组顺序和 `max_resident_models=4`；
 加载/组间卸载时间单独记录，不进入模型循环时延。无需重新生成 AIR/OM。
 `--eos-token-id` 可重复传入，用于覆盖 tokenizer 的 EOS 并对齐 NPU 报告。
 `--trace-rounds` 为 chunk bundle 记录每轮的 proposal、Target token、接受前缀和输出；
@@ -337,7 +337,7 @@ chunk 模式将各 OM 的临时工作内存从分别申请改为申请最大值�
 verify 完成后，主机复核接受数并统一发布状态；异常使本次请求失效，清零后才能继续。
 correction 或 bonus 成为下一轮 anchor，本轮不提前把它写入已提交状态。
 零接受后仍保留 Draft 上下文，提交 1 行 anchor 状态，下一轮继续 Draft/verify。
-此策略同样用于只加载三图的 DFlash 模式（含低显存 paired 的 DFlash 组）。
+此策略同样用于加载四图的 DFlash 模式（含低显存 paired 的 DFlash 组）。
 报告的 `speculation_disable_events`、`target_only_fallback_rounds` 保留为兼容字段，
 当前持续投机策略下均为 0；`stage_ms` 记录实际调用图。
 

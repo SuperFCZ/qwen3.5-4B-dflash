@@ -59,8 +59,8 @@ def test_batch_reuses_models_resets_prompts_and_preserves_parity(
     assert [c["id"] for c in index["cases"]] == [p[0] for p in prompts]
     loaded = [json.loads(line) for line in workspace.read_text().splitlines()]
     assert [r[0] for r in loaded] == (
-        ["target_decode", "target_prefill", "draft", "target_prefill", "target_verify"]
-        if low_memory else ["draft", "target_decode", "target_prefill", "target_verify"])
+        ["target_decode", "target_prefill", "draft", "draft_context", "target_prefill", "target_verify"]
+        if low_memory else ["draft", "draft_context", "target_decode", "target_prefill", "target_verify"])
     assert_cpp_resources_released(cleanup, proc.stderr)
     reports = []
     for case, (_, tokens) in zip(index["cases"], prompts):

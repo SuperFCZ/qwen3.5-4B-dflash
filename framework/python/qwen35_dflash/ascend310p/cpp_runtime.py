@@ -367,6 +367,8 @@ def validate_cpp_runner_report(
     if protocol.get("low_memory", False) is not low_memory:
         raise RuntimeError("C++ runner low-memory mode differs from the request")
     abi = report.get("abi", {})
+    # Saved reports can predate the mandatory context-only prefill graph.
+    # Live deployments are checked by validate_incremental_bundle before execution.
     reported_rows = abi.get("draft_context_rows", 64)
     if chunk_abi and (type(reported_rows) is not int or reported_rows not in (16, 64)
                       or draft_context_rows is not None and reported_rows != draft_context_rows):
@@ -554,7 +556,7 @@ def run_cpp_pair(
         chunk_abi=chunk,
         verify_gdr=verify_gdr,
         low_memory=low_memory,
-        draft_context_rows=contract.get("draft_context_rows", 64) if chunk else None,
+        draft_context_rows=contract["draft_context_rows"] if chunk else None,
     )
     run_root = Path(os.environ["AI_RUN_DIR"]).expanduser().resolve()
     air_record = deployment.get("air_manifest")

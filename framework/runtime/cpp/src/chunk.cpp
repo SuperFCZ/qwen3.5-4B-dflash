@@ -135,8 +135,8 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
   }
   Require(word == "done" && result.graphs.count("target_prefill") &&
               result.graphs.count("target_verify") &&
-              result.graphs.count("draft"),
-          "chunk plan needs prefill, verify and draft");
+              result.graphs.count("draft") && result.graphs.count("draft_context"),
+          "chunk plan needs prefill, verify, draft and draft_context; regenerate AIR/OM in a new bundle directory");
   Require(mode == "dflash" || result.graphs.count("target_decode"),
           "ordinary/paired execution requires target_decode");
   Require(!(input >> word), "unexpected data after chunk plan");

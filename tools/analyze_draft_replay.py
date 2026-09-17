@@ -89,6 +89,10 @@ def analyze(report_path: Path) -> dict:
     start = int(np.frombuffer(start_bytes, dtype="<i8")[0])
     references, preserved = {}, {}
     bounds = audit["row_regions"]
+    # Reports saved before compact execution did not record the projection gear.
+    context_rows = audit.get("context_rows", 64)
+    if type(context_rows) is not int or context_rows not in (16, 64):
+        raise ValueError("invalid context projection rows")
     for name, spec in audit["abi"].items():
         if spec["dtype"] != "float16":
             raise ValueError("KV analysis expects float16")
@@ -96,21 +100,21 @@ def analyze(report_path: Path) -> dict:
                          report["reference_output_sha256"][name], spec["shape"])
         references[name] = reference
         capacity = reference.shape[2]
-        if (not 0 <= start <= capacity - 64
+        if (not 0 <= start <= capacity - context_rows
                 or set(bounds) != {"valid_prefix", "written_padding", "untouched_tail"}
                 or any(len(b) != 2 or any(type(x) is not int for x in b)
                        or not 0 <= b[0] <= b[1] <= capacity for b in bounds.values())
                 or bounds["valid_prefix"][0] != 0
-                or not start < bounds["valid_prefix"][1] <= start + 64
-                or bounds["written_padding"] != [bounds["valid_prefix"][1], start + 64]
-                or bounds["untouched_tail"] != [start + 64, capacity]):
+                or not start <= bounds["valid_prefix"][1] <= start + context_rows
+                or bounds["written_padding"] != [bounds["valid_prefix"][1], start + context_rows]
+                or bounds["untouched_tail"] != [start + context_rows, capacity]):
             raise ValueError("invalid KV row regions")
         for region, (begin, end) in bounds.items():
             digest = hashlib.sha256(reference[:, :, begin:end, :].tobytes(order="C")).hexdigest()
             if digest != audit["reference_region_sha256"][name][region]:
                 raise ValueError(f"KV region hash mismatch: {name}/{region}")
         input_value = load(f"inputs/{name}.bin", report["snapshot_sha256"][name], spec["shape"])
-        # Scatter replaces [start, start+64). Outside that interval the
+        # Scatter replaces [start, start+context_rows). Outside that interval the
         # functional graph must preserve input bytes, including on iteration 0.
         preserved[name] = {
             "old_prefix": metrics(input_value, reference, 0, start),

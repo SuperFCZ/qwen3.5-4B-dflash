@@ -91,8 +91,9 @@ def test_replay_freezes_boundary_never_commits_outputs(replay_case, policy, prom
     assert all(phase["valid_kv_mismatch_iterations"] == 0 for phase in analysis["phase_counts"])
     calls = [json.loads(line) for line in events.read_text().splitlines()]
     assert not any(row[1] or row[0] in ("target_verify", "target_decode") for row in calls)
-    # Interleaved setup runs Prefill again; a long prompt also initializes old Draft KV.
-    prefix = ["target_prefill"] if prompt_count == 17 else ["target_prefill", "draft", "target_prefill"]
+    # Interleaved setup primes KV without generating discarded proposals.
+    prefix = (["target_prefill", "draft_context"] if prompt_count == 17
+              else ["target_prefill", "draft_context", "target_prefill"])
     assert [r[0] for r in calls] == prefix + ["draft"] * 4 + (prefix + ["draft"]) * 4
     assert_cpp_resources_released(cleanup, proc.stderr)
 
@@ -126,7 +127,7 @@ def test_replay_retains_drift_and_runs_remaining_iterations(replay_case, monkeyp
         region, row, channel = {
             "draft_output_bytes": ("valid_prefix", 0, 1),
             "draft_output_padding": ("written_padding", 17, 0),
-            "draft_output_tail": ("untouched_tail", 64, 0),
+            "draft_output_tail": ("untouched_tail", 33, 0),
         }[variation]
         assert completed[2]["valid_tokens_match"] and completed[2]["inputs_unchanged"]
         assert completed[2]["valid_kv_matches"] is padding_only
@@ -141,7 +142,7 @@ def test_replay_retains_drift_and_runs_remaining_iterations(replay_case, monkeyp
         assert diff["changed_elements"] == 1 and diff["max_fp16_ulp_finite"] == 1
         assert diff["max_abs_finite"] == 2 ** -24
         assert diff["first_difference"]["coordinate_bhsd"] == [0, 0, row, channel]
-        assert example["outside_write_vs_input"]["untouched_tail"]["changed_elements"] == int(row == 64)
+        assert example["outside_write_vs_input"]["untouched_tail"]["changed_elements"] == int(region == "untouched_tail")
         # Evidence is hash locked; corruption must not yield numerical results.
         saved = Path(data["trace"]).parent / example["path"]
         raw = bytearray(saved.read_bytes())
@@ -181,10 +182,10 @@ def test_replay_never_overwrites_previous_evidence(replay_case):
 
 
 @pytest.mark.parametrize("extra", [
-    ("--warmup", "2"),  # Formal benchmark requirements stay intact.
+    ("--warmup", "-1"),
     ("--profile-stage", "draft"),
 ])
-def test_debug_cannot_relax_benchmark_or_mix_with_profiler(replay_case, extra):
+def test_debug_rejects_invalid_counts_or_mixing_with_profiler(replay_case, extra):
     invoke, events, _ = replay_case
     proc, data, _ = invoke(extra=extra)
     assert proc.returncode != 0 and data is None

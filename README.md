@@ -2,6 +2,7 @@
 
 Ascend 310P 投机解码：Target 支持 FP16 / W8A8，官方 DFlash Draft 使用 FP16。
 Torch-NPU 和 AIR/OM/C++ 均支持 **GDR Chunk 两遍**与 **GDR MTP** 验证。
+OM 固定使用紧凑 Draft：16 行候选生成，独立 Draft Context 构建预填充缓存；无需额外开关。
 
 ## 环境配置
 
@@ -34,6 +35,7 @@ source /absolute/path/dflash-env.sh
 
 开源数据集 Chunk 测试（输出上限 **512 token**）：5 个文件、2563 条问题，加权接受率 **26.77%**；
 按用户日志汇总估算整体加速 **1.91×**，数学类 **2.05–2.11×**、代码类 **1.60–1.64×**。
+这些数据采集早于紧凑 Draft 默认化，当前执行路径待设备重测。
 允许输出差异，任务质量未评估；[详细结果与 128 token 对比](docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md#开源数据集输出上限-512-token)。
 
 <details>

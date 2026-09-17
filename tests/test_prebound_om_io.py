@@ -29,10 +29,7 @@ def logical_results(report):
             for mode in ("ordinary", "dflash")}
 
 
-@pytest.mark.parametrize("chunk_bundle", [
-    {"verify_gdr": route, "draft_context_rows": rows}
-    for route in ("chunk", "mtp") for rows in (64, 16)
-], indirect=True)
+@pytest.mark.parametrize("chunk_bundle", ["chunk", "mtp"], indirect=True)
 @pytest.mark.parametrize("accepted,eos", [(0, []), (3, []), (15, []), (15, [7])])
 @pytest.mark.parametrize("low_memory", [True, False])
 def test_prebound_banks_preserve_rounds_and_do_not_rebind(

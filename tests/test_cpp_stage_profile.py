@@ -299,8 +299,9 @@ def test_draft_input_audit_distinguishes_features_from_output_variation(chunk_bu
     reference, measured = [s for s in samples if s["event"] == "completed"]
     a, b = reference["draft_input_sha256"], measured["draft_input_sha256"]
     assert a.keys() == b.keys() and "features" in a and any(k.startswith("d0_") for k in a)
-    for name, fmt, value in (("anchor", "q", 5), ("valid_rows", "h", 17),
-                             ("start_position", "q", 0), ("proposal_count", "h", 15)):
+    # The 17-row prompt is already cached by Draft Context before this window.
+    for name, fmt, value in (("anchor", "q", 5), ("valid_rows", "h", 0),
+                             ("start_position", "q", 17), ("proposal_count", "h", 15)):
         assert a[name] == b[name] == hashlib.sha256(struct.pack(fmt, value)).hexdigest()
     assert reference["input_state_comparison"] == "REFERENCE_SHA256"
     differences = [key for key in a if a[key] != b[key]]

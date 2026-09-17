@@ -9,7 +9,7 @@ cd "$AI_RUN_DIR"
 
 配置里的 `VERIFY_GDR=chunk|mtp` 自动选择对应的 `DEPLOYMENT_MANIFEST`。
 两个 manifest 填实际已编译路径；共用 Prefill、Decode、Draft，各自引用自己的 Verify。
-紧凑 Draft 模式还共用一个仅构建缓存的 `draft_context.om`。
+Draft 固定采用 16 行紧凑执行，另共用 `draft_context.om` 构建预填充缓存，无需选择参数。
 首次部署见文末[导出与编译](#导出与编译)。`QUANT_MODE` 只控制原生推理，OM 精度由编译产物决定。
 
 ## 统一测试：短 / 1K 上下文、Chunk / MTP、多长度
@@ -19,14 +19,10 @@ cd "$AI_RUN_DIR"
 两种输入共用下面一条命令；投机始终开启。选择 `both` 时，**每个输出长度只测一次普通模型**：
 低内存模式依次运行普通模型、Chunk、MTP，MTP 复用同一份普通模型输出和时延。每模式仍按指定轮数预热、测量。
 
-普通基线复用需要 C++ runner 1.6.0+，仅启用此功能无需重编 OM。多轮漂移仍只记录、不报错。
-下文紧凑 Draft 模式需要 runner **1.7.0+** 和重新导出、编译的 OM。
-已有构建目录且指向当前源码时执行 `cmake --build "$(dirname "$CPP_RUNNER")" --parallel 4`；
-首次构建见文末第 5 步。
-
-runner **1.8.0+** 默认预绑定两套 current/next I/O，省去每次调用的地址重绑定。
-适用 Chunk/MTP 和 64/16 行 Draft，**只需重建 runner，无需重编 OM**；原始报告中
-`protocol.om_io_binding=prebound_ping_pong` 表示已启用。此改动不改变图内计算，实际耗时需重新测量。
+使用当前 runner **1.9.0+**。已有紧凑 OM（含 `draft_context`）只需重建 runner：
+`cmake --build "$(dirname "$CPP_RUNNER")" --parallel 4`；首次构建见文末第 5 步。
+不含该图的部署需按文末步骤在新目录重新导出、编译；不要覆盖已有 OM。
+runner 默认预绑定 current/next 两套 I/O；报告中 `protocol.om_io_binding=prebound_ping_pong` 表示已启用。
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
@@ -63,8 +59,8 @@ runner **1.8.0+** 默认预绑定两套 current/next I/O，省去每次调用的
 
 结果看 `gdr-lengths-*/summary.md` 和 `cases.csv`：整体及 short/long 分组的接受率、tok/s、加速比，
 普通 **Prefill / Decode**、DFlash **Prefill / Draft / Verify** 的平均 ms/call 与累计平均 ms/次生成。
-紧凑模式额外显示 **Draft Context**（缓存构建）。
-另列完整 Prefill / Decode 阶段耗时；DFlash Prefill 包含构建上下文的 Draft 调用，不能与图调用表重复相加。
+同时显示 **Draft Context**（缓存构建）。
+另列完整 Prefill / Decode 阶段耗时；DFlash Prefill 包含 Draft Context 调用，不能与图调用表重复相加。
 统计均排除预热、模型加载和请求重置，缺失分项显示 N/A。
 每组子目录的 `generations.txt` 保存文字输出，`runner-batch.json.cases/` 保存逐轮原始记录。
 `--allow-output-differences` 接受跨模式输出差异；去掉则比较两模式第 0 次正式输出的 token/EOS。
@@ -187,7 +183,7 @@ profile_om() {
 `--profile-warmup 0` 不预热；改为 `1` 则在窗口外预热一次。输出上限 `16` 用于设置 15 个候选的预算，不会跑满生成。
 Decode/Draft/Verify 的窗口只含一次对应 OM 调用，必要的 Prefill、缓存和候选准备在窗口外执行。
 Prefill 采集整个输入：含聊天模板不超过 64 token 时一次 OM 调用，约 1K 输入则约 16 次。
-紧凑模式的 `draft_context.om` 属于 Draft/Verify 窗口外的缓存准备；以上命令不单独采集它。
+`draft_context.om` 属于 Draft/Verify 窗口外的缓存准备；以上命令不单独采集它。
 
 每次输出到终端打印的 `Output` 目录，查看 `capture/<stage>-stage-summary.csv`、
 `capture/<stage>-operator-types.csv` 和 `capture/<stage>-hotspots.txt`，`<stage>` 为所选阶段或 `all`。
@@ -195,18 +191,10 @@ Verify 包含接受判断和图内状态提交；msprof 时延是采集窗口耗
 
 ## 导出与编译
 
-**可选执行优化**：在环境配置文件中将下列两行设为：
-
-```bash
-export DRAFT_CONTEXT_ROWS=16
-export OM_BUNDLE_DIR="$AI_RUN_DIR/artifacts-draft16"
-```
-
-两个 manifest 路径使用配置模板中的 `$OM_BUNDLE_DIR`，重新 `source` 后执行下面第 1–5 步。
-已有 runner 构建目录时，第 5 步改用前文的 `cmake --build` 命令。
-目录须未被使用。长输入只投影并写入上下文 KV；生成时只处理最多 16 行新增特征，每轮仍是一次 Draft + 一次 Verify。
-模型结构、权重和精度不变，使用现有算子；新增一个共享的缓存构建 OM。实际设备耗时和接受率需重新测量。
-默认 `DRAFT_CONTEXT_ROWS=64` 保留原路径；对比或回退时切换到原部署清单即可。
+在环境配置中将 `OM_BUNDLE_DIR` 设为未使用的目录，重新 `source` 后执行第 1–5 步。
+长输入通过 Draft Context 只建缓存；生成固定使用 16 行 Draft，每轮一次 Draft + 一次 Verify。
+模型结构、权重、精度和算子不变。实际设备耗时和接受率需重新测量。
+配置不再需要 `DRAFT_CONTEXT_ROWS`，已有 `factory.json` 中的 `draft_context_rows` 字段请删除。
 
 <details>
 <summary>首次部署：准备配置，导出 Chunk / MTP，构建 runner</summary>
@@ -214,9 +202,8 @@ export OM_BUNDLE_DIR="$AI_RUN_DIR/artifacts-draft16"
 先完成 [Torch-NPU 首次准备](DFLASH_RUN_AND_VALIDATE.md#首次准备)和 W8A8 配置。
 还需匹配版本的 TorchAir、ATC、AscendCL、CMake/C++17；MTP 路线需要对应设备算子和 GE 注册。
 在环境配置中填写实际 `ATC_BIN`、`SOC_VERSION` 和 `KV_CAPACITY=2048` 后重新 `source`。
-新版普通模型与 DFlash 的 recurrent state 都改为 FP32，conv/KV 保持 FP16。
-旧 FP16 状态 OM 不能仅靠改配置升级；需重新导出、编译并重建 runner。
-下列命令输出到配置中的 `$OM_BUNDLE_DIR`（默认 `artifacts-fp32`）；已有 `factory.json` 且容量足够、
+普通模型与 DFlash 的 recurrent state 使用 FP32，conv/KV 保持 FP16。
+下列命令输出到配置中的 `$OM_BUNDLE_DIR`（默认 `artifacts`）；已有 `factory.json` 且容量足够、
 `include_ordinary_decode=true`，可直接从第 1 步开始。
 
 ```bash
@@ -258,7 +245,7 @@ PY
 "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p export-air \
   --factory qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs \
   --factory-config "$AI_RUN_DIR/factory.json" --verify-gdr chunk \
-  --draft-context-rows "${DRAFT_CONTEXT_ROWS:-64}" --bundle-dir "$OM_BUNDLE_DIR"
+  --bundle-dir "$OM_BUNDLE_DIR"
 ```
 
 **2. 编译 Chunk OM**
@@ -275,7 +262,6 @@ PY
 "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p export-air \
   --factory qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs \
   --factory-config "$AI_RUN_DIR/factory.json" --verify-gdr mtp \
-  --draft-context-rows "${DRAFT_CONTEXT_ROWS:-64}" \
   --reuse-common-from "$OM_BUNDLE_DIR/deployment-manifest.json" \
   --bundle-dir "$OM_BUNDLE_DIR"
 ```
@@ -288,9 +274,9 @@ PY
   --atc "$ATC_BIN" --soc-version "$SOC_VERSION"
 ```
 
-完成后 `$OM_BUNDLE_DIR/om/` 默认有 **5 个文件**：
-`prefill.om`、`decode.om`、`draft.om`、`verify_chunk.om`、`verify_mtp.om`。
-选择 `DRAFT_CONTEXT_ROWS=16` 时增加 `draft_context.om`，共 **6 个**；Chunk/MTP 共用它，不重复存储。
+完成后 `$OM_BUNDLE_DIR/om/` 有 **6 个文件**：
+`prefill.om`、`decode.om`、`draft.om`、`draft_context.om`、`verify_chunk.om`、`verify_mtp.om`。
+前四个由 Chunk/MTP 共用，不重复存储。
 两个部署清单分别是同目录的 `deployment-manifest.json`（Chunk）和
 `deployment-manifest-mtp.json`（MTP）。将环境配置的两个 manifest 路径改为这两个文件，重新 `source`，
 完成第 5 步重建 runner 后，再执行上面的统一测试。公共图不重复编译、不复制存储。
@@ -299,7 +285,6 @@ PY
 只用 MTP 时可向空目录导出，省略 `--reuse-common-from`，随后编译该目录的 `air-manifest.json`。
 
 遇到 `Common reuse export differs` 时，新版会打印具体字段。
-旧版曾将审计信息中 JSON 的 list 与内存 tuple 误判为不一致，现已修复；
 源码哈希、张量接口或配置确实不同时仍会拒绝复用。更新源码后，旧清单的源码哈希也会变化，
 应在新目录用同一版本重新执行上述四步，不修改旧清单或覆盖已有 OM。
 
@@ -355,7 +340,7 @@ PY
 ```
 
 分别执行上面的四步，将两条导出命令中的 `factory.json` 换为 `factory-lengths.json`，
-在环境配置中将 `OM_BUNDLE_DIR` 改为尚未使用的 `$AI_RUN_DIR/artifacts-fp32-lengths` 并重新 `source`；
+在环境配置中将 `OM_BUNDLE_DIR` 改为尚未使用的 `$AI_RUN_DIR/artifacts-lengths` 并重新 `source`；
 完成后更新环境配置中的两个 manifest 路径并重新 `source`。
 容量变大可能增加显存和耗时，两条路线须使用同一容量重新比较。
 
@@ -372,7 +357,7 @@ PY
 ```
 
 新清单必须与原清单同目录、文件名未被使用；三个 Target OM 保持原文件。
-紧凑模式会同时重编 Draft 和 Draft Context。此命令只改编译选项；从 64 行切到 16 行必须重新导出 AIR。
+同时重编 Draft 和 Draft Context；此命令只改编译选项，不改变 AIR。
 把环境配置中的 `CHUNK_DEPLOYMENT_MANIFEST` 或 `MTP_DEPLOYMENT_MANIFEST` 改为新清单，重新 `source`。
 开启时将 `0` 改为 `1`，输出文件名也改为未使用的名称；省略参数默认为 `0`。
 更新后按第 5 步重建 C++ runner，多轮漂移会显示变化轮数、token 差异数和首个差异位置，

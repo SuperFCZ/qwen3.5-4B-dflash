@@ -161,7 +161,7 @@ def render_timings(rows, *, measured_only=True):
         lines.append(f"| {row['id']} | " + " | ".join(cells) + " |")
     lines += ["", "Measured repetitions only; warmups, model loading and request reset excluded.",
               "DFlash Prefill includes Target Prefill and context-building calls. "
-              "Compact execution reports cache-only calls as Draft Context; the 64-row path includes them in Draft. "
+              "Cache-only calls are reported as Draft Context. "
               "Phase and graph tables overlap and must not be added together.",
               "Graph times are synchronized OM calls, not kernel times. Missing timings are N/A."]
     return "\n".join(lines) + "\n"
@@ -891,7 +891,7 @@ def run(args):
         manifest, root / "chunk-plan.txt", verify_gdr=getattr(args, "verify_gdr", None))
     from qwen35_dflash.ascend310p.incremental_plan import verify_gdr_route
     args.verify_gdr = verify_gdr_route(contract)
-    args.draft_context_rows = contract.get("draft_context_rows", 64)
+    args.draft_context_rows = contract["draft_context_rows"]
     tokenizer, tokenizer_source = load_tokenizer(model_dir=args.model_dir)
     eos = args.eos_token_id or [248044]
     if any(token < 0 or token >= contract["vocab_size"] for token in eos):

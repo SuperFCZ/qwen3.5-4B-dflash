@@ -59,10 +59,11 @@ OM Draft 的 QK/PV 矩阵乘默认 FP16，缩放、Mask、Softmax 为 FP32；
 Chunk/MTP 共用同一个 `draft.om`，把上下文更新和候选生成合在一次调用中。
 逻辑接口为 `(features, start_position, valid_rows, anchor, proposal_count, 历史 KV)`
 → `(候选 token, 更新后的 KV)`，位置和有效长度控制可见范围。
-特征接口物理 64 行、block 16 行，由有效长度屏蔽 padding。
-默认 64 行执行路径在长 prompt 中间块生成并丢弃候选。
-可选 `--draft-context-rows 16`：预填充以独立 `draft_context.om` 只建缓存；
-生成时 `draft.om` 只投影前 16 行，仍一次完成缓存追加和候选生成。
+OM 固定使用紧凑 Draft：特征接口物理 64 行，生成只投影前 16 行，block 为 16 行。
+这里 64 是 Prefill/Verify 共用的特征缓冲区容量，不是候选数。
+生成轮的新特征最多为“旧 anchor + 15 个接受 token”共 16 行；候选输出最多 15 个。
+预填充以 `draft_context.om` 处理 64 行上下文块，只建缓存；
+生成时 `draft.om` 一次完成最多 16 行缓存追加和候选生成。
 末块不超过 16 行时合并进第一次 Draft；超过时先建缓存，第一次 Draft 的新增行数为 0。
 
 实现见 [Draft 模型](../models/dflash_v1/modeling_dflash.py)、
@@ -95,13 +96,13 @@ MTP bank 在 OM 内消费；原生提交复制所选状态，避免跨轮保留�
 |---|---|---|
 | `prefill.om` | 64 行物理块处理 prompt | 普通、DFlash |
 | `decode.om` | 单行 greedy decode | 仅普通 |
-| `draft.om` | 特征投影、KV 追加、并行候选 | DFlash |
-| `draft_context.om`（可选） | 只做 64 行上下文投影和 KV 追加 | 紧凑执行的 DFlash |
+| `draft.om` | 最多 16 行特征投影、KV 追加、并行候选 | DFlash |
+| `draft_context.om` | 只做 64 行上下文投影和 KV 追加 | DFlash |
 | `verify_chunk.om` | Chunk 两遍验证、接受判断、状态提交 | DFlash Chunk |
 | `verify_mtp.om` | MTP 验证、接受判断、选择状态 | DFlash MTP |
 
-普通模式加载 2 图；DFlash 默认加载 3 图，紧凑执行加载 4 图；无独立 commit OM。
-两条路线共存默认为 5 个 OM，紧凑执行为 6 个。Prefill、Decode、Draft、可选 Draft Context 均共用。
+普通模式加载 2 图；DFlash 加载 4 图；无独立 commit OM。
+两条路线共存为 6 个 OM。Prefill、Decode、Draft、Draft Context 均共用。
 运行时角色由清单映射到对应文件；紧凑执行只改变计算行数和调度，复用既有算子及模型权重。
 C++ 在设备上维护 KV、conv、recurrent state；低显存模式分组加载，并共享串行 workspace。
 runner 预先绑定 current/next 两组设备地址，提交后选择对应 dataset；热循环不再逐张量调用

@@ -639,8 +639,6 @@ void WriteReport(
     const std::string& error = {}) {
   const bool pass = result.token_id_mismatches == 0 && result.eos_mismatches == 0;
   const bool stable = result.ordinary.repeatable && result.dflash.repeatable;
-  const bool compact_draft = arguments.model_kind == "chunk" &&
-      dynamic_cast<const qwen35::dflash::ChunkExecutor&>(executor).HasDraftContext();
   const double speedup = result.dflash.model_total_ms.median > 0.0
                              ? result.ordinary.model_total_ms.median /
                                    result.dflash.model_total_ms.median
@@ -659,8 +657,7 @@ void WriteReport(
   if (arguments.model_kind == "chunk") {
     output << "\"abi\":{\"id\":\""
            << JsonEscape(dynamic_cast<const qwen35::dflash::ChunkExecutor&>(executor).abi_id())
-           << "\",\"graph_count\":" << (compact_draft ? 5 : 4)
-           << ",\"draft_context_rows\":" << (compact_draft ? 16 : 64)
+           << "\",\"graph_count\":5,\"draft_context_rows\":16"
            << ",\"sequence_length\":";
   } else {
     output << "\"abi\":{\"input_names\":[\"input_ids\",\"attention_mask\"],"
@@ -679,7 +676,7 @@ void WriteReport(
          << "\"om_io_binding\":\"" << (arguments.model_kind == "chunk" ? "prebound_ping_pong" : "static") << "\","
          << "\"repeatability_policy\":\"observe\","
          << "\"max_resident_models\":" << (arguments.model_kind == "chunk"
-              ? (arguments.low_memory || arguments.mode == "dflash" ? 3 : 4) + compact_draft : 1) << ','
+              ? (arguments.low_memory || arguments.mode == "dflash" ? 4 : 5) : 1) << ','
          << "\"synchronization\":\"one aclrtSynchronizeStream after queued H2D, execute, D2H\","
          << "\"model_load_excluded_from_latency\":true,"
          << "\"round_trace_enabled\":" << (arguments.trace_rounds ? "true" : "false") << ","

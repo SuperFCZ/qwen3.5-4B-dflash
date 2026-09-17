@@ -23,7 +23,7 @@ def execute(args, monkeypatch):
 
 
 @pytest.mark.parametrize("low_memory", [True, False])
-@pytest.mark.parametrize("matrix_args", [128, {"draft_context_rows": 16}], indirect=True)
+@pytest.mark.parametrize("matrix_args", [128, 256], indirect=True)
 def test_two_routes_execute_ordinary_once_per_budget(matrix_args, monkeypatch, low_memory):
     matrix_args.low_memory = low_memory
     matrix_args.lengths = [20, 32]
@@ -55,7 +55,7 @@ def test_two_routes_execute_ordinary_once_per_budget(matrix_args, monkeypatch, l
             m["latency_ms"]["model_total"] for m in ordinary["measurements"])
         assert suite.stage_timings(report)["ordinary_decode"]["calls"] == (second["max_new_tokens"] - 1) * 3
         assert report["protocol"]["order"] == baseline.ORDER
-        assert report["protocol"]["max_resident_models"] == 3 + (request["draft_context_rows"] == 16)
+        assert report["protocol"]["max_resident_models"] == 4
         assert report["formal_latency_evidence"] is False
         assert not any("target_decode" in m["stage_ms"] for m in raw["dflash"]["measurements"])
         validate_cpp_runner_report(report, prompt_token_ids=[4, 5],

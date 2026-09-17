@@ -505,11 +505,8 @@ def create_quant_recompute_graph(
     include_ordinary_decode = config.get("include_ordinary_decode", True)
     if type(include_ordinary_decode) is not bool:
         raise TypeError("include_ordinary_decode must be a bool")
-    draft_context_rows = config.get("draft_context_rows", 64)
-    if type(draft_context_rows) is not int or draft_context_rows not in (16, 64):
-        raise ValueError("draft_context_rows must be 16 or 64")
-    if not _incremental and draft_context_rows != 64:
-        raise ValueError("draft_context_rows=16 requires the incremental factory")
+    if "draft_context_rows" in config:
+        raise ValueError("draft_context_rows is no longer configurable; remove it from the factory config; incremental Draft uses 16 rows")
     device = str(config.get("device", "npu:0"))
     if not device.startswith("npu"):
         raise ValueError("formal quant AIR export requires an explicit NPU device")
@@ -702,8 +699,7 @@ def create_quant_recompute_graph(
             attention=torch_npu.adn_fused_infer_attention, rotary=apply_rotary_pos_emb,
             cache_update=_incremental_cache_update,
             verify_gdr=config.get("verify_gdr", "chunk"), gdr_mtp=gdr_mtp,
-            custom_ops=custom_op_exports, include_ordinary_decode=include_ordinary_decode,
-            draft_context_rows=draft_context_rows)
+            custom_ops=custom_op_exports, include_ordinary_decode=include_ordinary_decode)
     enable_padded_draft_context(draft)
     target_adapter = QuantFullPrefixExportTarget(target).eval()
     return (

@@ -471,7 +471,7 @@ def recompile_draft_om(
     runner: Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]] | None = None,
     atc_identity: str | None = None,
 ) -> dict[str, Any]:
-    """Recompile Draft and optional context-only OM, retaining the Target OMs.
+    """Recompile Draft and context-only OM, retaining the Target OMs.
 
     The new manifest shares its parent's bundle root so existing hash-locked
     AIR payloads and Target OMs need neither copies nor path/ABI changes.
