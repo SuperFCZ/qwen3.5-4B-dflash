@@ -19,6 +19,7 @@ Target + Draft checkpoint + W8A8 输入 + receiver 加载器
 单模式 DFlash 加载 `target_prefill`、`target_verify`、`draft`；普通运行加载
 `target_prefill`、`target_decode`；默认 paired 同时加载四个，低显存 paired 最多同时加载三个。
 prefill 共用，verify 内部完成接受判断与状态提交。
+可选 `draft_context_rows=16` 另导出缓存构建图：DFlash 加载 4 图，paired 加载 5 图，低内存最多 4 图。
 
 ## 2. 输入和导出配置
 
@@ -46,6 +47,7 @@ Draft 使用 FP16 embedding、LM head 和主体；公开 embedding getter 保留
 | `receiver_models_dir` | 含 `export_model_wrapper_qwen3_5.py` 及其依赖的外部 models 目录 |
 | `max_sequence_length` | 逻辑 KV 容量 C，64 的倍数，64..32704 |
 | `include_ordinary_decode` | `true` 导出 4 图；`false` 只导出 DFlash 3 图 |
+| `draft_context_rows` | 默认 `64`；`16` 将生成阶段投影压到 16 行，并增加 `draft_context` 缓存构建图 |
 | `dtype` | `float16` |
 | `draft_attention_matmul_dtype` | 默认 `float16`：OM Draft 的 QK/PV 均用 FP16 输入；`float32` 用于精度/接受率基线对照 |
 | `device` | 例如 `npu:0` |
@@ -128,6 +130,12 @@ C++ 为每份 discard state 分配独立、持久的设备缓冲区，共 48 MiB
 输出前 K 项有效，其余项为 0；不能用完整 block 的结果直接截断来替代短 block。
 用于 proposal 的 transient block KV 不作为 committed cache 输出。
 
+紧凑执行保持上述 64 行 features 接口，但 `draft.om` 只消费前 16 行，
+`valid_rows` 为 0..16；0 仅用于上下文已全部写入的首次候选生成，不增加可见 KV 长度。
+`draft_context.om` 输入为 `features,start_position,valid_rows,12 个 Draft KV`，
+输出仅为 12 个更新后的 KV，`valid_rows` 为 1..64；不执行 proposal attention、MLP 或 LM head。
+缓存只比较有效前缀，未提交的 scratch 行不影响注意力。两张 Draft 图的 deterministic 设置同步切换。
+
 增量套件的 ATC 编译自动添加 `--precision_mode=must_keep_origin_dtype`，
 保留图中显式的 FP32 RMSNorm、RoPE、Softmax 和 GDR 状态计算，以及选定的 Draft
 MatMul 输入 dtype。Draft QK/PV 默认均使用 FP16 输入，结果 Cast 到 FP32，
@@ -196,7 +204,8 @@ MTP 使用 `qwen35-dflash-mtp-v2` ABI，每层输出 FP32 `[1,16,32,128,128]` st
 在图内选择第 a 槽提交，外部不输出 bank 或 Chunk 的 24 份 discard state。
 普通、Chunk Verify、MTP Verify 均保留 FP32 recurrent state。使用 `--reuse-common-from` 时，
 导出器校验源码、配置、公共 tensor ABI、工具链身份，编译器核对 ATC 选项，允许两个路线清单
-引用同一份 Prefill/Decode/Draft；一个目录共 5 个 OM。旧 v3/v1 只兼容读取，不能通过重命名升级精度。
+引用同一份 Prefill/Decode/Draft 和可选 Draft Context；默认 5 个 OM，紧凑执行 6 个。
+旧 v3/v1 只兼容读取，不能通过重命名升级精度。
 路线对照见 [架构](DFLASH_ARCHITECTURE.md#chunk-两遍与-mtp)，切换见 [使用命令](GDR_CHUNK_AIR_OM.md)。
 
 卷积状态窗口使用静态切片加 `stack`，不调用 TorchAir 尚未实现 GE converter 的

@@ -140,7 +140,7 @@ def _graph_atc_args(arguments: Sequence[str], *, name: str, incremental: bool) -
     settings = [s for s in result if s.split("=", 1)[0] == "--deterministic"]
     if len(settings) > 1 or (settings and settings[0] not in {"--deterministic=0", "--deterministic=1"}):
         raise ValueError("use exactly one --deterministic=0 or --deterministic=1")
-    if incremental and name == "draft" and not settings:
+    if incremental and name in ("draft", "draft_context") and not settings:
         result.append("--deterministic=0")
     return result
 
@@ -471,7 +471,7 @@ def recompile_draft_om(
     runner: Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]] | None = None,
     atc_identity: str | None = None,
 ) -> dict[str, Any]:
-    """Recompile only Draft with the requested determinism, retaining the Target OMs.
+    """Recompile Draft and optional context-only OM, retaining the Target OMs.
 
     The new manifest shares its parent's bundle root so existing hash-locked
     AIR payloads and Target OMs need neither copies nor path/ABI changes.
@@ -523,49 +523,55 @@ def recompile_draft_om(
         if file_record(old_om, relative_to=root) != graph["om"]:
             raise ValueError(f"OM integrity check failed: {graph['name']}")
 
-    previous_draft = next(graph for graph in graphs if graph["name"] == "draft")
-    old_command = previous_draft["atc_command"]
-    if (not isinstance(old_command, list) or len(old_command) < 2
-            or not all(isinstance(value, str) for value in old_command)):
-        raise ValueError("missing original Draft ATC command")
-    # Preserve the actual old Draft flags, not only the bundle's common flags.
-    core = {"--mode", "--framework", "--model", "--output", "--soc_version"}
-    inherited = _validate_extra_args([
-        value for value in old_command[1:]
-        if value.split("=", 1)[0] not in core
-    ])
-    _graph_atc_args(inherited, name="draft", incremental=True)  # Reject malformed/duplicate flags.
-    inherited = [value for value in inherited if value.split("=", 1)[0] != "--deterministic"]
-    inherited.append(f"--deterministic={deterministic}")
-    arguments = _graph_atc_args(_chunk_precision_args(inherited, incremental=True), name="draft", incremental=True)
-    atc_path = resolve_atc_executable(atc_bin or os.environ.get("ASCEND310P_ATC_BIN") or old_command[0])
+    selected = [g for g in graphs if g["name"] in ("draft", "draft_context")]
+    graph_arguments = {}
+    for graph in selected:
+        name, old_command = graph["name"], graph["atc_command"]
+        if (not isinstance(old_command, list) or len(old_command) < 2
+                or not all(isinstance(value, str) for value in old_command)):
+            raise ValueError(f"missing original Draft ATC command: {name}")
+        # Preserve each graph's actual flags, not only the common bundle flags.
+        core = {"--mode", "--framework", "--model", "--output", "--soc_version"}
+        inherited = _validate_extra_args([
+            value for value in old_command[1:] if value.split("=", 1)[0] not in core
+        ])
+        _graph_atc_args(inherited, name=name, incremental=True)
+        inherited = [value for value in inherited if value.split("=", 1)[0] != "--deterministic"]
+        inherited.append(f"--deterministic={deterministic}")
+        graph_arguments[name] = _graph_atc_args(
+            _chunk_precision_args(inherited, incremental=True), name=name, incremental=True)
+    atc_path = resolve_atc_executable(
+        atc_bin or os.environ.get("ASCEND310P_ATC_BIN") or selected[0]["atc_command"][0])
     stage = Path(tempfile.mkdtemp(prefix=f"draft-det{deterministic}-", dir=root))
     log_root = stage / "log"
     log_root.mkdir()
-    compiled = _compile_air_graph(
-        air_by_name["draft"], root=root, om_root=stage, log_root=log_root,
-        atc_path=atc_path, exact_soc_version=soc, arguments=arguments,
-        execute=runner or _default_runner,
-    )
+    compiled = {
+        name: _compile_air_graph(
+            air_by_name[name], root=root, om_root=stage, log_root=log_root,
+            atc_path=atc_path, exact_soc_version=soc, arguments=arguments,
+            execute=runner or _default_runner,
+        ) for name, arguments in graph_arguments.items()
+    }
     # Publish only after ATC succeeded and the reused authority still matches.
     if file_record(source, relative_to=root) != parent_record or sha256_file(air_path) != air_record["sha256"]:
         raise ValueError("source manifests changed during Draft compilation")
     for graph in graphs:
         if file_record(contained_path(root, graph["om"]["path"]), relative_to=root) != graph["om"]:
             raise ValueError(f"original OM changed during Draft compilation: {graph['name']}")
-    deployment["graphs"] = [compiled if graph["name"] == "draft" else graph for graph in graphs]
+    deployment["graphs"] = [compiled.get(graph["name"], graph) for graph in graphs]
     deployment["recompilation"] = {
         "parent_manifest": parent_record,
-        "graphs": ["draft"],
+        "graphs": list(compiled),
         "reason": "Draft-only deterministic setting change; device validation pending",
         "deterministic": deterministic,
         "compiler": {"path": str(atc_path), "identity": atc_identity or _atc_identity(atc_path),
-                     "extra_args": arguments},
+                     "extra_args": graph_arguments["draft"],
+                     "graph_extra_args": graph_arguments},
         "ordinary_parity": "NOT_RUN", "formal_latency_evidence": False,
     }
     # Common compiler metadata describes the original build. Graph commands
     # and this override record describe the changed artifact precisely.
-    deployment["compiler"].setdefault("graph_extra_args", {})["draft"] = arguments
+    deployment["compiler"].setdefault("graph_extra_args", {}).update(graph_arguments)
     deployment.pop("manifest_path", None)
     with destination.open("x", encoding="utf-8") as stream:
         stream.write(json.dumps(deployment, ensure_ascii=False, indent=2, sort_keys=True) + "\n")

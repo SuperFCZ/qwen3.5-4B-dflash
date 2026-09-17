@@ -24,14 +24,16 @@ export DEVICE_ID=0
 export KV_CAPACITY=2048       # prompt + 输出容量，64 的倍数
 export MAX_NEW_TOKENS=128
 export MAX_DRAFT_TOKENS=15
+export DRAFT_CONTEXT_ROWS=64  # OM 导出：16=紧凑生成+独立缓存构建；64=原执行路径
 export QUANT_MODE=disable     # 原生推理：disable=FP16，enable=W8A8
 export PROMPT='请用通俗的中文解释什么是机器学习。'
 
 # 已有部署请填写实际路径；新部署可以沿用这些默认路径。
 export QUANT_CONFIG="$AI_RUN_DIR/qwen35-w8a8.yaml"
 export CPP_RUNNER="$AI_RUN_DIR/build/cpp/qwen35_dflash_acl_runner"
-export CHUNK_DEPLOYMENT_MANIFEST="$AI_RUN_DIR/artifacts-fp32/deployment-manifest.json"
-export MTP_DEPLOYMENT_MANIFEST="$AI_RUN_DIR/artifacts-fp32/deployment-manifest-mtp.json"
+export OM_BUNDLE_DIR="$AI_RUN_DIR/artifacts-fp32"  # 新导出必须用空目录
+export CHUNK_DEPLOYMENT_MANIFEST="$OM_BUNDLE_DIR/deployment-manifest.json"
+export MTP_DEPLOYMENT_MANIFEST="$OM_BUNDLE_DIR/deployment-manifest-mtp.json"
 export RUNNER_CONFIG="$AI_RUN_DIR/runner.json"
 export ATC_BIN="$CANN_ROOT/bin/atc"
 export SOC_VERSION=Ascend310P3 # 改成实际 SoC

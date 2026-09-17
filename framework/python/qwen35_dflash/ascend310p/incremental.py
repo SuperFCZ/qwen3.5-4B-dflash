@@ -579,16 +579,35 @@ class DraftProposeGraph(nn.Module):
         return (torch.where(active[None], top1, torch.zeros_like(top1)),)
 
 
+class DraftContextOnlyGraph(nn.Module):
+    """Prime context KV without running the proposal transformer or LM head."""
+
+    def __init__(self, draft):
+        super().__init__()
+        self.context = DraftContextGraph(draft, 64)
+
+    def forward(self, features, start_position, valid_rows, *state):
+        visible = torch.arange(64, device=features.device) < valid_rows.to(torch.long)
+        features = torch.where(visible[None, :, None], features, torch.zeros_like(features))
+        return self.context(features, start_position, *state)
+
+
 class DraftGraph(nn.Module):
     """One OM appends context and generates a block, sharing all Draft weights."""
 
-    def __init__(self, draft, embedding, head):
+    def __init__(self, draft, embedding, head, *, context_rows=64):
         super().__init__()
-        self.context = DraftContextGraph(draft, 64)
+        if type(context_rows) is not int or context_rows not in (16, 64):
+            raise ValueError("draft_context_rows must be 16 or 64")
+        self.context = DraftContextGraph(draft, context_rows)
         self.propose = DraftProposeGraph(draft, embedding, head)
 
     def forward(self, features, start_position, valid_rows, anchor, proposal_count, *state):
-        visible = torch.arange(64, device=features.device) < valid_rows.to(torch.long)
+        # Keep the shared 64-row feature ABI; only the live generation gear is
+        # projected. With context already primed, valid_rows=0 writes scratch
+        # rows only and leaves the committed prefix untouched.
+        features = features[:, :self.context.rows]
+        visible = torch.arange(self.context.rows, device=features.device) < valid_rows.to(torch.long)
         features = torch.where(
             visible[None, :, None], features, torch.zeros_like(features)
         )
@@ -621,12 +640,15 @@ def incremental_graph_specs(
     include_ordinary_decode: bool = True,
     verify_gdr: str = "chunk",
     gdr_mtp: Callable | None = None,
+    draft_context_rows: int = 64,
 ):
     """Build static graphs, with shapes derived from the loaded models."""
     if verify_gdr not in VERIFY_GDR_ROUTES:
         raise ValueError("verify_gdr must be chunk or mtp")
     if verify_gdr == "mtp" and not callable(gdr_mtp):
         raise ValueError("mtp verification requires GDR MTP; no fallback is permitted")
+    if type(draft_context_rows) is not int or draft_context_rows not in (16, 64):
+        raise ValueError("draft_context_rows must be 16 or 64")
     device = target.requested_device
     state = tuple(t for pair in target._fresh_hybrid_cache(batch_size=1) for t in pair)
     names, gdn_names, kv_names, capsules, capsule_names = [], [], [], [], []
@@ -721,6 +743,9 @@ def incremental_graph_specs(
         "draft_kv_update": "ScatterElements_dense_context",
         "commit_capsules": "internal_to_target_verify_not_external_OM_IO",
     }
+    if draft_context_rows == 16:
+        contract["draft_context_rows"] = 16
+        contract["draft_prefill_policy"] = "context_only64_then_draft16"
     contract["verify_discard_states"] = verify_discard_descriptors(contract)
     common = {**metadata, "incremental_contract": contract}
     specs = []
@@ -743,7 +768,7 @@ def incremental_graph_specs(
         if not ops:
             meta.pop("custom_op_export_contract", None)
             meta.pop("custom_op_export_contracts", None)
-        if not ops or name == "draft":
+        if not ops or name in ("draft", "draft_context"):
             meta.pop("standard_op_export_contracts", None)
         specs.append(
             AirGraphSpec(
@@ -836,7 +861,7 @@ def incremental_graph_specs(
     )
     add(
         "draft",
-        DraftGraph(draft, embedding, target.get_output_embeddings()),
+        DraftGraph(draft, embedding, target.get_output_embeddings(), context_rows=draft_context_rows),
         (features, start, valid, start.clone(),
          torch.full_like(valid, 15), *draft_state),
         ("features", "start_position", "valid_rows", "anchor", "proposal_count", *draft_names),
@@ -844,4 +869,15 @@ def incremental_graph_specs(
         (torch.zeros((1, 15), dtype=torch.long, device=device), *draft_state),
         draft_ops,
     )
+    if draft_context_rows == 16:
+        context_ops = tuple(
+            replace(op, minimum_occurrences=len(draft.layers) + 1)
+            for op in custom_ops if op.torch_op == "npu::adn_rms_norm"
+        )
+        add(
+            "draft_context", DraftContextOnlyGraph(draft),
+            (features, start, valid, *draft_state),
+            ("features", "start_position", "valid_rows", *draft_names),
+            draft_names, draft_state, context_ops,
+        )
     return tuple(specs)

@@ -173,8 +173,8 @@ DFlash 每处理一个非末尾的 64-token 输入块，还调用完整 Draft �
 冻结 FC 输出后，两种 RMSNorm 均稳定且逐位一致；冻结 norm 后 V projection 也稳定。
 尚未确定具体 kernel，不能归因于 AdnRmsNorm。
 
-`compile-om` 默认只给 Draft 加 `--deterministic=0`（关闭）；
-`recompile-draft-om --deterministic 0/1` 可单独切换 Draft，默认 `0`。
+`compile-om` 默认给 Draft 和可选 Draft Context 加 `--deterministic=0`（关闭）；
+`recompile-draft-om --deterministic 0/1` 同步切换这两张图，默认 `0`。
 多轮输出不一致记录为 `DRIFT_OBSERVED`，保留各轮 token、停止原因、首个差异，
 继续汇总接受率和时延，状态为 `PASS_WITH_OBSERVATIONS`。吞吐使用各轮实际 token 总数；
 不将漂移标为稳定通过。已有结果表不会因更改默认设置而重算。
@@ -182,6 +182,8 @@ Python 开关不影响已有 OM。FC 探针稳定不保证完整 Decode/Verify �
 该开关的独立性能代价仍未测定。[FC 探针命令](../tools/debug_draft_context/README.md)
 
 ## 数据来源
+
+本文测量使用原 64 行 Draft 执行路径；新增的 16 行紧凑执行尚无设备实测结果。
 
 本次仅整理用户提供的日志，未重新执行设备测试、读取远端原始 JSON 或评估任务正确率。
 日志摘录未含 OM 哈希、state dtype 和实际 deterministic 编译参数，不能据此确认部署精度配置。

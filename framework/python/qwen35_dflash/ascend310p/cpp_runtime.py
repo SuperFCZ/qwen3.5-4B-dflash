@@ -331,6 +331,7 @@ def validate_cpp_runner_report(
     chunk_abi: bool = False,
     verify_gdr: str | None = None,
     low_memory: bool = False,
+    draft_context_rows: int | None = None,
     allow_output_differences: bool = False,
     warmup: int = 3,
     repetitions: int = 10,
@@ -365,11 +366,17 @@ def validate_cpp_runner_report(
         raise RuntimeError(f"C++ runner protocol differs from requested {warmup}+{repetitions}")
     if protocol.get("low_memory", False) is not low_memory:
         raise RuntimeError("C++ runner low-memory mode differs from the request")
+    abi = report.get("abi", {})
+    reported_rows = abi.get("draft_context_rows", 64)
+    if chunk_abi and (type(reported_rows) is not int or reported_rows not in (16, 64)
+                      or draft_context_rows is not None and reported_rows != draft_context_rows):
+        raise RuntimeError("C++ runner Draft execution gear differs")
+    compact_draft = chunk_abi and reported_rows == 16
     if low_memory and (
         not chunk_abi
         or protocol.get("order") not in (
             "ordinary then DFlash with model unload between modes", "saved ordinary baseline then DFlash")
-        or protocol.get("max_resident_models") != 3
+        or protocol.get("max_resident_models") != 3 + compact_draft
     ):
         raise RuntimeError("C++ runner low-memory protocol differs")
     abi = report.get("abi", {})
@@ -379,7 +386,7 @@ def validate_cpp_runner_report(
             require_verify_gdr({"abi": abi.get("id")}, verify_gdr)
         except ValueError as error:
             raise RuntimeError("C++ runner incremental ABI differs: " + str(error)) from error
-        if abi.get("graph_count") != 4:
+        if abi.get("graph_count") != 4 + compact_draft:
             raise RuntimeError("C++ runner incremental graph count differs")
     if not chunk_abi and abi.get("input_names") != ["input_ids", "attention_mask"]:
         raise RuntimeError("C++ runner input ABI differs")
@@ -547,6 +554,7 @@ def run_cpp_pair(
         chunk_abi=chunk,
         verify_gdr=verify_gdr,
         low_memory=low_memory,
+        draft_context_rows=contract.get("draft_context_rows", 64) if chunk else None,
     )
     run_root = Path(os.environ["AI_RUN_DIR"]).expanduser().resolve()
     air_record = deployment.get("air_manifest")

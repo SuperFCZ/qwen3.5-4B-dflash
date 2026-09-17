@@ -314,7 +314,8 @@ class AclChunkExecutor::Impl {
     for (const auto& item : plan.graphs) {
       if (mode == "dflash" && item.first == "target_decode") continue;
       if (mode == "ordinary" &&
-          (item.first == "target_verify" || item.first == "draft"))
+          (item.first == "target_verify" || item.first == "draft" ||
+           item.first == "draft_context"))
         continue;
       selected.push_back(&item.second);
     }
@@ -621,17 +622,32 @@ class AclChunkExecutor::Impl {
       feature_start = cursor;
       feature_rows = rows;
       cursor += rows;
-      // Only the final chunk's proposal is needed. Earlier calls initialize
-      // Draft KV; the extra block computation is an explicit four-OM tradeoff.
-      if (draft && offset + rows < ids.size())
+      if (draft && plan.graphs.count("draft_context")) {
+        // A full/large prompt chunk cannot enter the compact 16-row gear.
+        // Cache-only execution skips proposal attention/MLP/head entirely.
+        // Defer a final <=16-row chunk so the first Draft can append it itself.
+        if (offset + rows < ids.size() || rows > 16) {
+          Scalar("start_position", static_cast<std::int64_t>(feature_start));
+          Scalar("valid_rows", static_cast<std::int64_t>(feature_rows));
+          Call("draft_context");
+          Swap('d');
+          draft_cursor = cursor;
+          feature_start = cursor;
+          feature_rows = 0;
+        }
+      } else if (draft && offset + rows < ids.size()) {
+        // Compatibility path for the original combined 64-row Draft OM.
         static_cast<void>(Propose(token, 15));
+      }
     }
     return token;
   }
   void PrepareDraft(std::int64_t anchor, std::size_t proposal_count) {
     Healthy();
     Require(proposal_count > 0 && proposal_count <= 15, "Draft proposal_count must be 1..15");
-    Require(!pending && feature_rows > 0 && draft_cursor == feature_start &&
+    const bool compact = plan.graphs.count("draft_context");
+    Require(!pending && (feature_rows > 0 || compact) &&
+                feature_rows <= (compact ? 16 : 64) && draft_cursor == feature_start &&
                 feature_start + feature_rows == cursor,
             "Draft context cursor is inconsistent");
     Scalar("start_position", static_cast<std::int64_t>(feature_start));
@@ -795,11 +811,13 @@ class AclChunkExecutor::Impl {
               "debug KV physical capacities differ");
     }
     // Physical Draft KV includes a guard block beyond the request capacity.
-    Require(kv_start_signed >= 0 && kv_valid_signed > 0 && kv_valid_signed <= 64 &&
-                static_cast<std::size_t>(kv_start_signed) + 64 <= kv_capacity,
+    const std::int64_t context_rows = plan.graphs.count("draft_context") ? 16 : 64;
+    Require(kv_start_signed >= 0 && kv_valid_signed >= (context_rows == 16 ? 0 : 1) &&
+                kv_valid_signed <= context_rows &&
+                static_cast<std::size_t>(kv_start_signed) + context_rows <= kv_capacity,
             "invalid debug KV row bounds");
     const auto kv_end = static_cast<std::size_t>(kv_start_signed + kv_valid_signed);
-    const auto physical_end = static_cast<std::size_t>(kv_start_signed) + 64;
+    const auto physical_end = static_cast<std::size_t>(kv_start_signed) + context_rows;
     const std::map<std::string, std::pair<std::size_t, std::size_t>> kv_regions{
         {"valid_prefix", {0, kv_end}},
         {"written_padding", {kv_end, physical_end}},
@@ -1144,6 +1162,9 @@ std::int64_t AclChunkExecutor::Decode(std::int64_t anchor) {
 }
 bool AclChunkExecutor::HasOrdinaryDecode() const noexcept {
   return impl_->models.count("target_decode") != 0;
+}
+bool AclChunkExecutor::HasDraftContext() const noexcept {
+  return impl_->plan.graphs.count("draft_context") != 0;
 }
 std::size_t AclChunkExecutor::graph_calls() const noexcept {
   return impl_->calls;

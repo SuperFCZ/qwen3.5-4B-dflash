@@ -106,10 +106,10 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
     log << "[\"" << model.role << "\"," << (active && std::filesystem::exists(active) ? "true" : "false")
         << ',' << start << ',' << valid << "]\n";
   }
-  if (start < 0 || valid <= 0 || valid > 64) return 23;
+  if (start < 0 || valid < 0 || (valid == 0 && model.role != "draft") || valid > 64) return 23;
   std::size_t committed = static_cast<std::size_t>(valid);
   if (model.role == "draft") {
-    if (*static_cast<std::uint16_t*>(in.at("features")->data) != start) return 24;
+    if (valid && *static_cast<std::uint16_t*>(in.at("features")->data) != start) return 24;
     const auto anchor = *static_cast<std::int64_t*>(in.at("anchor")->data);
     const auto proposal_count = *static_cast<std::int16_t*>(in.at("proposal_count")->data);
     if (proposal_count < 1 || proposal_count > 15) return 28;
@@ -137,6 +137,8 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
       proposals[7] = (proposals[7] + 7) % 64;
     if (variation == "draft_private_output" && !model.workspace)
       proposals[7] = (proposals[7] + 7) % 64;
+  } else if (model.role == "draft_context") {
+    if (*static_cast<std::uint16_t*>(in.at("features")->data) != start) return 24;
   } else {
     auto* ids = static_cast<std::int64_t*>(in.at("input_ids")->data);
     auto* predictions = static_cast<std::int64_t*>(out.at("target_top1")->data);

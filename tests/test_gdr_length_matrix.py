@@ -23,7 +23,9 @@ def matrix_args(tmp_path, monkeypatch, request):
     from qwen35_dflash.ascend310p import workflow
     import test_incremental_air_om as fixtures
 
-    capacity = getattr(request, "param", 128)
+    setting = getattr(request, "param", 128)
+    capacity = setting.get("capacity", 128) if isinstance(setting, dict) else setting
+    context_rows = setting.get("draft_context_rows", 64) if isinstance(setting, dict) else 64
     original_specs = fixtures.incremental_graph_specs
     def sized_attention(*, query, key, value, atten_mask, **kwargs):
         q = query.reshape(1, 2, query.shape[-2], 16)
@@ -59,7 +61,8 @@ def matrix_args(tmp_path, monkeypatch, request):
     for route in matrix.ROUTES:
         output = tmp_path / route
         output.mkdir()
-        manifests[route] = chunk_bundle.__wrapped__(output, monkeypatch, SimpleNamespace(param=route))
+        manifests[route] = chunk_bundle.__wrapped__(output, monkeypatch, SimpleNamespace(
+            param={"verify_gdr": route, "draft_context_rows": context_rows}))
     config = tmp_path / "runner.json"
     config.write_text(json.dumps(dict(device_model="Ascend310P3-host-fixture", cann="fake",
                                      driver="fake", firmware="fake", runtime="fake-acl")))
@@ -386,6 +389,9 @@ def test_real_batch_schema_without_per_case_fake_flag_keeps_timings(saved_matrix
     matrix.save(tmp_path, payload)
     row, = csv.DictReader((tmp_path / "cases.csv").open())
     for stage in matrix.STAGES:
+        if stage == "draft_context":
+            assert row[stage + "_ms_per_call"] == ""
+            continue
         assert row[stage + "_ms_per_call"]
         assert row[stage + "_ms_per_generation"]
     assert row["group"] == "long"

@@ -47,6 +47,8 @@ def _factory_config(args):
     config = _config(args.factory_config)
     if getattr(args, "verify_gdr", None) is not None:
         config["verify_gdr"] = args.verify_gdr
+    if getattr(args, "draft_context_rows", None) is not None:
+        config["draft_context_rows"] = args.draft_context_rows
     return config
 
 
@@ -371,6 +373,8 @@ def build_parser() -> argparse.ArgumentParser:
     chunk_plan.set_defaults(handler=command_chunk_plan)
 
     export = subparsers.add_parser("export-air", help="export factory graphs to AIR")
+    export.add_argument("--draft-context-rows", type=int, choices=(16, 64),
+                        help="16 adds cache-only prefill and compact generation; 64 keeps the combined Draft")
     export.add_argument("--factory", required=True, help="module:function graph factory")
     export.add_argument("--factory-config", type=Path)
     export.add_argument("--verify-gdr", choices=("chunk", "mtp"),
@@ -398,6 +402,8 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Draft ATC deterministic setting: 0 off (default), 1 on")
 
     build = subparsers.add_parser("build-om", help="export AIR and compile every graph")
+    build.add_argument("--draft-context-rows", type=int, choices=(16, 64),
+                       help="compact 16-row Draft with cache-only prefill, or combined 64-row Draft")
     build.add_argument("--factory", required=True, help="module:function graph factory")
     build.add_argument("--factory-config", type=Path)
     build.add_argument("--verify-gdr", choices=("chunk", "mtp"),

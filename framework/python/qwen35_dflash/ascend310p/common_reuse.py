@@ -11,6 +11,7 @@ from .utils import contained_path, file_record, load_json_object, sha256_file
 
 FACTORY = "qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs"
 COMMON = ("target_prefill", "target_decode", "draft")
+OPTIONAL_COMMON = ("draft_context",)
 _ROUTE_CONTRACT = {
     "abi", "verify_gdr", "target_states", "capsules", "state_policy",
     "verify_state_output_policy", "verify_discard_states",
@@ -18,7 +19,7 @@ _ROUTE_CONTRACT = {
 
 
 def artifact_stem(graph):
-    """Keep runtime roles stable while giving the five current OMs distinct names."""
+    """Keep runtime roles stable while giving route-specific OMs distinct names."""
     contract = graph.get("metadata", {}).get("incremental_contract", {})
     if contract.get("abi") not in (ABI, MTP_ABI):
         return graph["name"]
@@ -98,7 +99,7 @@ def load_common_source(path, *, factory, config, destination, expected_sha256=No
     graphs, paths = {}, []
     for graph in air["graphs"]:
         name = graph["name"]
-        if name not in COMMON:
+        if name not in (*COMMON, *OPTIONAL_COMMON):
             continue
         compiled = by_name[name]
         for key in ("metadata", "role", "input_names", "output_names", "air",
@@ -117,7 +118,10 @@ def load_common_source(path, *, factory, config, destination, expected_sha256=No
         om = _verified_file(path.parent, compiled["om"])
         paths.append(om)
         graphs[name] = {"air": graph, "compiled": compiled, "om": om}
-    if set(graphs) != set(COMMON):
+    expected_common = set(COMMON)
+    if "draft_context" in by_name:
+        expected_common.add("draft_context")
+    if set(graphs) != expected_common:
         raise ValueError("Common reuse requires prefill, decode and draft; set include_ordinary_decode=true")
     ancestor = Path(destination)
     while not ancestor.exists():

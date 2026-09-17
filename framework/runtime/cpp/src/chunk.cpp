@@ -84,7 +84,7 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
               result.capacity % 64 == 0 && result.vocabulary > 0,
           "invalid chunk capacity/vocabulary");
   const std::set<std::string> roles{"target_prefill", "target_decode",
-                                    "target_verify", "draft"};
+                                    "target_verify", "draft", "draft_context"};
   while (input >> word && word == "graph") {
     ChunkGraph graph;
     std::string filename;
@@ -96,7 +96,8 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
     graph.model = filename;
     if (!(mode == "dflash" && graph.name == "target_decode") &&
         !(mode == "ordinary" &&
-          (graph.name == "target_verify" || graph.name == "draft"))) {
+          (graph.name == "target_verify" || graph.name == "draft" ||
+           graph.name == "draft_context"))) {
       Require(Sha256File(graph.model) == graph.sha256,
               "chunk OM SHA-256 mismatch: " + graph.name);
     }

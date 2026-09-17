@@ -118,6 +118,11 @@ def expected_signatures(c):
         ],
         "outputs": [descriptor("draft_top1", "int64", [1, 15]), *drafts],
     }
+    if c.get("draft_context_rows", 64) == 16:
+        result["draft_context"] = {
+            "inputs": [feature(64), start, valid, *drafts],
+            "outputs": drafts,
+        }
     return result
 
 
@@ -128,14 +133,22 @@ def validate_incremental_bundle(graphs):
     if not candidates:
         return None
     names = {g["name"] for g in graphs}
-    required = set(ROLES) - {"target_decode"}
+    c = candidates[0]["metadata"]["incremental_contract"]
+    context_rows = c.get("draft_context_rows", 64)
+    if type(context_rows) is not int or context_rows not in (16, 64):
+        raise ValueError("draft_context_rows must be 16 or 64")
+    if context_rows == 16 and c.get("draft_prefill_policy") != "context_only64_then_draft16":
+        raise ValueError("compact Draft needs the context-only prefill policy")
+    roles = set(ROLES) | ({"draft_context"} if context_rows == 16 else set())
+    required = roles - {"target_decode"}
     if (
         len(candidates) != len(graphs)
         or len(names) != len(graphs)
-        or names not in (set(ROLES), required)
+        or names not in (roles, required)
     ):
         raise ValueError(
-            "incremental bundle needs prefill, verify, draft and optional ordinary decode (four graphs at most)"
+            "incremental bundle needs prefill, verify, draft, optional ordinary decode, "
+            "and draft_context exactly when draft_context_rows=16"
         )
     c = candidates[0]["metadata"]["incremental_contract"]
     route = verify_gdr_route(c)
@@ -242,7 +255,7 @@ def write_incremental_plan(deployment_manifest, output, *, mode="paired", verify
     if output.exists():
         raise FileExistsError(output)
     lines = [c["abi"], f"capacity {c['capacity']} {c['vocab_size']}"]
-    for name in ROLES:
+    for name in (*ROLES, *(("draft_context",) if c.get("draft_context_rows", 64) == 16 else ())):
         if name == "target_decode" and mode == "dflash":
             continue
         graph = next(g for g in graphs if g["name"] == name)

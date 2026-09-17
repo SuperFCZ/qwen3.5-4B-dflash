@@ -1,4 +1,4 @@
-"""Host-only checks for five physical OMs; fake export/ATC is not NPU evidence."""
+"""Shared OMs, including optional context; fake export/ATC is not NPU evidence."""
 import json
 import os
 from dataclasses import replace
@@ -37,7 +37,8 @@ def shared_build(tmp_path, monkeypatch):
         calls["factory"].append(config)
         values = []
         for spec in specs(verify_gdr=config.get("verify_gdr", "chunk"),
-                          include_ordinary_decode=config.get("include_ordinary_decode", True)):
+                    include_ordinary_decode=config.get("include_ordinary_decode", True),
+                    draft_context_rows=config.get("draft_context_rows", 64)):
             meta = {**spec.metadata, "quant_source_lock": {"sha256": "host-source"},
                     "quant_input_manifest_sha256": "host-inputs",
                     "target_rollback_audit": dict(bridge.dflash_rollback_audit), **metadata_change}
@@ -133,6 +134,52 @@ def test_only_verify_is_exported_and_compiled_with_shared_common_files(shared_bu
             low_memory=True, trace_rounds=True,
         )
         assert report["ordinary_parity"]["token_id_mismatches"] == 0
+
+
+def test_compact_draft_context_is_shared_between_routes(shared_build, tmp_path):
+    calls, export, compile, _, _ = shared_build
+    cfg = {"verify_gdr": "chunk", "draft_context_rows": 16}
+    chunk = compile(export("chunk", "compact-chunk", config=cfg))
+    assert {g["name"] for g in chunk["graphs"]} == {*COMMON, "target_verify", "draft_context"}
+    for graph in chunk["graphs"]:
+        if graph["name"].startswith("draft"):
+            assert "--deterministic=0" in graph["atc_command"]
+    source = Path(chunk["manifest_path"])
+    calls["export"].clear()
+    calls["atc"].clear()
+    mtp = compile(export("mtp", "compact-mtp", source, {**cfg, "verify_gdr": "mtp"}))
+    assert calls["export"] == ["target_verify"]
+    assert calls["atc"] == ["target_verify"]
+    destination = Path(mtp["manifest_path"])
+    for name in (*COMMON, "draft_context"):
+        left = next(g for g in chunk["graphs"] if g["name"] == name)
+        right = next(g for g in mtp["graphs"] if g["name"] == name)
+        assert os.path.samefile(source.parent / left["om"]["path"], destination.parent / right["om"]["path"])
+    oms = [*source.parent.glob("om/*.om"), *destination.parent.glob("om/*.om")]
+    assert len({(p.stat().st_dev, p.stat().st_ino) for p in oms}) == 6
+    plan, _, _ = write_incremental_plan(destination, tmp_path / "compact-plan.txt", verify_gdr="mtp")
+    assert plan.read_text().count("\ngraph ") == 5
+
+
+def test_recompile_determinism_covers_both_compact_draft_graphs(shared_build, tmp_path):
+    from qwen35_dflash.ascend310p.compiler import recompile_draft_om
+    _, export, compile, _, _ = shared_build
+    original = compile(export("chunk", "compact", config={"verify_gdr": "chunk", "draft_context_rows": 16}))
+    source = Path(original["manifest_path"])
+    calls = []
+    def atc(command, cwd):
+        prefix = Path(next(x.split("=", 1)[1] for x in command if x.startswith("--output=")))
+        calls.append(prefix.name)
+        assert "--deterministic=1" in command
+        Path(str(prefix) + ".om").write_bytes(b"host compiled deterministic fixture")
+        return subprocess.CompletedProcess(command, 0, "host ATC")
+    result = recompile_draft_om(source, output=source.parent / "det1.json", deterministic=1,
+                               atc_bin="/bin/true", runner=atc, atc_identity="fake-host-test")
+    assert calls == ["draft", "draft_context"]
+    assert result["recompilation"]["graphs"] == calls
+    for old, new in zip(original["graphs"], result["graphs"]):
+        if not old["name"].startswith("draft"):
+            assert old == new
 
 
 @pytest.mark.parametrize("damage", ["weights", "om", "manifest", "config", "source", "tensor_abi"])

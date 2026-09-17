@@ -241,7 +241,7 @@ def mtp_gdr(query, key, value, g, beta, initial_state, accepted_tokens, **kwargs
     return torch.stack(outputs, dim=1).half(), torch.stack(bank, dim=1)
 
 
-def specs(include_ordinary_decode=True, cache_update=None, verify_gdr="chunk"):
+def specs(include_ordinary_decode=True, cache_update=None, verify_gdr="chunk", draft_context_rows=64):
     torch.manual_seed(42)
     target, draft = TinyTarget().eval(), draft_model()
     return incremental_graph_specs(
@@ -255,6 +255,7 @@ def specs(include_ordinary_decode=True, cache_update=None, verify_gdr="chunk"):
         cache_update=cache_update,
         include_ordinary_decode=include_ordinary_decode,
         verify_gdr=verify_gdr, gdr_mtp=mtp_gdr if verify_gdr == "mtp" else None,
+        draft_context_rows=draft_context_rows,
     )
 
 
@@ -324,7 +325,7 @@ def test_exactly_four_graphs_and_complete_signatures():
     bad[2]["metadata"]["tensor_abi"]["outputs"][1]["dtype"] = "int16"
     with pytest.raises(ValueError, match="ABI differs"):
         validate_incremental_bundle(bad)
-    with pytest.raises(ValueError, match="four"):
+    with pytest.raises(ValueError, match="incremental bundle"):
         validate_incremental_bundle(manifest_graphs(values)[:-1])
     pure = [g for g in manifest_graphs(values) if g["name"] != "target_decode"]
     assert validate_incremental_bundle(pure)["capacity"] == 128
@@ -917,7 +918,8 @@ def chunk_bundle(tmp_path, monkeypatch, request):
     from qwen35_dflash.ascend310p.compiler import compile_air_bundle
 
     monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
-    values = specs(verify_gdr=getattr(request, "param", "chunk"))
+    settings = getattr(request, "param", "chunk")
+    values = specs(**settings) if isinstance(settings, dict) else specs(verify_gdr=settings)
     by_name = {s.name: s for s in values}
 
     class FakeTorchAir:
