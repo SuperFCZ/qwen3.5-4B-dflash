@@ -129,7 +129,7 @@
   },
   "compiler": {
     "exporter": "TorchAir dynamo_export",
-    "runtime_input_abi_gate": "normalize GE Data index/order by public tensor storage identity; specialize_float=True; only Draft features axis 1 is dynamic; require one PASS serialized-shape audit per graph before ATC",
+    "runtime_input_abi_gate": "order Data/RefData by runtime index before TorchAir positional weight conversion; preserve helper nodes and edges; normalize surviving inputs by public tensor storage identity; specialize_float=True; only Draft features axis 1 is dynamic; require one PASS serialized-shape audit per graph before ATC",
     "custom_op_gate": "validate all declared custom-op contracts and SoftplusV2 audits for the entire graph suite before ATC; preserve builtin converters and audit their GE nodes",
     "atc_mode": 0,
     "atc_framework": 1,

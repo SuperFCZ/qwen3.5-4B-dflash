@@ -247,6 +247,10 @@ PY
 `export-air` 的 PASS 表示 AIR 导出完成；`compile-om` 的 PASS 和对应目录下的
 `deployment-manifest.json` 才表示整套 OM 编译完成，单个 `.om` 文件不能代表整套完成。
 
+Draft 导出若报 `AIR runtime input count changed during weight conversion`，更新源码后换一个空的
+`OM_BUNDLE_DIR`，从第 1 步重试。双档动态图会在输入间插入 Shape 节点；导出器现按输入索引
+整理节点，再让 TorchAir 转换权重，保留动态形状和输入检查。权重保存进度完成不代表 AIR 导出成功。
+
 **1. 导出 Chunk AIR**
 
 ```bash

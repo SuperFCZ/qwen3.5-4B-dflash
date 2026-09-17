@@ -1,8 +1,9 @@
 """Preserve the public tensor ABI across TorchDynamo/TorchAir capture.
 
 Logical argument names do not control Dynamo's placeholder order. Match the
-actual serialization inputs to the original tensors before weight conversion,
-then order surviving Data/RefData nodes by the public ABI. No scalar values
+actual serialization inputs to the original tensors before weight conversion.
+Place Data/RefData nodes in runtime input order for TorchAir's positional weight
+lookup, then order surviving inputs by the public ABI. No scalar values
 are guessed: Python floats are specialized by Dynamo, and any remaining
 unbound symbol or tensor makes export fail before an AIR is published.
 """
@@ -173,10 +174,39 @@ def _public_bindings(
     return sorted(resolved.items())
 
 
+def _order_weight_conversion_inputs(inputs: Sequence[Any], graph: Any) -> bool:
+    """Satisfy TorchAir's graph.op[i] == inputs[i] weight conversion contract.
+
+    Dynamic shape lowering can insert Shape/Gather nodes between Data nodes.
+    Data.index still addresses the runtime inputs correctly, but TorchAir's
+    converter looks up graph.op[i] directly. Move all inputs ahead of helpers
+    before calling it; retain names, edges, descriptors and non-input order.
+    """
+    indexed = _indexed_graph_inputs(graph)
+    if sorted(indexed) != list(range(len(inputs))):
+        raise RuntimeError(
+            "TorchAir Data/RefData indexes do not cover weight-conversion inputs: "
+            f"inputs={len(inputs)}, indexes={sorted(indexed)}"
+        )
+    expected = [indexed[i].name for i in range(len(inputs))]
+    if [node.name for node in graph.op[:len(inputs)]] == expected:
+        return False
+    # Both protobuf's repeated composite container and a test list support a
+    # stable sort. Do not turn shape helpers into scalars or change their edges.
+    graph.op.sort(key=lambda node: (
+        int(node.attr["index"].i) if node.type in {"Data", "RefData"} else len(inputs)
+    ))
+    return True
+
+
 def _normalize_public_nodes(graph: Any, bindings: list[tuple[int, Any]]) -> None:
     positions = [i for i, op in enumerate(graph.op) if op.type in {"Data", "RefData"}]
     if len(positions) != len(bindings):
-        raise RuntimeError("AIR runtime input count changed during weight conversion")
+        raise RuntimeError(
+            "AIR runtime input count changed during weight conversion: "
+            f"expected={len(bindings)}, actual={len(positions)}, "
+            f"remaining={[graph.op[i].name for i in positions]}"
+        )
     copies = []
     for public_index, node in bindings:
         if node.type not in {"Data", "RefData"}:
@@ -226,6 +256,7 @@ def canonical_runtime_input_abi(
         original = export_utils._convert_data_to_const
 
         def convert(inputs, export_graph, file_path, weight_name):
+            reordered = _order_weight_conversion_inputs(inputs, export_graph)
             bindings = _public_bindings(
                 inputs, export_graph, weight_name, public_inputs, public_names,
             )
@@ -236,6 +267,12 @@ def canonical_runtime_input_abi(
                  "example_shape": list(public_inputs[index].shape)}
                 for index, node in bindings
             ]
+            audit["weight_conversion"] = {
+                "policy": "runtime-input-index-order-v1",
+                "reordered": reordered,
+                "input_count": len(inputs),
+                "weight_count": sum(id(value) in weight_name for value in inputs),
+            }
             result = original(inputs, export_graph, file_path, weight_name)
             _normalize_public_nodes(export_graph, bindings)
             gdr_dtypes = _gdr_output_dtype_audit(export_graph)

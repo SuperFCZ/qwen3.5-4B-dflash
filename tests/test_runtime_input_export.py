@@ -14,7 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "framework/python"))
 
 from qwen35_dflash.ascend310p.runtime_input_export import (
-    _gdr_output_dtype_audit, _normalize_public_nodes, _public_bindings, canonical_runtime_input_abi,
+    _gdr_output_dtype_audit, _normalize_public_nodes, _order_weight_conversion_inputs,
+    _public_bindings, canonical_runtime_input_abi,
     _verify_discard_output_audit,
     validated_runtime_input_abi as _validated_runtime_input_abi,
 )
@@ -241,6 +242,117 @@ def test_weight_slots_and_shape_helpers_are_not_public_inputs():
     assert graph.op[2].attr["index"].i == 0
 
 
+def _positional_weight_conversion(inputs, graph, file_path, weight_name):
+    """Match TorchAir's graph.op[i] lookup, not an index-aware substitute."""
+    del file_path
+    for index, value in enumerate(inputs):
+        file_id = weight_name.get(id(value))
+        if file_id is None:
+            continue
+        node = graph.op[index]
+        constant = _Op(node.name, "FileConstant")
+        constant.attr["file_id"] = file_id
+        node.Clear()
+        node.MergeFrom(constant)
+    # TorchAir resets Data then RefData indexes after converting the weights.
+    index = 0
+    for kind in ("Data", "RefData"):
+        for node in graph.op:
+            if node.type == kind:
+                node.attr["index"].i = index
+                index += 1
+    return True, len(weight_name)
+
+
+@pytest.mark.parametrize("cache_kind", ["Data", "RefData"])
+@pytest.mark.parametrize("reverse_data_order", [False, True])
+def test_weight_conversion_preserves_interleaved_shape_nodes(
+    monkeypatch, cache_kind, reverse_data_order,
+):
+    torchair = ModuleType("torchair")
+    feature, cache, weight = torch.zeros(1, 64, 4), torch.zeros(4), torch.ones(4, 4)
+    nodes = [
+        _Op("feature", "Data", index=0),
+        _Op("projection", "Data", index=1),
+        _Op("cache", cache_kind, index=2),
+    ]
+    if reverse_data_order:
+        nodes.reverse()
+    shape = _Op("feature_shape", "Shape", inputs=("feature:0",))
+    output = _Op("result", "NetOutput", inputs=("feature_shape:0", "projection:0", "cache:0"))
+    graph = _Graph([nodes[0], shape, *nodes[1:], output])
+    module = SimpleNamespace(_convert_data_to_const=_positional_weight_conversion)
+    monkeypatch.setitem(sys.modules, "torchair", torchair)
+    monkeypatch.setitem(sys.modules, "torchair._utils.export_utils", module)
+    with canonical_runtime_input_abi(
+        torchair, public_inputs=[cache, feature], public_names=["cache", "features"],
+    ) as audit:
+        result = module._convert_data_to_const(
+            [feature, weight, cache], graph, "unused", {id(weight): "projection.weight"},
+        )
+    assert result == (True, 1)
+    by_name = {node.name: node for node in graph.op}
+    assert len(by_name) == 5
+    assert by_name["projection"].type == "FileConstant"
+    assert by_name["projection"].attr["file_id"] == "projection.weight"
+    assert by_name["feature_shape"].type == "Shape"
+    assert by_name["feature_shape"].input == ["feature:0"]
+    assert by_name["result"].input == ["feature_shape:0", "projection:0", "cache:0"]
+    public = [node for node in graph.op if node.type in {"Data", "RefData"}]
+    assert [(node.name, node.attr["index"].i) for node in public] == [("cache", 0), ("feature", 1)]
+    assert audit["status"] == "PASS"
+    assert audit["weight_conversion"] == {
+        "policy": "runtime-input-index-order-v1", "reordered": True,
+        "input_count": 3, "weight_count": 1,
+    }
+    assert module._convert_data_to_const is _positional_weight_conversion
+
+
+def test_weight_input_sort_on_protobuf_preserves_edges_and_public_bindings():
+    from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+    proto = descriptor_pb2.FileDescriptorProto(name="input_order_test.proto")
+    attr = proto.message_type.add(name="Attr")
+    attr.field.add(name="i", number=1, type=3, label=1)
+    op = proto.message_type.add(name="Op")
+    op.field.add(name="name", number=1, type=9, label=1)
+    op.field.add(name="type", number=2, type=9, label=1)
+    op.field.add(name="input", number=3, type=9, label=3)
+    entry = op.nested_type.add(name="AttrEntry")
+    entry.options.map_entry = True
+    entry.field.add(name="key", number=1, type=9, label=1)
+    entry.field.add(name="value", number=2, type=11, label=1, type_name=".Attr")
+    op.field.add(name="attr", number=4, type=11, label=3, type_name=".Op.AttrEntry")
+    graph_desc = proto.message_type.add(name="Graph")
+    graph_desc.field.add(name="op", number=1, type=11, label=3, type_name=".Op")
+    pool = descriptor_pool.DescriptorPool()
+    pool.Add(proto)
+    graph = message_factory.GetMessageClass(pool.FindMessageTypeByName("Graph"))()
+    graph.op.add(name="x", type="Data").attr["index"].i = 1
+    graph.op.add(name="shape", type="Shape", input=["x:0"])
+    graph.op.add(name="w", type="Data").attr["index"].i = 0
+    graph.op.add(name="s", type="RefData").attr["index"].i = 2
+    graph.op.add(name="out", type="NetOutput", input=["shape:0", "s:0", "w:0"])
+    helper_bytes = [node.SerializeToString() for node in graph.op if node.type in {"Shape", "NetOutput"}]
+    weight, feature, state = torch.ones(4), torch.zeros(4), torch.zeros(4)
+    inputs = [weight, feature, state]
+    assert _order_weight_conversion_inputs(inputs, graph)
+    assert [node.name for node in graph.op] == ["w", "x", "s", "shape", "out"]
+    bindings = _public_bindings(inputs, graph, {id(weight): "w"}, [state, feature], ["s", "x"])
+    graph.op[0].Clear()
+    graph.op[0].name, graph.op[0].type = "w", "Const"
+    _normalize_public_nodes(graph, bindings)
+    assert [node.name for node in graph.op] == ["w", "s", "x", "shape", "out"]
+    assert [graph.op[i].attr["index"].i for i in (1, 2)] == [0, 1]
+    assert helper_bytes == [node.SerializeToString() for node in graph.op if node.type in {"Shape", "NetOutput"}]
+
+
+@pytest.mark.parametrize("indexes", [[0], [0, 2], [0, -1]])
+def test_weight_conversion_rejects_incomplete_or_invalid_runtime_index_map(indexes):
+    graph = _Graph([_Op(f"input{i}", "Data", index=i) for i in indexes])
+    with pytest.raises(RuntimeError, match="indexes do not cover weight-conversion inputs"):
+        _order_weight_conversion_inputs([torch.zeros(1), torch.ones(1)], graph)
+
+
 def test_remaining_scalar_is_rejected_without_guessing_its_value():
     public = torch.zeros(2)
     lifted = torch.tensor(0.125, dtype=torch.float64)
@@ -426,13 +538,7 @@ def test_incremental_exports_normalize_actual_dynamo_input_order(
     by_name = {spec.name: spec for spec in values}
     raw_orders = {}
 
-    def original(inputs, graph, file_path, weight_name):
-        del file_path
-        for node in graph.op:
-            if node.type == "Data" and id(inputs[node.attr["index"].i]) in weight_name:
-                node.type = "Const"
-        return False, len(weight_name)
-
+    original = _positional_weight_conversion
     export_utils = SimpleNamespace(_convert_data_to_const=original)
 
     def dynamo_export(*public, model, export_path, export_name, **kwargs):
@@ -481,6 +587,16 @@ def test_incremental_exports_normalize_actual_dynamo_input_order(
                 consumer = _Op("consumer", "Add", inputs=tuple(n.name + ":0" for n in nodes))
                 consumer_edges = tuple(consumer.input)
                 graph = _Graph([*nodes, consumer])
+                if export_name == "draft":
+                    feature_node = next(
+                        node for node in nodes
+                        if names.get(_tensor_identity(serialized[node.attr["index"].i])) == "features"
+                    )
+                    assert feature_node.output_desc[0].shape.dim[1] == -1
+                    # Dynamic GE lowering may emit this helper immediately
+                    # after features, ahead of the remaining input/weight Data.
+                    helper = _Op("feature_shape", "Shape", inputs=(feature_node.name + ":0",))
+                    graph.op.insert(graph.op.index(feature_node) + 1, helper)
                 if export_name == "target_verify" and verify_gdr == "chunk":
                     # Synthetic GE nodes for the serializer fixture. Actual
                     # opaque-op torch.export output liveness has its own test.
@@ -491,6 +607,10 @@ def test_incremental_exports_normalize_actual_dynamo_input_order(
                     graph.op.extend(discard_graph.op)
                 export_utils._convert_data_to_const(serialized, graph, export_path, weights)
                 assert tuple(consumer.input) == consumer_edges
+                if export_name == "draft":
+                    actual_helper = next(n for n in graph.op if n.name == "feature_shape")
+                    assert actual_helper.type == "Shape"
+                    assert actual_helper.input == [feature_node.name + ":0"]
                 normalized = [n for n in graph.op if n.type == "Data"]
                 assert [n.attr["index"].i for n in normalized] == list(range(len(public)))
                 for index, node in enumerate(normalized):
@@ -524,4 +644,5 @@ def test_incremental_exports_normalize_actual_dynamo_input_order(
         audit = _validated_runtime_input_abi(graph, required=True)
         assert audit["status"] == "PASS" and audit["calls"] == 1
         assert [b["logical_name"] for b in audit["bindings"]] == graph["input_names"]
+        assert audit["weight_conversion"]["reordered"] == (graph["name"] == "draft")
     assert export_utils._convert_data_to_const is original

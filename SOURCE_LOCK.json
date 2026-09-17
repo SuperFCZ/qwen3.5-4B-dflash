@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash with one compact Draft / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
-  "package_revision": "r20",
+  "package_revision": "r21",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
     "version": 7,
@@ -180,15 +180,15 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "410378d828fafae23b33b3af59bbdcf652cb66400b4d2d1a891de12984c0757e"
+        "source_sha256": "f3444bcce4a1ea5ad346fdfaccbc6e8ff555779db74df952599437904dc51f9c"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
-        "source_sha256": "41349c8ed4ec6a5b6f2555ba948b9d9b4d7ee6fb6e6387c8bece0dab67fb3a23"
+        "source_sha256": "b0785218fc062f020c6b0a1478c1a5f927bffa03fb2b3c0249d9ec4f1a9eff00"
       },
       {
         "source_file": "framework/FRAMEWORK_LOCK.json",
-        "source_sha256": "fb6ec4751ee9d31e93f74eb43bb253dc07f1349dda8201a37c8ea114345fca5d"
+        "source_sha256": "d92fa60d791b2f39bd359e583c7b6e93d908df116e360274ffcdbf226f1d1d1e"
       },
       {
         "source_file": "framework/README.md",
@@ -280,7 +280,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/runtime_input_export.py",
-        "source_sha256": "961677e0264cda9eff815529f049e9cb8929e7ddd7aa7f00c8f32301ecf27934"
+        "source_sha256": "6e92969ac1a3be729b24f313c3b47c4dc9307a256b30115ce044a2e17d641783"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/standard_op_export.py",
@@ -396,7 +396,7 @@
       },
       {
         "source_file": "tests/test_runtime_input_export.py",
-        "source_sha256": "48cca0d29aa7862ace75537d501e2adc5c89b83ed720260bae27b45d65036259"
+        "source_sha256": "62949be5d66f80ca250f373ed5d0ab7a45e8569bbcdad4b691c929db5e02174a"
       },
       {
         "source_file": "tests/test_source_lock_benchmark.py",

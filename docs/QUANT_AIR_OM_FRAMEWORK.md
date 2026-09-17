@@ -227,6 +227,10 @@ INT32 scan/reduction 及缓存、head 复制的 Tensor 算子。
 PyTorch 的 FakeTensor/严格捕获通过，只证明 PyTorch 图有效；标准算子的 GE 支持
 仍需单独检查，最终以目标机 TorchAir 导出及 ATC 编译为准。
 
+AIR 权重转换前，按 `Data/RefData.index` 把输入节点排到图首，兼容 TorchAir 按
+`graph.op[i]` 定位权重；动态图中穿插的 Shape/Gather 节点保持原名、连边和相对顺序。
+转换后再按公开 Tensor ABI 排序、检查动态轴；不会将形状符号固定成导出样本的值。
+
 W8A8 的量化 activation/weight 保持 INT8，weight scale 和 per-token scale 保持 FP32，
 matmul 输出为 FP16。专用前端仅在工厂启用的 AIR 捕获期间生效。普通 NPU 推理的量化
 调用不变。RMSNorm 的两个输出分别为同 input shape/dtype 的 Tensor，以及
