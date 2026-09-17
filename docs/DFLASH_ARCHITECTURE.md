@@ -68,7 +68,12 @@ OM 使用单个 Draft 的 16/64 两档上下文；特征缓冲区容量为 64 �
 生成时仍是每轮一次 Draft + 一次 Verify。
 
 实现见 [Draft 模型](../models/dflash_v1/modeling_dflash.py)、
-[DraftContextGraph / DraftProposeGraph](../framework/python/qwen35_dflash/ascend310p/incremental.py)。
+[DraftGraph / PackedDraftLayer](../framework/python/qwen35_dflash/ascend310p/incremental.py)。
+
+OM 内每层将新增上下文和候选输入按行拼接，共用一次 K/V 投影；K/V 与 gate/up 权重在导出时打包替换。
+KV 使用整行 `ScatterNdUpdate`，GQA 将 Query 分组并入行维，避免复制历史 K/V。
+模型层数、完整词表和 FP16 权重精度不变；仍只有一个 Draft OM 和既有 current/next 缓存。
+实际编译 workspace、峰值显存和浮点舍入需重新实测。
 
 </details>
 

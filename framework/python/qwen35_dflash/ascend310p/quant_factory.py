@@ -46,6 +46,7 @@ from .custom_op_export import (
     NPU_GATED_DELTA_RULE_MTP_TORCH_OP,
     NPU_GATED_DELTA_RULE_MTP_DEFAULT_GE_OP_TYPE,
     NPU_SCATTER_ND_UPDATE_TORCH_OP,
+    NPU_FUNCTIONAL_SCATTER_ND_UPDATE_TORCH_OP,
     NPU_SCATTER_ND_UPDATE_DEFAULT_GE_OP_TYPE,
     prepare_custom_op_export,
     validate_gdr_ge_prototype_environment,
@@ -291,14 +292,24 @@ class AirDFlashOps:
         scale: float,
         key_value_groups: int,
     ) -> Tensor:
-        key = _repeat_kv(key, int(key_value_groups))
-        value = _repeat_kv(value, int(key_value_groups))
+        # Fold query groups into rows instead of materializing G copies of KV.
+        # [B,Hkv,G,Q,D] -> [B,Hkv,G*Q,D] keeps the original head ordering.
+        batch, heads, rows, dim = query.shape
+        groups = int(key_value_groups)
+        kv_heads = key.shape[1]
+        query = query.reshape(batch, kv_heads, groups * rows, dim)
         scores = self._attention_matmul(query, key.transpose(-2, -1))
         scores = scores * float(scale)
         if attention_mask is not None:
+            # Production masks share heads, but accept the full broadcastable
+            # [B,Hq,Q,L] contract as well. Only the small mask is expanded.
+            attention_mask = attention_mask.expand(batch, heads, rows, key.shape[-2])
+            attention_mask = attention_mask.reshape(batch, kv_heads, groups * rows, key.shape[-2])
             scores = scores.masked_fill(~attention_mask, float("-inf"))
         probabilities = torch.softmax(scores, dim=-1, dtype=torch.float32)
-        return self._attention_matmul(probabilities, value).to(query.dtype)
+        return self._attention_matmul(probabilities, value).to(query.dtype).reshape(
+            batch, heads, rows, dim
+        )
 
     def swiglu(self, gate: Tensor, up: Tensor) -> Tensor:
         return F.silu(gate) * up
@@ -442,6 +453,10 @@ def _target_custom_op_exports(
             CustomOpExportSpec(NPU_SCATTER_ND_UPDATE_TORCH_OP, NPU_SCATTER_ND_UPDATE_DEFAULT_GE_OP_TYPE,
                                minimum_occurrences=0),
         ))
+    else:
+        operators.append(CustomOpExportSpec(
+            NPU_FUNCTIONAL_SCATTER_ND_UPDATE_TORCH_OP,
+            NPU_SCATTER_ND_UPDATE_DEFAULT_GE_OP_TYPE))
     return tuple(operators)
 
 
@@ -561,7 +576,8 @@ def create_quant_recompute_graph(
     except ImportError as error:
         raise RuntimeError("torch_npu is required for quant AIR export") from error
     required_operations = ("adn_rms_norm",) + (
-        ("npu_chunk_gated_delta_rule", "adn_fused_infer_attention", "npu_cache_update_")
+        ("npu_chunk_gated_delta_rule", "adn_fused_infer_attention", "npu_cache_update_",
+         "npu_scatter_nd_update")
         if _incremental else ()
     )
     missing = [name for name in required_operations
@@ -698,6 +714,7 @@ def create_quant_recompute_graph(
             metadata=metadata, gdr=torch_npu.npu_chunk_gated_delta_rule,
             attention=torch_npu.adn_fused_infer_attention, rotary=apply_rotary_pos_emb,
             cache_update=_incremental_cache_update,
+            draft_row_update=torch.ops.npu.npu_scatter_nd_update.default,
             verify_gdr=config.get("verify_gdr", "chunk"), gdr_mtp=gdr_mtp,
             custom_ops=custom_op_exports, include_ordinary_decode=include_ordinary_decode)
     enable_padded_draft_context(draft)

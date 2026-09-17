@@ -174,6 +174,7 @@ InferShape/InferDataType 和 ATC 的实际编译结果。ATC 失败时异常附�
 | 三个 Target 图 | `aten::softplus` | `SoftplusV2`；保留 beta/threshold 属性 |
 | 三个 Target 图及完整前缀图 | `qwen35_dflash::npu_cache_update` | `CacheUpdate`；功能化捕获前端直接接收 paged KV，输出供 attention 消费 |
 | 完整前缀图的可选 scatter 路径 | `npu::npu_scatter_nd_update_` | `ScatterNdUpdate`；验证别名/Meta，保留内置 converter |
+| 增量 Draft | `npu::npu_scatter_nd_update` | `ScatterNdUpdate`；功能化整行更新，INT32 `[H*R,1]` 索引；保留内置 converter，核对 12 处写入 |
 
 三个 Target 图的 K/V 都调用 `CacheUpdate`，直接更新
 `[blocks,H*D/16,64,16]` 布局，只打包本次新增的行，避免为写入而展平、转置整份缓存。
@@ -192,12 +193,26 @@ attention 的 mask 只允许有效行，verify 的逻辑长度仍只推进 `acce
 各图按上述最低次数审计 AIR 中的 GE 节点。C++ 的 current/next 状态缓冲区和提交方式
 保持相同，不能由此认定所有图边界复制都已消除；最终任务数和耗时以 OM/msprof 为准。
 
-Draft 的缓存是 `[B,H,C,D]`，在第 2 维使用 `scatter → ScatterElements`，
-六层 K/V 共 12 处写入。位置索引用静态 `repeat/Tile` 复制到更新值的形状，
-不构造动态 `BroadcastTo` shape 输入。写入位置连续且不重复，结果与整行
-`index_copy` 相同。它不直接使用 Target 的 paged `CacheUpdate` 接口。
-Draft 的 GQA 在新插入的 group 维使用 `repeat/Tile`，head 顺序为
-`[h0,h0,...,h1,h1,...]`，不重复整个 head 序列。
+Draft 保留 `[B,H,C,D]` 缓存，通过二维视图 `[B*H*C,D]` 整行更新，
+不转置整份缓存、不复制逐元素索引。六层 K/V 共 12 个功能化 `ScatterNdUpdate`，
+输入缓存不变，输出使用既有 next bank；CPU `index_copy` 仅作测试参考。
+GQA 将 Query 分组并入行维 `[B,Hkv,G*Q,D]`，直接复用 K/V，保持 head 次序和 mask。
+每层上下文与候选行共用一次 K/V 投影；K/V 和 MLP gate/up 在导出时打包，替换原权重。
+六层逻辑 Linear 数为 32（含 FC、完整词表 head）；FP16 乘法与 FP32 softmax 边界不变。
+这些是图执行优化，无新增 kernel；实际算子分派、时延、峰值 workspace 和候选一致性需上板确认。
+CPU 扩展对照中 GQA 的少数 FP16 元素存在末位差异（本次最大绝对差 `2.44e-4`）；
+仍使用已有 attention 测试容差，不能据此承诺 NPU 候选逐 token 不变。
+
+相关执行优化参考：
+
+| 参考 | 本实现采用的部分 |
+|---|---|
+| [FlashInfer 附录 A](https://arxiv.org/html/2501.01005v1#A1) | Query head group 与行维合并，复用原 KV；用现有 BatchMatMul 实现 |
+| [PyTorch Packed Projection](https://docs.pytorch.org/tutorials/intermediate/transformer_building_blocks.html#packed-projection) | K/V、SwiGLU gate/up 权重打包，保留原函数及权重精度 |
+| [PyTorch GPT, Fast](https://pytorch.org/blog/accelerating-generative-ai-2/) | 固定 KV 分配、完整图捕获；当前 OM/C++ 已采用，不另加 Python compile 包装 |
+
+上述文献的 GPU 性能不代表 310P 的收益。融合 attention、按有效 KV 长度分档可再评估，
+须先确认现有算子支持 Draft 的 causal/sliding/non-causal mask；本次不改模型结构、不开发 kernel。
 Draft 的 RMSNorm 使用同一个自定义前端，其余计算使用 Tensor 算子。
 完整前缀工厂按其实际缓存路径声明算子依赖。
 默认 Chunk 路径的 verify 和 commit 都使用 `ChunkGatedDeltaRule`。

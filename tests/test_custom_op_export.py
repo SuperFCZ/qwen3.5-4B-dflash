@@ -114,6 +114,7 @@ def _quant_incremental_specs(monkeypatch, verify_gdr="chunk"):
         gdr=operations["npu_chunk_gated_delta_rule"],
         attention=operations["adn_fused_infer_attention"], rotary=rotary,
         cache_update=_incremental_cache_update,
+        draft_row_update=operations["npu_scatter_nd_update"],
         custom_ops=contracts, include_ordinary_decode=True,
         verify_gdr=verify_gdr, gdr_mtp=operations["npu_gated_delta_rule_mtp"] if verify_gdr == "mtp" else None)
 
@@ -156,6 +157,8 @@ def test_four_incremental_graphs_capture_and_audit_every_custom_op(tmp_path, mon
                     converter(*node.args, **node.kwargs)
                 elif node.target is torch.ops.npu.npu_dynamic_quant.default:
                     self.ge.custom_op("DynamicQuant", outputs=["y", "scale"])
+                elif node.target is torch.ops.npu.npu_scatter_nd_update.default:
+                    self.ge.custom_op("ScatterNdUpdate", outputs=["var"])
                 elif str(node.target).startswith(("npu.", "qwen35_dflash.")):
                     raise AssertionError(f"uncovered custom operator: {node.target}")
             root = Path(export_path)
@@ -175,10 +178,13 @@ def test_four_incremental_graphs_capture_and_audit_every_custom_op(tmp_path, mon
         exported = ta.captures[name]
         nodes = list(exported.graph.nodes)
         cache_writes = [node for node in nodes if str(node.target) == "aten.scatter.src"]
-        assert len(cache_writes) == (4 if name == "draft" else 0)
-        # Cache indices use static Tile repeats, matching the receiver-tested
-        # quant branch and avoiding dynamic BroadcastTo auto-tiling failures.
-        assert all(str(node.args[2].target) == "aten.repeat.default" for node in cache_writes)
+        assert not cache_writes
+        row_writes = [n for n in nodes if str(n.target) == "npu.npu_scatter_nd_update.default"]
+        assert len(row_writes) == (4 if name == "draft" else 0)
+        for node in row_writes:
+            assert node.args[0].meta["val"].ndim == 2
+            assert node.args[1].meta["val"].dtype == torch.int32
+            assert node.args[1].meta["val"].shape[-1] == 1
         native_writes = [node for node in nodes if
                          str(node.target) == "qwen35_dflash.npu_cache_update.default"]
         expected_writes = 0 if name == "draft" else 32 if name == "target_verify" else 2
@@ -201,15 +207,17 @@ def test_four_incremental_graphs_capture_and_audit_every_custom_op(tmp_path, mon
         assert all(node.meta["val"].dtype == torch.int32 for node in scans)
         calls = [node for node in nodes if str(node.target) == "npu.npu_chunk_gated_delta_rule.default"]
         if name == "draft":
-            assert len(audit) == 1 and not calls
+            assert len(audit) == 2 and not calls
             assert audit[0]["torch_target"] == "npu.adn_rms_norm.default"
             assert audit[0]["ge_op_type"] == "AdnRmsNorm"
             assert audit[0]["minimum_occurrences"] == audit[0]["ge_node_occurrences"] == 12
+            assert audit[1]["torch_target"] == "npu.npu_scatter_nd_update.default"
+            assert audit[1]["minimum_occurrences"] == audit[1]["ge_node_occurrences"] == 4
             assert graph["standard_op_overrides"] == []
-            # Each of the two fixture layers repeats both K and V heads.
+            # GQA folds query groups into rows; no K/V head copies survive.
             head_repeats = [node for node in nodes if str(node.target) == "aten.repeat.default"
                             and node.meta["val"].ndim == 5]
-            assert len(head_repeats) == 4
+            assert not head_repeats
         else:
             assert len(audit) == 6
             rms = next(item for item in audit if item["ge_op_type"] == "AdnRmsNorm")
@@ -353,6 +361,9 @@ _TARGET_TEST_SCHEMAS = {
     "npu_scatter_nd_update_": (
         "npu_scatter_nd_update_(Tensor(a!) input, Tensor indices, "
         "Tensor updates) -> Tensor(a!)"
+    ),
+    "npu_scatter_nd_update": (
+        "npu_scatter_nd_update(Tensor input, Tensor indices, Tensor updates) -> Tensor"
     ),
 }
 

@@ -35,6 +35,7 @@ NPU_CHUNK_GATED_DELTA_RULE_TORCH_OP = "npu::npu_chunk_gated_delta_rule"
 NPU_DYNAMIC_QUANT_TORCH_OP = "npu::npu_dynamic_quant"
 NPU_QUANT_MATMUL_TORCH_OP = "npu::npu_quant_matmul"
 NPU_SCATTER_ND_UPDATE_TORCH_OP = "npu::npu_scatter_nd_update_"
+NPU_FUNCTIONAL_SCATTER_ND_UPDATE_TORCH_OP = "npu::npu_scatter_nd_update"
 
 ADN_FUSED_INFER_ATTENTION_DEFAULT_GE_OP_TYPE = "AdnFusedInferAttention"
 ADN_RMS_NORM_DEFAULT_GE_OP_TYPE = "AdnRmsNorm"
@@ -792,6 +793,11 @@ def _fake_npu_scatter_nd_update_(
     return input
 
 
+def _fake_npu_scatter_nd_update(input, indices, updates):
+    del indices, updates
+    return torch.empty_like(input)
+
+
 def _expect_tensor(
     value: Any,
     *,
@@ -954,7 +960,28 @@ def _validate_npu_scatter_nd_update_meta(operation: Any) -> None:
         raise RuntimeError("npu::npu_scatter_nd_update_ Meta kernel lost input alias")
 
 
+def _validate_functional_scatter_nd_update_meta(operation: Any) -> None:
+    input_tensor = torch.empty((128, 16), dtype=torch.float16, device="meta")
+    indices = torch.empty((4, 1), dtype=torch.int32, device="meta")
+    updates = torch.empty((4, 16), dtype=torch.float16, device="meta")
+    result = operation(input_tensor, indices, updates)
+    _expect_tensor(result, shape=(128, 16), dtype=torch.float16,
+                   label="npu::npu_scatter_nd_update output")
+    if result is input_tensor:
+        raise RuntimeError("functional npu_scatter_nd_update must not alias its input")
+
+
 _ADAPTERS = {
+    NPU_FUNCTIONAL_SCATTER_ND_UPDATE_TORCH_OP: _OperatorAdapter(
+        torch_op=NPU_FUNCTIONAL_SCATTER_ND_UPDATE_TORCH_OP,
+        argument_names=(("input", "self"), "indices", "updates"),
+        argument_types=("Tensor", "Tensor", "Tensor"),
+        kwarg_only=(False, False, False),
+        return_types=("Tensor",),
+        fake_kernel=_fake_npu_scatter_nd_update,
+        validate_meta=_validate_functional_scatter_nd_update_meta,
+        converter_policy=_TORCHAIR_BUILTIN_CONVERTER,
+    ),
     ADN_RMS_NORM_TORCH_OP: _OperatorAdapter(
         torch_op=ADN_RMS_NORM_TORCH_OP,
         argument_names=(("input", "self"), "gamma", "epsilon"),

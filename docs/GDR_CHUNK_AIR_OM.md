@@ -10,6 +10,10 @@ cd "$AI_RUN_DIR"
 配置里的 `VERIFY_GDR=chunk|mtp` 自动选择对应的 `DEPLOYMENT_MANIFEST`。
 两个 manifest 填实际已编译路径；共用 Prefill、Decode、Draft，各自引用自己的 Verify。
 Draft 采用 16/64 双档上下文：长输入建缓存用 64 行，生成用 16 行，共用一个 `draft.om`，自动选择档位。
+当前 Draft 默认使用整行 `ScatterNdUpdate`、合并投影和免 KV 复制的 GQA。
+更新代码后，在新 `OM_BUNDLE_DIR` 按文末步骤重新 **导出 AIR 并编译**；
+`recompile-draft-om` 只重编已有 AIR，不能启用本次改写。
+需要接收端已有的 `torch_npu.npu_scatter_nd_update` 和 TorchAir converter，无需安装新 kernel。
 首次部署见文末[导出与编译](#导出与编译)。`QUANT_MODE` 只控制原生推理，OM 精度由编译产物决定。
 
 ## 统一测试：短 / 1K 上下文、Chunk / MTP、多长度
@@ -370,6 +374,7 @@ PY
 
 新清单必须与原清单同目录、文件名未被使用；三个 Target OM 保持原文件。
 只重编 Draft；此命令只改编译选项，不改变 AIR。
+涉及 Draft 代码改写时，请使用上面的完整导出与编译流程。
 把环境配置中的 `CHUNK_DEPLOYMENT_MANIFEST` 或 `MTP_DEPLOYMENT_MANIFEST` 改为新清单，重新 `source`。
 开启时将 `0` 改为 `1`，输出文件名也改为未使用的名称；省略参数默认为 `0`。
 更新后按第 5 步重建 C++ runner，多轮漂移会显示变化轮数、token 差异数和首个差异位置，

@@ -808,8 +808,8 @@ def test_target_gears_use_execution_head_and_draft_keeps_checkpoint_head():
     with torch.inference_mode():
         for spec in graphs:
             if spec.name == "draft":
-                assert spec.model.propose.head is draft_head
-                assert spec.model.propose.head.weight.dtype == torch.float16
+                assert spec.model.head is draft_head
+                assert spec.model.head.weight.dtype == torch.float16
             elif spec.name.startswith("target_"):
                 assert torch.all(spec.model(*spec.example_args)[0] == 7)
 
@@ -898,14 +898,14 @@ def test_draft_graph_exports_with_dynamic_context_length():
         matmuls = [n for n in program.graph.nodes if n.target in (
             torch.ops.aten.mm.default, torch.ops.aten.bmm.default)]
         bmms = [n for n in matmuls if n.target == torch.ops.aten.bmm.default]
-        assert len(bmms) == 2 * len(spec.model.propose.draft.layers)
+        assert len(bmms) == 2 * len(spec.model.layers)
         assert len(matmuls) > len(bmms)
         for node in matmuls:
             assert node.args[0].meta["val"].dtype == torch.float16, node
             assert node.args[1].meta["val"].dtype == torch.float16, node
         softmaxes = [n for n in program.graph.nodes
                      if n.target == torch.ops.aten._softmax.default]
-        assert len(softmaxes) == len(spec.model.propose.draft.layers)
+        assert len(softmaxes) == len(spec.model.layers)
         assert all(n.args[0].meta["val"].dtype == torch.float32 for n in softmaxes)
         exported = program.module()
         args = list(spec.example_args)

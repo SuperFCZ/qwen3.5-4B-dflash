@@ -172,7 +172,7 @@
       },
       {
         "source_file": "docs/DFLASH_ARCHITECTURE.md",
-        "source_sha256": "e3e6898e2bae8c7eaa2dd6484912fee1c24c39af813543e048ee97229f62bee1"
+        "source_sha256": "9424d6e7fc653704361477f281700c98e4071debbcbde43aa6ab30ff910e4f29"
       },
       {
         "source_file": "docs/assets/dflash-draft-flow.svg",
@@ -180,11 +180,11 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "f3444bcce4a1ea5ad346fdfaccbc6e8ff555779db74df952599437904dc51f9c"
+        "source_sha256": "10af9993119a00c6a0e9686d8d4af67bc236ba072576c08ae3200fbe5c9cf842"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
-        "source_sha256": "b0785218fc062f020c6b0a1478c1a5f927bffa03fb2b3c0249d9ec4f1a9eff00"
+        "source_sha256": "271423f29952c52233033507321754a6b02f094a3a3d6d7ca87d54d741f6addc"
       },
       {
         "source_file": "framework/FRAMEWORK_LOCK.json",
@@ -244,7 +244,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/custom_op_export.py",
-        "source_sha256": "3abc1a0fce4ca1b2cd370826215326904fe626ae9958c460f11e403036305b3f"
+        "source_sha256": "32d1eaf26666edc29e217e3d4f2a9b61d568fde2819dad8b19e44775d7b27dea"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/exporter.py",
@@ -256,7 +256,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/incremental.py",
-        "source_sha256": "2e50156bc75aefa6512e80d5ca1a544dda35f9b2973cd6143f5f778ab9d4033a"
+        "source_sha256": "73f43e19288f4f1a39fd7a004da30e8a60d04175e68f01f696cbc8600376ced4"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/incremental_plan.py",
@@ -272,7 +272,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/quant_factory.py",
-        "source_sha256": "e2bf31ae74baac741da2a1667c5d0092061c768663ace3f3287055746c1f466c"
+        "source_sha256": "f1c2c7559ae7ae35f7901e48fefb9bbd6f70341223038e559b4e0635b719b266"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/recompute_backend.py",
@@ -376,11 +376,11 @@
       },
       {
         "source_file": "tests/test_custom_op_export.py",
-        "source_sha256": "bedc08f5981e6d9762d1f139a858d972a83c43a1b33d77741b9a5ca796a65e97"
+        "source_sha256": "2efa24f44d32c25a9f49bef7068efe9cd1494c912415b5dc9952e5a58b22117e"
       },
       {
         "source_file": "tests/test_incremental_air_om.py",
-        "source_sha256": "b3817cd16b8b6ccbc2c5e2b9a3a4b3566cda0db65ffa0c8af8ab565a10bf5d98"
+        "source_sha256": "5698371594e4886bded414a9cb0ca2659142ec50bb68abcd6c7161aacc9604f6"
       },
       {
         "source_file": "tests/test_msprof_stage_script.py",
@@ -609,6 +609,10 @@
       {
         "source_file": "tests/test_prebound_om_io.py",
         "source_sha256": "d3f190395c6f39db88c3374d5933ae27761b39ef168767a2cb1ce307d33f9d0d"
+      },
+      {
+        "source_file": "tests/test_draft_execution_optimizations.py",
+        "source_sha256": "c400506082d48e3f5268d2f68cbef48e3fa36e22c54fc451a80a885fdbd64c5c"
       }
     ],
     "supported_abis": [
@@ -680,7 +684,11 @@
       "prefill": "single_draft16_64_gears; ceil(input_tokens/64)-1 discarded-proposal preparation calls; final block in first useful Draft; no second Draft OM",
       "selection": "valid_rows > 16 selects gear 64; otherwise gear 16; one symbolic features axis and CANN finite dynamic_dims",
       "validation": "CPU equivalence, symbolic graph capture and fake ACL scheduling only; real TorchAir/ATC and Ascend310P measurements pending",
-      "memory": "reuse 64-row feature buffer and current/next KV banks; one mandatory CANN control buffer; physical gear weight/workspace/peak pending"
+      "memory": "reuse 64-row feature buffer and current/next KV banks; one mandatory CANN control buffer; physical gear weight/workspace/peak pending",
+      "projection_policy": "packed K/V and gate/up weights replace originals; shared context/noise row projection; 32 logical Linear calls for six layers",
+      "cache_update": "functional npu_scatter_nd_update on dense BHCD row view; INT32 unique head-row indices; no full-cache transpose",
+      "attention": "query group/row folding, no materialized KV repeat; FP16 matmul operands and FP32 score/softmax unchanged",
+      "numerics": "Matmul shape changes can alter rounding; expanded CPU GQA sample observed max abs 2.44e-4; original model gates retained; NPU token/acceptance/peak-memory checks pending"
     },
     "om_io_binding": {
       "runner_version": "1.11.0",

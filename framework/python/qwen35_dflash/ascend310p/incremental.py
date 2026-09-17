@@ -580,26 +580,139 @@ class DraftProposeGraph(nn.Module):
         return (torch.where(active[None], top1, torch.zeros_like(top1)),)
 
 
-class DraftGraph(nn.Module):
-    """One OM appends context and generates a block, sharing all Draft weights."""
+def copy_draft_cache_rows(cache, positions, values, row_update=None):
+    """Functional whole-row writes without a full-cache transpose or index Tile.
 
-    def __init__(self, draft, embedding, head):
+    BHCD is already contiguous by row. Each [batch,head,position] selects one
+    D-wide row; indices are unique and include padded uncommitted scratch rows.
+    The production callable is the existing functional NPU ScatterNdUpdate.
+    """
+    batch, heads, capacity, dim = cache.shape
+    head_base = torch.arange(batch * heads, dtype=torch.int32, device=cache.device) * capacity
+    indices = (head_base[:, None] + positions.to(torch.int32)[None, :]).reshape(-1, 1)
+    flat = cache.reshape(-1, dim)
+    updates = values.reshape(-1, dim)
+    if row_update is None:
+        if cache.device.type != "cpu":
+            raise RuntimeError("NPU Draft requires a functional whole-row cache update")
+        # CPU oracle only. No index_copy fallback is exported on the NPU route.
+        result = torch.index_copy(flat, 0, indices[:, 0].long(), updates)
+    else:
+        result = row_update(flat, indices, updates)
+    return result.reshape_as(cache)
+
+
+class PackedDraftLayer(nn.Module):
+    """Pack projection output channels once; retain no original K/V/gate/up."""
+
+    def __init__(self, layer, *, consume_source=False):
         super().__init__()
-        self.context = DraftContextGraph(draft)
-        self.propose = DraftProposeGraph(draft, embedding, head)
+        base = layer.self_attn
+        self.input_norm = layer.input_layernorm
+        self.post_norm = layer.post_attention_layernorm
+        self.q_proj, self.q_norm, self.k_norm = base.q_proj, base.q_norm, base.k_norm
+        self.o_proj, self.down_proj = base.o_proj, layer.mlp.down_proj
+        self.kv_weight = nn.Parameter(torch.cat(
+            (base.k_proj.weight.detach(), base.v_proj.weight.detach()), dim=0
+        ), requires_grad=False)
+        if consume_source:
+            del base.k_proj, base.v_proj
+        self.gate_up_weight = nn.Parameter(torch.cat(
+            (layer.mlp.gate_proj.weight.detach(), layer.mlp.up_proj.weight.detach()), dim=0
+        ), requires_grad=False)
+        if consume_source:
+            del layer.mlp.gate_proj, layer.mlp.up_proj
+        self.ops, self.scale = base.ops, base.scale
+        self.is_causal, self.sliding_window = base.is_causal, base.sliding_window
+
+
+class DraftGraph(nn.Module):
+    """Single 16/64-gear OM with shared context/noise K/V projections."""
+
+    def __init__(self, draft, embedding, head, *, row_update=None, consume_source=False):
+        super().__init__()
+        self.config, self.ops = draft.config, draft.ops
+        self.fc, self.hidden_norm, self.rotary = draft.fc, draft.hidden_norm, draft.rotary
+        self.norm, self.embedding, self.head = draft.norm, embedding, head
+        # Production consumes one pair at a time after checkpoint validation,
+        # avoiding simultaneous retention of every packed and original weight.
+        self.layers = nn.ModuleList(
+            PackedDraftLayer(layer, consume_source=consume_source) for layer in draft.layers
+        )
+        self.row_update = row_update
+        # Do not retain draft/context/propose: that would also register the
+        # unpacked parameters, doubling their weight storage in the exported OM.
 
     def forward(self, features, start_position, valid_rows, anchor, proposal_count, *state):
-        # One symbolic context axis, compiled into 16/64 gears in one OM.
-        # Proposal width and all persistent cache dimensions stay static.
-        visible = torch.arange(features.shape[1], device=features.device) < valid_rows.to(torch.long)
-        features = torch.where(
-            visible[None, :, None], features, torch.zeros_like(features)
-        )
-        updated = self.context(features, start_position, *state)
-        proposals = self.propose(
-            anchor, start_position + valid_rows.to(torch.long), proposal_count, *updated
-        )
-        return (*proposals, *updated)
+        config = self.config
+        rows = features.shape[1]
+        context_offsets = torch.arange(rows, device=features.device)
+        visible = context_offsets < valid_rows.to(torch.long)
+        features = torch.where(visible[None, :, None], features, torch.zeros_like(features))
+        projected = self.hidden_norm(self.fc(features))
+        context_positions = start_position + context_offsets
+        context_cos, context_sin = self.rotary(context_positions[None], projected.dtype)
+        context_cos, context_sin = context_cos[:, None], context_sin[:, None]
+        block_ids = torch.cat((anchor.reshape(1, 1), torch.full(
+            (1, config.block_size - 1), config.mask_token_id,
+            dtype=torch.long, device=anchor.device,
+        )), dim=1)
+        hidden = self.embedding(block_ids) * config.input_embedding_scale
+        offsets = torch.arange(config.block_size, device=anchor.device)
+        context_length = start_position + valid_rows.to(torch.long)
+        positions = context_length + offsets
+        cosine, sine = self.rotary(positions[None], hidden.dtype)
+        cache_positions = torch.arange(state[0].shape[2], device=anchor.device)
+        distance = positions[:, None] - torch.cat((cache_positions, positions))[None, :]
+        valid = torch.cat((cache_positions < context_length, offsets <= proposal_count.to(torch.long)))
+        updated = []
+        from .quant_factory import _rotate_half
+
+        for index, layer in enumerate(self.layers):
+            normalized = layer.input_norm(hidden)
+            # Same weights, different input rows. One projection instead of
+            # rereading K/V weights separately for committed and proposal rows.
+            kv = layer.ops.linear(torch.cat((projected, normalized), dim=1), layer.kv_weight)
+            key_all, value_all = kv.split(config.key_value_width, dim=-1)
+            key_context = layer.k_norm(key_all[:, :rows].reshape(
+                1, rows, config.num_key_value_heads, config.head_dim
+            )).transpose(1, 2)
+            key_context = key_context * context_cos + _rotate_half(key_context) * context_sin
+            value_context = value_all[:, :rows].reshape(
+                1, rows, config.num_key_value_heads, config.head_dim
+            ).transpose(1, 2)
+            cached_key = copy_draft_cache_rows(state[2 * index], context_positions, key_context, self.row_update)
+            cached_value = copy_draft_cache_rows(state[2 * index + 1], context_positions, value_context, self.row_update)
+            updated.extend((cached_key, cached_value))
+            query = layer.q_norm(layer.q_proj(normalized).reshape(
+                1, config.block_size, config.num_attention_heads, config.head_dim
+            )).transpose(1, 2)
+            key = layer.k_norm(key_all[:, rows:].reshape(
+                1, config.block_size, config.num_key_value_heads, config.head_dim
+            )).transpose(1, 2)
+            value = value_all[:, rows:].reshape(
+                1, config.block_size, config.num_key_value_heads, config.head_dim
+            ).transpose(1, 2)
+            query, key = layer.ops.rotary(query, key, cosine, sine)
+            key, value = torch.cat((cached_key, key), dim=2), torch.cat((cached_value, value), dim=2)
+            mask = valid[None, :].expand(config.block_size, -1)
+            if layer.is_causal:
+                mask = mask & (distance >= 0)
+            if layer.sliding_window is not None:
+                mask = mask & (distance < layer.sliding_window)
+                if not layer.is_causal:
+                    mask = mask & (-distance < layer.sliding_window)
+            mixed = layer.ops.attention(query, key, value, mask[None, None],
+                                        layer.scale, config.num_key_value_groups)
+            mixed = mixed.transpose(1, 2).contiguous().reshape(1, config.block_size, config.query_width)
+            hidden = hidden + layer.o_proj(mixed)
+            gate, up = layer.ops.linear(layer.post_norm(hidden), layer.gate_up_weight).split(
+                config.intermediate_size, dim=-1
+            )
+            hidden = hidden + layer.down_proj(layer.ops.swiglu(gate, up))
+        top1 = self.ops.top1(self.norm(hidden)[:, 1:], self.head.weight)
+        active = offsets[1:] <= proposal_count.to(torch.long)
+        return (torch.where(active[None], top1, torch.zeros_like(top1)), *updated)
 
 
 def tensor_spec(name, tensor):
@@ -620,6 +733,7 @@ def incremental_graph_specs(
     attention: Callable,
     rotary: Callable,
     cache_update: Callable | None = None,
+    draft_row_update: Callable | None = None,
     custom_ops: tuple[CustomOpExportSpec, ...] = (),
     include_ordinary_decode: bool = True,
     verify_gdr: str = "chunk",
@@ -721,7 +835,9 @@ def incremental_graph_specs(
             "CacheUpdate_paged_aligned_prefill_per_row_decode_verify"
             if cache_update is not None else "functional_scatter_reference"
         ),
-        "draft_kv_update": "ScatterElements_dense_context",
+        "draft_kv_update": ("ScatterNdUpdate_dense_rows" if draft_row_update is not None
+                            else "IndexCopy_CPU_reference"),
+        "draft_execution_policy": "packed_context_noise_kv_gate_up_grouped_query_v1",
         "commit_capsules": "internal_to_target_verify_not_external_OM_IO",
     }
     contract["draft_context_rows"] = 16
@@ -823,6 +939,7 @@ def incremental_graph_specs(
             else op for op in custom_ops
             if not (op.torch_op == "npu::npu_gated_delta_rule_mtp" and not (verify and verify_gdr == "mtp"))
             and not (op.torch_op == "npu::npu_chunk_gated_delta_rule" and verify and verify_gdr == "mtp")
+            and op.torch_op != "npu::npu_scatter_nd_update"
         )
         add(
             name,
@@ -843,11 +960,15 @@ def incremental_graph_specs(
     # norms per layer + final norm. Both branches are live in the single OM.
     draft_ops = tuple(
         replace(op, minimum_occurrences=5 * len(draft.layers) + 2)
+        if op.torch_op == "npu::adn_rms_norm" else
+        replace(op, minimum_occurrences=2 * len(draft.layers))
         for op in custom_ops if op.torch_op == "npu::adn_rms_norm"
+        or (draft_row_update is not None and op.torch_op == "npu::npu_scatter_nd_update")
     )
     add(
         "draft",
-        DraftGraph(draft, embedding, target.get_output_embeddings()),
+        DraftGraph(draft, embedding, target.get_output_embeddings(),
+                   row_update=draft_row_update, consume_source=True),
         (features, start, valid, start.clone(),
          torch.full_like(valid, 15), *draft_state),
         ("features", "start_position", "valid_rows", "anchor", "proposal_count", *draft_names),
