@@ -73,6 +73,9 @@ def test_recompile_only_draft_reuses_targets_and_creates_loadable_manifest(chunk
     for flags, _ in calls:
         assert flags.count(f"--deterministic={0 if new_mode is None else new_mode}") == 1
     command, cwd = calls[0]
+    assert command.count("--dynamic_dims=16;64") == 1
+    assert command.count("--input_format=ND") == 1
+    assert sum(arg.startswith("--input_shape=") for arg in command) == 1
     mode = 0 if new_mode is None else new_mode
     assert command.count(f"--deterministic={mode}") == 1 and f"--deterministic={1-mode}" not in command
     assert result["recompilation"]["deterministic"] == mode

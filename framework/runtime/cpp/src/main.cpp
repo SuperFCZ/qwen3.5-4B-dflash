@@ -658,7 +658,7 @@ void WriteReport(
     output << "\"abi\":{\"id\":\""
            << JsonEscape(dynamic_cast<const qwen35::dflash::ChunkExecutor&>(executor).abi_id())
            << "\",\"graph_count\":4,\"draft_context_rows\":16"
-           << ",\"draft_prefill_policy\":\"single_draft16_subchunks\""
+           << ",\"draft_context_gears\":[16,64],\"draft_prefill_policy\":\"single_draft16_64_gears\""
            << ",\"sequence_length\":";
   } else {
     output << "\"abi\":{\"input_names\":[\"input_ids\",\"attention_mask\"],"

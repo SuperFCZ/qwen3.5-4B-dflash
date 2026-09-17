@@ -129,7 +129,7 @@
   },
   "compiler": {
     "exporter": "TorchAir dynamo_export",
-    "runtime_input_abi_gate": "incremental graphs normalize GE Data.index and physical Data order by public tensor storage identity before serialization; specialize_float=True; verify static shapes; require one PASS audit per graph before ATC",
+    "runtime_input_abi_gate": "normalize GE Data index/order by public tensor storage identity; specialize_float=True; only Draft features axis 1 is dynamic; require one PASS serialized-shape audit per graph before ATC",
     "custom_op_gate": "validate all declared custom-op contracts and SoftplusV2 audits for the entire graph suite before ATC; preserve builtin converters and audit their GE nodes",
     "atc_mode": 0,
     "atc_framework": 1,
@@ -144,7 +144,8 @@
         ]
       }
     ],
-    "incremental_precision_mode": "must_keep_origin_dtype or precision_mode_v2=origin; downcasting modes rejected"
+    "incremental_precision_mode": "must_keep_origin_dtype or precision_mode_v2=origin; downcasting modes rejected",
+    "draft_dynamic_dims": "features [1,-1,W]; input_format ND; dynamic_dims 16;64"
   },
   "runtime": {
     "language": "C++17",
@@ -154,7 +155,7 @@
     "memory": "persistent pinned host and device buffers",
     "synchronization": "one stream synchronization per OM invocation",
     "generation": "ordinary greedy and strict-greedy DFlash",
-    "om_io_validation": "exact per-index dtype, bytes, rank and shape before execution; errors include graph/path, expected and actual tensor descriptors, and full failing-model I/O dump"
+    "om_io_validation": "exact dtype/bytes/rank/shape before execution; Draft additionally requires CANN control input and exactly the declared 16/64 gears"
   },
   "correctness_gate": {
     "token_id_mismatches": 0,
@@ -258,8 +259,12 @@
       "verify_mtp.om"
     ],
     "draft_context_rows": 16,
-    "draft_prefill_policy": "single_draft16_subchunks",
-    "draft_memory_policy": "one Draft weight allocation; existing 64-row feature buffer and current/next KV banks reused for all subchunks"
+    "draft_prefill_policy": "single_draft16_64_gears",
+    "draft_memory_policy": "one resident Draft; existing 64-row feature buffer and current/next KV banks reused; mandatory CANN gear-control buffer; compiled weight/workspace and physical peak pending device checks",
+    "draft_context_gears": [
+      16,
+      64
+    ]
   },
   "profiling": {
     "collector": "msprof dynamic CLI",

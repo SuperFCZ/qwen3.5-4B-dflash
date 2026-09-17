@@ -9,7 +9,7 @@ cd "$AI_RUN_DIR"
 
 配置里的 `VERIFY_GDR=chunk|mtp` 自动选择对应的 `DEPLOYMENT_MANIFEST`。
 两个 manifest 填实际已编译路径；共用 Prefill、Decode、Draft，各自引用自己的 Verify。
-Draft 固定采用 16 行紧凑执行，预填充和生成复用同一个 `draft.om`，无需选择参数。
+Draft 采用 16/64 双档上下文：长输入建缓存用 64 行，生成用 16 行，共用一个 `draft.om`，自动选择档位。
 首次部署见文末[导出与编译](#导出与编译)。`QUANT_MODE` 只控制原生推理，OM 精度由编译产物决定。
 
 ## 统一测试：短 / 1K 上下文、Chunk / MTP、多长度
@@ -19,8 +19,9 @@ Draft 固定采用 16 行紧凑执行，预填充和生成复用同一个 `draft
 两种输入共用下面一条命令；投机始终开启。选择 `both` 时，**每个输出长度只测一次普通模型**：
 低内存模式依次运行普通模型、Chunk、MTP，MTP 复用同一份普通模型输出和时延。每模式仍按指定轮数预热、测量。
 
-使用当前 runner **1.10.0+**，按文末步骤在新目录导出、编译并重建 runner。
-部署清单须包含 `draft_prefill_policy=single_draft16_subchunks`；不要手改旧清单或覆盖已有 OM。
+使用当前 runner **1.11.0+**，按文末步骤在新目录导出、编译并重建 runner。
+部署清单须包含 `draft_prefill_policy=single_draft16_64_gears` 和 `draft_context_gears=[16,64]`。
+不要手改旧清单或覆盖已有 OM；单纯重编静态 Draft AIR 不能得到双档模型。
 runner 默认预绑定 current/next 两套 I/O；报告中 `protocol.om_io_binding=prebound_ping_pong` 表示已启用。
 
 ```bash
@@ -183,6 +184,8 @@ profile_om() {
 Decode/Draft/Verify 的窗口只含一次对应 OM 调用，必要的 Prefill、缓存和候选准备在窗口外执行。
 Prefill 采集整个输入：含聊天模板不超过 64 token 时一次 OM 调用，约 1K 输入则约 16 次。
 分段建缓存的 Draft 调用在 Draft/Verify 采集窗口外执行。
+Draft 窗口采集首次正式调用：输入最后一块超过 16 token 时用 64 档，否则用 16 档；
+完整生成的后续轮均用 16 档。比较时须使用相同输入和档位。
 
 每次输出到终端打印的 `Output` 目录，查看 `capture/<stage>-stage-summary.csv`、
 `capture/<stage>-operator-types.csv` 和 `capture/<stage>-hotspots.txt`，`<stage>` 为所选阶段或 `all`。
@@ -191,9 +194,14 @@ Verify 包含接受判断和图内状态提交；msprof 时延是采集窗口耗
 ## 导出与编译
 
 在环境配置中将 `OM_BUNDLE_DIR` 设为未使用的目录，重新 `source` 后执行第 1–5 步。
-只有一个 Draft OM，不增加第二份 Draft 模型权重或设备缓存。
-长输入按 16 行复用 Draft 建缓存，1K 输入需额外 63 次准备调用；会增加 Prefill 开销。
-生成每轮一次 Draft + 一次 Verify。模型结构、权重、精度和算子不变，实际显存、时延和接受率需重新测量。
+只有一个 Draft OM，复用现有 64 行特征缓冲区和 KV 缓冲区。
+1024-token 输入需 15 次 Draft 准备调用，最后 64 行随首次正式 Draft 处理；后续投机用 16 行档位。
+候选块始终为 16 行，最多输出 15 个候选。准备阶段仍执行完整 Draft，候选丢弃。
+编译器自动为 Draft 添加 `--dynamic_dims="16;64"`，Target 三图保持静态；用户无需填写档位参数。
+运行日志记录每图的 `weight_bytes/work_bytes`、`dynamic_control_bytes` 和设备可用内存。
+单 OM 不保证峰值显存不变：CANN 需要档位控制缓冲区，多档权重布局与工作区也须实测。
+当前双档的设备编译、显存、时延和接受率待验证；以同输入、同容量的实测决定是否采用。
+模型结构与精度设置不变；档位可能改变算子选择，设备上的候选与有效 KV 仍需对照验证。
 配置不再需要 `DRAFT_CONTEXT_ROWS`，已有 `factory.json` 中的 `draft_context_rows` 字段请删除。
 
 <details>

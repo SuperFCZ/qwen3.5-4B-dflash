@@ -85,8 +85,8 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
           "invalid chunk capacity/vocabulary");
   std::string draft_policy;
   Require(static_cast<bool>(input >> word >> draft_policy) &&
-              word == "draft_prefill_policy" && draft_policy == "single_draft16_subchunks",
-          "chunk plan needs single_draft16_subchunks; regenerate the plan with current AIR/OM and runner");
+              word == "draft_prefill_policy" && draft_policy == "single_draft16_64_gears",
+          "chunk plan needs single_draft16_64_gears; regenerate the plan with current AIR/OM and runner");
   const std::set<std::string> roles{"target_prefill", "target_decode",
                                     "target_verify", "draft"};
   while (input >> word && word == "graph") {

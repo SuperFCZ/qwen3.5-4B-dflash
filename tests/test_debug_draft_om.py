@@ -91,9 +91,9 @@ def test_replay_freezes_boundary_never_commits_outputs(replay_case, policy, prom
     assert all(phase["valid_kv_mismatch_iterations"] == 0 for phase in analysis["phase_counts"])
     calls = [json.loads(line) for line in events.read_text().splitlines()]
     assert not any(row[1] or row[0] in ("target_verify", "target_decode") for row in calls)
-    # Context preparation reuses the same Draft graph in 16-row pieces.
-    prefix = (["target_prefill", "draft"] if prompt_count == 17
-              else ["target_prefill"] + ["draft"] * 4 + ["target_prefill"])
+    # Non-final blocks use the 64-row gear; the final block is replayed.
+    prefix = (["target_prefill"] if prompt_count == 17
+              else ["target_prefill", "draft", "target_prefill"])
     assert [r[0] for r in calls] == prefix + ["draft"] * 4 + (prefix + ["draft"]) * 4
     assert_cpp_resources_released(cleanup, proc.stderr)
 
@@ -127,7 +127,7 @@ def test_replay_retains_drift_and_runs_remaining_iterations(replay_case, monkeyp
         region, row, channel = {
             "draft_output_bytes": ("valid_prefix", 0, 1),
             "draft_output_padding": ("written_padding", 17, 0),
-            "draft_output_tail": ("untouched_tail", 32, 0),
+            "draft_output_tail": ("untouched_tail", 64, 0),
         }[variation]
         assert completed[2]["valid_tokens_match"] and completed[2]["inputs_unchanged"]
         assert completed[2]["valid_kv_matches"] is padding_only

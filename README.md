@@ -2,7 +2,7 @@
 
 Ascend 310P 投机解码：Target 支持 FP16 / W8A8，官方 DFlash Draft 使用 FP16。
 Torch-NPU 和 AIR/OM/C++ 均支持 **GDR Chunk 两遍**与 **GDR MTP** 验证。
-OM 只使用一个紧凑 Draft：16 行特征投影，最多 15 个候选；长输入复用同一图分段建缓存。
+OM 使用一个 Draft，自动切换 16/64 行上下文档位：生成用 16 行，长输入建缓存用 64 行，最多 15 个候选。
 
 ## 环境配置
 

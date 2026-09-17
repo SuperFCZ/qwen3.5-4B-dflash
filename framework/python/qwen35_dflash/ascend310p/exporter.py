@@ -18,6 +18,23 @@ from .runtime_input_export import canonical_runtime_input_abi
 from .utils import atomic_write_json, file_record, require_run_output, resolve_callable
 
 
+def _mark_input_shapes(spec):
+    """Keep caches/controls/weights static; expose only the declared feature axis."""
+    axes = spec.metadata.get("dynamic_input_axes", {})
+    if not axes:
+        return
+    for name, tensor in zip(spec.input_names, spec.example_args):
+        dynamic = axes.get(name, ())
+        for axis in range(tensor.ndim):
+            if axis in dynamic:
+                torch._dynamo.mark_dynamic(tensor, axis, min=16, max=64)
+            else:
+                torch._dynamo.mark_static(tensor, axis)
+    # dynamic=True must not generalize coincident parameter/cache dimensions.
+    for tensor in (*spec.model.parameters(), *spec.model.buffers()):
+        torch._dynamo.mark_static(tensor)
+
+
 @contextmanager
 def _working_directory(path: Path):
     previous = Path.cwd()
@@ -174,6 +191,7 @@ def export_air_bundle(
                 public_names=spec.input_names,
                 explicit_test_double=torchair_module is not None,
                 require_static_shapes=True,
+                dynamic_input_axes=spec.metadata.get("dynamic_input_axes"),
                 public_output_names=spec.output_names,
                 verify_discard_output_names=(
                     [s["name"] for s in spec.metadata["incremental_contract"]["verify_discard_states"]]
@@ -186,6 +204,7 @@ def export_air_bundle(
             torch.inference_mode(), _working_directory(graph_dir),
             input_abi_context as runtime_input_abi,
         ):
+            _mark_input_shapes(spec)
             torchair.dynamo_export(*spec.example_args, **call_kwargs)
 
         custom_op_audit = audit_custom_op_export(

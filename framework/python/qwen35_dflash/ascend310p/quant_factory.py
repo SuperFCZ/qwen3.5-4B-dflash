@@ -506,7 +506,7 @@ def create_quant_recompute_graph(
     if type(include_ordinary_decode) is not bool:
         raise TypeError("include_ordinary_decode must be a bool")
     if "draft_context_rows" in config:
-        raise ValueError("draft_context_rows is no longer configurable; remove it from the factory config; incremental Draft uses 16 rows")
+        raise ValueError("draft_context_rows is no longer configurable; remove it from the factory config; incremental Draft selects 16/64 context gears automatically")
     device = str(config.get("device", "npu:0"))
     if not device.startswith("npu"):
         raise ValueError("formal quant AIR export requires an explicit NPU device")

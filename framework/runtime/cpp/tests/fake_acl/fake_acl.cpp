@@ -19,6 +19,8 @@ struct aclDataBuffer {
 struct aclmdlDataset {
   std::vector<aclDataBuffer*> buffers;
   std::size_t identity = 0;
+  std::size_t context_rows = 0;
+  std::uint32_t gear_model = 0;
 };
 
 struct aclmdlDesc { std::uint32_t id = 0; };
@@ -39,6 +41,7 @@ struct FixtureModel {
   std::vector<FixtureTensor> inputs, outputs;
   void* workspace = nullptr;
   std::size_t workspace_size = 0;
+  bool dynamic_context = false;
 };
 std::map<std::uint32_t, FixtureModel> fixtures;
 std::uint32_t next_id = 1;
@@ -125,7 +128,12 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
   if (start < 0 || valid < 0 || (valid == 0 && model.role != "draft") || valid > 64) return 23;
   std::size_t committed = static_cast<std::size_t>(valid);
   if (model.role == "draft") {
-    if (valid > 16) return 23;
+    if (!model.dynamic_context || (input->context_rows != 16 && input->context_rows != 64) ||
+        valid > static_cast<int>(input->context_rows)) return 23;
+    if (const auto* path = std::getenv("QWEN35_FAKE_GEAR_LOG")) {
+      std::ofstream log(path, std::ios::app);
+      log << start << ' ' << valid << ' ' << input->context_rows << '\n';
+    }
     const auto feature_stride = in.at("features")->size / 64 / sizeof(std::uint16_t);
     for (int row = 0; row < valid; ++row)
       if (static_cast<std::uint16_t*>(in.at("features")->data)[row * feature_stride] != start + row)
@@ -217,7 +225,8 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
     if (variation == "draft_output_padding" || variation == "draft_output_tail") {
       const auto spec = std::find_if(model.outputs.begin(), model.outputs.end(),
                                     [](const auto& t) { return t.name == "d0_key"; });
-      const auto row = start + (variation == "draft_output_padding" ? valid : 16);
+      const auto row = start + (variation == "draft_output_padding" ? valid :
+                               static_cast<std::int64_t>(input->context_rows));
       if (spec == model.outputs.end() || spec->shape.size() != 4 || row >= spec->shape[2]) return 33;
       // Change a sequence row, not a flat prefix of a B,H,S,D cache.
       const auto offset = static_cast<std::size_t>(row * spec->shape[3]) * 2;
@@ -431,6 +440,11 @@ aclError aclmdlLoadFromFile(const char* path, std::uint32_t* model_id) {
       for (auto& dim : tensor.shape) { file >> dim; tensor.bytes *= static_cast<std::size_t>(dim); }
       (word == "I" ? model.inputs : model.outputs).push_back(tensor);
     }
+    if (word == "GEARS") {
+      int a = 0, b = 0;
+      file >> a >> b;
+      model.dynamic_context = model.role == "draft" && a == 16 && b == 64;
+    }
   }
   if (model.role == "draft") {
     const char* fault = std::getenv("QWEN35_FAKE_CHUNK_IO_FAULT");
@@ -445,6 +459,15 @@ aclError aclmdlLoadFromFile(const char* path, std::uint32_t* model_id) {
       if (kind.find("-rank") != std::string::npos) tensor.shape.insert(tensor.shape.begin(), 1);
       if (kind.find("-shape") != std::string::npos) tensor.shape.back() += 1;
       if (kind.find("-count") != std::string::npos) tensors.pop_back();
+    }
+  }
+  if (model.dynamic_context) {
+    const char* failure = std::getenv("QWEN35_FAKE_GEAR_FAULT");
+    if (failure && std::string(failure) == "missing") model.dynamic_context = false;
+    else {
+      FixtureTensor control{ACL_DYNAMIC_TENSOR_NAME, ACL_INT64, {8}, 64};
+      const auto middle = failure && std::string(failure) == "middle-control";
+      model.inputs.insert(middle ? model.inputs.begin() + 2 : model.inputs.end(), control);
     }
   }
   fixtures[*model_id] = std::move(model);
@@ -492,11 +515,69 @@ aclError aclmdlDestroyDesc(aclmdlDesc* description) {
 }
 
 aclError aclmdlGetDesc(aclmdlDesc* desc, std::uint32_t id) { desc->id = id; return ACL_SUCCESS; }
+aclError aclmdlGetInputIndexByName(const aclmdlDesc* desc, const char* name, std::size_t* index) {
+  const auto& inputs = fixtures.at(desc->id).inputs;
+  for (std::size_t i = 0; i < inputs.size(); ++i)
+    if (inputs[i].name == name) { *index = i; return ACL_SUCCESS; }
+  return 50;
+}
+aclError aclmdlGetInputDynamicGearCount(const aclmdlDesc* desc, std::size_t index, std::size_t* count) {
+  if (!fixtures.at(desc->id).dynamic_context || index != static_cast<std::size_t>(-1)) return 51;
+  const auto* fault = std::getenv("QWEN35_FAKE_GEAR_FAULT");
+  *count = fault && std::string(fault) == "count" ? 3 : 2;
+  return ACL_SUCCESS;
+}
+aclError aclmdlGetInputDynamicDims(const aclmdlDesc* desc, std::size_t index,
+                                 aclmdlIODims* dims, std::size_t count) {
+  const auto& model = fixtures.at(desc->id);
+  if (!model.dynamic_context || count != 2 || index != static_cast<std::size_t>(-1)) return 52;
+  for (std::size_t gear = 0; gear < 2; ++gear) {
+    dims[gear] = {};
+    for (const auto& input : model.inputs) {
+      if (input.name == ACL_DYNAMIC_TENSOR_NAME) continue;
+      for (std::size_t axis = 0; axis < input.shape.size(); ++axis) {
+        if (dims[gear].dimCount >= 128) return 53;
+        dims[gear].dims[dims[gear].dimCount++] =
+            input.name == "features" && axis == 1 ? (gear ? 64 : 16) : input.shape[axis];
+      }
+    }
+  }
+  const auto* fault = std::getenv("QWEN35_FAKE_GEAR_FAULT");
+  if (fault && std::string(fault) == "shape") dims[0].dims[1] = 32;
+  if (fault && std::string(fault) == "reverse") std::swap(dims[0], dims[1]);
+  return ACL_SUCCESS;
+}
+aclError aclmdlSetInputDynamicDims(std::uint32_t id, aclmdlDataset* input,
+                                 std::size_t index, const aclmdlIODims* dims) {
+  aclmdlDesc desc{id};
+  std::size_t expected_index = 0;
+  if (aclmdlGetInputIndexByName(&desc, ACL_DYNAMIC_TENSOR_NAME, &expected_index) ||
+      index != expected_index || input->buffers.size() != fixtures.at(id).inputs.size()) return 54;
+  const auto* fault = std::getenv("QWEN35_FAKE_GEAR_FAULT");
+  if (fault && std::string(fault) == "set") return 55;
+  aclmdlIODims gears[2];
+  if (aclmdlGetInputDynamicDims(&desc, static_cast<std::size_t>(-1), gears, 2)) return 56;
+  bool matched = false;
+  for (const auto& gear : gears)
+    if (dims->dimCount == gear.dimCount &&
+        std::equal(dims->dims, dims->dims + dims->dimCount, gear.dims)) matched = true;
+  if (!matched || !input->buffers[index]->data || input->buffers[index]->size != 64) return 57;
+  input->context_rows = dims->dims[1];
+  input->gear_model = id;
+  std::memcpy(input->buffers[index]->data, &input->context_rows, sizeof(input->context_rows));
+  return ACL_SUCCESS;
+}
 std::size_t aclmdlGetNumInputs(const aclmdlDesc* desc) { return fixtures.at(desc->id).role.empty() ? 2 : fixtures.at(desc->id).inputs.size(); }
 std::size_t aclmdlGetNumOutputs(const aclmdlDesc* desc) { return fixtures.at(desc->id).role.empty() ? 2 : fixtures.at(desc->id).outputs.size(); }
 
 aclError aclmdlGetInputDims(const aclmdlDesc* desc, std::size_t index, aclmdlIODims* dims) {
-  if (!fixtures.at(desc->id).role.empty()) return FixtureDims(fixtures.at(desc->id).inputs.at(index), dims);
+  if (!fixtures.at(desc->id).role.empty()) {
+    const auto& model = fixtures.at(desc->id);
+    auto status = FixtureDims(model.inputs.at(index), dims);
+    if (model.dynamic_context && model.inputs[index].name == "features" &&
+        dims->dimCount == 3) dims->dims[1] = -1;
+    return status;
+  }
   return index < 2 ? SetDims(dims, kSequenceLength) : 1;
 }
 
@@ -586,6 +667,7 @@ aclError aclmdlExecuteAsync(
     aclrtStream) {
   executed = true;
   const auto& model = fixtures.at(id);
+  if (model.dynamic_context && (!input || input->gear_model != id)) return 43;
   if (model.workspace && (!device_allocations.count(model.workspace) ||
       device_allocations.at(model.workspace) < model.workspace_size)) return 42;
   if (!fixtures.at(id).role.empty()) return ExecuteChunk(fixtures.at(id), input, output);

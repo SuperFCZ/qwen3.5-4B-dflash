@@ -68,6 +68,8 @@ def shared_build(tmp_path, monkeypatch):
             for t in signature[key]:
                 lines.append(" ".join((marker, t["name"], t["dtype"], str(len(t["shape"])),
                                        *(str(d) for d in t["shape"]))))
+        if name == "draft" and "--dynamic_dims=16;64" in command:
+            lines.append("GEARS 16 64")
         Path(str(prefix) + ".om").write_text("\n".join(lines))
         return subprocess.CompletedProcess(command, 0, "host fake ATC")
 

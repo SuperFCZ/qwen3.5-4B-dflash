@@ -128,8 +128,13 @@ def test_four_incremental_graphs_capture_and_audit_every_custom_op(tmp_path, mon
             self.captures = {}
 
         def dynamo_export(self, *args, model, export_path, export_name, dynamic):
-            assert not dynamic
-            exported = torch.export.export(model, args, strict=True)
+            assert dynamic is (export_name == "draft")
+            shapes = ({
+                "features": {1: torch.export.Dim("context_rows", min=16, max=64)},
+                "start_position": {}, "valid_rows": {}, "anchor": {}, "proposal_count": {},
+                "state": tuple({} for _ in args[5:]),
+            } if dynamic else None)
+            exported = torch.export.export(model, args, dynamic_shapes=shapes, strict=True)
             # Also functionalize using the AOT path: missing alias support must
             # fail here, before a receiver attempts GE conversion.
             exported = exported.run_decompositions({})

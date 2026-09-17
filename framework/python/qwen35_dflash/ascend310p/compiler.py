@@ -282,6 +282,39 @@ def _validated_standard_op_overrides(graph: Mapping[str, Any]) -> list[dict[str,
     return [dict(item)]
 
 
+def _dynamic_atc_args(graph, arguments):
+    axes = graph.get("metadata", {}).get("dynamic_input_axes", {})
+    if not axes:
+        return list(arguments)
+    abi = graph["runtime_input_abi"]
+    tensors = graph["metadata"]["tensor_abi"]["inputs"]
+    bindings = abi.get("bindings", [])
+    names = ([t["name"] for t in tensors]
+             if abi["status"] == "NOT_APPLICABLE_EXPLICIT_TEST_DOUBLE"
+             else [b["data_node_name"] for b in bindings])
+    shapes = []
+    for tensor, name in zip(tensors, names):
+        if any(char in name for char in ";:\n\r"):
+            raise ValueError("AIR Data node name is not safe for ATC input_shape")
+        shape = list(tensor["shape"])
+        for axis in axes.get(tensor["name"], ()):
+            shape[axis] = -1
+        shapes.append(name + ":" + ",".join(map(str, shape)))
+    required = {"--input_format": "ND", "--input_shape": ";".join(shapes),
+                "--dynamic_dims": "16;64"}
+    output = []
+    for arg in arguments:
+        key, _, value = arg.partition("=")
+        if key in ("--dynamic_batch_size", "--dynamic_image_size", "--input_shape_range"):
+            raise ValueError("Draft 16/64 gears cannot be overridden with another shape policy")
+        if key in required:
+            if value != required[key]:
+                raise ValueError(f"Draft gear contract requires {key}={required[key]}")
+            continue
+        output.append(arg)
+    return output + [key + "=" + value for key, value in required.items()]
+
+
 def _compile_air_graph(
     graph: Mapping[str, Any], *, root: Path, om_root: Path, log_root: Path,
     atc_path: Path, exact_soc_version: str, arguments: Sequence[str],
@@ -397,7 +430,8 @@ def compile_air_bundle(
         _validate_extra_args(extra_args), incremental=incremental is not None,
     )
     graph_arguments = {
-        graph["name"]: _graph_atc_args(arguments, name=graph["name"], incremental=incremental is not None)
+        graph["name"]: _dynamic_atc_args(graph, _graph_atc_args(
+            arguments, name=graph["name"], incremental=incremental is not None))
         for graph in graphs
     }
     from .common_reuse import artifact_stem, validate_common_compile, link_common_om
@@ -540,6 +574,7 @@ def recompile_draft_om(
         inherited.append(f"--deterministic={deterministic}")
         graph_arguments[name] = _graph_atc_args(
             _chunk_precision_args(inherited, incremental=True), name=name, incremental=True)
+        graph_arguments[name] = _dynamic_atc_args(air_by_name[name], graph_arguments[name])
     atc_path = resolve_atc_executable(
         atc_bin or os.environ.get("ASCEND310P_ATC_BIN") or selected[0]["atc_command"][0])
     stage = Path(tempfile.mkdtemp(prefix=f"draft-det{deterministic}-", dir=root))

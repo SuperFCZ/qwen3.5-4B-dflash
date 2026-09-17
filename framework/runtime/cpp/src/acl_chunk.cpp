@@ -176,9 +176,11 @@ std::string DescribeModelIo(aclmdlDesc* desc, const ChunkGraph& graph) {
   }
   return out.str();
 }
-void ValidateModelIo(aclmdlDesc* desc, const ChunkGraph& graph) {
+void ValidateModelIo(aclmdlDesc* desc, const ChunkGraph& graph,
+                     std::size_t dynamic_index = static_cast<std::size_t>(-1)) {
   const auto inputs = aclmdlGetNumInputs(desc), outputs = aclmdlGetNumOutputs(desc);
-  if (inputs != graph.inputs.size() || outputs != graph.outputs.size()) {
+  const bool dynamic = graph.name == "draft";
+  if (inputs != graph.inputs.size() + dynamic || outputs != graph.outputs.size()) {
     throw std::runtime_error(
         "OM tensor count differs from chunk plan: graph=" + graph.name +
         " inputs(plan=" + std::to_string(graph.inputs.size()) + ",om=" + std::to_string(inputs) +
@@ -188,8 +190,12 @@ void ValidateModelIo(aclmdlDesc* desc, const ChunkGraph& graph) {
   for (bool output : {false, true}) {
     const auto& specs = output ? graph.outputs : graph.inputs;
     for (std::size_t i = 0; i < specs.size(); ++i) {
-      const auto actual = ReadOmTensor(desc, output, i);
-      if (!actual.Matches(specs[i])) {
+      const auto actual = ReadOmTensor(desc, output, i + (!output && i >= dynamic_index));
+      auto comparable = actual;
+      if (dynamic && !output && specs[i].name == "features" &&
+          comparable.dims.dimCount == 3 && comparable.dims.dims[1] == -1)
+        comparable.dims.dims[1] = 64;  // Buffers hold the largest finite gear.
+      if (!comparable.Matches(specs[i])) {
         throw std::runtime_error(
             "OM tensor ABI differs from chunk plan: graph=" + graph.name +
             (output ? " output[" : " input[") + std::to_string(i) + "] expected={" +
@@ -278,6 +284,41 @@ struct Loaded {
   std::array<std::unique_ptr<BoundIo>, 2> io;
   std::string state_name;
   std::array<void*, 2> state_addresses{};
+  std::unique_ptr<Memory> dynamic_control;
+  std::size_t dynamic_index = static_cast<std::size_t>(-1);
+  std::array<aclmdlIODims, 2> gears{};
+  void ReadDraftGears(const ChunkGraph& graph) {
+    if (graph.name != "draft") return;
+    Check(aclmdlGetInputIndexByName(desc, ACL_DYNAMIC_TENSOR_NAME, &dynamic_index),
+          "aclmdlGetInputIndexByName(Draft dynamic control)");
+    Require(dynamic_index < aclmdlGetNumInputs(desc), "invalid Draft dynamic control index");
+    // Report damaged public descriptors before checking their flattened gears.
+    ValidateModelIo(desc, graph, dynamic_index);
+    std::size_t count = 0;
+    Check(aclmdlGetInputDynamicGearCount(desc, static_cast<std::size_t>(-1), &count),
+          "aclmdlGetInputDynamicGearCount");
+    Require(count == 2, "Draft OM must contain exactly the 16 and 64 context gears");
+    std::array<aclmdlIODims, 2> actual{};
+    Check(aclmdlGetInputDynamicDims(desc, static_cast<std::size_t>(-1), actual.data(), count),
+          "aclmdlGetInputDynamicDims");
+    for (std::size_t gear = 0; gear < 2; ++gear) {
+      auto& expected = gears[gear];
+      for (const auto& spec : graph.inputs) {
+        for (std::size_t axis = 0; axis < spec.shape.size(); ++axis) {
+          Require(expected.dimCount < sizeof(expected.dims) / sizeof(expected.dims[0]),
+                  "Draft gear exceeds aclmdlIODims capacity");
+          expected.dims[expected.dimCount++] =
+              spec.name == "features" && axis == 1 ? (gear ? 64 : 16) : spec.shape[axis];
+        }
+      }
+      const auto matches = [&](const auto& value) {
+        return value.dimCount == expected.dimCount &&
+               std::equal(expected.dims, expected.dims + expected.dimCount, value.dims);
+      };
+      Require(std::count_if(actual.begin(), actual.end(), matches) == 1,
+              "Draft OM gear dimensions differ from the 16/64 contract");
+    }
+  }
   ~Loaded() {
     // Dataset descriptors borrow device buffers; release them before unloading
     // the model and before the executor frees the shared buffer pool.
@@ -497,12 +538,28 @@ class AclChunkExecutor::Impl {
     model.desc = aclmdlCreateDesc();
     Require(model.desc != nullptr, "aclmdlCreateDesc returned null");
     Check(aclmdlGetDesc(model.desc, model.id), "aclmdlGetDesc");
-    ValidateModelIo(model.desc, graph);
+    model.ReadDraftGears(graph);
+    ValidateModelIo(model.desc, graph, model.dynamic_index);
     // Keep the original device-buffer allocation order. Additional datasets
     // are host descriptors and must not allocate another copy of tensor data.
     for (bool output : {false, true})
       for (const auto& spec : output ? graph.outputs : graph.inputs)
         static_cast<void>(Get(spec, graph.name, output));
+    if (graph.name == "draft") {
+      // CANN's mandatory gear-control input is small, shared by both datasets,
+      // and written only by aclmdlSetInputDynamicDims (never by a host memcpy).
+      model.dynamic_control = std::make_unique<Memory>(cleanup);
+      auto& control = *model.dynamic_control;
+      control.spec.name = "draft.dynamic_control";
+      control.bytes = aclmdlGetInputSizeByIndex(model.desc, model.dynamic_index);
+      Require(control.bytes > 0 && control.bytes <= 1024 * 1024,
+              "unexpected Draft dynamic-control buffer size");
+      Check(aclrtMalloc(&control.device, control.bytes, ACL_MEM_MALLOC_NORMAL_ONLY),
+            "aclrtMalloc(Draft dynamic control)");
+      cleanup.allocated_device_bytes += control.bytes;
+      std::cerr << "[chunk-runtime] draft_context_gears=16,64 dynamic_control_bytes="
+                << control.bytes << '\n';
+    }
     // Each graph uses either Target state or Draft state. Both banks have fixed
     // allocations; commit only exchanges their current/next ownership.
     for (bool output : {false, true}) {
@@ -529,7 +586,16 @@ class AclChunkExecutor::Impl {
         const auto& specs = output ? graph.outputs : graph.inputs;
         auto& buffers = output ? binding.output_buffers : binding.input_buffers;
         auto& host = output ? binding.host_outputs : binding.host_inputs;
-        for (const auto& spec : specs) {
+        for (std::size_t index = 0; index < specs.size() + (!output && model.dynamic_control); ++index) {
+          if (!output && index == model.dynamic_index) {
+            auto& mem = *model.dynamic_control;
+            auto* data = aclCreateDataBuffer(mem.device, mem.bytes);
+            Require(data != nullptr, "aclCreateDataBuffer returned null");
+            buffers.push_back(data);
+            Check(aclmdlAddDatasetBuffer(binding.inputs, data), "aclmdlAddDatasetBuffer(dynamic)");
+            continue;
+          }
+          const auto& spec = specs[index - (!output && index > model.dynamic_index)];
           const bool side = State(spec.name) && variant ? !output : output;
           auto& mem = Get(spec, graph.name, side);
           auto* data = aclCreateDataBuffer(mem.device, mem.bytes);
@@ -614,6 +680,13 @@ class AclChunkExecutor::Impl {
         else Require(address == model.state_addresses[0], "state allocation changed after I/O binding");
       }
       auto& binding = *model.io[variant];
+      if (model.dynamic_control) {
+        const auto rows = *static_cast<const std::int16_t*>(memory.at("valid_rows")->host);
+        Require(rows >= 0 && rows <= 64, "Draft context length exceeds largest gear");
+        Check(aclmdlSetInputDynamicDims(model.id, binding.inputs, model.dynamic_index,
+                                       &model.gears[rows > 16 ? 1 : 0]),
+              "aclmdlSetInputDynamicDims(Draft 16/64)");
+      }
       for (const auto* mem : binding.host_inputs)
         Check(aclrtMemcpyAsync(mem->device, mem->bytes, mem->host, mem->bytes,
                               ACL_MEMCPY_HOST_TO_DEVICE, stream),
@@ -656,42 +729,19 @@ class AclChunkExecutor::Impl {
       feature_start = cursor;
       feature_rows = rows;
       cursor += rows;
-      if (draft) {
-        // Reuse the one compact Draft OM for context preparation. Consume
-        // Target's 64-row output in <=16-row pieces without another model,
-        // weight allocation, feature buffer or KV bank.
-        for (std::size_t part = 0; part < rows; part += 16) {
-          feature_start = offset + part;
-          feature_rows = std::min<std::size_t>(16, rows - part);
-          Require(draft_cursor == feature_start, "Draft prefill cursor is inconsistent");
-          if (part) {
-            auto& features = *memory.at("features");
-            Require(features.spec.shape.size() == 3 && features.spec.shape[0] == 1 &&
-                        features.spec.shape[1] == 64,
-                    "Draft prefill requires the shared 64-row feature buffer");
-            const auto row_bytes = features.bytes / 64;
-            // Source and destination do not overlap. Later slices stay intact.
-            // The next graph runs on this stream, after the device-to-device copy.
-            Check(aclrtMemcpyAsync(features.device, features.bytes,
-                                   static_cast<char*>(features.device) + part * row_bytes,
-                                   16 * row_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE, stream),
-                  "aclrtMemcpyAsync(Draft feature slice)");
-          }
-          // Leave the final piece for the first real proposal call.
-          if (feature_start + feature_rows == ids.size()) {
-            if (part)
-              Check(aclrtSynchronizeStream(stream), "aclrtSynchronizeStream(prefill slice)");
-            break;
-          }
-          Scalar("start_position", static_cast<std::int64_t>(feature_start));
-          Scalar("valid_rows", static_cast<std::int64_t>(feature_rows));
-          Scalar("anchor", token);
-          Scalar("proposal_count", 1);
-          Call("draft");
-          Swap('d');
-          draft_cursor = feature_start + feature_rows;
-          feature_rows = 0;
-        }
+      if (draft && cursor < ids.size()) {
+        // One 64-row call per non-final Target block. The final block is
+        // consumed by the first useful proposal call, then Verify supplies
+        // <=16 committed rows and the same OM switches to its compact gear.
+        Require(draft_cursor == feature_start, "Draft prefill cursor is inconsistent");
+        Scalar("start_position", static_cast<std::int64_t>(feature_start));
+        Scalar("valid_rows", static_cast<std::int64_t>(feature_rows));
+        Scalar("anchor", token);
+        Scalar("proposal_count", 1);
+        Call("draft");
+        Swap('d');
+        draft_cursor = cursor;
+        feature_rows = 0;
       }
     }
     return token;
@@ -699,7 +749,7 @@ class AclChunkExecutor::Impl {
   void PrepareDraft(std::int64_t anchor, std::size_t proposal_count) {
     Healthy();
     Require(proposal_count > 0 && proposal_count <= 15, "Draft proposal_count must be 1..15");
-    Require(!pending && feature_rows <= 16 && draft_cursor == feature_start &&
+    Require(!pending && feature_rows <= 64 && draft_cursor == feature_start &&
                 feature_start + feature_rows == cursor,
             "Draft context cursor is inconsistent");
     Scalar("start_position", static_cast<std::int64_t>(feature_start));
@@ -863,7 +913,7 @@ class AclChunkExecutor::Impl {
               "debug KV physical capacities differ");
     }
     // Physical Draft KV includes a guard block beyond the request capacity.
-    const std::int64_t context_rows = 16;
+    const std::int64_t context_rows = kv_valid_signed > 16 ? 64 : 16;
     Require(kv_start_signed >= 0 && kv_valid_signed >= 0 &&
                 kv_valid_signed <= context_rows &&
                 static_cast<std::size_t>(kv_start_signed) + context_rows <= kv_capacity,
@@ -1075,7 +1125,8 @@ class AclChunkExecutor::Impl {
            << ",\"snapshot_sha256\":" << DebugMap(frozen_hashes)
            << ",\"reference_token_ids\":" << DebugTokens(reference)
            << ",\"reference_output_sha256\":" << DebugMap(reference_outputs)
-           << ",\"kv_output_audit\":{\"version\":1,\"context_rows\":16,\"layout\":\"B,H,S,D\",\"abi\":{" << kv_abi.str()
+           << ",\"kv_output_audit\":{\"version\":1,\"context_rows\":" << context_rows
+           << ",\"layout\":\"B,H,S,D\",\"abi\":{" << kv_abi.str()
            << "},\"row_regions\":{" << kv_bounds.str()
            << "},\"reference_region_sha256\":{" << reference_kv_json.str()
            << "},\"saved_differences\":[" << saved_differences.str() << "]}"

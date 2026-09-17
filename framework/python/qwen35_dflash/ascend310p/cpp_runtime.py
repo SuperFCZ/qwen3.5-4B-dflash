@@ -375,9 +375,11 @@ def validate_cpp_runner_report(
                       or draft_context_rows is not None and reported_rows != draft_context_rows):
         raise RuntimeError("C++ runner Draft execution gear differs")
     reported_policy = abi.get("draft_prefill_policy")
-    if chunk_abi and (reported_policy not in (None, "single_draft16_subchunks")
+    if chunk_abi and (reported_policy not in (None, "single_draft16_subchunks", "single_draft16_64_gears")
                       or draft_prefill_policy is not None and reported_policy != draft_prefill_policy):
         raise RuntimeError("C++ runner Draft prefill policy differs")
+    if chunk_abi and reported_policy == "single_draft16_64_gears" and abi.get("draft_context_gears") != [16, 64]:
+        raise RuntimeError("C++ runner Draft dynamic gears differ")
     extra_context_graph = chunk_abi and reported_rows == 16 and reported_policy is None
     if low_memory and (
         not chunk_abi

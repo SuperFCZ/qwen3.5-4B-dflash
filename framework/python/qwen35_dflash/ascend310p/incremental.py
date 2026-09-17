@@ -454,15 +454,16 @@ class TargetCommitGraph(nn.Module):
 class DraftContextGraph(nn.Module):
     """Append only committed Target features; transient noise never enters KV."""
 
-    def __init__(self, draft, rows):
+    def __init__(self, draft, rows=None):
         super().__init__()
         self.draft, self.rows = draft, rows
 
     def forward(self, features, start_position, *state):
         draft = self.draft
+        rows = features.shape[1] if self.rows is None else self.rows
         projected = draft.hidden_norm(draft.fc(features))
         positions = start_position + torch.arange(
-            self.rows, dtype=torch.long, device=features.device
+            rows, dtype=torch.long, device=features.device
         )
         cosine, sine = draft.rotary(positions[None], projected.dtype)
         cosine, sine = cosine[:, None], sine[:, None]
@@ -473,13 +474,13 @@ class DraftContextGraph(nn.Module):
             base, config = layer.self_attn, draft.config
             key = base.k_norm(
                 base.k_proj(projected).reshape(
-                    1, self.rows, config.num_key_value_heads, config.head_dim
+                    1, rows, config.num_key_value_heads, config.head_dim
                 )
             ).transpose(1, 2)
             key = key * cosine + _rotate_half(key) * sine
             value = (
                 base.v_proj(projected)
-                .reshape(1, self.rows, config.num_key_value_heads, config.head_dim)
+                .reshape(1, rows, config.num_key_value_heads, config.head_dim)
                 .transpose(1, 2)
             )
             result.extend(
@@ -584,15 +585,13 @@ class DraftGraph(nn.Module):
 
     def __init__(self, draft, embedding, head):
         super().__init__()
-        self.context = DraftContextGraph(draft, 16)
+        self.context = DraftContextGraph(draft)
         self.propose = DraftProposeGraph(draft, embedding, head)
 
     def forward(self, features, start_position, valid_rows, anchor, proposal_count, *state):
-        # Keep the shared 64-row feature ABI; only the live generation gear is
-        # projected. With context already primed, valid_rows=0 writes scratch
-        # rows only and leaves the committed prefix untouched.
-        features = features[:, :self.context.rows]
-        visible = torch.arange(self.context.rows, device=features.device) < valid_rows.to(torch.long)
+        # One symbolic context axis, compiled into 16/64 gears in one OM.
+        # Proposal width and all persistent cache dimensions stay static.
+        visible = torch.arange(features.shape[1], device=features.device) < valid_rows.to(torch.long)
         features = torch.where(
             visible[None, :, None], features, torch.zeros_like(features)
         )
@@ -626,7 +625,7 @@ def incremental_graph_specs(
     verify_gdr: str = "chunk",
     gdr_mtp: Callable | None = None,
 ):
-    """Build static graphs, with shapes derived from the loaded models."""
+    """Build static Target graphs and a Draft with finite 16/64 context gears."""
     if verify_gdr not in VERIFY_GDR_ROUTES:
         raise ValueError("verify_gdr must be chunk or mtp")
     if verify_gdr == "mtp" and not callable(gdr_mtp):
@@ -726,7 +725,8 @@ def incremental_graph_specs(
         "commit_capsules": "internal_to_target_verify_not_external_OM_IO",
     }
     contract["draft_context_rows"] = 16
-    contract["draft_prefill_policy"] = "single_draft16_subchunks"
+    contract["draft_context_gears"] = [16, 64]
+    contract["draft_prefill_policy"] = "single_draft16_64_gears"
     contract["verify_discard_states"] = verify_discard_descriptors(contract)
     common = {**metadata, "incremental_contract": contract}
     specs = []
@@ -739,6 +739,10 @@ def incremental_graph_specs(
                 "outputs": [tensor_spec(n, t) for n, t in zip(outputs, output_tensors)],
             },
         }
+        if name == "draft":
+            # tensor_abi records allocation maxima. Only this one AIR axis is
+            # symbolic; ACL selects a finite gear before each execution.
+            meta["dynamic_input_axes"] = {"features": [1]}
         if ops:
             meta["custom_op_export_contracts"] = [
                 {"torch_target": op.torch_target, "ge_op_type": op.ge_op_type,
@@ -761,6 +765,7 @@ def incremental_graph_specs(
                 output_names=tuple(outputs),
                 metadata=meta,
                 custom_ops=ops,
+                dynamic=name == "draft",
             )
         )
 

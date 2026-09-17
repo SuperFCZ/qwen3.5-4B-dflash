@@ -56,28 +56,21 @@ def test_default_draft_matches_separate_context_and_proposals_across_commits(pre
             features = padded(rows)
             ref = call(reference, features, start, rows, baseline)
             baseline = ref[1:]
-            for part in range(0, rows, 16):
-                count = min(16, rows - part)
-                # Match the runtime's in-place use of the shared feature buffer.
-                if part:
-                    features[:, :16] = features[:, part:part + 16].clone()
-                actual = call(compact, features, start + part, count, optimized,
-                              proposals if start + part + count == prefix else 1)
-                optimized = actual[1:]
-                assert seen_rows[-1] == 16
-                for left, right in zip(baseline, optimized):
-                    end = start + part + count
-                    torch.testing.assert_close(left[:, :, :end], right[:, :, :end], rtol=0, atol=0)
+            gear = 64 if rows > 16 else 16
+            actual = call(compact, features[:, :gear], start, rows, optimized,
+                          proposals if start + rows == prefix else 1)
+            optimized = actual[1:]
+            assert seen_rows[-1] == gear
             start += rows
             for left, right in zip(baseline, optimized):
                 torch.testing.assert_close(left[:, :, :start], right[:, :, :start], rtol=0, atol=0)
-        assert seen_rows[-1] == 16
+        assert seen_rows[-1] in (16, 64)
         torch.testing.assert_close(actual[0], ref[0], rtol=0, atol=0)
         # Includes a full acceptance and a zero-accept round (one committed anchor).
         for rows in (1, 4, 16, 1):
             features = padded(rows)
             ref = call(reference, features, start, rows, baseline)
-            actual = call(compact, features, start, rows, optimized)
+            actual = call(compact, features[:, :16], start, rows, optimized)
             assert seen_rows[-1] == 16
             torch.testing.assert_close(actual[0], ref[0], rtol=0, atol=0)
             baseline, optimized = ref[1:], actual[1:]
@@ -88,7 +81,7 @@ def test_default_draft_matches_separate_context_and_proposals_across_commits(pre
 
 
 @pytest.mark.parametrize("route", ["chunk", "mtp"])
-def test_compact_contract_requires_one_draft_and_subchunk_policy(route):
+def test_compact_contract_requires_one_draft_and_two_gears(route):
     graphs = manifest_graphs(specs(verify_gdr=route))
     assert validate_incremental_bundle(graphs)["draft_context_rows"] == 16
     assert {g["name"] for g in graphs} == {"target_prefill", "target_decode", "draft", "target_verify"}
@@ -125,10 +118,11 @@ def test_compact_cpp_schedule_and_phase_accounting(chunk_bundle, tmp_path, monke
     )
     assert result["abi"]["draft_context_rows"] == 16
     assert result["abi"]["graph_count"] == 4
-    assert result["abi"]["draft_prefill_policy"] == "single_draft16_subchunks"
+    assert result["abi"]["draft_prefill_policy"] == "single_draft16_64_gears"
+    assert result["abi"]["draft_context_gears"] == [16, 64]
     assert result["protocol"]["max_resident_models"] == (3 if low_memory else 4)
     assert result["ordinary_parity"]["token_id_mismatches"] == 0
-    context_calls = (prefix - 1) // 16
+    context_calls = (prefix - 1) // 64
     for measurement in result["dflash"]["measurements"]:
         times = measurement["stage_ms"]
         assert "draft_context" not in times
@@ -162,7 +156,7 @@ def test_removed_factory_option_fails_before_loading_models(rows):
 
 
 @pytest.mark.parametrize("chunk_bundle", ["chunk", "mtp"], indirect=True)
-def test_native_runner_rejects_plan_without_subchunk_policy_before_execution(chunk_bundle, tmp_path, monkeypatch):
+def test_native_runner_rejects_plan_without_gear_policy_before_execution(chunk_bundle, tmp_path, monkeypatch):
     runner = os.environ.get("QWEN35_CPP_TEST_RUNNER")
     if not runner:
         pytest.skip("fake ACL runner required")
@@ -178,17 +172,24 @@ def test_native_runner_rejects_plan_without_subchunk_policy_before_execution(chu
         "--output", str(report),
     ], capture_output=True, text=True)
     assert result.returncode != 0
-    assert "single_draft16_subchunks; regenerate the plan" in result.stderr
+    assert "single_draft16_64_gears; regenerate the plan" in result.stderr
     assert not report.exists() and not events.exists()
 
 
 @pytest.mark.parametrize("name", ["draft"])
 def test_compact_graph_captures_without_graph_breaks(name):
     spec = next(s for s in specs() if s.name == name)
-    captured = torch.export.export(spec.model, spec.example_args, strict=True).module()
+    dynamic_shapes = {
+        "features": {1: torch.export.Dim("context_rows", min=16, max=64)},
+        "start_position": {}, "valid_rows": {}, "anchor": {}, "proposal_count": {},
+        "state": tuple({} for _ in spec.example_args[5:]),
+    }
+    captured = torch.export.export(spec.model, spec.example_args,
+                                  dynamic_shapes=dynamic_shapes, strict=True).module()
     args = list(spec.example_args)
     with torch.inference_mode():
-        for valid in (0, 1, 16):
+        for valid in (0, 1, 16, 17, 63, 64, 4, 16):
+            args[0] = spec.example_args[0][:, :64 if valid > 16 else 16]
             args[2] = torch.tensor([valid], dtype=torch.int16)
             actual, expected = captured(*args), spec.model(*args)
             for a, b in zip(actual, expected):
@@ -204,16 +205,21 @@ def test_compact_cpp_profile_keeps_cache_setup_outside_capture(chunk_bundle, san
 @pytest.mark.parametrize("chunk_bundle", [
     {"verify_gdr": "chunk", "capacity": 2048}, {"verify_gdr": "mtp", "capacity": 2048},
 ], indirect=True)
+@pytest.mark.parametrize("gear_layout", [None, "reverse", "middle-control"])
 def test_single_draft_prefill_reuses_allocations_and_loads_only_three_models(
-        chunk_bundle, tmp_path, monkeypatch):
+        chunk_bundle, tmp_path, monkeypatch, gear_layout):
     runner = os.environ.get("QWEN35_CPP_TEST_RUNNER")
     if not runner:
         pytest.skip("fake ACL runner required")
+    if gear_layout:
+        monkeypatch.setenv("QWEN35_FAKE_GEAR_FAULT", gear_layout)
     plan, _, _ = write_incremental_plan(chunk_bundle, tmp_path / "memory-plan.txt", mode="dflash")
     allocated = []
     for prefix in (1, 96, 1024, 1984):
         cleanup, loads = tmp_path / f"cleanup-{prefix}.json", tmp_path / f"loads-{prefix}.jsonl"
         report = tmp_path / f"memory-{prefix}.json"
+        gears = tmp_path / f"gears-{prefix}.txt"
+        monkeypatch.setenv("QWEN35_FAKE_GEAR_LOG", str(gears))
         monkeypatch.setenv("QWEN35_FAKE_CLEANUP_LOG", str(cleanup))
         monkeypatch.setenv("QWEN35_FAKE_WORKSPACE_LOG", str(loads))
         proc = subprocess.run([
@@ -232,8 +238,60 @@ def test_single_draft_prefill_reuses_allocations_and_loads_only_three_models(
         assert all(value == 0 for key, value in audit.items() if key.startswith("live_"))
         allocated.append(int(re.findall(r"allocated_device_bytes=(\d+)", proc.stderr)[-1]))
         measurement, = json.loads(report.read_text())["benchmark"]["measurements"]
+        gear_calls = [tuple(map(int, line.split())) for line in gears.read_text().splitlines()]
+        context_calls = (prefix - 1) // 64
+        assert gear_calls[:context_calls] == [(i * 64, 64, 64) for i in range(context_calls)]
+        final_rows = prefix - context_calls * 64
+        assert gear_calls[context_calls] == (context_calls * 64, final_rows,
+                                              64 if final_rows > 16 else 16)
+        assert all(gear == 16 and valid <= 16 for _, valid, gear in gear_calls[context_calls + 1:])
         assert len(measurement["stage_ms"]["draft"]) == (
-            (prefix - 1) // 16 + measurement["counters"]["decode_iterations"])
+            (prefix - 1) // 64 + measurement["counters"]["decode_iterations"])
         # Priming candidates are discarded and never inflate acceptance counters.
         assert measurement["counters"]["drafted_tokens"] <= 15 * measurement["counters"]["decode_iterations"]
     assert len(set(allocated)) == 1
+
+
+@pytest.mark.parametrize("fault,message", [
+    ("missing", "Draft dynamic control"),
+    ("count", "exactly the 16 and 64"),
+    ("shape", "gear dimensions differ"),
+    ("set", "aclmdlSetInputDynamicDims"),
+])
+def test_invalid_draft_gears_fail_before_draft_execution(chunk_bundle, tmp_path, monkeypatch,
+                                                       fault, message):
+    runner = os.environ.get("QWEN35_CPP_TEST_RUNNER")
+    if not runner:
+        pytest.skip("fake ACL runner required")
+    plan, _, _ = write_incremental_plan(chunk_bundle, tmp_path / "plan.txt", mode="dflash")
+    gears, cleanup = tmp_path / "gears.txt", tmp_path / "cleanup.json"
+    monkeypatch.setenv("QWEN35_FAKE_GEAR_FAULT", fault)
+    monkeypatch.setenv("QWEN35_FAKE_GEAR_LOG", str(gears))
+    monkeypatch.setenv("QWEN35_FAKE_CLEANUP_LOG", str(cleanup))
+    proc = subprocess.run([
+        runner, "--model-kind", "chunk", "--mode", "dflash", "--model", str(plan),
+        "--model-sha256", sha256_file(plan), "--prompt-token-ids", "4",
+        "--max-new-tokens", "32", "--warmup", "0", "--repetitions", "1",
+        "--output", str(tmp_path / "report.json"),
+    ], capture_output=True, text=True)
+    assert proc.returncode != 0 and message in proc.stderr
+    assert not gears.exists()
+    audit = json.loads(cleanup.read_text())
+    assert all(value == 0 for key, value in audit.items() if key.startswith("live_"))
+
+
+def test_dynamic_atc_options_use_serialized_names_and_do_not_accumulate():
+    from qwen35_dflash.ascend310p.compiler import _dynamic_atc_args
+    graph = next(g for g in manifest_graphs(specs()) if g["name"] == "draft")
+    graph["runtime_input_abi"] = {"status": "PASS", "bindings": [
+        {"data_node_name": f"arg{7 + i}"} for i in range(len(graph["input_names"]))
+    ]}
+    args = _dynamic_atc_args(graph, ["--deterministic=0"])
+    assert "--input_format=ND" in args and "--dynamic_dims=16;64" in args
+    shape = next(a.split("=", 1)[1] for a in args if a.startswith("--input_shape="))
+    assert shape.startswith("arg7:1,-1,64;") and shape.count("-1") == 1
+    assert _dynamic_atc_args(graph, args) == args
+    for incompatible in ("--dynamic_dims=16", "--input_format=NCHW", "--input_shape=x:16",
+                         "--dynamic_batch_size=16,64", "--input_shape_range=x:[1~64]"):
+        with pytest.raises(ValueError):
+            _dynamic_atc_args(graph, [incompatible])

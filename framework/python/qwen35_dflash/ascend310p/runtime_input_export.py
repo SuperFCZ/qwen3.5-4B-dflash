@@ -195,6 +195,7 @@ def canonical_runtime_input_abi(
     torchair: Any, *, public_inputs: Sequence[torch.Tensor],
     public_names: Sequence[str], explicit_test_double: bool = False,
     require_static_shapes: bool = False,
+    dynamic_input_axes: Mapping[str, Sequence[int]] | None = None,
     public_output_names: Sequence[str] = (),
     verify_discard_output_names: Sequence[str] = (),
 ) -> Iterator[dict[str, Any]]:
@@ -263,7 +264,7 @@ def canonical_runtime_input_abi(
                         "raw first-pass GDR states must reach separate OM outputs; "
                         f"report={report}"
                     )
-            if require_static_shapes:
+            if require_static_shapes or dynamic_input_axes:
                 final_nodes = _indexed_graph_inputs(export_graph)
                 for record in records:
                     index = record["index"]
@@ -271,12 +272,13 @@ def canonical_runtime_input_abi(
                     if len(node.output_desc) != 1:
                         raise RuntimeError("static AIR Data must have one tensor output")
                     shape = list(node.output_desc[0].shape.dim)
-                    if shape != list(public_inputs[index].shape) or any(
-                        dimension <= 0 for dimension in shape
-                    ):
+                    expected = list(public_inputs[index].shape)
+                    for axis in (dynamic_input_axes or {}).get(public_names[index], ()):
+                        expected[axis] = -1
+                    if shape != expected:
                         raise RuntimeError(
-                            f"static AIR input {public_names[index]} has unexpected "
-                            f"serialized shape {shape}; refusing a dynamic artifact"
+                            f"static AIR input / declared dynamic axis {public_names[index]} has unexpected "
+                            f"serialized shape {shape}; expected {expected}"
                         )
                     record["serialized_shape"] = shape
             audit["calls"] += 1
@@ -343,10 +345,13 @@ def validated_runtime_input_abi(
         if len(signature) != len(bindings):
             raise ValueError("AIR runtime_input_abi tensor count differs from chunk plan")
         for tensor, binding in zip(signature, bindings):
+            serialized = list(tensor["shape"])
+            for axis in graph.get("metadata", {}).get("dynamic_input_axes", {}).get(tensor["name"], ()):
+                serialized[axis] = -1
             if (tensor["name"] != binding["logical_name"] or
                     tensor["dtype"] != binding.get("dtype") or
                     tensor["shape"] != binding.get("example_shape") or
-                    tensor["shape"] != binding.get("serialized_shape")):
+                    serialized != binding.get("serialized_shape")):
                 raise ValueError(
                     "AIR runtime_input_abi tensor descriptor differs from chunk plan"
                 )

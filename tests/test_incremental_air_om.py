@@ -957,6 +957,8 @@ def chunk_bundle(tmp_path, monkeypatch, request):
                         )
                     )
                 )
+        if name == "draft" and "--dynamic_dims=16;64" in command:
+            lines.append("GEARS 16 64")
         Path(str(prefix) + ".om").write_text("\n".join(lines))
         return subprocess.CompletedProcess(command, 0, "host fake ATC only")
 
@@ -1145,7 +1147,7 @@ def test_cpp_five_om_roundtrip_with_fake_acl(
         if accepted == 0:
             assert len(row["stage_ms"]["target_verify"]) == 39
             assert "draft_context" not in row["stage_ms"]
-            assert len(row["stage_ms"]["draft"]) == 39 + 4
+            assert len(row["stage_ms"]["draft"]) == 39 + 1
             assert row["counters"]["drafted_tokens"] == sum(min(15, n) for n in range(1, 40))
             assert row["counters"]["accepted_draft_tokens"] == 0
     assert result["protocol"]["round_trace_enabled"] is True

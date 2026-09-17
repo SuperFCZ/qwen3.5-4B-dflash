@@ -19,7 +19,7 @@ Target + Draft checkpoint + W8A8 输入 + receiver 加载器
 单模式 DFlash 加载 `target_prefill`、`target_verify`、`draft`；普通运行加载
 `target_prefill`、`target_decode`；paired 同时加载四个，低显存 paired 最多同时加载三个。
 prefill 共用，verify 内部完成接受判断与状态提交。
-Draft 固定使用一个 16 行图，长输入分段复用，不另加载缓存构建图。
+Draft 使用一个 16/64 双档 OM，长输入建缓存用 64 行，生成用 16 行。
 
 ## 2. 输入和导出配置
 
@@ -116,9 +116,9 @@ C++ 为每份 discard state 分配独立、持久的设备缓冲区，共 48 MiB
 
 | 输入顺序 | dtype/shape | 含义 |
 |---|---|---|
-| `features` | FP16 `[1,64,20480]` | 本次需追加的 committed Target feature，右补齐 |
+| `features` | FP16 `[1,R,20480]`，R=16/64 | 本次需追加的 committed Target feature，缓冲区按 64 行分配 |
 | `start_position` | INT64 `[1]` | 这批 feature 在上下文中的起始位置 |
-| `valid_rows` | INT16 `[1]` | 有效 feature 行数，0..16 |
+| `valid_rows` | INT16 `[1]` | 有效 feature 行数，0..R；0 仅用于诊断 |
 | `anchor` | INT64 `[1]` | 当前已输出、尚未作为 Target 输入提交的 token |
 | `proposal_count` | INT16 `[1]` | 本轮实际草稿数 K，1..15，受请求设置和剩余输出预算约束 |
 | `d0_key,d0_value,...,d5_key,d5_value` | FP16 `[1,8,C+64,128]` | 6 层 committed-context KV |
@@ -129,13 +129,14 @@ C++ 为每份 discard state 分配独立、持久的设备缓冲区，共 48 MiB
 输出前 K 项有效，其余项为 0；不能用完整 block 的结果直接截断来替代短 block。
 用于 proposal 的 transient block KV 不作为 committed cache 输出。
 
-`draft.om` 保持 64 行 features 接口，只消费前 16 行；
-64 行用于共用 Prefill/Verify 特征缓冲区，最多 15 个候选由独立的 anchor/MASK block 生成。
-`valid_rows=0` 可用于无新增特征的诊断调用；正常调度每次追加 1..16 行。
-长输入在同一 64 行特征缓冲区内将后续 16 行复制到前部，复用同一个 Draft。
+`draft.om` 只有 features 的行数动态，权重、候选块与持久 KV 维度保持固定。
+AIR 审计要求该输入为 `[1,-1,20480]`，其余输入全部静态；ATC 编译 16/64 两档。
+C++ 查询并校验完整档位维度，再用 `aclmdlSetInputDynamicDims` 选择档位。
+features 和 KV 复用现有缓冲区，CANN 附加的档位控制输入在加载时分配、由 API 填充。
+正常 Prefill 追加 1..64 行，生成轮追加 1..16 行；有效行数大于 16 时选 64 档。
 准备阶段使用 `proposal_count=1`，候选丢弃；图仍执行完整 proposal，不能视为免计算。
-最后一段留给第一次正式 Draft，准备调用数为 `ceil(input_tokens/16)-1`。
-不新增设备缓冲区或模型权重；缓存只比较有效前缀，未提交的 scratch 行不影响注意力。
+最后一个输入块留给第一次正式 Draft，准备调用数为 `ceil(input_tokens/64)-1`。
+缓存只比较有效前缀，未提交的 scratch 行不影响注意力；多档 OM 的权重布局与工作区须实测。
 
 增量套件的 ATC 编译自动添加 `--precision_mode=must_keep_origin_dtype`，
 保留图中显式的 FP32 RMSNorm、RoPE、Softmax 和 GDR 状态计算，以及选定的 Draft
@@ -323,7 +324,7 @@ ATC 的 `--soc-version` 同样要求设备支持的精确型号。
 性能基线不启用逐轮记录。
 Python 处理 tokenizer、文本和报告；生成热循环在 C++ 内执行。
 runner 预建两套 ping-pong I/O dataset，按当前状态缓冲区选择；不重绑静态输出或缓存地址，
-不新增设备张量。两条 Verify 共用单个 16 行 Draft；报告记录 `om_io_binding=prebound_ping_pong`。
+两条 Verify 共用单个双档 Draft；报告记录 `om_io_binding=prebound_ping_pong` 和 `draft_context_gears=[16,64]`。
 直接调用 C++ 时使用 `--model-kind chunk --mode ordinary|dflash|paired`，
 配合 `--model`、`--model-sha256`、`--prompt-token-ids`、`--eos-token-ids` 和 `--output`。
 

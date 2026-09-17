@@ -59,14 +59,12 @@ OM Draft 的 QK/PV 矩阵乘默认 FP16，缩放、Mask、Softmax 为 FP32；
 Chunk/MTP 共用同一个 `draft.om`，把上下文更新和候选生成合在一次调用中。
 逻辑接口为 `(features, start_position, valid_rows, anchor, proposal_count, 历史 KV)`
 → `(候选 token, 更新后的 KV)`，位置和有效长度控制可见范围。
-OM 固定使用紧凑 Draft：特征接口物理 64 行，生成只投影前 16 行，block 为 16 行。
-这里 64 是 Prefill/Verify 共用的特征缓冲区容量，不是候选数。
+OM 使用单个 Draft 的 16/64 两档上下文；特征缓冲区容量为 64 行，候选 block 始终为 16 行。
 生成轮的新特征最多为“旧 anchor + 15 个接受 token”共 16 行；候选输出最多 15 个。
-预填充将每个 Target 64 行特征块分成最多 4 段，复用同一 `draft.om` 逐段追加缓存，
-丢弃准备阶段的候选；最后一段留给首次正式生成。
-在现有特征缓冲区内做设备到设备复制，不新增特征缓冲区、KV 副本或 Draft 权重。
-代价是长输入有更多完整 Draft 调用：N 个输入 token 需 `ceil(N/16)-1` 次准备调用；
-1K 输入为 63 次。该策略优先避免额外显存，实际 Prefill 时延需重新测量。
+每个非末尾的 Target 64 行特征块调用一次 Draft 建缓存，准备阶段候选丢弃；
+最后一块随首次正式生成处理。N 个输入 token 需 `ceil(N/64)-1` 次准备调用，1024 输入为 15 次。
+首次 Draft 根据有效特征数选择 16 或 64 档，后续 Verify 最多提交 16 行，自动切回 16 档。
+不复制特征切片，不增加第二个 Draft 或 KV 副本；CANN 档位控制缓冲区、权重布局和工作区计入显存实测。
 生成时仍是每轮一次 Draft + 一次 Verify。
 
 实现见 [Draft 模型](../models/dflash_v1/modeling_dflash.py)、
@@ -99,7 +97,7 @@ MTP bank 在 OM 内消费；原生提交复制所选状态，避免跨轮保留�
 |---|---|---|
 | `prefill.om` | 64 行物理块处理 prompt | 普通、DFlash |
 | `decode.om` | 单行 greedy decode | 仅普通 |
-| `draft.om` | 最多 16 行特征投影、KV 追加、并行候选 | DFlash |
+| `draft.om` | 16/64 行特征投影、KV 追加、最多 15 个并行候选 | DFlash |
 | `verify_chunk.om` | Chunk 两遍验证、接受判断、状态提交 | DFlash Chunk |
 | `verify_mtp.om` | MTP 验证、接受判断、选择状态 | DFlash MTP |
 
@@ -108,7 +106,7 @@ MTP bank 在 OM 内消费；原生提交复制所选状态，避免跨轮保留�
 运行时角色由清单映射到对应文件；紧凑执行只改变计算行数和调度，复用既有算子及模型权重。
 C++ 在设备上维护 KV、conv、recurrent state；低显存模式分组加载，并共享串行 workspace。
 runner 预先绑定 current/next 两组设备地址，提交后选择对应 dataset；热循环不再逐张量调用
-`aclUpdateDataBuffer`。新增的是主机侧描述符，设备状态缓存仍只有 current/next 两份。
+`aclUpdateDataBuffer`。预绑定增加主机侧描述符，设备状态缓存仍只有 current/next 两份。
 Chunk Verify 保留 24 份 FP32 discard state 输出（48 MiB），不回传 CPU、不进入缓存；
 这是已有设备上避免单输出 GDR 性能退化的处理。
 

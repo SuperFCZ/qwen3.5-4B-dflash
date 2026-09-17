@@ -441,13 +441,41 @@ def test_incremental_exports_normalize_actual_dynamo_input_order(
         weights = {id(t): n for n, t in (*model.named_parameters(), *model.named_buffers())}
 
         def backend(fx, example_args):
+            # Model TorchAir's _optimize_sym_input and dead-Data removal:
+            # shape symbols become sym_size(tensor, axis), never constants or
+            # additional public scalar inputs. Use symbolic provenance, not
+            # the concrete value 64. This remains a host serializer fixture.
+            placeholders = [n for n in fx.graph.nodes if n.op == "placeholder"]
+            symbolic = [n.meta.get("example_value", arg) for n, arg in zip(placeholders, example_args)]
+            for node, value in zip(placeholders, symbolic):
+                if not isinstance(value, torch.SymInt):
+                    continue
+                source = next((
+                    (tensor_node, axis)
+                    for tensor_node, tensor in zip(placeholders, symbolic)
+                    if isinstance(tensor, torch.Tensor)
+                    for axis, dim in enumerate(tensor.shape)
+                    if isinstance(dim, torch.SymInt) and str(dim.node.expr) == str(value.node.expr)
+                ), None)
+                assert source is not None, f"unbound shape symbol {node.name}={value} in Draft capture"
+                with fx.graph.inserting_after(source[0]):
+                    shape = fx.graph.call_function(torch.ops.aten.sym_size.int, source)
+                    node.replace_all_uses_with(shape)
+            fx.graph.lint()
+            fx.recompile()
+            live = [i for i, n in enumerate(placeholders) if n.users]
+            assert all(isinstance(symbolic[i], torch.Tensor) for i in live)
+
             def run(*actual):
                 raw_orders[export_name] = [names[_tensor_identity(t)] for t in actual
                                           if _tensor_identity(t) in names]
+                serialized = tuple(actual[i] for i in live)
                 nodes = []
-                for index, tensor in enumerate(actual):
-                    node = _Op(f"arg{index}", "Data", index=index)
-                    node.output_desc = [SimpleNamespace(shape=SimpleNamespace(dim=list(tensor.shape)))]
+                for index, raw_index in enumerate(live):
+                    shape = [-1 if isinstance(d, torch.SymInt) else int(d)
+                             for d in symbolic[raw_index].shape]
+                    node = _Op(f"arg{raw_index}", "Data", index=index)
+                    node.output_desc = [SimpleNamespace(shape=SimpleNamespace(dim=shape))]
                     nodes.append(node)
                 # A consumer keeps its input edges when Data nodes move.
                 consumer = _Op("consumer", "Add", inputs=tuple(n.name + ":0" for n in nodes))
@@ -461,7 +489,7 @@ def test_incremental_exports_normalize_actual_dynamo_input_order(
                         ["consumer:0"] * (len(spec.output_names) - 1) + ["raw_state:0"]
                     )
                     graph.op.extend(discard_graph.op)
-                export_utils._convert_data_to_const(actual, graph, export_path, weights)
+                export_utils._convert_data_to_const(serialized, graph, export_path, weights)
                 assert tuple(consumer.input) == consumer_edges
                 normalized = [n for n in graph.op if n.type == "Data"]
                 assert [n.attr["index"].i for n in normalized] == list(range(len(public)))
@@ -475,7 +503,7 @@ def test_incremental_exports_normalize_actual_dynamo_input_order(
                 return fx.forward(*actual)
             return run
 
-        captured = torch.compile(model, backend=backend, dynamic=False, fullgraph=True)(*public)
+        captured = torch.compile(model, backend=backend, dynamic=kwargs["dynamic"], fullgraph=True)(*public)
         eager = model(*public)
         torch.testing.assert_close(captured, eager, rtol=0, atol=0)
 

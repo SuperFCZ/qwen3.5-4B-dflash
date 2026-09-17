@@ -9,6 +9,7 @@ extern "C" {
 
 typedef int aclError;
 static const aclError ACL_SUCCESS = 0;
+#define ACL_DYNAMIC_TENSOR_NAME "ascend_mbatch_shape_data"
 
 typedef enum aclDataType {
   ACL_DT_UNDEFINED = -1,
@@ -95,6 +96,10 @@ aclError aclmdlUnload(std::uint32_t model_id);
 aclmdlDesc* aclmdlCreateDesc();
 aclError aclmdlDestroyDesc(aclmdlDesc* description);
 aclError aclmdlGetDesc(aclmdlDesc* description, std::uint32_t model_id);
+aclError aclmdlGetInputIndexByName(const aclmdlDesc*, const char*, std::size_t*);
+aclError aclmdlGetInputDynamicGearCount(const aclmdlDesc*, std::size_t, std::size_t*);
+aclError aclmdlGetInputDynamicDims(const aclmdlDesc*, std::size_t, aclmdlIODims*, std::size_t);
+aclError aclmdlSetInputDynamicDims(std::uint32_t, aclmdlDataset*, std::size_t, const aclmdlIODims*);
 std::size_t aclmdlGetNumInputs(const aclmdlDesc* description);
 std::size_t aclmdlGetNumOutputs(const aclmdlDesc* description);
 aclError aclmdlGetInputDims(

@@ -14,6 +14,7 @@ MTP_ABI = "qwen35-dflash-mtp-v2"
 VERIFY_GDR_ROUTES = ("chunk", "mtp")
 ATTENTION_EXPORT_POLICY = "receiver_adn_all_seq_lengths_q_static_capacity_causal_mask"
 DRAFT_LENGTH_POLICY = "anchor_plus_runtime_K_masked_in_every_attention_layer"
+DRAFT_PREFILL_POLICY = "single_draft16_64_gears"
 VERIFY_STATE_OUTPUT_POLICY = "raw_fp32_device_only_discard_first_pass_commit_second_pass"
 MTP_STATE_OUTPUT_POLICY = "internal_fp32_bank_gather_accepted_slot"
 ROLES = ("target_prefill", "target_decode", "target_verify", "draft")
@@ -131,8 +132,9 @@ def validate_incremental_bundle(graphs):
     c = candidates[0]["metadata"]["incremental_contract"]
     if type(c.get("draft_context_rows")) is not int or c["draft_context_rows"] != 16:
         raise ValueError("incremental Draft requires draft_context_rows=16; regenerate AIR/OM in a new bundle directory")
-    if c.get("draft_prefill_policy") != "single_draft16_subchunks":
-        raise ValueError("compact Draft needs single_draft16_subchunks; regenerate AIR/OM in a new bundle directory")
+    if (c.get("draft_prefill_policy") != DRAFT_PREFILL_POLICY
+            or c.get("draft_context_gears") != [16, 64]):
+        raise ValueError("Draft needs single_draft16_64_gears with [16, 64]; regenerate AIR/OM in a new bundle directory")
     roles = set(ROLES)
     required = roles - {"target_decode"}
     if (
@@ -210,6 +212,11 @@ def validate_incremental_bundle(graphs):
         signature = graph["metadata"].get("tensor_abi")
         if signature != expected[graph["name"]]:
             raise ValueError(f"incremental tensor ABI differs: {graph['name']}")
+        axes = graph["metadata"].get("dynamic_input_axes", {})
+        if axes != ({"features": [1]} if graph["name"] == "draft" else {}):
+            raise ValueError("only Draft features axis 1 may be dynamic")
+        if "dynamic" in graph and graph["dynamic"] is not (graph["name"] == "draft"):
+            raise ValueError("Draft requires dynamic AIR; Target graphs must stay static")
         if graph.get("role") != graph["name"].replace("_", "-"):
             raise ValueError("incremental graph role differs")
         for direction in ("input", "output"):
