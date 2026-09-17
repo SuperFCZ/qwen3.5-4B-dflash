@@ -104,6 +104,8 @@ MTP bank 在 OM 内消费；原生提交复制所选状态，避免跨轮保留�
 两条路线共存默认为 5 个 OM，紧凑执行为 6 个。Prefill、Decode、Draft、可选 Draft Context 均共用。
 运行时角色由清单映射到对应文件；紧凑执行只改变计算行数和调度，复用既有算子及模型权重。
 C++ 在设备上维护 KV、conv、recurrent state；低显存模式分组加载，并共享串行 workspace。
+runner 预先绑定 current/next 两组设备地址，提交后选择对应 dataset；热循环不再逐张量调用
+`aclUpdateDataBuffer`。新增的是主机侧描述符，设备缓存仍只有原来的两份，上传、回传和同步顺序保持不变。
 Chunk Verify 保留 24 份 FP32 discard state 输出（48 MiB），不回传 CPU、不进入缓存；
 这是已有设备上避免单输出 GDR 性能退化的处理。
 

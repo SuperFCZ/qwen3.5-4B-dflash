@@ -314,13 +314,15 @@ ATC 的 `--soc-version` 同样要求设备支持的精确型号。
 `--low-memory` 用于四图 chunk bundle：先完成普通模式的 3+10，再卸载模型和缓冲区，
 加载三图 DFlash 完成 3+10，最后执行相同的严格 token/EOS 对照。
 `run-e2e-cpp` 和直接 C++ 的 `--model-kind chunk --mode paired` 也支持该参数。
-报告记录 `protocol.low_memory=true`、分组顺序和 `max_resident_models=3`；
+报告记录 `protocol.low_memory=true`、分组顺序和 `max_resident_models`（默认 3，紧凑 Draft 为 4）；
 加载/组间卸载时间单独记录，不进入模型循环时延。无需重新生成 AIR/OM。
 `--eos-token-id` 可重复传入，用于覆盖 tokenizer 的 EOS 并对齐 NPU 报告。
 `--trace-rounds` 为 chunk bundle 记录每轮的 proposal、Target token、接受前缀和输出；
 直接 C++ 入口也支持此开关。记录位于每条 measurement 的 `rounds` 中，
 性能基线不启用逐轮记录。
 Python 处理 tokenizer、文本和报告；生成热循环在 C++ 内执行。
+runner 1.8.0 起预建两套 ping-pong I/O dataset，按当前状态缓冲区选择；不重绑静态输出或缓存地址，
+不新增设备张量。支持两条 Verify 和两种 Draft 行数，使用原 OM；报告记录 `om_io_binding=prebound_ping_pong`。
 直接调用 C++ 时使用 `--model-kind chunk --mode ordinary|dflash|paired`，
 配合 `--model`、`--model-sha256`、`--prompt-token-ids`、`--eos-token-ids` 和 `--output`。
 

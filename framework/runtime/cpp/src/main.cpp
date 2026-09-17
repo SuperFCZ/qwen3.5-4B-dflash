@@ -676,6 +676,7 @@ void WriteReport(
               : "alternating ordinary/DFlash in one loaded process") << "\","
          << "\"low_memory\":" << (arguments.low_memory ? "true" : "false") << ','
          << "\"dflash_speculation_policy\":\"always_on\","
+         << "\"om_io_binding\":\"" << (arguments.model_kind == "chunk" ? "prebound_ping_pong" : "static") << "\","
          << "\"repeatability_policy\":\"observe\","
          << "\"max_resident_models\":" << (arguments.model_kind == "chunk"
               ? (arguments.low_memory || arguments.mode == "dflash" ? 3 : 4) + compact_draft : 1) << ','

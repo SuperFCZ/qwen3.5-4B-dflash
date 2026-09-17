@@ -18,6 +18,7 @@ struct aclDataBuffer {
 
 struct aclmdlDataset {
   std::vector<aclDataBuffer*> buffers;
+  std::size_t identity = 0;
 };
 
 struct aclmdlDesc { std::uint32_t id = 0; };
@@ -47,11 +48,21 @@ std::set<void*> discard_allocations;
 std::size_t live_contexts = 0, live_streams = 0, live_descs = 0;
 std::size_t live_datasets = 0, live_data_buffers = 0, allocations_after_execute = 0;
 bool executed = false, initialized_once = false;
+std::size_t dataset_create_calls = 0, buffer_create_calls = 0;
 std::map<std::string, std::size_t> profile_fixture_calls;
 
 bool FailCleanup(const char* operation) {
   const auto* failure = std::getenv("QWEN35_FAKE_CLEANUP_FAIL");
   return failure && std::string(failure) == operation;
+}
+
+void LogIo(const char* operation, const aclmdlDataset* input = nullptr,
+           const aclmdlDataset* output = nullptr, const std::string& role = {}) {
+  if (const auto* path = std::getenv("QWEN35_FAKE_IO_LOG")) {
+    std::ofstream log(path, std::ios::app);
+    log << "[\"" << operation << "\",\"" << role << "\","
+        << (input ? input->identity : 0) << ',' << (output ? output->identity : 0) << "]\n";
+  }
 }
 
 bool TouchesDiscard(const void* pointer, std::size_t bytes) {
@@ -65,6 +76,7 @@ bool TouchesDiscard(const void* pointer, std::size_t bytes) {
 }
 
 aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, aclmdlDataset* output) {
+  LogIo("execute", input, output, model.role);
   if (input->buffers.size() != model.inputs.size() || output->buffers.size() != model.outputs.size()) return 21;
   const char* failure = std::getenv("QWEN35_FAKE_FAIL_GRAPH");
   if (failure && model.role == failure) return 22;
@@ -294,6 +306,7 @@ aclError aclrtMemsetAsync(void* ptr, std::size_t maximum, std::int32_t value, st
   std::memset(ptr, value, count); return ACL_SUCCESS;
 }
 aclError aclUpdateDataBuffer(aclDataBuffer* buffer, void* ptr, std::size_t size) {
+  LogIo("update_buffer");
   if (!buffer || !ptr || !size) return 1;
   buffer->data = ptr; buffer->size = size; return ACL_SUCCESS;
 }
@@ -510,18 +523,29 @@ std::size_t aclmdlGetOutputSizeByIndex(aclmdlDesc* desc, std::size_t index) {
 }
 
 aclmdlDataset* aclmdlCreateDataset() {
+  ++dataset_create_calls;
+  const auto* fail = std::getenv("QWEN35_FAKE_FAIL_DATASET_CREATE_CALL");
+  if (fail && dataset_create_calls == std::stoul(fail)) return nullptr;
   auto* dataset = new (std::nothrow) aclmdlDataset();
-  if (dataset) ++live_datasets;
+  if (dataset) {
+    ++live_datasets;
+    dataset->identity = dataset_create_calls;
+    LogIo("create_dataset", dataset);
+  }
   return dataset;
 }
 
 aclError aclmdlDestroyDataset(aclmdlDataset* dataset) {
+  LogIo("destroy_dataset", dataset);
   if (dataset) --live_datasets;
   delete dataset;
   return ACL_SUCCESS;
 }
 
 aclDataBuffer* aclCreateDataBuffer(void* data, std::size_t size) {
+  ++buffer_create_calls;
+  const auto* fail = std::getenv("QWEN35_FAKE_FAIL_BUFFER_CREATE_CALL");
+  if (fail && buffer_create_calls == std::stoul(fail)) return nullptr;
   if (data == nullptr || size == 0) {
     return nullptr;
   }

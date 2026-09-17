@@ -172,7 +172,7 @@
       },
       {
         "source_file": "docs/DFLASH_ARCHITECTURE.md",
-        "source_sha256": "6b2284a94e6bbdc7ed7b6d355cfb15ad5c535dee07ad43f5a310548f8ec47a1b"
+        "source_sha256": "27fd992d3c4d19066be86dcc0f966b8254356e765cef3c4cba04943d27762f4b"
       },
       {
         "source_file": "docs/assets/dflash-draft-flow.svg",
@@ -180,11 +180,11 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "b35d7ce8124e7c08a8dba6df066cb98551dab609dc7006744a309d1b0ecaddf8"
+        "source_sha256": "0be1f9ca08aa18198fc08871748d6359b38a66618309454c722e26986a5edfbd"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
-        "source_sha256": "1bc153c5fd945351ed2fdb90fdbb83470108f2876aaf624e611442d976d8b43a"
+        "source_sha256": "2abb5878344a6f0ac159ab8c5ccb7f4e149b7bb4caa0e95dda55075b711bd290"
       },
       {
         "source_file": "framework/FRAMEWORK_LOCK.json",
@@ -296,7 +296,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/CMakeLists.txt",
-        "source_sha256": "2def96175dc4db3a91ab9987376ecd11fe50ac3247e76749003f52a06b9c11ad"
+        "source_sha256": "31db967d14a6e6bff27780b208c101f111f65304c3ac12d0a524b5714a6b6e49"
       },
       {
         "source_file": "framework/runtime/cpp/include/qwen35_dflash/acl_executor.hpp",
@@ -320,7 +320,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/src/acl_chunk.cpp",
-        "source_sha256": "b4b53213422a628d3a4e8e81ad7dd1d48778849de5eb9ffaaa0843104fff0825"
+        "source_sha256": "209f042cc69f31decea5ba631f0c8ef911b80470cb83155445700764daeda4d7"
       },
       {
         "source_file": "framework/runtime/cpp/src/acl_executor.cpp",
@@ -336,7 +336,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/src/main.cpp",
-        "source_sha256": "a282a47becaf47059bc27bafde039f6a37012470de35124f77ac23197837fd9c"
+        "source_sha256": "c9c82fcf5783d125f4f91d4fbc7d691fd1de0487c086276c20ada01f46ad59e5"
       },
       {
         "source_file": "framework/runtime/cpp/src/sha256.cpp",
@@ -352,7 +352,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/tests/fake_acl/fake_acl.cpp",
-        "source_sha256": "1b4cb5a6394439759289a8d4efd0df3721c15af522ea4c51c6fb7dd251d6ffad"
+        "source_sha256": "02bda59896f6c9c6b46528a51e5ed69f8d2fb9e0edc9b62bc48fa13d737003e9"
       },
       {
         "source_file": "framework/runtime/cpp/tests/run_fake_runner.cmake",
@@ -605,6 +605,10 @@
       {
         "source_file": "tests/test_compact_draft_execution.py",
         "source_sha256": "bb5850dfbe2e850615a8beb51a284f6700011b852e3e1d14b3bdbec792ddad9c"
+      },
+      {
+        "source_file": "tests/test_prebound_om_io.py",
+        "source_sha256": "77eafa3793bbb777c74550be60e4542232f520df2e8dc2bd16f60409ad7e3b4c"
       }
     ],
     "supported_abis": [
@@ -672,6 +676,12 @@
       "compact_context_rows": 16,
       "compact_prefill": "shared draft_context OM; context KV only",
       "validation": "CPU equivalence and fake ACL scheduling only; TorchAir/ATC and Ascend310P measurements pending"
+    },
+    "om_io_binding": {
+      "runner_version": "1.8.0",
+      "policy": "prebound_ping_pong",
+      "scope": "Host descriptor reuse; unchanged OMs, device buffer count and execution order",
+      "validation": "Host fake-ACL equivalence only; real Ascend310P timing pending"
     }
   }
 }

@@ -24,6 +24,10 @@ cd "$AI_RUN_DIR"
 已有构建目录且指向当前源码时执行 `cmake --build "$(dirname "$CPP_RUNNER")" --parallel 4`；
 首次构建见文末第 5 步。
 
+runner **1.8.0+** 默认预绑定两套 current/next I/O，省去每次调用的地址重绑定。
+适用 Chunk/MTP 和 64/16 行 Draft，**只需重建 runner，无需重编 OM**；原始报告中
+`protocol.om_io_binding=prebound_ping_pong` 表示已启用。此改动不改变图内计算，实际耗时需重新测量。
+
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
   --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \

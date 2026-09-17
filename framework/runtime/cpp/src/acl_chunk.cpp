@@ -1,6 +1,7 @@
 #include <acl/acl.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -251,6 +252,22 @@ struct Memory {
     if (host) audit.Check(aclrtFreeHost(host), "aclrtFreeHost");
   }
 };
+struct BoundIo {
+  explicit BoundIo(CleanupAudit& audit) : audit(audit) {}
+  CleanupAudit& audit;
+  aclmdlDataset* inputs = nullptr;
+  aclmdlDataset* outputs = nullptr;
+  std::vector<aclDataBuffer*> input_buffers, output_buffers;
+  std::vector<Memory*> host_inputs, host_outputs;
+  ~BoundIo() {
+    for (auto* data : input_buffers)
+      audit.Check(aclDestroyDataBuffer(data), "aclDestroyDataBuffer(input)");
+    for (auto* data : output_buffers)
+      audit.Check(aclDestroyDataBuffer(data), "aclDestroyDataBuffer(output)");
+    if (inputs) audit.Check(aclmdlDestroyDataset(inputs), "aclmdlDestroyDataset(input)");
+    if (outputs) audit.Check(aclmdlDestroyDataset(outputs), "aclmdlDestroyDataset(output)");
+  }
+};
 struct Loaded {
   explicit Loaded(CleanupAudit& audit) : audit(audit) {}
   CleanupAudit& audit;
@@ -258,16 +275,13 @@ struct Loaded {
   std::uint32_t id = 0;
   bool loaded = false;
   aclmdlDesc* desc = nullptr;
-  aclmdlDataset* inputs = nullptr;
-  aclmdlDataset* outputs = nullptr;
-  std::vector<aclDataBuffer*> input_buffers, output_buffers;
+  std::array<std::unique_ptr<BoundIo>, 2> io;
+  std::string state_name;
+  std::array<void*, 2> state_addresses{};
   ~Loaded() {
-    for (auto* data : input_buffers)
-      audit.Check(aclDestroyDataBuffer(data), "aclDestroyDataBuffer(input)");
-    for (auto* data : output_buffers)
-      audit.Check(aclDestroyDataBuffer(data), "aclDestroyDataBuffer(output)");
-    if (inputs) audit.Check(aclmdlDestroyDataset(inputs), "aclmdlDestroyDataset(input)");
-    if (outputs) audit.Check(aclmdlDestroyDataset(outputs), "aclmdlDestroyDataset(output)");
+    // Dataset descriptors borrow device buffers; release them before unloading
+    // the model and before the executor frees the shared buffer pool.
+    for (auto& binding : io) binding.reset();
     if (desc) audit.Check(aclmdlDestroyDesc(desc), "aclmdlDestroyDesc");
     if (loaded) {
       const auto status = aclmdlUnload(id);
@@ -485,23 +499,51 @@ class AclChunkExecutor::Impl {
     Require(model.desc != nullptr, "aclmdlCreateDesc returned null");
     Check(aclmdlGetDesc(model.desc, model.id), "aclmdlGetDesc");
     ValidateModelIo(model.desc, graph);
-    model.inputs = aclmdlCreateDataset();
-    model.outputs = aclmdlCreateDataset();
-    Require(model.inputs && model.outputs, "aclmdlCreateDataset returned null");
+    // Keep the original device-buffer allocation order. Additional datasets
+    // are host descriptors and must not allocate another copy of tensor data.
+    for (bool output : {false, true})
+      for (const auto& spec : output ? graph.outputs : graph.inputs)
+        static_cast<void>(Get(spec, graph.name, output));
+    // Each graph uses either Target state or Draft state. Both banks have fixed
+    // allocations; commit only exchanges their current/next ownership.
     for (bool output : {false, true}) {
       const auto& specs = output ? graph.outputs : graph.inputs;
-      auto& buffers = output ? model.output_buffers : model.input_buffers;
-      for (std::size_t index = 0; index < specs.size(); ++index) {
-        const auto& spec = specs[index];
-        auto& mem = Get(spec, graph.name, output);
-        auto* data = aclCreateDataBuffer(mem.device, mem.bytes);
-        Require(data != nullptr, "aclCreateDataBuffer returned null");
-        buffers.push_back(data);
-        Check(
-            aclmdlAddDatasetBuffer(output ? model.outputs : model.inputs, data),
-            "aclmdlAddDatasetBuffer");
+      for (const auto& spec : specs) {
+        if (!State(spec.name)) continue;
+        if (model.state_name.empty()) {
+          model.state_name = spec.name;
+          model.state_addresses = {Get(spec, graph.name, false).device,
+                                   Get(spec, graph.name, true).device};
+        }
+        Require(spec.name[0] == model.state_name[0],
+                "one graph cannot bind independently swapped Target and Draft states");
       }
     }
+    const std::size_t variants = model.state_name.empty() ? 1 : 2;
+    for (std::size_t variant = 0; variant < variants; ++variant) {
+      model.io[variant] = std::make_unique<BoundIo>(cleanup);
+      auto& binding = *model.io[variant];
+      binding.inputs = aclmdlCreateDataset();
+      binding.outputs = aclmdlCreateDataset();
+      Require(binding.inputs && binding.outputs, "aclmdlCreateDataset returned null");
+      for (bool output : {false, true}) {
+        const auto& specs = output ? graph.outputs : graph.inputs;
+        auto& buffers = output ? binding.output_buffers : binding.input_buffers;
+        auto& host = output ? binding.host_outputs : binding.host_inputs;
+        for (const auto& spec : specs) {
+          const bool side = State(spec.name) && variant ? !output : output;
+          auto& mem = Get(spec, graph.name, side);
+          auto* data = aclCreateDataBuffer(mem.device, mem.bytes);
+          Require(data != nullptr, "aclCreateDataBuffer returned null");
+          buffers.push_back(data);
+          Check(aclmdlAddDatasetBuffer(output ? binding.outputs : binding.inputs, data),
+                "aclmdlAddDatasetBuffer");
+          if (mem.host) host.push_back(&mem);
+        }
+      }
+    }
+    std::cerr << "[chunk-runtime] io_binding=prebound_ping_pong graph=" << graph.name
+              << " dataset_pairs=" << variants << '\n';
     models.emplace(graph.name, std::move(owner));
     LogDeviceMemory("after_load_and_io", graph.name);
   }
@@ -565,31 +607,24 @@ class AclChunkExecutor::Impl {
     Healthy();
     const auto start = std::chrono::steady_clock::now();
     auto& model = *models.at(name);
-    const auto& graph = plan.graphs.at(name);
     try {
-      for (bool output : {false, true}) {
-        const auto& specs = output ? graph.outputs : graph.inputs;
-        const auto& buffers =
-            output ? model.output_buffers : model.input_buffers;
-        for (std::size_t index = 0; index < specs.size(); ++index) {
-          auto& mem = Get(specs[index], name, output);
-          Check(aclUpdateDataBuffer(buffers[index], mem.device, mem.bytes),
-                "aclUpdateDataBuffer");
-          if (!output && mem.host)
-            Check(aclrtMemcpyAsync(mem.device, mem.bytes, mem.host, mem.bytes,
-                                   ACL_MEMCPY_HOST_TO_DEVICE, stream),
-                  "aclrtMemcpyAsync(H2D)");
-        }
+      std::size_t variant = 0;
+      if (!model.state_name.empty()) {
+        const auto address = memory.at(model.state_name + ".current")->device;
+        if (address == model.state_addresses[1]) variant = 1;
+        else Require(address == model.state_addresses[0], "state allocation changed after I/O binding");
       }
-      Check(aclmdlExecuteAsync(model.id, model.inputs, model.outputs, stream),
+      auto& binding = *model.io[variant];
+      for (const auto* mem : binding.host_inputs)
+        Check(aclrtMemcpyAsync(mem->device, mem->bytes, mem->host, mem->bytes,
+                              ACL_MEMCPY_HOST_TO_DEVICE, stream),
+              "aclrtMemcpyAsync(H2D)");
+      Check(aclmdlExecuteAsync(model.id, binding.inputs, binding.outputs, stream),
             "aclmdlExecuteAsync");
-      for (const auto& spec : graph.outputs) {
-        auto& mem = Get(spec, name, true);
-        if (mem.host)
-          Check(aclrtMemcpyAsync(mem.host, mem.bytes, mem.device, mem.bytes,
-                                 ACL_MEMCPY_DEVICE_TO_HOST, stream),
-                "aclrtMemcpyAsync(D2H)");
-      }
+      for (const auto* mem : binding.host_outputs)
+        Check(aclrtMemcpyAsync(mem->host, mem->bytes, mem->device, mem->bytes,
+                              ACL_MEMCPY_DEVICE_TO_HOST, stream),
+              "aclrtMemcpyAsync(D2H)");
       Check(aclrtSynchronizeStream(stream), "aclrtSynchronizeStream");
     } catch (...) {
       invalid = true;
