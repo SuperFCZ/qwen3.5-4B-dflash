@@ -121,7 +121,7 @@ def compare_routes(cells, lengths):
 
 
 def render(summary):
-    if summary.get("datasets"):
+    if summary.get("datasets") and all(p.get("dataset_id") for p in summary["prompts"]):
         protocol = summary["protocol"]
         lines = [f"Warmup per mode/question: {protocol['warmup']}; measured repetitions: {protocol['repetitions']}.", "",
                  suite.render_datasets(suite.dataset_results(summary)).rstrip()]
@@ -138,6 +138,8 @@ def render(summary):
 
     lines = ["| Prompt | Group | Input tokens |", "|---|---|---:|"]
     for prompt in summary["prompts"]:
+        if prompt.get("dataset_id"):
+            continue  # File-level results below summarize large offline inputs.
         lines.append(f"| {prompt['id']} | {prompt.get('group', 'custom')} | {len(prompt['prompt_token_ids'])} |")
     protocol = summary.get("protocol", {})
     lines += ["", f"Warmup per mode/prompt: {protocol.get('warmup', 'N/A')}; "
@@ -192,6 +194,8 @@ def render(summary):
             lines += ["", f"- {cell['verify_gdr']}/{cell['max_new_tokens']}: {cell['error']}"]
         elif cell.get("status") not in suite.MEASURED_STATUSES:
             lines += ["", f"- {cell['verify_gdr']}/{cell['max_new_tokens']}: {cell['status']}"]
+    if summary.get("datasets"):
+        lines += ["", suite.render_datasets(suite.dataset_results(summary)).rstrip()]
     return "\n".join(lines) + "\n"
 
 
@@ -252,7 +256,8 @@ def prepare(args, root):
             raise RuntimeError("rebuild the C++ runner for ordinary baseline reuse (no OM recompilation needed)")
     tokenizer, tokenizer_source = load_tokenizer(model_dir=args.model_dir)
     for prompt in prompts:
-        prompt["prompt_token_ids"] = tokenize_prompt(tokenizer, prompt["prompt"], chat=args.chat)
+        prompt["prompt_token_ids"] = tokenize_prompt(tokenizer, prompt["prompt"], chat=args.chat,
+                                                   enable_thinking=getattr(args, "enable_thinking", False))
         prompt["input_tokens"] = len(prompt["prompt_token_ids"])
     required_capacity = math.ceil(
         (max(len(p["prompt_token_ids"]) for p in prompts) + max(args.lengths)) / 64) * 64
@@ -299,6 +304,7 @@ def prepare(args, root):
             "warmup": args.warmup, "repetitions": args.repetitions, "max_draft_tokens": args.max_draft_tokens,
             "prompt_group": getattr(args, "prompt_group", "all"),
             "chat": args.chat, "eos_token_ids": args.eos_token_id or [248044],
+            "enable_thinking": bool(getattr(args, "enable_thinking", False)) if args.chat else None,
             "output_comparison": "allow_output_differences" if args.allow_output_differences else "strict",
             "repeatability_policy": "observe",
             "dflash_speculation_policy": "always_on", "low_memory": args.low_memory,
@@ -313,6 +319,12 @@ def prepare(args, root):
 
 
 def run(args):
+    if (getattr(args, "_prepared_summary", None) is None and
+            (getattr(args, "bundle_dir", None) or getattr(args, "draft_variants_manifest", None)
+             or getattr(args, "draft_quantizations", None))):
+        from tools import benchmark_draft_variants
+        args._unified_entry = True
+        return benchmark_draft_variants.run(args)
     args.run_dir = args.run_dir.expanduser().resolve()
     if not args.run_dir.is_dir() or args.run_dir.is_relative_to(REPO):
         raise ValueError("run-dir must be an existing directory outside the repository")
@@ -321,10 +333,21 @@ def run(args):
             require_run_output(Path(tempfile.mkdtemp(prefix="gdr-lengths-", dir=args.run_dir))))
     print(f"Output: {root}", flush=True)
     summary = getattr(args, "_prepared_summary", None) or prepare(args, root)
-    selection = (f"{len(summary['prompts'])} questions from " + ", ".join(d["name"] for d in summary["datasets"])
+    if getattr(args, "ordinary_baseline", None) and not hasattr(args, "_shared_baselines"):
+        from tools.ordinary_baseline import resolve_sources, preflight_sources
+        args._shared_baselines = resolve_sources(args.ordinary_baseline, args.lengths)
+        preflight_sources(args._shared_baselines, summary, args)
+        args._ordinary_baseline_required = True
+    if getattr(args, "ordinary_baseline", None):
+        summary["protocol"]["ordinary_baseline_source"] = str(args.ordinary_baseline)
+        summary["protocol"]["ordinary_baseline_policy"] = "reuse saved ordinary only; missing/incompatible data is an error"
+    selection = (f"{sum(bool(p.get('dataset_id')) for p in summary['prompts'])} offline questions + "
+                 f"{sum(not p.get('dataset_id') for p in summary['prompts'])} built-in/custom prompts; files: "
+                 + ", ".join(d["name"] for d in summary["datasets"])
                  if summary.get("datasets") else ", ".join(p["id"] for p in summary["prompts"]))
     print(f"Selected routes: {', '.join(summary['routes'])}; lengths: {', '.join(map(str, summary['lengths']))}; "
           f"prompts: {selection}", flush=True)
+    print(f"Thinking: {'on' if summary['protocol'].get('enable_thinking') else 'off'}", flush=True)
     atomic_write_json(root / "request.json", summary)
     summary["status"] = "PREPARED" if args.plan_only else "RUNNING"
     save(root, summary)
@@ -402,6 +425,13 @@ def parser():
                         required=not os.environ.get("CPP_RUNNER"))
     result.add_argument("--runner-config", type=Path)
     result.add_argument("--model-dir", type=Path, required=True)
+    result.add_argument("--ordinary-baseline", type=Path,
+                        help="saved runner-batch.json, summary.json or report directory; run DFlash only")
+    result.add_argument("--bundle-dir", type=Path, help="shared OM directory containing draft-variants.json")
+    result.add_argument("--draft-variants-manifest", type=Path, help="explicit index; normally use --bundle-dir")
+    result.add_argument("--draft-quantization", "--draft-quantizations", dest="draft_quantizations",
+                        nargs="+", choices=("fp16", "w4a16", "w8a16"),
+                        help="one or more Draft types; default with --bundle-dir: DRAFT_QUANTIZATION or fp16")
     result.add_argument("--verify-gdr", choices=(*ROUTES, "both"), default="both",
                         help="select chunk, mtp, or both (default); only selected manifests are required")
     result.add_argument("--chunk-deployment-manifest", type=Path,
@@ -417,6 +447,8 @@ def parser():
     result.add_argument("--prompt-id", action="append",
                         help="test only this ID from --prompts or the built-in suite; repeat to select several")
     result.add_argument("--chat", action=argparse.BooleanOptionalAction, default=True)
+    result.add_argument("--enable-thinking", action=argparse.BooleanOptionalAction, default=False,
+                        help="Qwen chat thinking; disabled by default for benchmarks")
     result.add_argument("--eos-token-id", type=int, action="append")
     result.add_argument("--device-id", type=int, default=0)
     result.add_argument("--max-draft-tokens", type=int, default=15)

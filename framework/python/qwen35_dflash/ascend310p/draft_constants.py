@@ -6,6 +6,7 @@ exporter/compiler to fold a compressed checkpoint into a dense FP16 OM.
 from __future__ import annotations
 
 from dataclasses import replace
+from math import prod
 from pathlib import Path
 
 import torch
@@ -16,10 +17,12 @@ from .utils import contained_path, file_record, sha256_file
 
 
 class DraftConstantInputs(nn.Module):
-    def __init__(self, model: nn.Module, buffer_names: tuple[str, ...], dynamic_count: int):
+    def __init__(self, model: nn.Module, buffer_names: tuple[str, ...], buffer_shapes: tuple,
+                 dynamic_count: int):
         super().__init__()
         self.model = model
         self.buffer_names = buffer_names
+        self.buffer_shapes = buffer_shapes
         self.dynamic_count = dynamic_count
 
     def forward(self, *inputs):
@@ -27,7 +30,8 @@ class DraftConstantInputs(nn.Module):
         if len(weights) != len(self.buffer_names):
             raise ValueError("compressed Draft input count differs")
         return torch.func.functional_call(
-            self.model, dict(zip(self.buffer_names, weights)),
+            self.model, {name: weight.view(shape) for name, weight, shape in
+                         zip(self.buffer_names, weights, self.buffer_shapes)},
             arguments, strict=False,
         )
 
@@ -42,7 +46,12 @@ def expose_draft_constants(spec: AirGraphSpec) -> AirGraphSpec:
     if not names:
         return spec
     buffers = dict(spec.model.named_buffers())
-    values = tuple(buffers[name] for name in names)
+    shapes = tuple(tuple(buffers[name].shape) for name in names)
+    # ACL dynamic gears concatenate the ranks of ALL inputs into 128 slots.
+    # The five-layer checkpoints need 151 slots with 2-D weights, but only 99
+    # with flat carriers. Views preserve bytes/storage; restore logical shapes
+    # inside the graph, without an additional device allocation or conversion.
+    values = tuple(buffers[name].view(-1) for name in names)
     # Remove the stored copies from the exported module. functional_call binds
     # each buffer to its explicit input on every invocation.
     for name in names:
@@ -53,10 +62,11 @@ def expose_draft_constants(spec: AirGraphSpec) -> AirGraphSpec:
     inputs = tuple(f"draft_weight_{index:03d}" for index in range(len(names)))
     tensors = [{"name": n, "dtype": str(t.dtype).removeprefix("torch."), "shape": list(t.shape)}
                for n, t in zip(inputs, values)]
-    metadata = dict(spec.metadata, constant_tensors=tensors)
+    metadata = dict(spec.metadata, constant_tensors=tensors,
+                    constant_tensor_shapes={n: list(shape) for n, shape in zip(inputs, shapes)})
     if "tensor_abi" in metadata:
         metadata["tensor_abi"] = dict(metadata["tensor_abi"], inputs=metadata["tensor_abi"]["inputs"] + tensors)
-    return replace(spec, model=DraftConstantInputs(spec.model, tuple(names), len(spec.example_args)),
+    return replace(spec, model=DraftConstantInputs(spec.model, tuple(names), shapes, len(spec.example_args)),
                    metadata=metadata,
                    example_args=spec.example_args + values,
                    input_names=spec.input_names + inputs, constant_input_names=inputs)
@@ -72,12 +82,13 @@ def write_constant_inputs(spec: AirGraphSpec, graph_dir: Path, root: Path) -> di
     for index, name in enumerate(spec.constant_input_names, start=len(spec.example_args) - len(spec.constant_input_names)):
         tensor = spec.example_args[index].detach().cpu().contiguous()
         dtype = str(tensor.dtype).removeprefix("torch.")
-        if dtype not in ("int8", "uint8", "float16") or tensor.ndim != 2:
+        if dtype not in ("int8", "uint8", "float16") or tensor.ndim != 1:
             raise ValueError("unsupported compressed Draft constant dtype/shape")
         path = directory / f"{name}.bin"
         tensor.numpy().tofile(path)
         record = {**file_record(path, relative_to=root), "index": index,
-                  "name": name, "dtype": dtype, "shape": list(tensor.shape)}
+                  "name": name, "dtype": dtype, "shape": list(tensor.shape),
+                  "logical_shape": spec.metadata["constant_tensor_shapes"][name]}
         records.append(record)
         table.append("\t".join((name, dtype, ",".join(map(str, tensor.shape)),
                                 str(path.stat().st_size), record["sha256"],
@@ -113,12 +124,21 @@ def verify_constant_inputs(graph: dict, root: Path) -> Path | None:
         raise ValueError("duplicate constant input names")
     if len(records) % 2:
         raise ValueError("compressed weights and scales must form pairs")
+    logical_shapes = graph.get("metadata", {}).get("constant_tensor_shapes", {})
+    for record in records:
+        shape, logical = record["shape"], record.get("logical_shape", record["shape"])
+        if (len(shape) not in (1, 2) or len(logical) != 2
+                or any(type(v) is not int or v <= 0 for v in (*shape, *logical))
+                or prod(shape) != prod(logical)
+                or (len(shape) == 1 and logical_shapes.get(record["name"]) != logical)):
+            raise ValueError("invalid compressed Draft carrier/logical shape")
     for packed, scale in zip(records[::2], records[1::2]):
         bits = {"int8": 8, "uint8": 4}.get(packed["dtype"])
+        packed_shape = packed.get("logical_shape", packed["shape"])
+        scale_shape = scale.get("logical_shape", scale["shape"])
         if (bits is None or scale["dtype"] != "float16"
-                or len(packed["shape"]) != 2 or len(scale["shape"]) != 2
-                or packed["shape"][0] != scale["shape"][0]
-                or packed["shape"][1] * 8 != scale["shape"][1] * 128 * bits
+                or packed_shape[0] != scale_shape[0]
+                or packed_shape[1] * 8 != scale_shape[1] * 128 * bits
                 or (variant == "w8a16" and bits != 8) or (variant == "w4a16" and bits != 4)):
             raise ValueError("compressed Draft weight/scale group contract differs")
     table_record = graph["constant_inputs_table"]
@@ -130,10 +150,10 @@ def verify_constant_inputs(graph: dict, root: Path) -> Path | None:
         path = contained_path(root, record["path"])
         width = {"int8": 1, "uint8": 1, "float16": 2}.get(record["dtype"])
         shape = record["shape"]
-        if (record["index"] != index or width is None or len(shape) != 2
+        if (record["index"] != index or width is None or len(shape) not in (1, 2)
                 or any(type(v) is not int or v <= 0 for v in shape)):
             raise ValueError("invalid constant input ABI")
-        size = shape[0] * shape[1] * width
+        size = prod(shape) * width
         if (not path.is_file() or path.stat().st_size != size
                 or record["bytes"] != size or sha256_file(path) != record["sha256"]):
             raise ValueError("constant input payload integrity check failed")

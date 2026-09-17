@@ -24,7 +24,7 @@ def prepare(args, root):
         raise ValueError("duplicate Draft selections")
     index = load_json_object(args.draft_variants_manifest)
     if index.get("artifact_kind") != "qwen35-draft-variants":
-        raise ValueError("not a Draft variant index; run build_draft_variants.py")
+        raise ValueError("not a compiled Draft index; run export-air and compile-om with --draft-quantizations")
     routes = matrix.ROUTES if args.verify_gdr == "both" else (args.verify_gdr,)
     result, ordinary, prompts = {}, None, None
     for variant in args.draft_quantizations:
@@ -36,6 +36,8 @@ def prepare(args, root):
             if entry.get("status") != "PASS":
                 raise ValueError(f"{variant}/{route} has no compiled bundle")
             manifest = Path(entry["manifest"])
+            if not manifest.is_absolute():
+                manifest = args.draft_variants_manifest.parent / manifest
             if sha256_file(manifest) != entry["manifest_sha256"]:
                 raise ValueError(f"{variant}/{route} manifest changed after build")
             deployment = load_json_object(manifest)
@@ -92,33 +94,36 @@ def compare(cells):
 
 
 def save(root, prepared):
-    cells, datasets, timing, dataset_sections = [], [], [], []
-    lines = ["| Draft | GDR | Output budget | Measured / selected | Acceptance | Tokens / round | Ordinary tok/s | DFlash tok/s | Speedup | Draft ms/call | Verify ms/call |",
-             "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    cells, datasets, timing = [], [], []
+    lines = ["| Draft | GDR | Output budget | Group | Measured / selected | Acceptance | Tokens / round | Ordinary tok/s | DFlash tok/s | Speedup | Draft ms/call | Verify ms/call |",
+             "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     def number(value, percent=False):
         return "N/A" if value is None else f"{value:.2%}" if percent else f"{value:.2f}"
     for variant, options in prepared.items():
         summary = options._prepared_summary
         for cell in summary["cells"]:
             cells.append(dict(cell, draft_quantization=variant))
-            a = cell.get("aggregate", {})
-            stages = a.get("stage_ms_per_call", {})
-            values = [variant, cell["verify_gdr"], cell["max_new_tokens"],
-                      f"{a.get('measured_prompts', 0)} / {len(summary['prompts'])}",
-                      number(a.get("weighted_acceptance_rate"), True), number(a.get("tokens_per_speculative_round")),
-                      number(a.get("ordinary_tokens_per_second")), number(a.get("dflash_tokens_per_second")),
-                      number(a.get("total_model_time_speedup")), number(stages.get("draft", {}).get("mean_ms")),
-                      number(stages.get("verify", {}).get("mean_ms"))]
-            lines.append("| " + " | ".join(map(str, values)) + " |")
-            timing.append(dict(id=f"{variant}/{cell['verify_gdr']}/{cell['max_new_tokens']}",
-                               stage_timings=stages, phase_timings=a.get("phase_timings", {})))
+            groups = {"all": cell.get("aggregate", {})}
+            if len({p.get("group", "custom") for p in summary["prompts"]}) > 1:
+                groups.update(cell.get("aggregate_by_group", {}))
+            for group, a in groups.items():
+                stages = a.get("stage_ms_per_call", {})
+                count = sum(group == "all" or p.get("group", "custom") == group for p in summary["prompts"])
+                values = [variant, cell["verify_gdr"], cell["max_new_tokens"], group,
+                          f"{a.get('measured_prompts', 0)} / {count}",
+                          number(a.get("weighted_acceptance_rate"), True), number(a.get("tokens_per_speculative_round")),
+                          number(a.get("ordinary_tokens_per_second")), number(a.get("dflash_tokens_per_second")),
+                          number(a.get("total_model_time_speedup")), number(stages.get("draft", {}).get("mean_ms")),
+                          number(stages.get("verify", {}).get("mean_ms"))]
+                lines.append("| " + " | ".join(map(str, values)) + " |")
+                timing.append(dict(id=f"{variant}/{cell['verify_gdr']}/{cell['max_new_tokens']}/{group}",
+                                   stage_timings=stages, phase_timings=a.get("phase_timings", {})))
             if cell.get("error"):
                 lines.append(f"\n{variant}/{cell['verify_gdr']}/{cell['max_new_tokens']}: {cell['error']}\n")
         for d in suite.dataset_results(summary):
             datasets.append(dict(d, draft_quantization=variant))
-        if summary.get("datasets"):
-            dataset_sections += ["", f"Draft: {variant}", "", suite.render_datasets(suite.dataset_results(summary)).rstrip()]
-    lines += dataset_sections
+    if datasets:
+        lines += ["", suite.render_datasets(datasets).rstrip()]
     comparisons = compare(cells)
     if comparisons:
         lines += ["", "| Draft | GDR | Output budget | Matched | Acceptance change (pp) | Throughput / FP16 | Time speedup vs FP16 |",
@@ -132,12 +137,20 @@ def save(root, prepared):
               "Published quantized checkpoints have five layers; the current FP16 checkpoint has six. This is not a bitwidth-only ablation.",
               "Group dequantization uses standard ops and FP16 MatMul. Packed weights stay resident; peak temporary memory requires device profiling.",
               "Per-Draft reports, cases.csv and per-file summaries are in fp16/, w4a16/, w8a16/."]
+    first = next(iter(prepared.values()))._prepared_summary
+    lines.insert(0, "Thinking: " + ("on" if first["protocol"].get("enable_thinking") else "off") + ".\n")
     result = dict(schema_version=1, cells=cells, datasets=datasets, comparisons_vs_fp16=comparisons,
+                  prompts=first["prompts"], input_datasets=first.get("datasets", []),
+                  draft_quantizations=list(prepared),
+                  routes=first.get("routes", []), lengths=first.get("lengths", []),
+                  formal_latency_evidence=False,
                   bundles={v: o._prepared_summary["bundles"] for v, o in prepared.items()},
                   protocol=next(iter(prepared.values()))._prepared_summary["protocol"],
                   quality_evaluation="NOT_RUN", status=("PREPARED" if all(o.plan_only for o in prepared.values()) else
                     suite.measured_status(cells) if all(c["status"] in suite.MEASURED_STATUSES for c in cells) else "FAIL_OR_INCOMPLETE"))
     atomic_write_json(root / "summary.json", result)
+    suite.write_dataset_reports(root, dict(cells=cells, datasets=first.get("datasets", []),
+                                           protocol=result["protocol"]))
     text = "\n".join(lines) + "\n"
     (root / "summary.md").write_text(text)
     # Existing matrix CSVs retain all phase/call latencies and dataset provenance.
@@ -156,17 +169,37 @@ def save(root, prepared):
 
 
 def run(args):
+    args.draft_quantizations = getattr(args, "draft_quantizations", None) or [os.environ.get("DRAFT_QUANTIZATION", "fp16")]
+    if any(v not in VARIANTS for v in args.draft_quantizations):
+        raise ValueError("invalid Draft precision selection")
+    if not getattr(args, "draft_variants_manifest", None):
+        bundle = getattr(args, "bundle_dir", None)
+        if bundle:
+            args.draft_variants_manifest = Path(bundle) / "draft-variants.json"
+        elif os.environ.get("DRAFT_VARIANTS_MANIFEST"):
+            args.draft_variants_manifest = Path(os.environ["DRAFT_VARIANTS_MANIFEST"])
+        elif getattr(args, "chunk_deployment_manifest", None):
+            args.draft_variants_manifest = args.chunk_deployment_manifest.parent / "draft-variants.json"
+        else:
+            raise ValueError("--bundle-dir is required when selecting Draft types")
+    args.draft_variants_manifest = Path(args.draft_variants_manifest).expanduser().resolve()
     args.run_dir = args.run_dir.expanduser().resolve()
     if not args.run_dir.is_dir() or args.run_dir.is_relative_to(REPO):
         raise ValueError("run-dir must exist outside the repository")
     os.environ["AI_RUN_DIR"] = str(args.run_dir)
-    root = Path(tempfile.mkdtemp(prefix="draft-comparison-", dir=args.run_dir))
+    prefix = "gdr-lengths-" if getattr(args, "_unified_entry", False) else "draft-comparison-"
+    root = Path(tempfile.mkdtemp(prefix=prefix, dir=args.run_dir))
     print(f"Output: {root}", flush=True)
     prepared = prepare(args, root)  # All variants/routes preflight before device work.
     baselines, codes = {}, []
+    external_baseline = getattr(args, "ordinary_baseline", None)
+    if external_baseline:
+        from tools.ordinary_baseline import resolve_sources, preflight_sources
+        baselines = resolve_sources(external_baseline, args.lengths)
+        preflight_sources(baselines, next(iter(prepared.values()))._prepared_summary, args)
     for i, (variant, options) in enumerate(prepared.items()):
         options._shared_baselines = baselines
-        options._ordinary_baseline_required = i != 0
+        options._ordinary_baseline_required = bool(external_baseline) or i != 0
         print(f"[draft-comparison] {variant} start", flush=True)
         code = matrix.run(options)
         codes.append(code)
@@ -182,9 +215,8 @@ def parser():
     result = matrix.parser()
     result.description = __doc__
     result.set_defaults(lengths=[128], verify_gdr="chunk")
-    result.add_argument("--draft-variants-manifest", type=Path, default=os.environ.get("DRAFT_VARIANTS_MANIFEST"),
-                        required=not os.environ.get("DRAFT_VARIANTS_MANIFEST"))
-    result.add_argument("--draft-quantizations", nargs="+", choices=VARIANTS, default=list(VARIANTS))
+    result.set_defaults(draft_variants_manifest=os.environ.get("DRAFT_VARIANTS_MANIFEST"),
+                        draft_quantizations=list(VARIANTS))
     return result
 
 

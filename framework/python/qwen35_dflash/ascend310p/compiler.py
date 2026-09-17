@@ -395,12 +395,18 @@ def compile_air_bundle(
     extra_args: Sequence[str] = (),
     runner: Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]] | None = None,
     atc_identity: str | None = None,
+    _shared_compiled: dict | None = None,
+    _deployment_name: str | None = None,
 ) -> dict[str, Any]:
     """Compile all AIR graphs with ``framework=1`` into the same run bundle."""
 
     manifest_path = Path(air_manifest_path).expanduser().resolve()
     root = require_run_output(manifest_path.parent)
     air_manifest = load_json_object(manifest_path)
+    from .bundle_matrix import AIR_KIND, compile_matrix, validate_shared_graph
+    if air_manifest.get("artifact_kind") == AIR_KIND:
+        return compile_matrix(manifest_path, soc_version=soc_version, atc_bin=atc_bin,
+                              extra_args=extra_args, runner=runner, atc_identity=atc_identity)
     if air_manifest.get("status") != "PASS":
         raise ValueError("AIR manifest is not passing")
     if air_manifest.get("artifact_kind") != "qwen35-dflash-torchair-bundle":
@@ -451,12 +457,19 @@ def compile_air_bundle(
     om_root = root / "om"
     shared_root = reused is not None and root == reused["path"].parent
     suffix = "-" + incremental["verify_gdr"] if shared_root else ""
-    deployment_path = root / ("deployment-manifest" + suffix + ".json")
+    deployment_path = root / (_deployment_name or ("deployment-manifest" + suffix + ".json"))
     if deployment_path.exists():
         raise FileExistsError(deployment_path)
-    if not shared_root and om_root.exists() and any(om_root.iterdir()):
+    if _shared_compiled is None and not shared_root and om_root.exists() and any(om_root.iterdir()):
         raise FileExistsError(f"OM output directory is not empty: {om_root}")
     for graph in graphs:
+        key = artifact_stem(graph)
+        if _shared_compiled is not None and key in _shared_compiled:
+            original, options = _shared_compiled[key]
+            validate_shared_graph(original, {k: v for k, v in graph.items() if k in original})
+            if options != graph_arguments[graph["name"]]:
+                raise ValueError(f"shared graph ATC options differ: {key}")
+            continue
         if reused is None or graph["name"] not in reused["graphs"]:
             output_path = om_root / (artifact_stem(graph) + ".om")
             if output_path.exists():
@@ -467,16 +480,26 @@ def compile_air_bundle(
     log_root.mkdir(parents=True, exist_ok=True)
     log_root = Path(tempfile.mkdtemp(prefix=root.name + "-", dir=log_root))
 
-    compiled = [
-        link_common_om(reused, graph, root, om_root)
-        if reused is not None and graph["name"] in reused["graphs"]
-        else _compile_air_graph(
-            graph, root=root, om_root=om_root, log_root=log_root, atc_path=atc_path,
-            exact_soc_version=exact_soc_version, arguments=graph_arguments[graph["name"]],
-            execute=execute,
-        )
-        for graph in graphs
-    ]
+    compiled = []
+    for graph in graphs:
+        key = artifact_stem(graph)
+        if _shared_compiled is not None and key in _shared_compiled:
+            import copy
+            current = copy.deepcopy(_shared_compiled[key][0])
+            current["metadata"] = copy.deepcopy(graph["metadata"])
+        elif reused is not None and graph["name"] in reused["graphs"]:
+            current = link_common_om(reused, graph, root, om_root)
+        else:
+            print(f"[compile-om] {key} START", flush=True)
+            current = _compile_air_graph(
+                graph, root=root, om_root=om_root, log_root=log_root, atc_path=atc_path,
+                exact_soc_version=exact_soc_version, arguments=graph_arguments[graph["name"]],
+                execute=execute,
+            )
+            print(f"[compile-om] {key} DONE", flush=True)
+        compiled.append(current)
+        if _shared_compiled is not None and key not in _shared_compiled:
+            _shared_compiled[key] = (current, graph_arguments[graph["name"]])
 
     deployment = {
         "schema_version": 1,

@@ -62,6 +62,7 @@ ABI 标识为 `qwen35-dflash-chunk-v4`，合同见
 [图与状态合同](../framework/abi/dflash-chunk-v4.json)。所有图固定 batch=1。
 实际 tensor 顺序、dtype、shape 由加载后的模型推导，并冻结在 manifest 的
 `metadata.tensor_abi` 中。不要通过文件名猜测输入顺序。
+下表 `F` 为共享 Target 特征宽度：统一三精度套件为 28160；`L` 为所选 Draft 层数，FP16 为 6，W4/W8 为 5。
 
 ### 3.1 Target 图
 
@@ -78,9 +79,9 @@ ABI 标识为 `qwen35-dflash-chunk-v4`，合同见
 
 | 图 | 输出 |
 |---|---|
-| `target_prefill` | `target_top1 INT64[1,1]`、`features FP16[1,64,20480]`、完整 Target 状态 |
+| `target_prefill` | `target_top1 INT64[1,1]`、`features FP16[1,64,F]`、完整 Target 状态 |
 | `target_decode` | `target_top1 INT64[1,1]`、完整 Target 状态 |
-| `target_verify` | `target_top1 INT64[1,16]`、`accepted_count INT64[1]`、`features FP16[1,64,20480]`、完整 Target 状态、24 份第一遍 GDR 的原始 FP32 state |
+| `target_verify` | `target_top1 INT64[1,16]`、`accepted_count INT64[1]`、`features FP16[1,64,F]`、完整 Target 状态、24 份第一遍 GDR 的原始 FP32 state |
 
 prefill/decode Top1 对应本次最后一个有效输入行。verify 输入为 `[anchor,d1,...,dK]`，
 右侧补齐至 16 行；`valid_rows=K+1`。接受数 `a` 是从第一个 proposal 起连续匹配的长度，
@@ -116,22 +117,25 @@ C++ 为每份 discard state 分配独立、持久的设备缓冲区，共 48 MiB
 
 | 输入顺序 | dtype/shape | 含义 |
 |---|---|---|
-| `features` | FP16 `[1,R,20480]`，R=16/64 | 本次需追加的 committed Target feature，缓冲区按 64 行分配 |
+| `features` | FP16 `[1,R,F]`，R=16/64 | 本次需追加的 committed Target feature，缓冲区按 64 行分配 |
 | `start_position` | INT64 `[1]` | 这批 feature 在上下文中的起始位置 |
 | `valid_rows` | INT16 `[1]` | 有效 feature 行数，0..R；0 仅用于诊断 |
 | `anchor` | INT64 `[1]` | 当前已输出、尚未作为 Target 输入提交的 token |
 | `proposal_count` | INT16 `[1]` | 本轮实际草稿数 K，1..15，受请求设置和剩余输出预算约束 |
-| `d0_key,d0_value,...,d5_key,d5_value` | FP16 `[1,8,C+64,128]` | 6 层 committed-context KV |
+| `d0_key,d0_value,...` | FP16 `[1,8,C+64,128]` | L 层 committed-context KV |
+| `draft_weight_000,...` | 一维 INT8/UINT8 压缩权重与 FP16 scale，交替排列 | 仅 W4/W8；52 个只读输入，加载时上传一次 |
 
-输出为 `draft_top1 INT64[1,15]`，随后是相同顺序的 12 个更新后 Draft KV。
+输出为 `draft_top1 INT64[1,15]`，随后是相同顺序的 2L 个更新后 Draft KV。
 一次调用完成 feature projection、context KV 追加和 anchor+K mask 的并行 proposal。
 物理 block 固定 16 行，每层 attention 都排除 K 以后的 noise key，包括最后的非因果层。
 输出前 K 项有效，其余项为 0；不能用完整 block 的结果直接截断来替代短 block。
 用于 proposal 的 transient block KV 不作为 committed cache 输出。
 
 `draft.om` 只有 features 的行数动态，权重、候选块与持久 KV 维度保持固定。
-AIR 审计要求该输入为 `[1,-1,20480]`，其余输入全部静态；ATC 编译 16/64 两档。
+AIR 审计要求该输入为 `[1,-1,F]`，其余输入全部静态；ATC 编译 16/64 两档。
 C++ 查询并校验完整档位维度，再用 `aclmdlSetInputDynamicDims` 选择档位。
+ACL 将所有输入维度拼入一个 [128 维数组](https://www.hiascend.com/document/detail/zh/canncommercial/850/API/appdevgapi/aclcppdevg_03_1365.html)。
+量化权重通过一维视图输入、在图内恢复矩阵形状；五层 Draft 共 99 维，编译和加载前均检查上限。
 features 和 KV 复用现有缓冲区，CANN 附加的档位控制输入在加载时分配、由 API 填充。
 正常 Prefill 追加 1..64 行，生成轮追加 1..16 行；有效行数大于 16 时选 64 档。
 准备阶段使用 `proposal_count=1`，候选丢弃；图仍执行完整 proposal，不能视为免计算。
@@ -219,10 +223,10 @@ Draft 的 RMSNorm 使用同一个自定义前端，其余计算使用 Tensor 算
 增量工厂可用 `--verify-gdr mtp` 改为一次 `GatedDeltaRuleMTP` 加图内状态选择；
 MTP 使用 `qwen35-dflash-mtp-v2` ABI，每层输出 FP32 `[1,16,32,128,128]` state bank，
 在图内选择第 a 槽提交，外部不输出 bank 或 Chunk 的 24 份 discard state。
-普通、Chunk Verify、MTP Verify 均保留 FP32 recurrent state。使用 `--reuse-common-from` 时，
-导出器校验源码、配置、公共 tensor ABI、工具链身份，编译器核对 ATC 选项，允许两个路线清单
-引用同一份 Prefill/Decode/Draft；两条路线共 5 个 OM。
-旧 v3/v1 只兼容读取，不能通过重命名升级精度。
+普通、Chunk Verify、MTP Verify 均保留 FP32 recurrent state。
+`export-air --draft-quantizations fp16 w4a16 w8a16 --verify-gdr both` 输出统一 AIR 索引，
+`compile-om` 编译公共 Prefill/Decode、两条 Verify、三种 Draft，共 7 个 OM，全部位于 `om/`。
+各组合的部署清单共用同一份文件，编译前核对源码、公共 tensor ABI、权重和环境身份。
 路线对照见 [架构](DFLASH_ARCHITECTURE.md#chunk-两遍与-mtp)，切换见 [使用命令](GDR_CHUNK_AIR_OM.md)。
 
 卷积状态窗口使用静态切片加 `stack`，不调用 TorchAir 尚未实现 GE converter 的
@@ -393,7 +397,7 @@ OM 命令使用 `tools/profile_om.py --profile-mode ordinary|dflash --profile-st
 每次创建独立输出目录并记录清单、runner hash；单阶段将 `all` 替换为所需阶段。
 准备计划使用模型 Python 环境，采集由 C++ runner 执行。
 `all` 只展开当前模式，不会切换 Chunk/MTP；两条 Verify 须分别指定对应的 deployment manifest 和
-`--verify-gdr chunk|mtp`。五个 OM 各采一次的命令见 [OM 使用手册](GDR_CHUNK_AIR_OM.md#msprof)。
+`--verify-gdr chunk|mtp`。选择 Draft 类型的命令见 [OM 使用手册](GDR_CHUNK_AIR_OM.md#单-om-profiling)。
 
 统一 wrapper 为 `tools/run_msprof.sh`。C++ 使用 `--profile-backend cpp`，
 普通模式选 `--profile-mode ordinary --profile-stage prefill|decode|all`，DFlash 选

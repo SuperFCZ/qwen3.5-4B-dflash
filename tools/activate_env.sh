@@ -69,9 +69,13 @@ _dflash_activate_env() {
     export DRAFT_FP16_DIR="${DRAFT_FP16_DIR:-${DRAFT_DIR:-}}"
     dflash_name="DRAFT_${DRAFT_QUANTIZATION^^}_DIR"
     export DRAFT_SELECTED_DIR="${!dflash_name:-}"
-    export DRAFT_VARIANTS_DIR="${DRAFT_VARIANTS_DIR:-$AI_RUN_DIR/artifacts-drafts}"
+    export OM_BUNDLE_DIR="${OM_BUNDLE_DIR:-$AI_RUN_DIR/artifacts}"
+    export DRAFT_VARIANTS_DIR="${DRAFT_VARIANTS_DIR:-$OM_BUNDLE_DIR}"
     export DRAFT_VARIANTS_MANIFEST="${DRAFT_VARIANTS_MANIFEST:-$DRAFT_VARIANTS_DIR/draft-variants.json}"
-    export SELECTED_DRAFT_DEPLOYMENT_MANIFEST="$DRAFT_VARIANTS_DIR/$DRAFT_QUANTIZATION/$VERIFY_GDR/deployment-manifest.json"
+    local dflash_manifest_suffix=""
+    if [[ "$DRAFT_QUANTIZATION" != fp16 ]]; then dflash_manifest_suffix="-$DRAFT_QUANTIZATION"; fi
+    if [[ "$VERIFY_GDR" == mtp ]]; then dflash_manifest_suffix="$dflash_manifest_suffix-mtp"; fi
+    export SELECTED_DRAFT_DEPLOYMENT_MANIFEST="$OM_BUNDLE_DIR/deployment-manifest$dflash_manifest_suffix.json"
     export MAX_SEQUENCE_LENGTH="$KV_CAPACITY" BLOCK_SIZE="$((MAX_DRAFT_TOKENS + 1))"
     export RECEIVER_MODELS_DIR=""
     if [[ -n "${RECEIVER_ROOT:-}" ]]; then
@@ -109,7 +113,7 @@ _dflash_activate_env() {
         --verify-gdr "$VERIFY_GDR" --device "npu:$DEVICE_ID"
         --kv-cache-max-len "$KV_CAPACITY"
         --prompt "${PROMPT:-请用一句话解释什么是机器学习。}"
-        --prompt-mode chat --enable-thinking
+        --prompt-mode chat --no-enable-thinking
     )
     QUANT_ARGS=()
     if [[ "$QUANT_MODE" == enable ]]; then

@@ -2,7 +2,7 @@
 
 Ascend 310P 投机解码：Target 支持 FP16 / W8A8；OM Draft 可选 FP16 / W4A16 / W8A16。
 Torch-NPU 和 AIR/OM/C++ 均支持 **GDR Chunk 两遍**与 **GDR MTP** 验证。
-OM 使用一个 Draft，自动切换 16/64 行上下文档位：生成用 16 行，长输入建缓存用 64 行，最多 15 个候选。
+同一目录可编译 7 个 OM，运行时只加载所选 Draft 与 Verify；Draft 自动切换 16/64 行上下文档位，最多 15 个候选。
 
 ## 环境配置
 
@@ -28,15 +28,15 @@ source /absolute/path/dflash-env.sh
 | 要做什么 | 文档 |
 |---|---|
 | 直接运行 Torch-NPU，切换 Chunk / MTP | [Torch-NPU 使用](docs/DFLASH_RUN_AND_VALIDATE.md) |
-| 运行 OM：短 + 1K 输入统一测试、Chunk/MTP、多长度、分项时延 | [OM/C++ 使用](docs/GDR_CHUNK_AIR_OM.md) |
-| 读取离线 JSONL/JSON 测试集，按文件统计接受率和时延 | [离线测试集](docs/GDR_CHUNK_AIR_OM.md#离线开源测试集) |
-| 配置三种 Draft 权重、生成 OM、对比接受率与时延 | [Draft 精度对比](docs/GDR_CHUNK_AIR_OM.md#三种-draft精度选择与对比) |
+| 编译三种 Draft、两条 Verify，共 7 个 OM | [导出与编译](docs/GDR_CHUNK_AIR_OM.md#导出与编译) |
+| 合并短 / 1K 输入与离线 JSONL/JSON 数据集，对比 Draft 精度 | [统一测试](docs/GDR_CHUNK_AIR_OM.md#统一测试) |
+| 复用已有普通模型数据，只运行 DFlash | [基线复用](docs/GDR_CHUNK_AIR_OM.md#复用已有普通模型数据) |
 | 了解 Draft → Verify → Commit | [流程与架构](docs/DFLASH_ARCHITECTURE.md) |
 | 查看已有速度、接受率、deterministic 漂移问题 | [结果与已知问题](docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md) |
 
 开源数据集 Chunk 测试（输出上限 **512 token**）：5 个文件、2563 条问题，加权接受率 **26.77%**；
 按用户日志汇总估算整体加速 **1.91×**，数学类 **2.05–2.11×**、代码类 **1.60–1.64×**。
-这些数据采集早于紧凑 Draft 默认化，当前执行路径待设备重测。
+这些结果对应已测 FP16 Draft 配置，W4/W8 的性能需分别测量。
 允许输出差异，任务质量未评估；[详细结果与 128 token 对比](docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md#开源数据集输出上限-512-token)。
 
 <details>

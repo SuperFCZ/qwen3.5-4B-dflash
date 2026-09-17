@@ -82,6 +82,7 @@ def render_repeatability(rows):
 
 
 def set_benchmark_counts(args):
+    args.enable_thinking = getattr(args, "enable_thinking", False)
     args.warmup = getattr(args, "warmup", 1)
     args.repetitions = getattr(args, "repetitions", 3)
     if (type(args.warmup) is not int or args.warmup < 0
@@ -212,7 +213,13 @@ def load_inputs(args):
     if getattr(args, "_prepared_inputs", None) is not None:
         return copy.deepcopy(args._prepared_inputs)
     if offline_datasets.selected(args):
-        return offline_datasets.load(args)
+        questions, datasets = offline_datasets.load(args)
+        if getattr(args, "include_builtin_prompts", False):
+            builtin = load_prompts(args.prompts, getattr(args, "prompt_id", None), getattr(args, "prompt_group", "all"))
+            if {p["id"] for p in builtin} & {p["id"] for p in questions}:
+                raise ValueError("prompt IDs collide with offline dataset question IDs")
+            questions = builtin + questions
+        return questions, datasets
     if getattr(args, "num_questions", None) is not None or getattr(args, "dataset_field", "question") != "question":
         raise ValueError("--num-questions/--dataset-field require --dataset-dir or --dataset-files")
     return load_prompts(args.prompts, getattr(args, "prompt_id", None), getattr(args, "prompt_group", "all")), []
@@ -535,6 +542,7 @@ def dataset_results(summary):
             if cell.get("error"):
                 status = "FAIL_OR_INCOMPLETE"
             result.append({**totals, "dataset_id": dataset["id"], "dataset_file": dataset["name"],
+                           **({"draft_quantization": cell["draft_quantization"]} if "draft_quantization" in cell else {}),
                            "dataset_sha256": dataset["sha256"], "total_samples": dataset["total_samples"],
                            "selected_samples": dataset["selected_samples"], "status": status,
                            "verify_gdr": cell.get("verify_gdr"), "max_new_tokens": cell.get("max_new_tokens"),
@@ -548,17 +556,23 @@ def render_datasets(results):
     lines = ["Acceptance by dataset file:", "",
              "| Dataset file | GDR | Max new tokens | Status | Measured / selected | Accepted / proposed | Acceptance | Tokens / round | Ordinary tok/s | DFlash tok/s | Speedup |",
              "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|"]
+    show_draft = any("draft_quantization" in row for row in results)
+    if show_draft:
+        lines[2] = lines[2].replace("| Dataset file |", "| Draft | Dataset file |", 1)
+        lines[3] = "|---" + lines[3]
     timing_rows = []
     for row in results:
         name = row["dataset_file"].replace("|", "\\|").replace("\n", " ")
-        lines.append(f"| {name} | {row['verify_gdr']} | {row['max_new_tokens']} | {row['status']} | "
+        prefix = f"| {row.get('draft_quantization', 'unknown')} " if show_draft else ""
+        lines.append(prefix + f"| {name} | {row['verify_gdr']} | {row['max_new_tokens']} | {row['status']} | "
                      f"{row['measured_prompts']} / {row['selected_samples']} | "
                      f"{row['accepted_draft_tokens']} / {row['drafted_tokens']} | "
                      f"{number(row['weighted_acceptance_rate'], True)} | "
                      f"{number(row['tokens_per_speculative_round'])} | "
                      f"{number(row['ordinary_tokens_per_second'])} | {number(row['dflash_tokens_per_second'])} | "
                      f"{number(row['total_model_time_speedup'])} |")
-        timing_rows.append(dict(id=f"{row['verify_gdr']}/{row['max_new_tokens']}/{name}",
+        timing_rows.append(dict(id=(row.get("draft_quantization", "") + "/" if show_draft else "") +
+                               f"{row['verify_gdr']}/{row['max_new_tokens']}/{name}",
                                 stage_timings=row["stage_ms_per_call"], phase_timings=row["phase_timings"]))
     lines += ["", "Acceptance = sum accepted / sum proposed; speedup = sum ordinary time / sum DFlash time.",
               "Only admitted measurements contribute; measured/selected exposes incomplete files. Warmups and startup excluded.",
@@ -588,6 +602,8 @@ def write_dataset_reports(root, summary):
               *[stage + "_ms_per_call" for stage in STAGES],
               *[stage + "_ms_per_generation" for stage in STAGES],
               *[phase + "_phase_ms_per_generation" for phase in PHASES]]
+    if any("draft_quantization" in r for r in results):
+        fields.insert(0, "draft_quantization")
     with (root / "datasets.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
@@ -600,7 +616,8 @@ def write_dataset_reports(root, summary):
             for phase in PHASES:
                 row[phase + "_phase_ms_per_generation"] = result["phase_timings"][phase].get("mean_ms")
             writer.writerow(row)
-    cases = [r for c in summary.get("cells", [summary]) for r in c.get("cases", [])]
+    cases = [dict(r, **({"draft_quantization": c["draft_quantization"]} if "draft_quantization" in c else {}))
+             for c in summary.get("cells", [summary]) for r in c.get("cases", [])]
     for dataset in summary["datasets"]:
         # IDs are generated by the loader, but saved requests may have been edited.
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", dataset["id"]):
@@ -635,6 +652,7 @@ def markdown(summary):
     repeats = f"{protocol.get('warmup', 'N/A')}+{protocol.get('repetitions', 'N/A')}"
     lines += ["", f"Passed: {totals['passed_prompts']}; failed: {totals['failed_prompts']}; not run: {totals['not_run_prompts']}.",
               f"Warmup per mode/prompt: {protocol.get('warmup', 'N/A')}; measured repetitions: {protocol.get('repetitions', 'N/A')}.",
+              "Thinking: " + {False: "off", True: "on", None: "not recorded / raw input"}[protocol.get("enable_thinking")] + ".",
               f"Weighted acceptance: {value(totals['weighted_acceptance_rate'], True)}.",
               "Acceptance = accepted draft tokens / proposed draft tokens; warmups excluded.",
               "Speedup > 1 means faster than ordinary generation; acceptance alone does not establish speedup."]
@@ -750,6 +768,7 @@ def collect_results(args, prompts, raw, index, plan_hash, batch_hash, eos, exit_
     return {"schema_version": 1, "status": measured_status(rows) if ok else "FAIL_OR_INCOMPLETE",
         "cases": rows, "aggregate": aggregate(rows), "protocol": {
             "warmup": warmup, "repetitions": repetitions, "low_memory": args.low_memory,
+            "enable_thinking": getattr(args, "enable_thinking", None) if getattr(args, "chat", True) else None,
             "prompt_group": getattr(args, "prompt_group", "all"),
             "output_comparison": "allow_output_differences" if allow_differences else "strict",
             "repeatability_policy": "observe",
@@ -819,6 +838,7 @@ def summarize_existing(args):
     if batch.read_text() != expected_batch:
         raise ValueError("saved prompt tokens differ from batch inputs")
     stored = argparse.Namespace(device_id=int(argument("--device-id")),
+        chat=request.get("chat", True), enable_thinking=request.get("enable_thinking"),
         warmup=int(argument("--warmup", "3")), repetitions=int(argument("--repetitions", "10")),
         prompt_group=request.get("prompt_group", "all"),
         draft_context_rows=request.get("draft_context_rows"),
@@ -877,6 +897,11 @@ def run(args):
         raise ValueError("invalid device/token limits")
     set_benchmark_counts(args)
     prompts, datasets = load_inputs(args)
+    if not args.deployment_manifest and getattr(args, "bundle_dir", None):
+        from qwen35_dflash.ascend310p.bundle_matrix import deployment_name
+        variant = getattr(args, "draft_quantization", None) or os.environ.get("DRAFT_QUANTIZATION", "fp16")
+        route = getattr(args, "verify_gdr", None) or os.environ.get("VERIFY_GDR", "chunk")
+        args.deployment_manifest = args.bundle_dir / deployment_name(variant, route)
     manifest = (args.deployment_manifest or run_dir / "artifacts/deployment-manifest.json").resolve()
     config = json.loads((args.runner_config or run_dir / "runner.json").read_text())
     identity = validate_cpp_runner_options(config, args.device_id)
@@ -889,6 +914,8 @@ def run(args):
     if (args.warmup, args.repetitions) != (3, 10) and "positive; default 10" not in help_result.stdout:
         raise RuntimeError("rebuild the C++ runner for configurable --warmup/--repetitions (no OM recompilation needed)")
     baseline = getattr(args, "_ordinary_baseline", None)
+    if not baseline and getattr(args, "ordinary_baseline", None):
+        baseline = ordinary_baseline.resolve_sources(args.ordinary_baseline, [args.max_new_tokens])[args.max_new_tokens]
     if baseline and "dflash-only batch" not in help_result.stdout:
         raise RuntimeError("rebuild the C++ runner for ordinary baseline reuse (no OM recompilation needed)")
     root = require_run_output(Path(tempfile.mkdtemp(prefix="prompt-suite-", dir=run_dir)))
@@ -897,6 +924,8 @@ def run(args):
         manifest, root / "chunk-plan.txt", verify_gdr=getattr(args, "verify_gdr", None))
     from qwen35_dflash.ascend310p.incremental_plan import verify_gdr_route
     args.verify_gdr = verify_gdr_route(contract)
+    if getattr(args, "draft_quantization", None) and args.draft_quantization != contract.get("draft_quantization", "fp16"):
+        raise ValueError("selected Draft type differs from deployment manifest")
     args.draft_context_rows = contract["draft_context_rows"]
     args.draft_prefill_policy = contract["draft_prefill_policy"]
     tokenizer, tokenizer_source = load_tokenizer(model_dir=args.model_dir)
@@ -904,7 +933,8 @@ def run(args):
     if any(token < 0 or token >= contract["vocab_size"] for token in eos):
         raise ValueError("EOS token outside model vocabulary")
     for item in prompts:
-        tokens = tokenize_prompt(tokenizer, item["prompt"], chat=args.chat)
+        tokens = tokenize_prompt(tokenizer, item["prompt"], chat=args.chat,
+                                 enable_thinking=getattr(args, "enable_thinking", False))
         if (not tokens or len(tokens) + args.max_new_tokens > contract["capacity"]
                 or any(token < 0 or token >= contract["vocab_size"] for token in tokens)):
             raise ValueError(f"{offline_datasets.prompt_label(item)}: input {len(tokens)} + output budget {args.max_new_tokens} "
@@ -928,6 +958,7 @@ def run(args):
     if args.low_memory:
         command.append("--low-memory")
     request = {"schema_version": 1, "prompts": prompts, "datasets": datasets, "chat": args.chat, "eos_token_ids": eos,
+        "enable_thinking": bool(getattr(args, "enable_thinking", False)) if args.chat else None,
         "prompt_group": getattr(args, "prompt_group", "all"),
         "warmup": args.warmup, "repetitions": args.repetitions,
         "verify_gdr": args.verify_gdr, "incremental_abi": contract["abi"],
@@ -966,6 +997,10 @@ def main():
     parser.add_argument("--run-dir", type=Path, default=os.environ.get("AI_RUN_DIR"), required=not os.environ.get("AI_RUN_DIR"))
     parser.add_argument("--runner", type=Path, default=os.environ.get("CPP_RUNNER"))
     parser.add_argument("--deployment-manifest", type=Path)
+    parser.add_argument("--bundle-dir", type=Path, help="shared OM directory; selects manifest by Draft type and GDR route")
+    parser.add_argument("--draft-quantization", choices=("fp16", "w4a16", "w8a16"))
+    parser.add_argument("--ordinary-baseline", type=Path,
+                        help="reuse saved ordinary measurements; do not execute ordinary again")
     parser.add_argument("--verify-gdr", choices=("chunk", "mtp"),
                         help="require the selected compiled route; omitted: read manifest")
     parser.add_argument("--runner-config", type=Path)
@@ -976,6 +1011,8 @@ def main():
                         help="select all (default), short, or long inputs; custom JSON can specify group")
     parser.add_argument("--prompt-id", action="append", help="run only selected ID(s); repeatable")
     parser.add_argument("--chat", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--enable-thinking", action=argparse.BooleanOptionalAction, default=False,
+                        help="Qwen chat thinking; disabled by default for benchmarks")
     parser.add_argument("--eos-token-id", type=int, action="append", help="repeatable; default 248044")
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--max-new-tokens", type=int, default=128)

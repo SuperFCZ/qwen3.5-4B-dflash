@@ -126,7 +126,7 @@ class EnvironmentConfigTests(unittest.TestCase):
         self.assertEqual(values["DRAFT_FP16_DIR"], self.values["DRAFT_DIR"])
         self.assertEqual(values["DRAFT_W8A16_DIR"], str(self.root / "W8 weights"))
         self.assertEqual(values["SELECTED_DRAFT_DEPLOYMENT_MANIFEST"],
-                         str(self.run / "artifacts-drafts/w4a16/chunk/deployment-manifest.json"))
+                         str(self.run / "artifacts/deployment-manifest-w4a16.json"))
 
     def test_repeated_source_preserves_shell_flags_and_avoids_duplicate_paths(self):
         inherited = str(self.root / "other Python modules")

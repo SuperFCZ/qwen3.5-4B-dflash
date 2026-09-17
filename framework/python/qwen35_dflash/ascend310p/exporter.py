@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
+import copy
 import importlib
 import os
 from pathlib import Path
@@ -102,10 +103,15 @@ def export_air_bundle(
     torchair_module: Any | None = None,
     reuse_common_from: str | Path | None = None,
     reuse_target_from: str | Path | None = None,
+    _shared_air: dict | None = None,
+    _manifest_name: str | None = None,
 ) -> dict[str, Any]:
     """Export every graph from ``factory`` and retain a hash-complete manifest."""
 
     root = require_run_output(bundle_dir)
+    matrix = _shared_air is not None
+    if matrix and (reuse_common_from or reuse_target_from):
+        raise ValueError("matrix export manages shared graphs internally")
     from .common_reuse import (
         COMMON, artifact_stem, load_common_source, validate_common_export,
         link_common_air, reuse_record,
@@ -120,10 +126,10 @@ def export_air_bundle(
     shared_root = reused is not None and root == reused["path"].parent
     if shared_root and reuse_target_from:
         raise ValueError("use a separate bundle directory for each Draft quantization")
-    if not shared_root and root.exists() and any(root.iterdir()):
+    if not matrix and not shared_root and root.exists() and any(root.iterdir()):
         raise FileExistsError(f"AIR bundle directory is not empty: {root}")
     suffix = "-" + str(factory_config.get("verify_gdr", "chunk")) if shared_root else ""
-    manifest_path = root / ("air-manifest" + suffix + ".json")
+    manifest_path = root / (_manifest_name or ("air-manifest" + suffix + ".json"))
     if manifest_path.exists():
         raise FileExistsError(manifest_path)
     torchair = torchair_module
@@ -157,24 +163,40 @@ def export_air_bundle(
         validate_common_export(
             reused, {s.name: _spec_header(s) for s in specs if s.name in reused["graphs"]}, environment,
         )
+    if matrix:
+        from .bundle_matrix import validate_shared_graph
+        for spec in specs:
+            header = _spec_header(spec)
+            key = artifact_stem(header)
+            if key in _shared_air:
+                original, previous_environment = _shared_air[key]
+                validate_shared_graph(original, header)
+                if environment != previous_environment:
+                    raise ValueError("shared AIR export environments differ")
     for spec in specs:
+        if matrix and artifact_stem(_spec_header(spec)) in _shared_air:
+            continue
         if reused is None or spec.name not in reused["graphs"]:
             graph_dir = root / "air" / (artifact_stem(_spec_header(spec))
-                                       if spec.name == "target_verify" else spec.name)
+                                       if matrix or spec.name == "target_verify" else spec.name)
             if graph_dir.exists():
                 raise FileExistsError(f"AIR graph output already exists: {graph_dir}")
     root.mkdir(parents=True, exist_ok=True)
     air_root = root / "air"
-    air_root.mkdir(exist_ok=shared_root)
+    air_root.mkdir(exist_ok=shared_root or matrix)
 
     graphs: list[dict[str, Any]] = []
     for spec in specs:
+        key = artifact_stem(_spec_header(spec))
+        if matrix and key in _shared_air:
+            graphs.append({**copy.deepcopy(_shared_air[key][0]), **_spec_header(spec)})
+            continue
         if reused is not None and spec.name in reused["graphs"]:
             graphs.append(link_common_air(reused, _spec_header(spec), root))
             continue
         # Common graph directories retain their original names for payload validation.
         graph_dir = air_root / (artifact_stem(_spec_header(spec))
-                                if spec.name == "target_verify" else spec.name)
+                                if matrix or spec.name == "target_verify" else spec.name)
         graph_dir.mkdir()
         custom_op_sessions = [
             prepare_custom_op_export(item, torchair) for item in spec.custom_ops
@@ -249,6 +271,8 @@ def export_air_bundle(
                 **constant_records,
             }
         )
+        if matrix:
+            _shared_air[key] = (copy.deepcopy(graphs[-1]), environment)
 
     factory_name = (
         factory

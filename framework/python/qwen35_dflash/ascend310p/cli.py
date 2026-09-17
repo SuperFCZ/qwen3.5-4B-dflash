@@ -56,14 +56,31 @@ def _print(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 
-def command_export(args: argparse.Namespace) -> int:
-    payload = export_air_bundle(
+def _export(args):
+    variants = getattr(args, "draft_quantizations", None)
+    if variants or getattr(args, "verify_gdr", None) == "both":
+        from .bundle_matrix import export_matrix
+        if args.reuse_common_from or getattr(args, "reuse_target_from", None):
+            raise ValueError("matrix export uses one new directory; omit external reuse flags")
+        if variants and getattr(args, "draft_quantization", None):
+            raise ValueError("select either --draft-quantization or --draft-quantizations")
+        config = _factory_config(args)
+        selection = config.get("verify_gdr", "chunk")
+        return export_matrix(args.factory, config, args.bundle_dir,
+            variants=variants or [config.get("draft_quantization", "fp16")],
+            routes=["chunk", "mtp"] if selection == "both" else [selection],
+            draft_dirs={v: getattr(args, v + "_draft_dir", None) for v in ("fp16", "w4a16", "w8a16")})
+    return export_air_bundle(
         args.factory,
         _factory_config(args),
         args.bundle_dir,
         reuse_common_from=args.reuse_common_from,
         reuse_target_from=getattr(args, "reuse_target_from", None),
     )
+
+
+def command_export(args: argparse.Namespace) -> int:
+    payload = _export(args)
     _print(payload)
     return 0
 
@@ -90,12 +107,7 @@ def command_build(args: argparse.Namespace) -> int:
     # 4B checkpoints.
     atc_path = resolve_atc_executable(args.atc)
     exact_soc_version = validate_soc_version(args.soc_version)
-    exported = export_air_bundle(
-        args.factory,
-        _factory_config(args),
-        args.bundle_dir,
-        reuse_common_from=args.reuse_common_from,
-    )
+    exported = _export(args)
     payload = compile_air_bundle(
         Path(exported["manifest_path"]),
         soc_version=exact_soc_version,
@@ -357,6 +369,14 @@ def _add_atc_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_draft_matrix_arguments(parser):
+    parser.add_argument("--draft-quantizations", nargs="+", choices=("fp16", "w4a16", "w8a16"),
+                        help="export selected Drafts with shared Target graphs into one bundle")
+    for variant in ("fp16", "w4a16", "w8a16"):
+        parser.add_argument(f"--{variant}-draft-dir", type=Path,
+                            default=os.environ.get("DRAFT_" + variant.upper() + "_DIR"))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -379,12 +399,13 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--draft-quantization", choices=("fp16", "w4a16", "w8a16"))
     export.add_argument("--reuse-target-from", type=Path,
                         help="reuse Prefill/Decode/Verify, exporting only the selected Draft")
-    export.add_argument("--verify-gdr", choices=("chunk", "mtp"),
+    export.add_argument("--verify-gdr", choices=("chunk", "mtp", "both"),
                         help="incremental verifier; overrides factory config (default: chunk)")
     export.add_argument("--bundle-dir", type=Path, required=True)
     export.add_argument("--reuse-common-from", type=Path,
                         help="reuse ordinary prefill/decode and Draft AIR/OM on the same filesystem")
     export.set_defaults(handler=command_export)
+    _add_draft_matrix_arguments(export)
 
     compile_parser = subparsers.add_parser(
         "compile-om", help="compile a hash-locked AIR bundle with ATC"
@@ -406,12 +427,14 @@ def build_parser() -> argparse.ArgumentParser:
     build = subparsers.add_parser("build-om", help="export AIR and compile every graph")
     build.add_argument("--factory", required=True, help="module:function graph factory")
     build.add_argument("--factory-config", type=Path)
-    build.add_argument("--verify-gdr", choices=("chunk", "mtp"),
+    build.add_argument("--draft-quantization", choices=("fp16", "w4a16", "w8a16"))
+    build.add_argument("--verify-gdr", choices=("chunk", "mtp", "both"),
                        help="incremental verifier; overrides factory config (default: chunk)")
     build.add_argument("--bundle-dir", type=Path, required=True)
     build.add_argument("--reuse-common-from", type=Path,
                        help="reuse ordinary prefill/decode and Draft AIR/OM on the same filesystem")
     _add_atc_arguments(build)
+    _add_draft_matrix_arguments(build)
     build.set_defaults(handler=command_build)
 
     build_cpp = subparsers.add_parser(

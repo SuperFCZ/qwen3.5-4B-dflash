@@ -48,12 +48,14 @@ def _normalize_eos(eos_token_id: Any) -> tuple[int, ...]:
     return tuple(int(item) for item in eos_token_id)
 
 
-def tokenize_prompt(tokenizer: Any, prompt: str, *, chat: bool) -> list[int]:
+def tokenize_prompt(tokenizer: Any, prompt: str, *, chat: bool,
+                    enable_thinking: bool | None = None) -> list[int]:
     if chat:
         values = tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}],
             tokenize=True,
             add_generation_prompt=True,
+            **({"enable_thinking": enable_thinking} if enable_thinking is not None else {}),
         )
     else:
         values = tokenizer.encode(prompt, add_special_tokens=True)

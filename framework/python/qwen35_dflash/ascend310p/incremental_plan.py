@@ -207,6 +207,11 @@ def validate_incremental_bundle(graphs):
             else "MTP verify requires internal FP32 bank selection without discard outputs"
         )
     expected = expected_signatures(c)
+    gear_rank = sum(len(t["shape"]) for t in expected["draft"]["inputs"])
+    if gear_rank > 128:
+        raise ValueError(f"Draft dynamic gear requires {gear_rank} dimensions, exceeding "
+                         "aclmdlIODims capacity 128; re-export and recompile the quantized "
+                         "Draft with flat weight inputs")
     constants = c.get("draft_constants", [])
     variant = c.get("draft_quantization", "fp16")
     if variant not in ("fp16", "w4a16", "w8a16"):

@@ -1,331 +1,66 @@
-# OM/C++ 使用
+# Ascend310P OM 使用
 
-先按 [README](../README.md#环境配置)保存环境配置。新终端执行：
+流程：[架构](DFLASH_ARCHITECTURE.md)。测量结果：[结果汇总](DFLASH_CURRENT_USAGE_AND_RESULTS.md)。
+
+## 环境配置
+
+复制 [环境模板](../config/dflash_env.sh.example) 到源码外，填写实际路径，然后每个新终端执行：
 
 ```bash
 source /absolute/path/dflash-env.sh
-cd "$AI_RUN_DIR"
 ```
 
-配置里的 `VERIFY_GDR=chunk|mtp` 自动选择对应的 `DEPLOYMENT_MANIFEST`。
-两个 manifest 填实际已编译路径；共用 Prefill、Decode、Draft，各自引用自己的 Verify。
-Draft 采用 16/64 双档上下文：长输入建缓存用 64 行，生成用 16 行，共用一个 `draft.om`，自动选择档位。
-当前 Draft 默认使用整行 `ScatterNdUpdate`、合并投影和免 KV 复制的 GQA。
-更新代码后，在新 `OM_BUNDLE_DIR` 按文末步骤重新 **导出 AIR 并编译**；
-`recompile-draft-om` 只重编已有 AIR，不能启用本次改写。
-需要接收端已有的 `torch_npu.npu_scatter_nd_update` 和 TorchAir converter，无需安装新 kernel。
-首次部署见文末[导出与编译](#导出与编译)。`QUANT_MODE` 只控制原生推理，OM 精度由编译产物决定。
+主要配置：
 
-## 三种 Draft：精度选择与对比
-
-环境配置增加以下路径，指向各自含 `config.json` 和 `model.safetensors` 的目录；修改后重新 `source`。
-`DRAFT_DIR` 仍是原生推理的 FP16 路径，新增选择用于 OM。
-
-```bash
-export DRAFT_FP16_DIR="$DRAFT_DIR"
-export DRAFT_W4A16_DIR="/absolute/path/Qwen3.5-4B-DFlash-GPTQ-W4A16"
-export DRAFT_W8A16_DIR="/absolute/path/Qwen3.5-4B-DFlash-W8A16"
-export DRAFT_QUANTIZATION=fp16  # fp16 / w4a16 / w8a16
-export DRAFT_VARIANTS_DIR="$AI_RUN_DIR/artifacts-drafts"  # 新的空目录
-export DRAFT_VARIANTS_MANIFEST="$DRAFT_VARIANTS_DIR/draft-variants.json"
-```
-
-权重采用固定版本：[W4A16 GPTQ](https://huggingface.co/nota-ai/Qwen3.5-4B-DFlash-GPTQ-W4A16)、
-[W8A16 RTN](https://huggingface.co/naveenrajk/Qwen3.5-4B-DFlash-W8A16)。加载前检查配置、权重哈希及张量规格。
-没有本地权重时，可用 `"$MODEL_PYTHON" -B -m models.dflash_v1.prepare_draft --draft-quantization w4a16 --output "$DRAFT_W4A16_DIR"` 下载固定版本；
-W8 改对应参数。下载目录须未存在且位于本次 `AI_RUN_DIR` 内；已有离线权重不需下载。
-
-已有 `factory.json` 后，分两步执行。第一步检查权重、生成配置；第二步逐项导出和编译，打印每步 START/DONE。
-
-```bash
-"$MODEL_PYTHON" -B "$REPO_ROOT/tools/build_draft_variants.py" \
-  --factory-config "$AI_RUN_DIR/factory.json" --output "$DRAFT_VARIANTS_DIR" \
-  --draft-quantizations fp16 w4a16 w8a16 --verify-gdr both \
-  --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --prepare-only
-```
-
-```bash
-"$MODEL_PYTHON" -B "$REPO_ROOT/tools/build_draft_variants.py" \
-  --execute-plan "$DRAFT_VARIANTS_MANIFEST"
-```
-
-全部选择时只编译 **7 个不同的 OM**：Prefill、Decode、Verify Chunk、Verify MTP，及三种 Draft。
-部署清单位于 `$DRAFT_VARIANTS_DIR/<精度>/<路线>/deployment-manifest.json`；公共产物使用硬链接，目录须在同一文件系统。
-每次运行只加载选定的一个 Draft。请按文末命令重建 **1.12.0+ runner**，以支持只读压缩权重输入。
-已完成的构建步骤重跑时检查哈希后跳过；失败步骤不覆盖已有部分产物，必要时换新输出目录。
-
-```bash
-"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_draft_variants.py" \
-  --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
-  --runner-config "$RUNNER_CONFIG" --model-dir "$TARGET_DIR" \
-  --draft-variants-manifest "$DRAFT_VARIANTS_MANIFEST" \
-  --draft-quantizations fp16 w4a16 w8a16 --verify-gdr chunk --lengths 128 \
-  --warmup 1 --repetitions 3 --max-draft-tokens "$MAX_DRAFT_TOKENS" \
-  --device-id "$DEVICE_ID" --low-memory --allow-output-differences
-```
-
-只测一种用 `--draft-quantizations "$DRAFT_QUANTIZATION"`；两条验证路线用 `--verify-gdr both`。
-支持原有 `--prompt-group`、`--prompt-id`、`--lengths`，以及离线 `--dataset-files` / `--dataset-dir`、`--num-questions`。
-每个问题、输出上限的普通模型只跑一次，三种 Draft 和两条 Verify 共用基线。
-结果在 `draft-comparison-*/summary.md`、`cases.csv`：接受率、tok/s、Draft/Verify 时延，以及相对 FP16 的变化；
-各精度子目录保留按文件汇总、分阶段时延和文字输出。单 OM profiling 可将清单设为 `$SELECTED_DRAFT_DEPLOYMENT_MANIFEST`。
-
-实现与比较口径：
-
-- 两个量化 checkpoint 为五层，当前 FP16 为六层，特征层也不同。这是三个 checkpoint 的比较，不能把全部差异归因于位宽；W4 还面向 QAD Target 训练。
-- 构建脚本启用共同的 Target 特征层输出，各 Draft 在图内选择所需特征。首次须重新导出共享 Target，旧的 FP16 特征接口不能直接混用；新增特征缓冲开销也计入本次运行。
-- 310P 路径以压缩权重常驻，标准算子按 group-128 解量化后做 FP16 MatMul；无新增自定义算子，Embedding/LM Head 仍为 FP16。不是融合低比特 GEMM，解量化工作区和实际加速需设备测量。[接口限制](https://www.hiascend.com/document/detail/zh/Pytorch/600/apiref/apilist/ptaoplist_000164.html)
-- 已有主机算术、动态导出和模拟 ACL 验证；真实 TorchAir/ATC、峰值显存、接受率与性能尚未验证。允许输出差异仍保留记录，不代表任务质量等价。
-
-## 统一测试：短 / 1K 上下文、Chunk / MTP、多长度
-
-默认 **8 条短 prompt + 12 条约 1K 输入 prompt**，每模式 **1 轮预热 + 3 轮测量**。
-长输入包括 **6 条中文任务（含英译中）+ 6 条英文任务**，覆盖分析、检索、规划、数学、代码、翻译、抽取、比较、事件排序、规则和创作。
-两种输入共用下面一条命令；投机始终开启。选择 `both` 时，**每个输出长度只测一次普通模型**：
-低内存模式依次运行普通模型、Chunk、MTP，MTP 复用同一份普通模型输出和时延。每模式仍按指定轮数预热、测量。
-
-使用当前 runner **1.11.0+**，按文末步骤在新目录导出、编译并重建 runner。
-部署清单须包含 `draft_prefill_policy=single_draft16_64_gears` 和 `draft_context_gears=[16,64]`。
-不要手改旧清单或覆盖已有 OM；单纯重编静态 Draft AIR 不能得到双档模型。
-runner 默认预绑定 current/next 两套 I/O；报告中 `protocol.om_io_binding=prebound_ping_pong` 表示已启用。
-
-```bash
-"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
-  --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
-  --runner-config "$RUNNER_CONFIG" --model-dir "$TARGET_DIR" \
-  --chunk-deployment-manifest "$CHUNK_DEPLOYMENT_MANIFEST" \
-  --mtp-deployment-manifest "$MTP_DEPLOYMENT_MANIFEST" \
-  --verify-gdr both --prompt-group all --lengths 128 \
-  --warmup 1 --repetitions 3 \
-  --max-draft-tokens "$MAX_DRAFT_TOKENS" --device-id "$DEVICE_ID" \
-  --low-memory --allow-output-differences
-```
-
-| 选择 | 修改参数 |
+| 变量 | 内容 |
 |---|---|
-| 只测短 / 长输入 | `--prompt-group short` / `--prompt-group long` |
-| 只测 Chunk / MTP | `--verify-gdr chunk` / `--verify-gdr mtp`；另一条清单可省略 |
-| 单个 / 多个输出上限 | `--lengths 512` / `--lengths 128 512 1024` |
-| 单条 prompt | `--prompt-id long_zh_code`；可重复参数，可与短 prompt ID 混选 |
-| 恢复原测量次数 | `--warmup 3 --repetitions 10` |
-| 只检查不运行 | 增加 `--plan-only` |
+| `TARGET_DIR` | Qwen3.5-4B 权重 |
+| `DRAFT_FP16_DIR` | FP16 Draft 权重 |
+| `DRAFT_W4A16_DIR` | [W4A16 GPTQ 权重](https://huggingface.co/nota-ai/Qwen3.5-4B-DFlash-GPTQ-W4A16) |
+| `DRAFT_W8A16_DIR` | [W8A16 权重](https://huggingface.co/naveenrajk/Qwen3.5-4B-DFlash-W8A16) |
+| `OM_BUNDLE_DIR` | 统一 AIR/OM 目录；导出时使用空目录 |
+| `DRAFT_QUANTIZATION` | 默认 Draft：`fp16` / `w4a16` / `w8a16` |
+| `KV_CAPACITY` | 上下文容量，含输入和输出，默认 2048 |
+| `MODEL_PYTHON`、`CANN_ROOT`、`ATC_BIN`、`SOC_VERSION` | 本机工具链 |
 
-上面是 20 条 × 2 路线 × 1 长度，共 40 个组合；改成三个长度就是 120 个。
-同一长度的两条路线共用普通基线，记录来源路径和哈希；Prefill/Decode OM 或接口不一致时提前报错。
-单独选择 `chunk` 或 `mtp` 时，照常测一次普通基线和所选 DFlash 路线。
-省略 `--lengths` 则测试 32、64、128、256、512、1024 六个输出上限。
-两条路线使用相同完整输入，必须都能容纳输入加输出；内置长输入含聊天模板为 **978–1024 token**，
-配 1024 输出需要容量 2048。运行时再用当前 tokenizer 检查，提前 EOS 按实际输出计数。
-
-自定义输入仍可用 `--prompts /path/prompts.json`：
-`[{"id":"my_case","prompt":"你的问题","category":"自定义","group":"long"}]`。
-`group` 可省略；只有筛选 short/long 时才需要标注。
-原 `benchmark_prompts.py` 入口仍支持这些输入选择和轮数参数，单个输出上限用 `--max-new-tokens`。
-
-结果看 `gdr-lengths-*/summary.md` 和 `cases.csv`：整体及 short/long 分组的接受率、tok/s、加速比，
-普通 **Prefill / Decode**、DFlash **Prefill / Draft / Verify** 的平均 ms/call 与累计平均 ms/次生成。
-另列完整 Prefill / Decode 阶段耗时；DFlash Prefill 包含分段建缓存的 Draft 调用，
-这些调用也计入 Draft 图累计耗时，两表不能重复相加；准备阶段候选不计入接受率。
-统计均排除预热、模型加载和请求重置，缺失分项显示 N/A。
-每组子目录的 `generations.txt` 保存文字输出，`runner-batch.json.cases/` 保存逐轮原始记录。
-`--allow-output-differences` 接受跨模式输出差异；去掉则比较两模式第 0 次正式输出的 token/EOS。
-多轮漂移独立记录为 `DRIFT_OBSERVED`，不导致测试失败；结果完整性、设备执行错误仍报错。
-
-<details>
-<summary>12 条长 prompt 的 ID 和实际输入长度</summary>
-
-| ID | 类型 | 输入 token |
-|---|---|---:|
-| long_zh_summary | 中文摘要 | 983 |
-| long_zh_qa | 跨段检索 | 998 |
-| long_zh_plan | 约束规划 | 1001 |
-| long_en_analysis | 英文分析 | 1008 |
-| long_en_math | 英文数学核算 | 978 |
-| long_zh_code | 代码修复 | 984 |
-| long_zh_translate | 技术翻译 | 1004 |
-| long_zh_extract | 结构化抽取 | 1024 |
-| long_en_compare | 英文方案比较 | 980 |
-| long_en_timeline | 英文事件排序 | 1022 |
-| long_en_rules | 英文规则判断 | 1007 |
-| long_en_story | 英文约束创作 | 987 |
-
-长度使用锁定的 Qwen tokenizer 和默认聊天模板；[完整文本](../config/prompts_long_1k.json)。
-1K 指输入上下文，`--lengths` 指输出上限。
-
-</details>
-
-## 离线开源测试集
-
-直接读取 GPU 测试使用的 `gsm8k.jsonl`、`math500.jsonl`、`humaneval.jsonl` 等文件，
-每行 `{"question":"完整问题"}`；也支持相同记录组成的 JSON 数组。不会联网下载数据。
-
-```bash
-"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
-  --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
-  --runner-config "$RUNNER_CONFIG" --model-dir "$TARGET_DIR" \
-  --chunk-deployment-manifest "$CHUNK_DEPLOYMENT_MANIFEST" \
-  --mtp-deployment-manifest "$MTP_DEPLOYMENT_MANIFEST" \
-  --dataset-dir /absolute/path/datasets --num-questions 10 \
-  --verify-gdr both --lengths 128 --warmup 1 --repetitions 3 \
-  --max-draft-tokens "$MAX_DRAFT_TOKENS" --device-id "$DEVICE_ID" \
-  --low-memory --allow-output-differences
-```
-
-- `--num-questions 10`：**每个文件**取前 10 条；省略则读取全部，保持文件顺序。
-- 只测指定文件：将 `--dataset-dir ...` 替换成 `--dataset-files /path/gsm8k.jsonl /path/math500.jsonl`。
-- 文本字段为 `prompt` 时增加 `--dataset-field prompt`；默认使用 `question`，不把答案字段加入输入。
-- 单路线、多长度、`--plan-only` 仍可用。离线文件替代内置 prompt，不与 `--prompts`、short/long 或 prompt ID 筛选混用。
-
-每个**文件 × 路线 × 输出长度**单独汇总接受率、接受/提议数、每轮 token、吞吐、加速比，
-以及普通 Prefill/Decode、DFlash Prefill/Draft/Verify 时延。
-查看 `gdr-lengths-*/datasets.csv`，或 `datasets/<数据集ID>/summary.md`、`summary.json`；
-逐题结果在 `cases.csv`，文件哈希和样本行号随报告保存。接受率是总接受数/总提议数，排除预热。
-这些是推理效率指标，不是 GSM8K 正确率或 HumanEval pass@1。
-
-同一长度、路线下所有文件复用一次模型加载；`both` 共用一次普通基线，不会为 MTP 重跑普通模型。
-先用少量样本检查；文件格式和全部所选输入的容量会在设备运行前校验，不会静默跳过或截短问题。
-`benchmark_prompts.py` 也支持上述离线参数，输出上限使用 `--max-new-tokens`。
-
-## 查看文字、接受率和重新汇总
-
-在环境配置中填写 `SAVED_BATCH`（已有 `runner-batch.json` 的路径），重新 `source` 后执行：
-
-```bash
-"$MODEL_PYTHON" -B "$REPO_ROOT/tools/decode_outputs.py" \
-  --model-dir "$TARGET_DIR" --report "$SAVED_BATCH" --prompt-id zh_explain
-
-"$MODEL_PYTHON" -B "$REPO_ROOT/tools/decode_outputs.py" \
-  --report "$SAVED_BATCH" --acceptance-only
-
-"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_prompts.py" \
-  --run-dir "$AI_RUN_DIR" --summarize-existing "$SAVED_BATCH" \
-  --allow-output-differences
-```
-
-这些命令读取已保存报告，无需重跑模型。汇总另存为 `prompt-summary-*`。
-
-## msprof
-
-只采集选中的 OM 阶段，不跑完整生成。下面定义一次快捷命令，参数依次为 **路线、模式、阶段**。
-`--prompt-report` 改成实际存在的单条报告；示例使用短输入 `zh_explain`。
-
-```bash
-profile_om() {
-  local manifest="$CHUNK_DEPLOYMENT_MANIFEST"
-  if [[ "$1" == mtp ]]; then manifest="$MTP_DEPLOYMENT_MANIFEST"; fi
-  "$MODEL_PYTHON" -B "$REPO_ROOT/tools/profile_om.py" \
-    --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
-    --deployment-manifest "$manifest" --verify-gdr "$1" \
-    --prompt-report "${SAVED_BATCH}.cases/zh_explain.json" \
-    --profile-mode "$2" --profile-stage "$3" --device-id "$DEVICE_ID" \
-    --max-new-tokens 16 --max-draft-tokens 15 --profile-warmup 0
-}
-```
-
-单项测试，选一行执行：
-
-| OM | 命令 |
-|---|---|
-| Prefill | `profile_om chunk ordinary prefill` |
-| Decode | `profile_om chunk ordinary decode` |
-| Draft | `profile_om chunk dflash draft` |
-| Verify Chunk | `profile_om chunk dflash verify` |
-| Verify MTP | `profile_om mtp dflash verify` |
-
-**采集五个主要 OM**：公共的 Prefill、Decode、Draft 各采一次，两条 Verify 分别采集。
-
-```bash
-(
-  set -e
-  profile_om chunk ordinary all
-  profile_om chunk dflash draft
-  profile_om chunk dflash verify
-  profile_om mtp dflash verify
-)
-```
-
-`all` 只展开当前模式：ordinary 为 Prefill/Decode，dflash 为 Prefill/Draft/Verify，**不会自动切换 Chunk/MTP**。
-`--profile-warmup 0` 不预热；改为 `1` 则在窗口外预热一次。输出上限 `16` 用于设置 15 个候选的预算，不会跑满生成。
-Decode/Draft/Verify 的窗口只含一次对应 OM 调用，必要的 Prefill、缓存和候选准备在窗口外执行。
-Prefill 采集整个输入：含聊天模板不超过 64 token 时一次 OM 调用，约 1K 输入则约 16 次。
-分段建缓存的 Draft 调用在 Draft/Verify 采集窗口外执行。
-Draft 窗口采集首次正式调用：输入最后一块超过 16 token 时用 64 档，否则用 16 档；
-完整生成的后续轮均用 16 档。比较时须使用相同输入和档位。
-
-每次输出到终端打印的 `Output` 目录，查看 `capture/<stage>-stage-summary.csv`、
-`capture/<stage>-operator-types.csv` 和 `capture/<stage>-hotspots.txt`，`<stage>` 为所选阶段或 `all`。
-Verify 包含接受判断和图内状态提交；msprof 时延是采集窗口耗时，不是完整生成时延。
+权重目录应包含 `config.json`、`model.safetensors`，加载时检查固定版本哈希。所有生成文件放在 `AI_RUN_DIR` 下。
+原生 Torch-NPU 命令见 [原生推理](DFLASH_RUN_AND_VALIDATE.md)；本页选择参数控制 OM。
 
 ## 导出与编译
 
-在环境配置中将 `OM_BUNDLE_DIR` 设为未使用的目录，重新 `source` 后执行第 1–5 步。
-只有一个 Draft OM，复用现有 64 行特征缓冲区和 KV 缓冲区。
-1024-token 输入需 15 次 Draft 准备调用，最后 64 行随首次正式 Draft 处理；后续投机用 16 行档位。
-候选块始终为 16 行，最多输出 15 个候选。准备阶段仍执行完整 Draft，候选丢弃。
-编译器自动为 Draft 添加 `--dynamic_dims="16;64"`，Target 三图保持静态；用户无需填写档位参数。
-运行日志记录每图的 `weight_bytes/work_bytes`、`dynamic_control_bytes` 和设备可用内存。
-单 OM 不保证峰值显存不变：CANN 需要档位控制缓冲区，多档权重布局与工作区也须实测。
-当前双档的设备编译、显存、时延和接受率待验证；以同输入、同容量的实测决定是否采用。
-模型结构与精度设置不变；档位可能改变算子选择，设备上的候选与有效 KV 仍需对照验证。
-配置不再需要 `DRAFT_CONTEXT_ROWS`，已有 `factory.json` 中的 `draft_context_rows` 字段请删除。
-
-<details>
-<summary>首次部署：准备配置，导出 Chunk / MTP，构建 runner</summary>
-
-先完成 [Torch-NPU 首次准备](DFLASH_RUN_AND_VALIDATE.md#首次准备)和 W8A8 配置。
-还需匹配版本的 TorchAir、ATC、AscendCL、CMake/C++17；MTP 路线需要对应设备算子和 GE 注册。
-在环境配置中填写实际 `ATC_BIN`、`SOC_VERSION` 和 `KV_CAPACITY=2048` 后重新 `source`。
-普通模型与 DFlash 的 recurrent state 使用 FP32，conv/KV 保持 FP16。
-下列命令输出到配置中的 `$OM_BUNDLE_DIR`（默认 `artifacts`）；已有 `factory.json` 且容量足够、
-`include_ordinary_decode=true`，可直接从第 1 步开始。
+先完成 [首次环境准备](DFLASH_RUN_AND_VALIDATE.md#首次准备)和 Target W8A8 配置。
+没有 `factory.json` 时创建：
 
 ```bash
-cd "$AI_RUN_DIR"
-
-"$MODEL_PYTHON" -B "$REPO_ROOT/framework/scripts/lock_quant_inputs.py" \
-  --target-dir "$TARGET_DIR" --draft-dir "$DRAFT_DIR" \
-  --quant-config "$QUANT_CONFIG" --receiver-models-dir "$RECEIVER_MODELS_DIR" \
-  --output "$AI_RUN_DIR/quant-input-manifest.json"
-
 "$MODEL_PYTHON" -B - <<'PY'
 import json, os
 from pathlib import Path
-run = Path(os.environ["AI_RUN_DIR"])
 config = {
     "target_dir": os.environ["TARGET_DIR"],
-    "draft_dir": os.environ["DRAFT_DIR"],
+    "draft_dir": os.environ["DRAFT_FP16_DIR"],
     "quant_config": os.environ["QUANT_CONFIG"],
-    "input_manifest": str(run / "quant-input-manifest.json"),
     "receiver_models_dir": os.environ["RECEIVER_MODELS_DIR"],
-    "max_sequence_length": int(os.environ["MAX_SEQUENCE_LENGTH"]),
+    "max_sequence_length": int(os.environ["KV_CAPACITY"]),
     "include_ordinary_decode": True,
     "draft_attention_matmul_dtype": "float16",
     "dtype": "float16", "device": "npu:" + os.environ["DEVICE_ID"],
     "adn_rms_norm_ge_op_type": "AdnRmsNorm",
 }
-with (run / "factory.json").open("x") as f:
+with (Path(os.environ["AI_RUN_DIR"]) / "factory.json").open("x") as f:
     json.dump(config, f, indent=2)
 PY
 ```
 
-下面四步分别执行，每步成功并返回命令提示符后再继续。
-`export-air` 的 PASS 表示 AIR 导出完成；`compile-om` 的 PASS 和对应目录下的
-`deployment-manifest.json` 才表示整套 OM 编译完成，单个 `.om` 文件不能代表整套完成。
-
-Draft 导出若报 `AIR runtime input count changed during weight conversion`，更新源码后换一个空的
-`OM_BUNDLE_DIR`，从第 1 步重试。双档动态图会在输入间插入 Shape 节点；导出器现按输入索引
-整理节点，再让 TorchAir 转换权重，保留动态形状和输入检查。权重保存进度完成不代表 AIR 导出成功。
-
-**1. 导出 Chunk AIR**
+**1. 导出 AIR。** 自动锁定所选权重、共享 Target 特征，公共图只导出一次。
 
 ```bash
 "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p export-air \
   --factory qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs \
-  --factory-config "$AI_RUN_DIR/factory.json" --verify-gdr chunk \
-  --bundle-dir "$OM_BUNDLE_DIR"
+  --factory-config "$AI_RUN_DIR/factory.json" --bundle-dir "$OM_BUNDLE_DIR" \
+  --verify-gdr both --draft-quantizations fp16 w4a16 w8a16
 ```
 
-**2. 编译 Chunk OM**
+**2. 编译 OM。** 等上一步返回终端提示符后执行；逐图打印 START/DONE。
 
 ```bash
 "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p compile-om \
@@ -333,47 +68,20 @@ Draft 导出若报 `AIR runtime input count changed during weight conversion`，
   --atc "$ATC_BIN" --soc-version "$SOC_VERSION"
 ```
 
-**3. 只导出 MTP Verify，复用公共图**
+全部选择时，`$OM_BUNDLE_DIR/om/` 下只有 **7 个 OM**：
 
-```bash
-"$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p export-air \
-  --factory qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs \
-  --factory-config "$AI_RUN_DIR/factory.json" --verify-gdr mtp \
-  --reuse-common-from "$OM_BUNDLE_DIR/deployment-manifest.json" \
-  --bundle-dir "$OM_BUNDLE_DIR"
+```text
+prefill.om       decode.om
+verify_chunk.om verify_mtp.om
+draft.om        draft_w4a16.om draft_w8a16.om
 ```
 
-**4. 只编译 MTP Verify**
+`draft-variants.json` 索引各组合；部署清单与它同目录。运行时只加载选定的一个 Draft 和一个 Verify。
+只编译部分类型可改 `--draft-quantizations w8a16`；只要一条验证路线可改 `--verify-gdr chunk`。
+AIR 导出成功不代表 OM 编译成功；以第二步成功及 `draft-variants.json` 的 PASS 为准。
+编译日志位于 `$AI_RUN_DIR/log/dflash-atc/`。失败的部分产物保留，重试使用新目录。
 
-```bash
-"$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p compile-om \
-  --air-manifest "$OM_BUNDLE_DIR/air-manifest-mtp.json" \
-  --atc "$ATC_BIN" --soc-version "$SOC_VERSION"
-```
-
-完成后 `$OM_BUNDLE_DIR/om/` 有 **5 个文件**：
-`prefill.om`、`decode.om`、`draft.om`、`verify_chunk.om`、`verify_mtp.om`。
-前三个由 Chunk/MTP 共用，不重复存储；DFlash 运行时只加载 Prefill、Draft 和所选 Verify。
-两个部署清单分别是同目录的 `deployment-manifest.json`（Chunk）和
-`deployment-manifest-mtp.json`（MTP）。将环境配置的两个 manifest 路径改为这两个文件，重新 `source`，
-完成第 5 步重建 runner 后，再执行上面的统一测试。公共图不重复编译、不复制存储。
-
-复用要求两次导出使用同一源码、权重、配置（仅 `verify_gdr` 不同）、工具链及编译选项；不匹配会报错。
-只用 MTP 时可向空目录导出，省略 `--reuse-common-from`，随后编译该目录的 `air-manifest.json`。
-
-遇到 `Common reuse export differs` 时，新版会打印具体字段。
-源码哈希、张量接口或配置确实不同时仍会拒绝复用。更新源码后，旧清单的源码哈希也会变化，
-应在新目录用同一版本重新执行上述四步，不修改旧清单或覆盖已有 OM。
-
-当前 ATC 输出会被收集，每张图结束后才写入 `$AI_RUN_DIR/log/dflash-atc/<本次编译目录>/<图名>.log`；
-编译期间可能长时间没有终端输出，不能仅据此判断卡死。
-Draft 默认 `--deterministic=0`（关闭）；已有 OM 不会随代码更新自动改变，需重编。
-多轮输出不一致只记录 `DRIFT_OBSERVED`，继续统计接受率和时延；详见[漂移问题](DFLASH_CURRENT_USAGE_AND_RESULTS.md#deterministic-与-fc-漂移)。
-
-中断后：对应路线已有 PASS 部署清单则无需重编。首次编译的 `om/` 为空，或增补 MTP 时尚未生成
-`verify_mtp.om`，可重跑对应编译命令；若已有未完成的 OM，不会覆盖或自动续编，请保留原产物并使用新目录。
-
-**5. 构建 runner**
+**3. 构建 runner。**
 
 ```bash
 "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p build-cpp \
@@ -381,65 +89,94 @@ Draft 默认 `--deterministic=0`（关闭）；已有 OM 不会随代码更新�
   --output "$AI_RUN_DIR/reports/cpp-build.json"
 ```
 
-创建 `runner.json`，填写真实设备和软件版本：
+在 `RUNNER_CONFIG` 指向的 JSON 中填写实际 `device_model`、`cann`、`driver`、`firmware`，
+另设 `"runtime": "AscendCL C++"`、`"pad_token_id": 0`。
+
+## 统一测试
+
+同一入口测试短输入、约 1K 长输入、离线开源数据集、三种 Draft 和两条 Verify。
+测试默认关闭 thinking；普通模型与所有 Draft 使用相同的非 thinking 输入模板。
+下面命令合并 **8 条短 prompt + 12 条长 prompt + 每个离线文件前 10 题**：
 
 ```bash
-cat > "$RUNNER_CONFIG" <<'JSON'
-{
-  "device_model": "填写设备型号",
-  "cann": "填写CANN版本",
-  "driver": "填写驱动版本",
-  "firmware": "填写固件版本",
-  "runtime": "AscendCL C++",
-  "pad_token_id": 0
-}
-JSON
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
+  --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
+  --runner-config "$RUNNER_CONFIG" --model-dir "$TARGET_DIR" \
+  --bundle-dir "$OM_BUNDLE_DIR" \
+  --draft-quantization fp16 w4a16 w8a16 --verify-gdr both --lengths 128 \
+  --no-enable-thinking \
+  --dataset-dir /absolute/path/datasets --num-questions 10 --include-builtin-prompts \
+  --warmup 1 --repetitions 3 \
+  --max-draft-tokens "$MAX_DRAFT_TOKENS" --device-id "$DEVICE_ID" \
+  --low-memory --allow-output-differences
 ```
 
-</details>
+| 需求 | 参数 |
+|---|---|
+| 只测短 / 长输入 | 去掉三个数据集参数；设 `--prompt-group short` / `long` |
+| 只测内置 20 条 | 去掉 `--dataset-dir`、`--num-questions`、`--include-builtin-prompts` |
+| 只测离线数据集 | 去掉 `--include-builtin-prompts` |
+| 长输入与离线数据一起测 | 保留数据集参数，增加 `--prompt-group long` |
+| 只测一种 Draft | `--draft-quantization w4a16`；也可写 `"$DRAFT_QUANTIZATION"` |
+| 只测一条 Verify | `--verify-gdr chunk` 或 `mtp` |
+| 多个输出上限 | `--lengths 128 512 1024` |
+| 指定离线文件 | 用 `--dataset-files /path/gsm8k.jsonl /path/humaneval.jsonl` 替换 `--dataset-dir` |
+| 文件全部题目 | 去掉 `--num-questions` |
+| 只检查配置与容量 | 增加 `--plan-only` |
 
-<details>
-<summary>已有 512 容量：扩容到 2048</summary>
+离线格式：JSONL 每行 `{"question":"完整问题"}`，或相同记录的 JSON 数组；字段为 `prompt` 时加 `--dataset-field prompt`。
+不会下载数据、拼接答案或截短问题。自定义短/长输入用 `--prompts /path/prompts.json`；筛选 ID 用 `--prompt-id zh_explain`。
+`--include-builtin-prompts` 合并所选本地 prompt 与离线文件，`--num-questions` 只限制离线文件。
 
-复制已有配置，保留权重、量化和算子设置：
+**每个问题、每个输出上限的普通模型只测一次**，所有 Draft/Verify 组合共用其输出和时延。
+
+## 复用已有普通模型数据
+
+在同一测试命令后增加：
 
 ```bash
-"$MODEL_PYTHON" -B - <<'PY'
-import json, os
-from pathlib import Path
-run = Path(os.environ["AI_RUN_DIR"])
-config = json.loads((run / "factory.json").read_text())
-config["max_sequence_length"] = 2048
-config["include_ordinary_decode"] = True
-with (run / "factory-lengths.json").open("x") as f:
-    json.dump(config, f, indent=2)
-PY
+--ordinary-baseline /absolute/path/previous-run/summary.json
 ```
 
-分别执行上面的四步，将两条导出命令中的 `factory.json` 换为 `factory-lengths.json`，
-在环境配置中将 `OM_BUNDLE_DIR` 改为尚未使用的 `$AI_RUN_DIR/artifacts-lengths` 并重新 `source`；
-完成后更新环境配置中的两个 manifest 路径并重新 `source`。
-容量变大可能增加显存和耗时，两条路线须使用同一容量重新比较。
+支持测试目录、矩阵/单套测试的 `summary.json`，或 `runner-batch.json`；多长度测试按输出上限匹配。
+脚本核对普通 OM、接口、runner/设备、thinking 设置、输入 token 和题目顺序、输出上限、EOS、预热及测量次数。
+开启 thinking 或未记录该设置的结果，不能用于当前非 thinking 测试。
+匹配后只执行 DFlash；缺失或不匹配会报明原因，**不会自动重跑普通模型**。原始报告保持不变。
 
-</details>
+## 查看结果
 
-<details>
-<summary>只重编 Draft，选择 deterministic（默认关闭）</summary>
+- `gdr-lengths-*/summary.md`：Draft × Verify × 输出长度的总表及短/长分组，含接受率、吞吐、加速比和阶段时延。
+- `datasets.csv`、`datasets/<ID>/summary.md`：每个离线文件在各 Draft/Verify 下的结果。
+- `cases.csv`：逐题数据，含 Draft 类型；各精度子目录的 `generations.txt` 保存文字输出。
+
+接受率为总接受数/总提议数；加速比为普通模型总耗时/DFlash 总耗时。
+计时排除预热、加载和重置；图时延为同步 OM 调用时间。
+DFlash Prefill 包含长输入建 Draft 缓存的调用，不能与图累计耗时重复相加。
+允许输出差异仍保留差异记录；多轮漂移报告为 `DRIFT_OBSERVED`。这些指标不代表任务正确率。
+
+## 单 OM profiling
+
+在环境文件选择 `DRAFT_QUANTIZATION`、`VERIFY_GDR`，重新 `source` 后执行：
 
 ```bash
-"$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p recompile-draft-om \
-  --deployment-manifest "$DEPLOYMENT_MANIFEST" --atc "$ATC_BIN" \
-  --deterministic 0 \
-  --output "${DEPLOYMENT_MANIFEST%/*}/deployment-manifest-det0.json"
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/profile_om.py" \
+  --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
+  --deployment-manifest "$SELECTED_DRAFT_DEPLOYMENT_MANIFEST" --verify-gdr "$VERIFY_GDR" \
+  --prompt-report "${SAVED_BATCH}.cases/zh_explain.json" \
+  --profile-mode dflash --profile-stage draft --device-id "$DEVICE_ID" \
+  --max-new-tokens 16 --max-draft-tokens 15 --profile-warmup 0
 ```
 
-新清单必须与原清单同目录、文件名未被使用；三个 Target OM 保持原文件。
-只重编 Draft；此命令只改编译选项，不改变 AIR。
-涉及 Draft 代码改写时，请使用上面的完整导出与编译流程。
-把环境配置中的 `CHUNK_DEPLOYMENT_MANIFEST` 或 `MTP_DEPLOYMENT_MANIFEST` 改为新清单，重新 `source`。
-开启时将 `0` 改为 `1`，输出文件名也改为未使用的名称；省略参数默认为 `0`。
-更新后按第 5 步重建 C++ runner，多轮漂移会显示变化轮数、token 差异数和首个差异位置，
-标为 `PASS_WITH_OBSERVATIONS` 并保留各轮结果。接受率、吞吐和时延使用全部正式轮次；
-普通模型与 DFlash 的输出比较仍由 `--allow-output-differences` 控制。
+普通模型用 `--profile-mode ordinary --profile-stage prefill` 或 `decode`；
+DFlash 可选 `prefill`、`draft`、`verify`。阶段 `all` 采集当前模式全部图，准备工作在窗口外执行。
 
-</details>
+## 精度与执行口径
+
+Recurrent state 存储/传输为 FP32，conv/KV 为 FP16。Draft 采用 16/64 双档，最多输出 15 个候选；
+Draft 默认 `deterministic=0`，投机始终开启。
+
+公开 W4/W8 Draft 为五层，当前 FP16 为六层，特征层也不同，因此是不同 checkpoint 的对比。
+量化路径以压缩权重常驻，标准算子按 group-128 解量化后做 FP16 MatMul；Embedding/LM Head 仍为 FP16。
+压缩权重以一维输入传输，图内恢复形状；五层 Draft 的动态档位共 99 维，低于 ACL 的 128 维上限。
+若加载时报 `aclmdlGetInputDynamicDims failed: 500001`，请更新 runner，并在空目录重新导出、编译量化 Draft。
+真实 TorchAir/ATC 编译、峰值显存、接受率和加速效果须在 310P 上验证。

@@ -65,6 +65,15 @@ def test_raw_prompt_has_no_chat_generation_marker(tokenizer):
     assert tokenize_prompt(tokenizer, "hello world", chat=False) == [1, 2]
 
 
+def test_explicit_no_thinking_changes_chat_prefix(tokenizer):
+    tokenizer.chat_template = (
+        "{% for message in messages %}{{ message['content'] }} {% endfor %}"
+        "{% if enable_thinking is false %}assistant{% else %}world{% endif %}"
+    )
+    assert tokenize_prompt(tokenizer, "hello", chat=True, enable_thinking=False) == [1, 3]
+    assert tokenize_prompt(tokenizer, "hello", chat=True, enable_thinking=True) == [1, 2]
+
+
 def test_long_context_suite_length_with_locked_target_tokenizer():
     """Optional real-tokenizer check; this never loads model weights."""
     model_dir = os.environ.get("QWEN35_TEST_TOKENIZER_DIR")

@@ -129,6 +129,7 @@ def test_exported_graph_consumes_runtime_compressed_weights(bits, tmp_path):
     reference = base.model(*base.example_args)
     spec = expose_draft_constants(base)
     assert spec.input_names[2:] == ("draft_weight_000", "draft_weight_001")
+    assert all(t.ndim == 1 for t in spec.example_args[2:])
     assert spec.model.model.linear.qweight.numel() == 0
     # Actual torch.export, not a fake exporter: external weights must affect output
     # after capture and must not be folded into dense FP16 state.
@@ -140,7 +141,7 @@ def test_exported_graph_consumes_runtime_compressed_weights(bits, tmp_path):
     graph_dir = tmp_path / "draft"
     graph_dir.mkdir()
     metadata = write_constant_inputs(spec, graph_dir, tmp_path)
-    graph = {"input_names": list(spec.input_names), **metadata}
+    graph = {"input_names": list(spec.input_names), "metadata": spec.metadata, **metadata}
     assert verify_constant_inputs(graph, tmp_path) is not None
     path = tmp_path / metadata["constant_inputs"][0]["path"]
     path.write_bytes(bytes(path.stat().st_size))

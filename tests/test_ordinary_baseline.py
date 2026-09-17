@@ -81,7 +81,7 @@ def test_two_routes_execute_ordinary_once_per_budget(matrix_args, monkeypatch, l
         baseline.validate_saved(last / "runner-batch.json", request)
     derived_path.write_bytes(saved)
     for key in ("max_new_tokens", "repetitions", "warmup", "eos_token_ids", "runtime_identity",
-                "ordinary_contract", "runner", "tokenizer_source"):
+                "ordinary_contract", "runner", "tokenizer_source", "enable_thinking"):
         damaged = copy.deepcopy(request)
         damaged[key] = None
         with pytest.raises(ValueError, match="ordinary baseline differs"):

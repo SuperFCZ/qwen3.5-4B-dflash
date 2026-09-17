@@ -673,7 +673,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--enable-thinking",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
     )
     parser.add_argument("--max-new-tokens", type=int, required=True)
     parser.add_argument(

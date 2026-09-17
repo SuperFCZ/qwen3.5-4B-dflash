@@ -298,6 +298,13 @@ struct Loaded {
     Require(dynamic_index < aclmdlGetNumInputs(desc), "invalid Draft dynamic control index");
     // Report damaged public descriptors before checking their flattened gears.
     ValidateModelIo(desc, graph, dynamic_index);
+    std::size_t rank_sum = 0;
+    for (const auto& input : graph.inputs) rank_sum += input.shape.size();
+    const auto capacity = sizeof(gears[0].dims) / sizeof(gears[0].dims[0]);
+    if (rank_sum > capacity) throw std::runtime_error(
+            "Draft dynamic gear requires " + std::to_string(rank_sum) +
+            " dimensions, exceeding aclmdlIODims capacity " + std::to_string(capacity) +
+            "; re-export and recompile the quantized Draft with flat weight inputs");
     std::size_t count = 0;
     Check(aclmdlGetInputDynamicGearCount(desc, static_cast<std::size_t>(-1), &count),
           "aclmdlGetInputDynamicGearCount");

@@ -16,6 +16,83 @@ from qwen35_dflash.ascend310p.utils import atomic_write_json, sha256_file
 ORDER = "saved ordinary baseline then DFlash"
 
 
+def resolve_sources(path, lengths):
+    """Follow saved report references; do not scan runs or execute any model."""
+    found, visited = {}, set()
+    def visit(value):
+        item = Path(value).expanduser().resolve()
+        if item.is_dir():
+            item = item / ("runner-batch.json" if (item / "runner-batch.json").is_file() else "summary.json")
+        if item in visited:
+            return
+        visited.add(item)
+        data = json.loads(item.read_text())
+        def referenced(value):
+            p = Path(value)
+            return p if p.is_absolute() else item.parent / p
+        if "runner_index" in data:
+            ref = referenced(data["runner_index"])
+            if data.get("runner_index_sha256") and sha256_file(ref) != data["runner_index_sha256"]:
+                raise ValueError("ordinary baseline runner index changed")
+            visit(ref)
+        elif "cells" in data:
+            for cell in data["cells"]:
+                if cell.get("max_new_tokens") not in lengths:
+                    continue
+                ref = cell.get("ordinary_baseline") or cell.get("summary")
+                if isinstance(ref, str):
+                    visit(referenced(ref))
+        elif "model_sha256" in data and "cases" in data:
+            request = json.loads((item.parent / "request.json").read_text())
+            if request.get("ordinary_baseline"):
+                ref = request["ordinary_baseline"]["index"]
+                read_locked(ref)
+                visit(ref["path"])
+            elif argument(request, "--mode") == "paired":
+                found.setdefault(request["max_new_tokens"], item)
+            else:
+                raise ValueError("baseline batch has no measured ordinary mode")
+        else:
+            raise ValueError("ordinary baseline expects a runner-batch.json, suite/matrix summary.json, or report directory")
+    visit(path)
+    missing = set(lengths) - found.keys()
+    if missing:
+        raise ValueError(f"ordinary baseline missing output budgets {sorted(missing)}; refusing to rerun ordinary")
+    return {n: found[n] for n in lengths}
+
+
+def preflight_sources(sources, summary, args):
+    """Validate all budgets, prompts, identities and measurements before DFlash."""
+    protocol = summary["protocol"]
+    identity = summary["runtime_identity"]
+    for length, path in sources.items():
+        flags = {"--device-id": args.device_id, "--pad-token-id": identity["pad_token_id"],
+                 "--eos-token-ids": ",".join(map(str, protocol["eos_token_ids"])),
+                 "--max-new-tokens": length, "--max-draft-tokens": args.max_draft_tokens,
+                 "--warmup": protocol["warmup"], "--repetitions": protocol["repetitions"]}
+        current = dict(prompts=summary["prompts"], ordinary_contract=next(iter(summary["bundles"].values()))["ordinary_contract"],
+                       runtime_identity=identity, runner=summary["runner"],
+                       tokenizer_source=summary["tokenizer_source"], chat=protocol["chat"],
+                       enable_thinking=protocol.get("enable_thinking"),
+                       eos_token_ids=protocol["eos_token_ids"], max_new_tokens=length,
+                       max_draft_tokens=args.max_draft_tokens, warmup=protocol["warmup"],
+                       repetitions=protocol["repetitions"],
+                       command=[part for flag, value in flags.items() for part in (flag, str(value))])
+        refs = snapshot(path, current)
+        source = read_locked(refs["request"])
+        for prompt in current["prompts"]:
+            report = read_locked(refs["reports"][prompt["id"]])
+            if (report.get("prompt_token_ids") != prompt["prompt_token_ids"]
+                    or report.get("cpu_fallback") is not False
+                    or report.get("model", {}).get("sha256") != argument(source, "--model-sha256")
+                    or report.get("device_id") != args.device_id
+                    or report.get("eos_token_ids") != current["eos_token_ids"]):
+                raise ValueError(f"ordinary baseline case identity differs: {prompt['id']}")
+            _validate_mode_report("ordinary", report.get("ordinary", {}),
+                generation_mode="ordinary-greedy", warmup=protocol["warmup"],
+                repetitions=protocol["repetitions"], max_new_tokens=length, eos_token_ids=current["eos_token_ids"])
+
+
 def ordinary_contract(deployment, contract):
     return {
         "capacity": contract["capacity"], "vocab_size": contract["vocab_size"],
@@ -47,6 +124,8 @@ def argument(request, name):
 
 
 def compatible(source, current):
+    if source.get("enable_thinking") != current.get("enable_thinking"):
+        raise ValueError("ordinary baseline differs: enable_thinking (missing setting is unknown)")
     for key in ("ordinary_contract", "runtime_identity", "runner", "chat", "tokenizer_source",
                 "eos_token_ids", "max_new_tokens", "max_draft_tokens", "warmup", "repetitions"):
         if key not in source or source[key] != current[key]:

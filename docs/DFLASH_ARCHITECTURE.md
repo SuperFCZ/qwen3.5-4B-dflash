@@ -28,8 +28,8 @@ anchor 是已输出、尚待本轮写入状态的 token。若候选为 `A B C`�
 | 部分 | 结构 |
 |---|---|
 | Target | Qwen3.5-4B，32 层：24 层 Gated DeltaNet + 8 层 full attention；隐藏维度 2560 |
-| Target 特征 | 第 1、5、9、13、17、21、25、29 层输出（从 0 编号），拼成每 token 20480 维 |
-| Draft | 官方 6 层模型；FC 20480 → 2560，norm，各层上下文 K/V 投影，6 层 attention/MLP，LM head |
+| Target 特征 | 统一 OM 输出第 1、5、8、9、13、15、17、21、22、25、29 层的并集（从 0 编号），每 token 28160 维；Draft 选择 checkpoint 对应的层 |
+| Draft | FP16 为 6 层、W4/W8 为 5 层；FC 将选定特征投影到 2560 维，随后为 norm、上下文 K/V、attention/MLP 与 LM head |
 | Draft 输入 | 新提交的 Target 特征 + anchor/MASK block；持久 KV 只保留已提交上下文 |
 | 精度 | 原生 Target 可选 FP16/W8A8；OM 为 W8A8 Target，Draft 可选 FP16/W4A16/W8A16 |
 
@@ -52,16 +52,17 @@ OM Draft 的 QK/PV 矩阵乘默认 FP16，缩放、Mask、Softmax 为 FP32；
 <details>
 <summary>算子与 OM 接口细节</summary>
 
-同一份 FC/RMSNorm 结果供 6 层分别生成上下文 K/V；Query 只来自 anchor/MASK block。
+同一份 FC/RMSNorm 结果供各层分别生成上下文 K/V；Query 只来自 anchor/MASK block。
 每层内部为 RMSNorm → Q/K/V 投影（Q/K norm + RoPE）→ Attention → 输出投影与残差，
 再经 RMSNorm → SwiGLU MLP 与残差。滑窗层按因果窗口计算，full-attention 层允许块内双向注意。
 
 Chunk/MTP 共用选定精度的 Draft OM，把上下文更新和候选生成合在一次调用中。
 三精度对比时，共享 Target 输出特征层的并集；每个 Draft 选取自己的特征输入。
 发布的 W4/W8 checkpoint 为五层，FP16 为六层；量化路径保留压缩权重输入，在图内按组解量化后做 FP16 MatMul。
-三种 Draft 分开运行，不同时驻留；[构建与对比命令](GDR_CHUNK_AIR_OM.md#三种-draft精度选择与对比)。
+三种 Draft 分开运行，不同时驻留；[构建与对比命令](GDR_CHUNK_AIR_OM.md#统一测试)。
 逻辑接口为 `(features, start_position, valid_rows, anchor, proposal_count, 历史 KV)`
 → `(候选 token, 更新后的 KV)`，位置和有效长度控制可见范围。
+W4/W8 另带一维只读权重输入，加载一次后常驻设备，图内恢复形状并解量化。
 OM 使用单个 Draft 的 16/64 两档上下文；特征缓冲区容量为 64 行，候选 block 始终为 16 行。
 生成轮的新特征最多为“旧 anchor + 15 个接受 token”共 16 行；候选输出最多 15 个。
 每个非末尾的 Target 64 行特征块调用一次 Draft 建缓存，准备阶段候选丢弃；
@@ -75,7 +76,7 @@ OM 使用单个 Draft 的 16/64 两档上下文；特征缓冲区容量为 64 �
 
 OM 内每层将新增上下文和候选输入按行拼接，共用一次 K/V 投影；K/V 与 gate/up 权重在导出时打包替换。
 KV 使用整行 `ScatterNdUpdate`，GQA 将 Query 分组并入行维，避免复制历史 K/V。
-模型层数、完整词表和 FP16 权重精度不变；仍只有一个 Draft OM 和既有 current/next 缓存。
+各 checkpoint 的层数与完整词表保持不变；每次加载一个 Draft OM，使用 current/next 缓存。
 实际编译 workspace、峰值显存和浮点舍入需重新实测。
 
 </details>
@@ -92,7 +93,7 @@ KV 使用整行 `ScatterNdUpdate`，GQA 将 Query 分组并入行维，避免复
 
 GDN 状态压缩了历史，不能靠截短 KV 长度撤销拒绝的 token，因此需要重算或选取中间状态。
 MTP 输入的旧状态选择值固定为 0，当前轮接受数用于选择输出 bank；二者含义不同。
-普通 prefill/decode 使用原有 Chunk 算子，recurrent state 的初始化、存储、传递统一为 FP32，取消 FP16 写回。
+普通 prefill/decode 使用 Chunk 算子，recurrent state 的初始化、存储、传递统一为 FP32。
 Torch-NPU 和 AIR/OM 均采用这一规则；权重、conv 和 KV 的精度保持现有设置。
 
 Torch-NPU 使用实际 `T=K+1` 行；OM 固定 16 行，通过有效长度限制接受和提交。
@@ -106,11 +107,14 @@ MTP bank 在 OM 内消费；原生提交复制所选状态，避免跨轮保留�
 | `prefill.om` | 64 行物理块处理 prompt | 普通、DFlash |
 | `decode.om` | 单行 greedy decode | 仅普通 |
 | `draft.om` | 16/64 行特征投影、KV 追加、最多 15 个并行候选 | DFlash |
+| `draft_w4a16.om` | W4A16 Draft，相同运行角色 | DFlash 选 W4A16 |
+| `draft_w8a16.om` | W8A16 Draft，相同运行角色 | DFlash 选 W8A16 |
 | `verify_chunk.om` | Chunk 两遍验证、接受判断、状态提交 | DFlash Chunk |
 | `verify_mtp.om` | MTP 验证、接受判断、选择状态 | DFlash MTP |
 
 普通模式加载 2 图；DFlash 加载 3 图；无独立 commit OM。
-两条路线共存为 5 个 OM，Prefill、Decode、Draft 共用；运行时只加载所选 Verify。
+三种 Draft、两条 Verify 共 7 个 OM，全部位于同一个 `om/` 目录。
+Prefill、Decode 为所有组合共用；每条 Verify 在三种 Draft 间共用，每个 Draft 在两条验证路线间共用。
 运行时角色由清单映射到对应文件；紧凑执行只改变计算行数和调度，复用既有算子及模型权重。
 C++ 在设备上维护 KV、conv、recurrent state；低显存模式分组加载，并共享串行 workspace。
 runner 预先绑定 current/next 两组设备地址，提交后选择对应 dataset；热循环不再逐张量调用
@@ -120,7 +124,7 @@ Chunk Verify 保留 24 份 FP32 discard state 输出（48 MiB），不回传 CPU
 
 Recurrent state 不是 KV cache：batch=1、24 层 `[1,32,128,128]`，单份 FP32 共 48 MiB，
 FP16 为 24 MiB，与序列长度无关。C++ 的 current/next 两份采用 FP32 比 FP16 多 48 MiB；
-不会增大 KV cache。此前 FP16 写回尚无独立实测收益，新版 FP32 的精度与速度需重新测量。
+不会增大 KV cache。
 
 ## 加速如何衡量
 

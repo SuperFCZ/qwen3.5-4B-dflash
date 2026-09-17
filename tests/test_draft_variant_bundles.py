@@ -31,7 +31,9 @@ def variant_builder(tmp_path, monkeypatch):
     monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
     active, calls = {}, []
     def factory(cfg):
+        layers = cfg.get("draft_layers", 2)
         draft = DFlashDraftModel(replace(config(), vocab_size=64, mask_token_id=63, block_size=16,
+            num_hidden_layers=layers, layer_types=("full_attention",) * layers,
             target_layer_ids=(0, 1), num_target_layers=2), ops=AirDFlashOps(), dtype=torch.float16).eval()
         variant = cfg["draft_quantization"]
         if variant != "fp16":
@@ -64,8 +66,10 @@ def variant_builder(tmp_path, monkeypatch):
         path = Path(next(c.split("=", 1)[1] + ".om" for c in command if c.startswith("--output=")))
         calls.append(("compile", name))
         lines = ["FAKE_CHUNK " + name]
+        air_path = Path(next(c.split("=", 1)[1] for c in command if c.startswith("--model=")))
+        signature = json.loads(air_path.read_text())
         for direction, tag in (("inputs", "I"), ("outputs", "O")):
-            for t in active[name].metadata["tensor_abi"][direction]:
+            for t in signature[direction]:
                 lines.append(" ".join(map(str, (tag, t["name"], t["dtype"], len(t["shape"]), *t["shape"])) ))
         if name == "draft":
             lines.append("GEARS 16 64")
@@ -79,6 +83,7 @@ def variant_builder(tmp_path, monkeypatch):
         result = compile_air_bundle(air["manifest_path"], soc_version="Ascend310P3", atc_bin="/bin/true",
                                    runner=atc, atc_identity="fake-atc")
         return Path(result["manifest_path"])
+    build.air, build.atc = Air(), atc
     return build, calls
 
 
@@ -133,3 +138,37 @@ def test_reuse_rejects_different_target_input_identity(variant_builder):
     with pytest.raises(ValueError, match="configuration differs|target_input_identity"):
         build("w4a16", "chunk", reuse_target=source, extra={"target_identity": "changed"})
     assert calls == []
+
+
+@pytest.mark.parametrize("variant", ["w4a16", "w8a16"])
+def test_five_layer_quantized_draft_fits_acl_gears(variant_builder, tmp_path, variant):
+    from copy import deepcopy
+    from qwen35_dflash.ascend310p.incremental_plan import validate_incremental_bundle
+    from qwen35_dflash.ascend310p.cpp_runtime import run_cpp_pair
+
+    build, _ = variant_builder
+    manifest = build(variant, "chunk", extra={"draft_layers": 5})
+    data = json.loads(manifest.read_text())
+    graph = next(g for g in data["graphs"] if g["name"] == "draft")
+    constants = graph["constant_inputs"]
+    assert len(constants) == 52
+    assert all(len(t["shape"]) == 1 for t in constants)
+    assert sum(len(t["shape"]) for t in graph["metadata"]["tensor_abi"]["inputs"]) == 99
+    # Production layer count, not a two-layer fixture: the old 2-D ABI needs
+    # 151 slots. Reject it before compiling/loading another unusable OM.
+    old = deepcopy(data["graphs"])
+    for g in old:
+        for descriptor, payload in zip(g["metadata"]["incremental_contract"]["draft_constants"], constants):
+            descriptor["shape"] = payload["logical_shape"]
+    with pytest.raises(ValueError, match="151 dimensions.*capacity 128"):
+        validate_incremental_bundle(old)
+    runner = os.environ.get("QWEN35_CPP_TEST_RUNNER")
+    if not runner:
+        pytest.skip("requires fake ACL test runner")
+    result = run_cpp_pair(deployment_manifest=manifest, runner=runner,
+        runner_options={"device_model": "host-fixture", "cann": "fake", "driver": "fake",
+                        "firmware": "fake", "runtime": "fake-acl"},
+        prompt_token_ids=[4] * 65, eos_token_ids=[], device_id=0,
+        max_new_tokens=40, max_draft_tokens=15,
+        raw_output=tmp_path / "five-layer.json", log_output=tmp_path / "five-layer.log", low_memory=True)
+    assert result["ordinary_parity"]["token_id_mismatches"] == 0

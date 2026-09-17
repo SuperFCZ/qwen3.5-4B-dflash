@@ -17,6 +17,8 @@ def add_arguments(parser):
                         help="first N questions from EACH file; omitted: all questions")
     parser.add_argument("--dataset-field", default="question",
                         help="text field in each record (default: question; e.g. prompt)")
+    parser.add_argument("--include-builtin-prompts", action="store_true",
+                        help="combine selected short/long prompts with offline dataset questions in one run")
 
 
 def selected(args):
@@ -28,9 +30,9 @@ def load(args):
     directory, files = getattr(args, "dataset_dir", None), getattr(args, "dataset_files", None)
     if directory and files:
         raise ValueError("--dataset-dir and --dataset-files are mutually exclusive")
-    if (getattr(args, "prompts", None) or getattr(args, "prompt_id", None)
+    if not getattr(args, "include_builtin_prompts", False) and (getattr(args, "prompts", None) or getattr(args, "prompt_id", None)
             or getattr(args, "prompt_group", "all") != "all"):
-        raise ValueError("offline datasets cannot be combined with --prompts/--prompt-id/--prompt-group filtering")
+        raise ValueError("offline datasets cannot be combined with --prompts/--prompt-id/--prompt-group filtering without --include-builtin-prompts")
     limit = getattr(args, "num_questions", None)
     if limit is not None and (type(limit) is not int or limit <= 0):
         raise ValueError("--num-questions must be positive (per file); omit it to read all")

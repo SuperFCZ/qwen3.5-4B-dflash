@@ -27,6 +27,8 @@ OM 测试见 [OM/C++ 使用](GDR_CHUNK_AIR_OM.md)。
 
 ## 测量普通 / DFlash 时延
 
+测试默认关闭 thinking；环境脚本中的 `NPU_ARGS` 也使用 `--no-enable-thinking`。
+
 ```bash
 for MODE in ordinary dflash; do
   "$MODEL_PYTHON" -B -m models.dflash_v1.benchmark_npu \
@@ -38,7 +40,7 @@ done
 ```
 
 比较报告中的整段生成时延、tok/s 和实际输出长度。此原生 benchmark 保留严格对照；
-允许输出差异的多 prompt 实验使用 [OM 测试命令](GDR_CHUNK_AIR_OM.md#多-prompt-测试)。
+允许输出差异的多 prompt 实验使用 [OM 测试命令](GDR_CHUNK_AIR_OM.md#统一测试)。
 
 ## msprof
 
