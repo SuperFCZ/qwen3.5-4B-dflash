@@ -20,7 +20,9 @@ values = {k: os.environ.get(k) for k in (
     'RECEIVER_MODELS_DIR', 'DEPLOYMENT_MANIFEST', 'VERIFY_GDR', 'QUANT_MODE',
     'KV_CAPACITY', 'MAX_SEQUENCE_LENGTH', 'MAX_NEW_TOKENS', 'MAX_DRAFT_TOKENS',
     'BLOCK_SIZE', 'DEVICE_ID', 'TMPDIR', 'HF_HOME', 'TORCH_HOME', 'XDG_CACHE_HOME',
-    'PYTHONPATH', 'PYTHONDONTWRITEBYTECODE', 'DFLASH_TEST_CANN_LOADS'
+    'PYTHONPATH', 'PYTHONDONTWRITEBYTECODE', 'DFLASH_TEST_CANN_LOADS',
+    'DRAFT_FP16_DIR', 'DRAFT_W4A16_DIR', 'DRAFT_W8A16_DIR', 'DRAFT_QUANTIZATION',
+    'DRAFT_SELECTED_DIR', 'DRAFT_VARIANTS_MANIFEST', 'SELECTED_DRAFT_DEPLOYMENT_MANIFEST'
 )}
 values['args'] = sys.argv[1:]
 values['cwd'] = os.getcwd()
@@ -98,6 +100,7 @@ class EnvironmentConfigTests(unittest.TestCase):
     def test_fresh_terminal_restores_exports_arrays_and_receiver_import(self):
         values = self.probe()
         self.assertEqual(values["receiver_marker"], "first receiver")
+
         self.assertEqual(values["DEPLOYMENT_MANIFEST"],
                          str(self.run / "artifacts/deployment-manifest.json"))
         self.assertEqual(values["BLOCK_SIZE"], "8")
@@ -113,6 +116,17 @@ class EnvironmentConfigTests(unittest.TestCase):
         for name in ("TMPDIR", "HF_HOME", "TORCH_HOME", "XDG_CACHE_HOME"):
             self.assertTrue(Path(values[name]).is_relative_to(self.run))
         self.assertTrue((self.run / "reports").is_dir())
+
+    def test_quantized_checkpoint_paths_and_selection_restore_in_fresh_shell(self):
+        self.values.update(DRAFT_W4A16_DIR=str(self.root / "W4 weights"),
+                           DRAFT_W8A16_DIR=str(self.root / "W8 weights"), DRAFT_QUANTIZATION="w4a16")
+        self.write_config()
+        values = self.probe()
+        self.assertEqual(values["DRAFT_SELECTED_DIR"], str(self.root / "W4 weights"))
+        self.assertEqual(values["DRAFT_FP16_DIR"], self.values["DRAFT_DIR"])
+        self.assertEqual(values["DRAFT_W8A16_DIR"], str(self.root / "W8 weights"))
+        self.assertEqual(values["SELECTED_DRAFT_DEPLOYMENT_MANIFEST"],
+                         str(self.run / "artifacts-drafts/w4a16/chunk/deployment-manifest.json"))
 
     def test_repeated_source_preserves_shell_flags_and_avoids_duplicate_paths(self):
         inherited = str(self.root / "other Python modules")

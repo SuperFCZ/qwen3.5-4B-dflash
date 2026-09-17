@@ -16,10 +16,14 @@ export MODEL_PYTHON="/absolute/path/npu-env/bin/python"
 export CANN_ROOT="/absolute/path/ascend-toolkit"
 export TARGET_DIR="/absolute/path/Qwen3.5-4B"
 export DRAFT_DIR="/absolute/path/Qwen3.5-4B-DFlash"
+export DRAFT_FP16_DIR="$DRAFT_DIR"
+export DRAFT_W4A16_DIR="/absolute/path/Qwen3.5-4B-DFlash-GPTQ-W4A16"
+export DRAFT_W8A16_DIR="/absolute/path/Qwen3.5-4B-DFlash-W8A16"
 export RECEIVER_ROOT="/absolute/path/qwen35-receiver"  # 仅运行已有 OM 可留空
 
 # 常用参数
 export VERIFY_GDR=chunk       # chunk / mtp
+export DRAFT_QUANTIZATION=fp16 # OM Draft：fp16 / w4a16 / w8a16
 export DEVICE_ID=0
 export KV_CAPACITY=2048       # prompt + 输出容量，64 的倍数
 export MAX_NEW_TOKENS=128
@@ -31,6 +35,8 @@ export PROMPT='请用通俗的中文解释什么是机器学习。'
 export QUANT_CONFIG="$AI_RUN_DIR/qwen35-w8a8.yaml"
 export CPP_RUNNER="$AI_RUN_DIR/build/cpp/qwen35_dflash_acl_runner"
 export OM_BUNDLE_DIR="$AI_RUN_DIR/artifacts"  # 新导出必须用空目录
+export DRAFT_VARIANTS_DIR="$AI_RUN_DIR/artifacts-drafts"
+export DRAFT_VARIANTS_MANIFEST="$DRAFT_VARIANTS_DIR/draft-variants.json"
 export CHUNK_DEPLOYMENT_MANIFEST="$OM_BUNDLE_DIR/deployment-manifest.json"
 export MTP_DEPLOYMENT_MANIFEST="$OM_BUNDLE_DIR/deployment-manifest-mtp.json"
 export RUNNER_CONFIG="$AI_RUN_DIR/runner.json"

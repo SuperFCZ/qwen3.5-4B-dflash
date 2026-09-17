@@ -20,6 +20,8 @@ struct ChunkGraph {
   std::filesystem::path model;
   std::string sha256;
   std::vector<TensorSpec> inputs, outputs;
+  struct Constant { std::filesystem::path path; std::string sha256; std::size_t bytes; };
+  std::map<std::string, Constant> constants;
 };
 struct ChunkPlan {
   std::string abi = "qwen35-dflash-chunk-v4";

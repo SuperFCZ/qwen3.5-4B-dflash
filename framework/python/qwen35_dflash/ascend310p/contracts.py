@@ -66,6 +66,7 @@ class AirGraphSpec:
     compiler_config: Any | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
     custom_ops: tuple[CustomOpExportSpec, ...] = ()
+    constant_input_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not _GRAPH_NAME.fullmatch(self.name):
@@ -88,6 +89,8 @@ class AirGraphSpec:
             raise ValueError(f"example kwargs use TorchAir control names: {overlap}")
         if len(set(self.input_names)) != len(self.input_names):
             raise ValueError("AIR input names must be unique")
+        if self.constant_input_names and self.input_names[-len(self.constant_input_names):] != self.constant_input_names:
+            raise ValueError("constant inputs must be an ordered suffix of the graph inputs")
         if len(set(self.output_names)) != len(self.output_names):
             raise ValueError("AIR output names must be unique")
         if not isinstance(self.custom_ops, tuple):

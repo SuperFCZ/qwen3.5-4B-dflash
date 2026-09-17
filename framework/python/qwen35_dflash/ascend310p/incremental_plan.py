@@ -18,7 +18,7 @@ DRAFT_PREFILL_POLICY = "single_draft16_64_gears"
 VERIFY_STATE_OUTPUT_POLICY = "raw_fp32_device_only_discard_first_pass_commit_second_pass"
 MTP_STATE_OUTPUT_POLICY = "internal_fp32_bank_gather_accepted_slot"
 ROLES = ("target_prefill", "target_decode", "target_verify", "draft")
-DTYPES = {"int64": 8, "int16": 2, "float16": 2, "float32": 4}
+DTYPES = {"int64": 8, "int16": 2, "float16": 2, "float32": 4, "int8": 1, "uint8": 1}
 
 
 def verify_gdr_route(contract):
@@ -116,6 +116,7 @@ def expected_signatures(c):
             descriptor("anchor", "int64", [1]),
             descriptor("proposal_count", "int16", [1]),
             *drafts,
+            *c.get("draft_constants", []),
         ],
         "outputs": [descriptor("draft_top1", "int64", [1, 15]), *drafts],
     }
@@ -206,6 +207,17 @@ def validate_incremental_bundle(graphs):
             else "MTP verify requires internal FP32 bank selection without discard outputs"
         )
     expected = expected_signatures(c)
+    constants = c.get("draft_constants", [])
+    variant = c.get("draft_quantization", "fp16")
+    if variant not in ("fp16", "w4a16", "w8a16"):
+        raise ValueError("unknown Draft quantization")
+    if variant == "fp16" and constants or variant != "fp16" and len(constants) != 2 + 5 * len(c["draft_states"]):
+        raise ValueError("Draft constant count differs from packed projection contract")
+    for i, tensor in enumerate(constants):
+        _validate_tensor(tensor)
+        if tensor["name"] != f"draft_weight_{i:03d}" or tensor["dtype"] != (
+                "float16" if i % 2 else "uint8" if variant == "w4a16" else "int8"):
+            raise ValueError("Draft compressed constant ordering/dtype differs")
     for graph in graphs:
         if graph["metadata"]["incremental_contract"] != c:
             raise ValueError("incremental graph contracts differ")
@@ -284,6 +296,12 @@ def write_incremental_plan(deployment_manifest, output, *, mode="paired", verify
                         )
                     )
                 )
+        if graph.get("constant_inputs") or (graph["name"] == "draft" and c.get("draft_quantization", "fp16") != "fp16"):
+            from .draft_constants import verify_constant_inputs
+            verify_constant_inputs(graph, path.parent)
+        for record in graph.get("constant_inputs", []):
+            payload = contained_path(path.parent, record["path"])
+            lines.append(f'C {record["name"]} {json.dumps(str(payload))} {record["sha256"]} {record["bytes"]}')
         lines.append("end")
     lines.append("done")
     output.parent.mkdir(parents=True, exist_ok=True)

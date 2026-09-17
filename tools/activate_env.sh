@@ -32,12 +32,15 @@ _dflash_activate_env() {
     case "${QUANT_MODE:-disable}" in enable|disable) ;; *)
         echo "dflash-env: QUANT_MODE 只能是 enable 或 disable" >&2; return 1 ;;
     esac
+    case "${DRAFT_QUANTIZATION:-fp16}" in fp16|w4a16|w8a16) ;; *)
+        echo "dflash-env: DRAFT_QUANTIZATION 只能是 fp16、w4a16 或 w8a16" >&2; return 1 ;;
+    esac
     if [[ ! "${MAX_DRAFT_TOKENS:-15}" =~ ^([1-9]|1[0-5])$ ]]; then
         echo "dflash-env: MAX_DRAFT_TOKENS 必须为 1..15" >&2
         return 1
     fi
     dflash_run_real="$(realpath -m -- "$AI_RUN_DIR")" || return 1
-    for dflash_name in REPO_ROOT TARGET_DIR DRAFT_DIR RECEIVER_ROOT CANN_ROOT; do
+    for dflash_name in REPO_ROOT TARGET_DIR DRAFT_DIR DRAFT_FP16_DIR DRAFT_W4A16_DIR DRAFT_W8A16_DIR RECEIVER_ROOT CANN_ROOT; do
         dflash_value="${!dflash_name:-}"
         [[ -n "$dflash_value" ]] || continue
         dflash_root_real="$(realpath -m -- "$dflash_value")" || return 1
@@ -62,6 +65,13 @@ _dflash_activate_env() {
     export VERIFY_GDR="${VERIFY_GDR:-chunk}" DEVICE_ID="${DEVICE_ID:-0}"
     export KV_CAPACITY="${KV_CAPACITY:-2048}" MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-128}"
     export MAX_DRAFT_TOKENS="${MAX_DRAFT_TOKENS:-15}" QUANT_MODE="${QUANT_MODE:-disable}"
+    export DRAFT_QUANTIZATION="${DRAFT_QUANTIZATION:-fp16}"
+    export DRAFT_FP16_DIR="${DRAFT_FP16_DIR:-${DRAFT_DIR:-}}"
+    dflash_name="DRAFT_${DRAFT_QUANTIZATION^^}_DIR"
+    export DRAFT_SELECTED_DIR="${!dflash_name:-}"
+    export DRAFT_VARIANTS_DIR="${DRAFT_VARIANTS_DIR:-$AI_RUN_DIR/artifacts-drafts}"
+    export DRAFT_VARIANTS_MANIFEST="${DRAFT_VARIANTS_MANIFEST:-$DRAFT_VARIANTS_DIR/draft-variants.json}"
+    export SELECTED_DRAFT_DEPLOYMENT_MANIFEST="$DRAFT_VARIANTS_DIR/$DRAFT_QUANTIZATION/$VERIFY_GDR/deployment-manifest.json"
     export MAX_SEQUENCE_LENGTH="$KV_CAPACITY" BLOCK_SIZE="$((MAX_DRAFT_TOKENS + 1))"
     export RECEIVER_MODELS_DIR=""
     if [[ -n "${RECEIVER_ROOT:-}" ]]; then
@@ -105,8 +115,8 @@ _dflash_activate_env() {
     if [[ "$QUANT_MODE" == enable ]]; then
         QUANT_ARGS=(--quant_mode enable --config "${QUANT_CONFIG:-}")
     fi
-    printf '[dflash-env] verify=%s quant=%s max_new_tokens=%s run=%s\n' \
-        "$VERIFY_GDR" "$QUANT_MODE" "$MAX_NEW_TOKENS" "$AI_RUN_DIR"
+    printf '[dflash-env] verify=%s draft=%s target_quant=%s max_new_tokens=%s run=%s\n' \
+        "$VERIFY_GDR" "$DRAFT_QUANTIZATION" "$QUANT_MODE" "$MAX_NEW_TOKENS" "$AI_RUN_DIR"
 }
 
 if _dflash_activate_env; then

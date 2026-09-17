@@ -79,6 +79,8 @@ aclError aclrtMalloc(
     aclrtMemMallocPolicy policy);
 aclError aclrtFree(void* device_ptr);
 aclError aclrtGetMemInfo(aclrtMemAttr attr, std::size_t* free, std::size_t* total);
+aclError aclrtMemcpy(void* destination, std::size_t destination_max,
+                     const void* source, std::size_t count, aclrtMemcpyKind kind);
 aclError aclrtMemcpyAsync(
     void* destination,
     std::size_t destination_max,

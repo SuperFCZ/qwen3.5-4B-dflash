@@ -32,7 +32,7 @@ class Qwen35DFlashConfig:
     rms_norm_eps: float
     rope_theta: float
     max_position_embeddings: int
-    sliding_window: int
+    sliding_window: int | None
     use_sliding_window: bool
     attention_bias: bool
     attention_dropout: float
@@ -79,12 +79,13 @@ class Qwen35DFlashConfig:
             num_target_layers=int(raw["num_target_layers"]),
             target_layer_ids=tuple(int(item) for item in dflash["target_layer_ids"]),
             layer_types=tuple(str(item) for item in raw["layer_types"]),
-            block_size=int(dflash.get("block_size", 16)),
+            block_size=int(dflash.get("block_size", raw.get("block_size", 16))),
             mask_token_id=int(dflash["mask_token_id"]),
             rms_norm_eps=float(raw.get("rms_norm_eps", 1e-6)),
-            rope_theta=float(rope.get("rope_theta", 10_000.0)),
+            rope_theta=float(rope.get("rope_theta", raw.get("rope_theta", 10_000.0))),
             max_position_embeddings=int(raw.get("max_position_embeddings", 262_144)),
-            sliding_window=int(raw.get("sliding_window", 4096)),
+            sliding_window=(None if raw.get("sliding_window", 4096) is None
+                            else int(raw.get("sliding_window", 4096))),
             use_sliding_window=bool(raw.get("use_sliding_window", False)),
             attention_bias=bool(raw.get("attention_bias", False)),
             attention_dropout=float(raw.get("attention_dropout", 0.0)),
@@ -118,11 +119,14 @@ class Qwen35DFlashConfig:
             "num_target_layers": self.num_target_layers,
             "block_size": self.block_size,
             "max_position_embeddings": self.max_position_embeddings,
-            "sliding_window": self.sliding_window,
         }
         invalid = [name for name, value in positive.items() if value <= 0]
         if invalid:
             raise ValueError(f"DFlash configuration values must be positive: {invalid}")
+        if self.sliding_window is not None and self.sliding_window <= 0:
+            raise ValueError("sliding_window must be positive when specified")
+        if "sliding_attention" in self.layer_types and self.sliding_window is None:
+            raise ValueError("sliding attention requires sliding_window")
         if self.block_size < DFLASH_MIN_BLOCK_SIZE:
             raise ValueError(
                 "DFlash block_size includes one anchor row and must be at least 2"

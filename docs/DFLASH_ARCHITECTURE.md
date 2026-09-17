@@ -31,7 +31,7 @@ anchor 是已输出、尚待本轮写入状态的 token。若候选为 `A B C`�
 | Target 特征 | 第 1、5、9、13、17、21、25、29 层输出（从 0 编号），拼成每 token 20480 维 |
 | Draft | 官方 6 层模型；FC 20480 → 2560，norm，各层上下文 K/V 投影，6 层 attention/MLP，LM head |
 | Draft 输入 | 新提交的 Target 特征 + anchor/MASK block；持久 KV 只保留已提交上下文 |
-| 精度 | 原生 Target 可选 FP16/W8A8；当前 OM 为 W8A8 Target + FP16 Draft |
+| 精度 | 原生 Target 可选 FP16/W8A8；OM 为 W8A8 Target，Draft 可选 FP16/W4A16/W8A16 |
 
 OM Draft 的 QK/PV 矩阵乘默认 FP16，缩放、Mask、Softmax 为 FP32；
 原生 Torch-NPU Draft 使用 FP32 矩阵乘。两者不能视为完全相同的数值路径。
@@ -56,7 +56,10 @@ OM Draft 的 QK/PV 矩阵乘默认 FP16，缩放、Mask、Softmax 为 FP32；
 每层内部为 RMSNorm → Q/K/V 投影（Q/K norm + RoPE）→ Attention → 输出投影与残差，
 再经 RMSNorm → SwiGLU MLP 与残差。滑窗层按因果窗口计算，full-attention 层允许块内双向注意。
 
-Chunk/MTP 共用同一个 `draft.om`，把上下文更新和候选生成合在一次调用中。
+Chunk/MTP 共用选定精度的 Draft OM，把上下文更新和候选生成合在一次调用中。
+三精度对比时，共享 Target 输出特征层的并集；每个 Draft 选取自己的特征输入。
+发布的 W4/W8 checkpoint 为五层，FP16 为六层；量化路径保留压缩权重输入，在图内按组解量化后做 FP16 MatMul。
+三种 Draft 分开运行，不同时驻留；[构建与对比命令](GDR_CHUNK_AIR_OM.md#三种-draft精度选择与对比)。
 逻辑接口为 `(features, start_position, valid_rows, anchor, proposal_count, 历史 KV)`
 → `(候选 token, 更新后的 KV)`，位置和有效长度控制可见范围。
 OM 使用单个 Draft 的 16/64 两档上下文；特征缓冲区容量为 64 行，候选 block 始终为 16 行。

@@ -101,6 +101,7 @@ def export_air_bundle(
     *,
     torchair_module: Any | None = None,
     reuse_common_from: str | Path | None = None,
+    reuse_target_from: str | Path | None = None,
 ) -> dict[str, Any]:
     """Export every graph from ``factory`` and retain a hash-complete manifest."""
 
@@ -109,10 +110,16 @@ def export_air_bundle(
         COMMON, artifact_stem, load_common_source, validate_common_export,
         link_common_air, reuse_record,
     )
-    reused = (load_common_source(reuse_common_from, factory=factory,
-                              config=factory_config, destination=root)
-              if reuse_common_from is not None else None)
+    if reuse_common_from and reuse_target_from:
+        raise ValueError("select either common-route reuse or target-only reuse")
+    reuse_path = reuse_common_from or reuse_target_from
+    reused = (load_common_source(reuse_path, factory=factory,
+                              config=factory_config, destination=root,
+                              targets=reuse_target_from is not None)
+              if reuse_path is not None else None)
     shared_root = reused is not None and root == reused["path"].parent
+    if shared_root and reuse_target_from:
+        raise ValueError("use a separate bundle directory for each Draft quantization")
     if not shared_root and root.exists() and any(root.iterdir()):
         raise FileExistsError(f"AIR bundle directory is not empty: {root}")
     suffix = "-" + str(factory_config.get("verify_gdr", "chunk")) if shared_root else ""
@@ -148,7 +155,7 @@ def export_air_bundle(
     }
     if reused is not None:
         validate_common_export(
-            reused, {s.name: _spec_header(s) for s in specs if s.name in COMMON}, environment,
+            reused, {s.name: _spec_header(s) for s in specs if s.name in reused["graphs"]}, environment,
         )
     for spec in specs:
         if reused is None or spec.name not in reused["graphs"]:
@@ -223,6 +230,8 @@ def export_air_bundle(
             raise RuntimeError(
                 f"TorchAir export for {spec.name!r} produced {len(air_files)} AIR files"
             )
+        from .draft_constants import write_constant_inputs
+        constant_records = write_constant_inputs(spec, graph_dir, root)
         payload_files = sorted(path for path in graph_dir.rglob("*") if path.is_file())
         records = [file_record(path, relative_to=root) for path in payload_files]
         air_record = next(
@@ -237,6 +246,7 @@ def export_air_bundle(
                 "standard_op_overrides": standard_op_audit,
                 "air": air_record,
                 "payload_files": records,
+                **constant_records,
             }
         )
 

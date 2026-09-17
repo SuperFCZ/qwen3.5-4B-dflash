@@ -95,6 +95,8 @@ aclDataType Dtype(const std::string& name) {
   if (name == "int16") return ACL_INT16;
   if (name == "float32") return ACL_FLOAT;
   if (name == "float16") return ACL_FLOAT16;
+  if (name == "int8") return ACL_INT8;
+  if (name == "uint8") return ACL_UINT8;
   throw std::runtime_error("unsupported chunk tensor dtype");
 }
 std::string DtypeName(aclDataType dtype) {
@@ -105,6 +107,8 @@ std::string DtypeName(aclDataType dtype) {
     case ACL_INT16: name = "int16"; break;
     case ACL_INT32: name = "int32"; break;
     case ACL_INT64: name = "int64"; break;
+    case ACL_INT8: name = "int8"; break;
+    case ACL_UINT8: name = "uint8"; break;
     default: break;
   }
   return std::string(name) + "(" + std::to_string(static_cast<int>(dtype)) + ")";
@@ -504,6 +508,7 @@ class AclChunkExecutor::Impl {
     // Discard outputs have private graph-scoped device allocations. No host
     // allocation means Call queues neither H2D nor D2H for them.
     if (!State(spec.name) && spec.name != "features" &&
+        spec.name.rfind("draft_weight_", 0) != 0 &&
         !IsVerifyDiscardState(spec.name))
       Check(aclrtMallocHost(&buffer->host, buffer->bytes), "aclrtMallocHost");
     auto* pointer = buffer.get();
@@ -545,6 +550,23 @@ class AclChunkExecutor::Impl {
     for (bool output : {false, true})
       for (const auto& spec : output ? graph.outputs : graph.inputs)
         static_cast<void>(Get(spec, graph.name, output));
+    // Quantized weights are graph inputs to prevent dense constant folding.
+    // Upload once per model load, never once per token/request or into next KV.
+    for (const auto& spec : graph.inputs) {
+      const auto found = graph.constants.find(spec.name);
+      if (found == graph.constants.end()) continue;
+      const auto& constant = found->second;
+      Require(Sha256File(constant.path) == constant.sha256,
+              "Draft constant changed before model load");
+      std::vector<char> data(constant.bytes);
+      std::ifstream file(constant.path, std::ios::binary);
+      Require(static_cast<bool>(file.read(data.data(), data.size())) && file.peek() == EOF,
+              "Draft constant payload size changed");
+      auto& memory = Get(spec, graph.name, false);
+      Require(memory.host == nullptr && memory.bytes == data.size(), "invalid constant buffer");
+      Check(aclrtMemcpy(memory.device, memory.bytes, data.data(), data.size(), ACL_MEMCPY_HOST_TO_DEVICE),
+            "aclrtMemcpy(Draft constant once)");
+    }
     if (graph.name == "draft") {
       // CANN's mandatory gear-control input is small, shared by both datasets,
       // and written only by aclmdlSetInputDynamicDims (never by a host memcpy).

@@ -518,6 +518,13 @@ def create_quant_recompute_graph(
     draft_attention_matmul_dtype = config.get("draft_attention_matmul_dtype", "float16")
     draft_ops = AirDFlashOps(attention_matmul_dtype=draft_attention_matmul_dtype)
     include_ordinary_decode = config.get("include_ordinary_decode", True)
+    variant = config.get("draft_quantization", "fp16")
+    if variant not in ("fp16", "w4a16", "w8a16"):
+        raise ValueError("draft_quantization must be fp16, w4a16 or w8a16")
+    if variant != "fp16" and not _incremental:
+        raise ValueError("quantized Draft export requires create_quant_incremental_graphs")
+    if type(config.get("shared_draft_features", False)) is not bool:
+        raise TypeError("shared_draft_features must be a bool")
     if type(include_ordinary_decode) is not bool:
         raise TypeError("include_ordinary_decode must be a bool")
     if "draft_context_rows" in config:
@@ -635,6 +642,7 @@ def create_quant_recompute_graph(
         ops=draft_ops,
         device=device,
         dtype=dtype,
+        draft_quantization=config.get("draft_quantization", "fp16"),
     ).eval()
     pad_token_id = int(config.get("pad_token_id", 0))
     metadata = {
@@ -644,7 +652,10 @@ def create_quant_recompute_graph(
         "target_precision": "W8A8 dynamic QLinear with FP16 outputs",
         "target_quant_mode": "w8a8_dynamic",
         "target_embedding": "INT8 weight * FP32 row scale -> FP16",
-        "draft_precision": "FP16",
+        "draft_precision": config.get("draft_quantization", "fp16").upper(),
+        "draft_quantization": config.get("draft_quantization", "fp16"),
+        "draft_checkpoint_audit": getattr(draft, "draft_quantization_audit", None),
+        "target_input_identity": {k: v for k, v in locked_inputs["group_sha256"].items() if k != "draft_checkpoint"},
         "draft_dtype": dtype_name,
         "draft_attention_matmul_dtype": draft_attention_matmul_dtype,
         "draft_attention_softmax_dtype": "float32",
@@ -715,6 +726,8 @@ def create_quant_recompute_graph(
             attention=torch_npu.adn_fused_infer_attention, rotary=apply_rotary_pos_emb,
             cache_update=_incremental_cache_update,
             draft_row_update=torch.ops.npu.npu_scatter_nd_update.default,
+            target_feature_layers=((1, 5, 8, 9, 13, 15, 17, 21, 22, 25, 29)
+                                   if config.get("shared_draft_features", False) else None),
             verify_gdr=config.get("verify_gdr", "chunk"), gdr_mtp=gdr_mtp,
             custom_ops=custom_op_exports, include_ordinary_decode=include_ordinary_decode)
     enable_padded_draft_context(draft)

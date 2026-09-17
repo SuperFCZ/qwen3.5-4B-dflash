@@ -16,6 +16,67 @@ Draft 采用 16/64 双档上下文：长输入建缓存用 64 行，生成用 16
 需要接收端已有的 `torch_npu.npu_scatter_nd_update` 和 TorchAir converter，无需安装新 kernel。
 首次部署见文末[导出与编译](#导出与编译)。`QUANT_MODE` 只控制原生推理，OM 精度由编译产物决定。
 
+## 三种 Draft：精度选择与对比
+
+环境配置增加以下路径，指向各自含 `config.json` 和 `model.safetensors` 的目录；修改后重新 `source`。
+`DRAFT_DIR` 仍是原生推理的 FP16 路径，新增选择用于 OM。
+
+```bash
+export DRAFT_FP16_DIR="$DRAFT_DIR"
+export DRAFT_W4A16_DIR="/absolute/path/Qwen3.5-4B-DFlash-GPTQ-W4A16"
+export DRAFT_W8A16_DIR="/absolute/path/Qwen3.5-4B-DFlash-W8A16"
+export DRAFT_QUANTIZATION=fp16  # fp16 / w4a16 / w8a16
+export DRAFT_VARIANTS_DIR="$AI_RUN_DIR/artifacts-drafts"  # 新的空目录
+export DRAFT_VARIANTS_MANIFEST="$DRAFT_VARIANTS_DIR/draft-variants.json"
+```
+
+权重采用固定版本：[W4A16 GPTQ](https://huggingface.co/nota-ai/Qwen3.5-4B-DFlash-GPTQ-W4A16)、
+[W8A16 RTN](https://huggingface.co/naveenrajk/Qwen3.5-4B-DFlash-W8A16)。加载前检查配置、权重哈希及张量规格。
+没有本地权重时，可用 `"$MODEL_PYTHON" -B -m models.dflash_v1.prepare_draft --draft-quantization w4a16 --output "$DRAFT_W4A16_DIR"` 下载固定版本；
+W8 改对应参数。下载目录须未存在且位于本次 `AI_RUN_DIR` 内；已有离线权重不需下载。
+
+已有 `factory.json` 后，分两步执行。第一步检查权重、生成配置；第二步逐项导出和编译，打印每步 START/DONE。
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/build_draft_variants.py" \
+  --factory-config "$AI_RUN_DIR/factory.json" --output "$DRAFT_VARIANTS_DIR" \
+  --draft-quantizations fp16 w4a16 w8a16 --verify-gdr both \
+  --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --prepare-only
+```
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/build_draft_variants.py" \
+  --execute-plan "$DRAFT_VARIANTS_MANIFEST"
+```
+
+全部选择时只编译 **7 个不同的 OM**：Prefill、Decode、Verify Chunk、Verify MTP，及三种 Draft。
+部署清单位于 `$DRAFT_VARIANTS_DIR/<精度>/<路线>/deployment-manifest.json`；公共产物使用硬链接，目录须在同一文件系统。
+每次运行只加载选定的一个 Draft。请按文末命令重建 **1.12.0+ runner**，以支持只读压缩权重输入。
+已完成的构建步骤重跑时检查哈希后跳过；失败步骤不覆盖已有部分产物，必要时换新输出目录。
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_draft_variants.py" \
+  --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
+  --runner-config "$RUNNER_CONFIG" --model-dir "$TARGET_DIR" \
+  --draft-variants-manifest "$DRAFT_VARIANTS_MANIFEST" \
+  --draft-quantizations fp16 w4a16 w8a16 --verify-gdr chunk --lengths 128 \
+  --warmup 1 --repetitions 3 --max-draft-tokens "$MAX_DRAFT_TOKENS" \
+  --device-id "$DEVICE_ID" --low-memory --allow-output-differences
+```
+
+只测一种用 `--draft-quantizations "$DRAFT_QUANTIZATION"`；两条验证路线用 `--verify-gdr both`。
+支持原有 `--prompt-group`、`--prompt-id`、`--lengths`，以及离线 `--dataset-files` / `--dataset-dir`、`--num-questions`。
+每个问题、输出上限的普通模型只跑一次，三种 Draft 和两条 Verify 共用基线。
+结果在 `draft-comparison-*/summary.md`、`cases.csv`：接受率、tok/s、Draft/Verify 时延，以及相对 FP16 的变化；
+各精度子目录保留按文件汇总、分阶段时延和文字输出。单 OM profiling 可将清单设为 `$SELECTED_DRAFT_DEPLOYMENT_MANIFEST`。
+
+实现与比较口径：
+
+- 两个量化 checkpoint 为五层，当前 FP16 为六层，特征层也不同。这是三个 checkpoint 的比较，不能把全部差异归因于位宽；W4 还面向 QAD Target 训练。
+- 构建脚本启用共同的 Target 特征层输出，各 Draft 在图内选择所需特征。首次须重新导出共享 Target，旧的 FP16 特征接口不能直接混用；新增特征缓冲开销也计入本次运行。
+- 310P 路径以压缩权重常驻，标准算子按 group-128 解量化后做 FP16 MatMul；无新增自定义算子，Embedding/LM Head 仍为 FP16。不是融合低比特 GEMM，解量化工作区和实际加速需设备测量。[接口限制](https://www.hiascend.com/document/detail/zh/Pytorch/600/apiref/apilist/ptaoplist_000164.html)
+- 已有主机算术、动态导出和模拟 ACL 验证；真实 TorchAir/ATC、峰值显存、接受率与性能尚未验证。允许输出差异仍保留记录，不代表任务质量等价。
+
 ## 统一测试：短 / 1K 上下文、Chunk / MTP、多长度
 
 默认 **8 条短 prompt + 12 条约 1K 输入 prompt**，每模式 **1 轮预热 + 3 轮测量**。

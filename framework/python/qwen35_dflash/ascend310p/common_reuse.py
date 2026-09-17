@@ -11,6 +11,7 @@ from .utils import contained_path, file_record, load_json_object, sha256_file
 
 FACTORY = "qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs"
 COMMON = ("target_prefill", "target_decode", "draft")
+TARGETS = ("target_prefill", "target_decode", "target_verify")
 _ROUTE_CONTRACT = {
     "abi", "verify_gdr", "target_states", "capsules", "state_policy",
     "verify_state_output_policy", "verify_discard_states",
@@ -25,6 +26,8 @@ def artifact_stem(graph):
     name = graph["name"]
     if name == "target_verify":
         return "verify_" + verify_gdr_route(contract)
+    if name == "draft" and contract.get("draft_quantization", "fp16") != "fp16":
+        return "draft_" + contract["draft_quantization"]
     return {"target_prefill": "prefill", "target_decode": "decode"}.get(name, name)
 
 
@@ -36,11 +39,20 @@ def _verified_file(root, record):
     return path
 
 
-def _metadata(value):
+def _metadata(value, *, targets=False):
     # Compare the representation that actually survives an AIR-manifest write.
     # The live bridge audit contains tuples (e.g. cumulative_counter_fields);
     # JSON reloads them as lists, without changing the graph or its contract.
     result = json.loads(json.dumps(value, allow_nan=False))
+    if targets:
+        if not result.get("target_input_identity"):
+            raise ValueError("Target reuse needs hash-locked target input identity")
+        for key in list(result):
+            if key.startswith("draft_") or key == "quant_input_manifest_sha256":
+                result.pop(key)
+        for key in list(result["incremental_contract"]):
+            if key.startswith("draft_"):
+                result["incremental_contract"].pop(key)
     for key in ("factory_id", "verify_gdr"):
         result.pop(key, None)
     for key in _ROUTE_CONTRACT:
@@ -66,11 +78,12 @@ def _difference(old, new, path):
     return f"{path} (saved={repr(old)[:160]}, current={repr(new)[:160]})"
 
 
-def _config(config):
-    return {k: v for k, v in config.items() if k != "verify_gdr"}
+def _config(config, *, targets=False):
+    ignored = {"draft_dir", "draft_quantization", "input_manifest"} if targets else {"verify_gdr"}
+    return {k: v for k, v in config.items() if k not in ignored}
 
 
-def load_common_source(path, *, factory, config, destination, expected_sha256=None):
+def load_common_source(path, *, factory, config, destination, expected_sha256=None, targets=False):
     """Validate provenance/configuration before constructing any model graphs."""
     path = Path(path).expanduser().resolve()
     digest = sha256_file(path)
@@ -90,15 +103,19 @@ def load_common_source(path, *, factory, config, destination, expected_sha256=No
         raise ValueError("Common reuse requires a passing AIR manifest")
     if factory != FACTORY or air.get("factory") != FACTORY:
         raise ValueError("Common reuse supports only the quant incremental factory")
-    if _config(config) != _config(air["factory_config"]):
-        raise ValueError("Common reuse factory configuration differs (only verify_gdr may change)")
+    if targets and (not config.get("shared_draft_features") or not air["factory_config"].get("shared_draft_features")):
+        raise ValueError("Target reuse across Draft checkpoints requires shared_draft_features=true; re-export the common Target")
+    if _config(config, targets=targets) != _config(air["factory_config"], targets=targets):
+        allowed = "only Draft checkpoint/precision/input manifest may change" if targets else "only verify_gdr may change"
+        raise ValueError(f"Common reuse factory configuration differs ({allowed})")
     if validate_incremental_bundle(air["graphs"]) != validate_incremental_bundle(deployment["graphs"]):
         raise ValueError("Common reuse AIR/deployment contracts differ")
     by_name = {g["name"]: g for g in deployment["graphs"]}
+    selected = TARGETS if targets else COMMON
     graphs, paths = {}, []
     for graph in air["graphs"]:
         name = graph["name"]
-        if name not in COMMON:
+        if name not in selected:
             continue
         compiled = by_name[name]
         for key in ("metadata", "role", "input_names", "output_names", "air",
@@ -111,13 +128,13 @@ def load_common_source(path, *, factory, config, destination, expected_sha256=No
         if len({p["path"] for p in payload}) != len(payload):
             raise ValueError("Common reuse payload paths are duplicated")
         for item in payload:
-            if Path(item["path"]).parts[:2] != ("air", name):
+            if Path(item["path"]).parts[:2] != ("air", artifact_stem(graph) if name == "target_verify" else name):
                 raise ValueError("Common reuse payload escapes its graph directory")
             paths.append(_verified_file(path.parent, item))
         om = _verified_file(path.parent, compiled["om"])
         paths.append(om)
         graphs[name] = {"air": graph, "compiled": compiled, "om": om}
-    if set(graphs) != set(COMMON):
+    if set(graphs) != set(selected):
         raise ValueError("Common reuse requires prefill, decode and draft; set include_ordinary_decode=true")
     ancestor = Path(destination)
     while not ancestor.exists():
@@ -125,7 +142,7 @@ def load_common_source(path, *, factory, config, destination, expected_sha256=No
     if any(p.stat().st_dev != ancestor.stat().st_dev for p in paths):
         raise ValueError("Common reuse needs bundles on the same filesystem for hard links")
     return {"path": path, "sha256": digest, "air": air, "destination": Path(destination),
-            "deployment": deployment, "graphs": graphs}
+            "deployment": deployment, "graphs": graphs, "targets_only": targets}
 
 
 def validate_common_export(source, headers, environment):
@@ -134,10 +151,11 @@ def validate_common_export(source, headers, environment):
     for name, header in headers.items():
         original = source["graphs"][name]["air"]
         for key, value in header.items():
-            old, new = ((_metadata(original[key]), _metadata(value))
+            old, new = ((_metadata(original[key], targets=source["targets_only"]), _metadata(value, targets=source["targets_only"]))
                         if key == "metadata" else (original.get(key), value))
             if key == "metadata" and (
-                    not new.get("quant_source_lock") or not new.get("quant_input_manifest_sha256")):
+                    not new.get("quant_source_lock") or not new.get(
+                        "target_input_identity" if source["targets_only"] else "quant_input_manifest_sha256")):
                 raise ValueError("Common reuse requires locked source and input identities")
             if old != new:
                 raise ValueError("Common reuse export differs: " + _difference(old, new, f"{name}.{key}")
@@ -161,6 +179,7 @@ def reuse_record(source):
     return {
         "deployment_manifest": {"path": str(source["path"]), "sha256": source["sha256"]},
         "graphs": sorted(source["graphs"]),
+        **({"targets_only": True} if source.get("targets_only") else {}),
         "method": ("same_directory" if source["destination"] == source["path"].parent
                    else "hardlink"),
     }
@@ -172,6 +191,7 @@ def validate_common_compile(air, root, *, atc_path, soc_version, arguments, iden
     source = load_common_source(
         reference["path"], factory=air["factory"], config=air["factory_config"],
         destination=root, expected_sha256=reference["sha256"],
+        targets=record.get("targets_only", False),
     )
     if record != reuse_record(source):
         raise ValueError("Unsupported common reuse record")
@@ -181,7 +201,7 @@ def validate_common_compile(air, root, *, atc_path, soc_version, arguments, iden
         if set(graph) != set(original):
             raise ValueError(f"Common reuse AIR graph fields differ: {name}")
         for key, value in graph.items():
-            old, new = ((_metadata(original[key]), _metadata(value))
+            old, new = ((_metadata(original[key], targets=source["targets_only"]), _metadata(value, targets=source["targets_only"]))
                         if key == "metadata" else (original[key], value))
             if old != new:
                 raise ValueError("Common reuse AIR graph differs: " + _difference(old, new, f"{name}.{key}"))

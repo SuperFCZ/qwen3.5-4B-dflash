@@ -612,24 +612,39 @@ class PackedDraftLayer(nn.Module):
         self.post_norm = layer.post_attention_layernorm
         self.q_proj, self.q_norm, self.k_norm = base.q_proj, base.q_norm, base.k_norm
         self.o_proj, self.down_proj = base.o_proj, layer.mlp.down_proj
-        self.kv_weight = nn.Parameter(torch.cat(
-            (base.k_proj.weight.detach(), base.v_proj.weight.detach()), dim=0
-        ), requires_grad=False)
+        from models.dflash_v1.draft_quantization import GroupQuantLinear
+        self.quantized = isinstance(base.k_proj, GroupQuantLinear)
+        if self.quantized:
+            self.kv_linear = GroupQuantLinear.concatenate(base.k_proj, base.v_proj)
+        else:
+            self.kv_weight = nn.Parameter(torch.cat(
+                (base.k_proj.weight.detach(), base.v_proj.weight.detach()), dim=0
+            ), requires_grad=False)
         if consume_source:
             del base.k_proj, base.v_proj
-        self.gate_up_weight = nn.Parameter(torch.cat(
-            (layer.mlp.gate_proj.weight.detach(), layer.mlp.up_proj.weight.detach()), dim=0
-        ), requires_grad=False)
+        if self.quantized:
+            self.gate_up_linear = GroupQuantLinear.concatenate(layer.mlp.gate_proj, layer.mlp.up_proj)
+        else:
+            self.gate_up_weight = nn.Parameter(torch.cat(
+                (layer.mlp.gate_proj.weight.detach(), layer.mlp.up_proj.weight.detach()), dim=0
+            ), requires_grad=False)
         if consume_source:
             del layer.mlp.gate_proj, layer.mlp.up_proj
         self.ops, self.scale = base.ops, base.scale
         self.is_causal, self.sliding_window = base.is_causal, base.sliding_window
 
+    def project_kv(self, value):
+        return self.kv_linear(value) if self.quantized else self.ops.linear(value, self.kv_weight)
+
+    def project_gate_up(self, value):
+        return self.gate_up_linear(value) if self.quantized else self.ops.linear(value, self.gate_up_weight)
+
 
 class DraftGraph(nn.Module):
     """Single 16/64-gear OM with shared context/noise K/V projections."""
 
-    def __init__(self, draft, embedding, head, *, row_update=None, consume_source=False):
+    def __init__(self, draft, embedding, head, *, row_update=None, consume_source=False,
+                 feature_layers=None):
         super().__init__()
         self.config, self.ops = draft.config, draft.ops
         self.fc, self.hidden_norm, self.rotary = draft.fc, draft.hidden_norm, draft.rotary
@@ -640,11 +655,19 @@ class DraftGraph(nn.Module):
             PackedDraftLayer(layer, consume_source=consume_source) for layer in draft.layers
         )
         self.row_update = row_update
+        source_layers = tuple(feature_layers or draft.config.target_layer_ids)
+        if not set(draft.config.target_layer_ids).issubset(source_layers):
+            raise ValueError("Target feature output is missing a selected Draft layer")
+        self.feature_slots = tuple(source_layers.index(i) for i in draft.config.target_layer_ids)
+        self.select_features = source_layers != tuple(draft.config.target_layer_ids)
         # Do not retain draft/context/propose: that would also register the
         # unpacked parameters, doubling their weight storage in the exported OM.
 
     def forward(self, features, start_position, valid_rows, anchor, proposal_count, *state):
         config = self.config
+        if self.select_features:
+            features = torch.cat(tuple(features[..., i * config.hidden_size:(i + 1) * config.hidden_size]
+                                       for i in self.feature_slots), dim=-1)
         rows = features.shape[1]
         context_offsets = torch.arange(rows, device=features.device)
         visible = context_offsets < valid_rows.to(torch.long)
@@ -672,7 +695,7 @@ class DraftGraph(nn.Module):
             normalized = layer.input_norm(hidden)
             # Same weights, different input rows. One projection instead of
             # rereading K/V weights separately for committed and proposal rows.
-            kv = layer.ops.linear(torch.cat((projected, normalized), dim=1), layer.kv_weight)
+            kv = layer.project_kv(torch.cat((projected, normalized), dim=1))
             key_all, value_all = kv.split(config.key_value_width, dim=-1)
             key_context = layer.k_norm(key_all[:, :rows].reshape(
                 1, rows, config.num_key_value_heads, config.head_dim
@@ -706,7 +729,7 @@ class DraftGraph(nn.Module):
                                         layer.scale, config.num_key_value_groups)
             mixed = mixed.transpose(1, 2).contiguous().reshape(1, config.block_size, config.query_width)
             hidden = hidden + layer.o_proj(mixed)
-            gate, up = layer.ops.linear(layer.post_norm(hidden), layer.gate_up_weight).split(
+            gate, up = layer.project_gate_up(layer.post_norm(hidden)).split(
                 config.intermediate_size, dim=-1
             )
             hidden = hidden + layer.down_proj(layer.ops.swiglu(gate, up))
@@ -734,6 +757,7 @@ def incremental_graph_specs(
     rotary: Callable,
     cache_update: Callable | None = None,
     draft_row_update: Callable | None = None,
+    target_feature_layers: tuple[int, ...] | None = None,
     custom_ops: tuple[CustomOpExportSpec, ...] = (),
     include_ordinary_decode: bool = True,
     verify_gdr: str = "chunk",
@@ -745,6 +769,10 @@ def incremental_graph_specs(
     if verify_gdr == "mtp" and not callable(gdr_mtp):
         raise ValueError("mtp verification requires GDR MTP; no fallback is permitted")
     device = target.requested_device
+    feature_layers = tuple(target_feature_layers or draft.config.target_layer_ids)
+    if tuple(sorted(set(feature_layers))) != feature_layers or not set(draft.config.target_layer_ids).issubset(feature_layers):
+        raise ValueError("Target feature layers must be a sorted unique superset of Draft feature layers")
+    feature_width = len(feature_layers) * draft.config.hidden_size
     state = tuple(t for pair in target._fresh_hybrid_cache(batch_size=1) for t in pair)
     names, gdn_names, kv_names, capsules, capsule_names = [], [], [], [], []
     layers = target.dflash_execution_model.language_model.layers
@@ -822,7 +850,10 @@ def incremental_graph_specs(
         "kv_states": kv_names,
         "capsules": [tensor_spec(n, t) for n, t in zip(capsule_names, capsules)],
         "vocab_size": draft.config.vocab_size,
-        "feature_width": draft.config.feature_size,
+        "feature_width": feature_width,
+        "target_feature_layers": list(feature_layers),
+        "draft_feature_layers": list(draft.config.target_layer_ids),
+        "draft_quantization": getattr(draft, "draft_quantization", "fp16"),
         "recurrent_state_dtype": "float32",
         "state_policy": ("in-graph-acceptance-two-pass-gdr-atomic-fp32-state-output"
                          if verify_gdr == "chunk" else "in-graph-mtp-bank-select-fp32-recurrent"),
@@ -844,7 +875,7 @@ def incremental_graph_specs(
     contract["draft_context_gears"] = [16, 64]
     contract["draft_prefill_policy"] = "single_draft16_64_gears"
     contract["verify_discard_states"] = verify_discard_descriptors(contract)
-    common = {**metadata, "incremental_contract": contract}
+    common = {**metadata, "draft_quantization": contract["draft_quantization"], "incremental_contract": contract}
     specs = []
 
     def add(name, model, args, inputs, outputs, output_tensors, ops=()):
@@ -894,7 +925,7 @@ def incremental_graph_specs(
             continue
         ids = torch.zeros((1, rows), dtype=torch.long, device=device)
         feature_tensor = torch.zeros(
-            (1, 64, draft.config.feature_size), dtype=torch.float16, device=device
+            (1, 64, feature_width), dtype=torch.float16, device=device
         )
         top1 = torch.zeros((1, rows if verify else 1), dtype=torch.long, device=device)
         out_names, out_tensors = ["target_top1"], [top1]
@@ -918,7 +949,7 @@ def incremental_graph_specs(
             target,
             rows=rows,
             verify=verify,
-            feature_layers=tuple(draft.config.target_layer_ids) if rows != 1 else (),
+            feature_layers=feature_layers if rows != 1 else (),
             gdr=gdr,
             attention=attention,
             rotary=rotary,
@@ -954,7 +985,7 @@ def incremental_graph_specs(
         target.get_input_embeddings()
     )  # Draft uses the authoritative FP16 embedding.
     features = torch.zeros(
-        (1, 64, draft.config.feature_size), dtype=torch.float16, device=device
+        (1, 64, feature_width), dtype=torch.float16, device=device
     )
     # Context projection: one norm + one K norm per layer. Proposal: four
     # norms per layer + final norm. Both branches are live in the single OM.
@@ -968,7 +999,7 @@ def incremental_graph_specs(
     add(
         "draft",
         DraftGraph(draft, embedding, target.get_output_embeddings(),
-                   row_update=draft_row_update, consume_source=True),
+                   row_update=draft_row_update, consume_source=True, feature_layers=feature_layers),
         (features, start, valid, start.clone(),
          torch.full_like(valid, 15), *draft_state),
         ("features", "start_position", "valid_rows", "anchor", "proposal_count", *draft_names),
@@ -976,4 +1007,9 @@ def incremental_graph_specs(
         (torch.zeros((1, 15), dtype=torch.long, device=device), *draft_state),
         draft_ops,
     )
+    from .draft_constants import expose_draft_constants
+    specs[-1] = expose_draft_constants(specs[-1])
+    # Constants belong only to Draft, but the complete bundle contract names
+    # them so the host can validate the exact ordered inputs before loading.
+    contract["draft_constants"] = specs[-1].metadata.get("constant_tensors", [])
     return tuple(specs)

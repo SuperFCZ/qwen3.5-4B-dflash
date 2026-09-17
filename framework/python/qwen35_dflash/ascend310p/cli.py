@@ -47,6 +47,8 @@ def _factory_config(args):
     config = _config(args.factory_config)
     if getattr(args, "verify_gdr", None) is not None:
         config["verify_gdr"] = args.verify_gdr
+    if getattr(args, "draft_quantization", None) is not None:
+        config["draft_quantization"] = args.draft_quantization
     return config
 
 
@@ -60,6 +62,7 @@ def command_export(args: argparse.Namespace) -> int:
         _factory_config(args),
         args.bundle_dir,
         reuse_common_from=args.reuse_common_from,
+        reuse_target_from=getattr(args, "reuse_target_from", None),
     )
     _print(payload)
     return 0
@@ -373,6 +376,9 @@ def build_parser() -> argparse.ArgumentParser:
     export = subparsers.add_parser("export-air", help="export factory graphs to AIR")
     export.add_argument("--factory", required=True, help="module:function graph factory")
     export.add_argument("--factory-config", type=Path)
+    export.add_argument("--draft-quantization", choices=("fp16", "w4a16", "w8a16"))
+    export.add_argument("--reuse-target-from", type=Path,
+                        help="reuse Prefill/Decode/Verify, exporting only the selected Draft")
     export.add_argument("--verify-gdr", choices=("chunk", "mtp"),
                         help="incremental verifier; overrides factory config (default: chunk)")
     export.add_argument("--bundle-dir", type=Path, required=True)

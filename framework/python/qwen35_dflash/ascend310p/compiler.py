@@ -383,6 +383,7 @@ def _compile_air_graph(
         "om": file_record(om_path, relative_to=root),
         "atc_command": command,
         "atc_log": str(log_path.relative_to(run_dir)),
+        **{key: graph[key] for key in ("constant_inputs", "constant_inputs_table") if key in graph},
     }
 
 
@@ -419,6 +420,10 @@ def compile_air_bundle(
 
     # Validate the entire suite before starting any ATC process.
     for graph in graphs:
+        if graph.get("constant_inputs") or (graph["name"] == "draft" and
+                graph.get("metadata", {}).get("draft_quantization", "fp16") != "fp16"):
+            from .draft_constants import verify_constant_inputs
+            verify_constant_inputs(graph, root)
         _validated_custom_op_audit(graph)
         _validated_standard_op_overrides(graph)
         validated_runtime_input_abi(

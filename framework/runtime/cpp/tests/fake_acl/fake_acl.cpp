@@ -128,6 +128,23 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
   if (start < 0 || valid < 0 || (valid == 0 && model.role != "draft") || valid > 64) return 23;
   std::size_t committed = static_cast<std::size_t>(valid);
   if (model.role == "draft") {
+    if (const auto* expected = std::getenv("QWEN35_FAKE_CONSTANT_EXPECT")) {
+      std::size_t count = 0;
+      for (const auto& item : in) {
+        if (item.first.rfind("draft_weight_", 0) != 0) continue;
+        const auto index = std::stoul(item.first.substr(13));
+        if (index % 2 == 0) {
+          const auto byte = std::string(expected) == "w4a16" ? 0x99 : 1;
+          const auto* data = static_cast<unsigned char*>(item.second->data);
+          for (std::size_t i = 0; i < item.second->size; ++i) if (data[i] != byte) return 40;
+        } else {
+          const auto* data = static_cast<std::uint16_t*>(item.second->data);
+          for (std::size_t i = 0; i < item.second->size / 2; ++i) if (data[i] != 0x3800) return 41;
+        }
+        ++count;
+      }
+      if (count != 22) return 42;
+    }
     if (!model.dynamic_context || (input->context_rows != 16 && input->context_rows != 64) ||
         valid > static_cast<int>(input->context_rows)) return 23;
     if (const auto* path = std::getenv("QWEN35_FAKE_GEAR_LOG")) {
@@ -405,6 +422,15 @@ aclError aclrtGetMemInfo(aclrtMemAttr attr, std::size_t* free, std::size_t* tota
   return ACL_SUCCESS;
 }
 
+aclError aclrtMemcpy(void* destination, std::size_t destination_max,
+                     const void* source, std::size_t count, aclrtMemcpyKind kind) {
+  if (const auto* path = std::getenv("QWEN35_FAKE_CONSTANT_UPLOAD_LOG")) {
+    std::ofstream log(path, std::ios::app);
+    log << count << '\n';
+  }
+  return aclrtMemcpyAsync(destination, destination_max, source, count, kind, nullptr);
+}
+
 aclError aclmdlQuerySize(const char* path, std::size_t* work, std::size_t* weight) {
   if (!work || !weight) return 1;
   if (std::getenv("QWEN35_FAKE_QUERY_SIZE_FAIL")) return 36;
@@ -434,8 +460,8 @@ aclError aclmdlLoadFromFile(const char* path, std::uint32_t* model_id) {
       std::size_t rank;
       file >> tensor.name >> dtype >> rank;
       if (rank > 8) return 2;
-      tensor.dtype = dtype == "float16" ? ACL_FLOAT16 : dtype == "int16" ? ACL_INT16 : dtype == "float32" ? ACL_FLOAT : ACL_INT64;
-      tensor.bytes = tensor.dtype == ACL_INT64 ? 8 : tensor.dtype == ACL_FLOAT ? 4 : 2;
+      tensor.dtype = dtype == "float16" ? ACL_FLOAT16 : dtype == "int16" ? ACL_INT16 : dtype == "float32" ? ACL_FLOAT : dtype == "int8" ? ACL_INT8 : dtype == "uint8" ? ACL_UINT8 : ACL_INT64;
+      tensor.bytes = tensor.dtype == ACL_INT64 ? 8 : tensor.dtype == ACL_FLOAT ? 4 : (tensor.dtype == ACL_INT8 || tensor.dtype == ACL_UINT8) ? 1 : 2;
       tensor.shape.resize(rank);
       for (auto& dim : tensor.shape) { file >> dim; tensor.bytes *= static_cast<std::size_t>(dim); }
       (word == "I" ? model.inputs : model.outputs).push_back(tensor);

@@ -54,6 +54,7 @@ bool IsVerifyDiscardState(const std::string& name) {
 
 std::size_t TensorSpec::bytes() const {
   std::size_t size = dtype == "float16" || dtype == "int16" ? 2
+                     : dtype == "int8" || dtype == "uint8" ? 1
                      : dtype == "float32"                   ? 4
                      : dtype == "int64"                     ? 8
                                                             : 0;
@@ -105,7 +106,23 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
               "chunk OM SHA-256 mismatch: " + graph.name);
     }
     std::set<std::string> inputs, outputs;
-    while (input >> word && (word == "I" || word == "O")) {
+    while (input >> word && (word == "I" || word == "O" || word == "C")) {
+      if (word == "C") {
+        std::string name, filename, hash;
+        std::size_t bytes = 0;
+        Require(static_cast<bool>(input >> name >> std::quoted(filename) >> hash >> bytes),
+                "truncated Draft constant input");
+        const auto spec = std::find_if(graph.inputs.begin(), graph.inputs.end(),
+                                      [&](const auto& value) { return value.name == name; });
+        Require(graph.name == "draft" && name.rfind("draft_weight_", 0) == 0 &&
+                    spec != graph.inputs.end() && spec->bytes() == bytes && !outputs.count(name) &&
+                    !graph.constants.count(name), "invalid Draft constant input ABI");
+        if (mode != "ordinary")
+          Require(std::filesystem::file_size(filename) == bytes && Sha256File(filename) == hash,
+                  "Draft constant size/hash mismatch: " + name);
+        graph.constants.emplace(name, ChunkGraph::Constant{filename, hash, bytes});
+        continue;
+      }
       TensorSpec tensor;
       std::size_t rank = 0;
       Require(static_cast<bool>(input >> tensor.name >> tensor.dtype >> rank) &&
@@ -121,6 +138,9 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
     }
     Require(word == "end" && !graph.inputs.empty() && !graph.outputs.empty(),
             "incomplete graph plan");
+    for (const auto& spec : graph.inputs)
+      Require(spec.name.rfind("draft_weight_", 0) != 0 || graph.constants.count(spec.name),
+              "compressed Draft input has no constant payload");
     const bool mtp = result.abi == "qwen35-dflash-mtp-v1" || result.abi == "qwen35-dflash-mtp-v2";
     ValidateVerifyDiscardOutputs(graph, mtp);
     if (mtp || result.abi == "qwen35-dflash-chunk-v4") {

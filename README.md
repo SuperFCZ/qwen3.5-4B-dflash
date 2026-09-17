@@ -1,6 +1,6 @@
 # Qwen3.5-4B DFlash
 
-Ascend 310P 投机解码：Target 支持 FP16 / W8A8，官方 DFlash Draft 使用 FP16。
+Ascend 310P 投机解码：Target 支持 FP16 / W8A8；OM Draft 可选 FP16 / W4A16 / W8A16。
 Torch-NPU 和 AIR/OM/C++ 均支持 **GDR Chunk 两遍**与 **GDR MTP** 验证。
 OM 使用一个 Draft，自动切换 16/64 行上下文档位：生成用 16 行，长输入建缓存用 64 行，最多 15 个候选。
 
@@ -30,6 +30,7 @@ source /absolute/path/dflash-env.sh
 | 直接运行 Torch-NPU，切换 Chunk / MTP | [Torch-NPU 使用](docs/DFLASH_RUN_AND_VALIDATE.md) |
 | 运行 OM：短 + 1K 输入统一测试、Chunk/MTP、多长度、分项时延 | [OM/C++ 使用](docs/GDR_CHUNK_AIR_OM.md) |
 | 读取离线 JSONL/JSON 测试集，按文件统计接受率和时延 | [离线测试集](docs/GDR_CHUNK_AIR_OM.md#离线开源测试集) |
+| 配置三种 Draft 权重、生成 OM、对比接受率与时延 | [Draft 精度对比](docs/GDR_CHUNK_AIR_OM.md#三种-draft精度选择与对比) |
 | 了解 Draft → Verify → Commit | [流程与架构](docs/DFLASH_ARCHITECTURE.md) |
 | 查看已有速度、接受率、deterministic 漂移问题 | [结果与已知问题](docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md) |
 

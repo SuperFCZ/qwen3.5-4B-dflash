@@ -317,9 +317,10 @@ def run(args):
     if not args.run_dir.is_dir() or args.run_dir.is_relative_to(REPO):
         raise ValueError("run-dir must be an existing directory outside the repository")
     os.environ["AI_RUN_DIR"] = str(args.run_dir)
-    root = require_run_output(Path(tempfile.mkdtemp(prefix="gdr-lengths-", dir=args.run_dir)))
+    root = (getattr(args, "_matrix_root", None) or
+            require_run_output(Path(tempfile.mkdtemp(prefix="gdr-lengths-", dir=args.run_dir))))
     print(f"Output: {root}", flush=True)
-    summary = prepare(args, root)  # Selected routes/lengths checked before the first model load.
+    summary = getattr(args, "_prepared_summary", None) or prepare(args, root)
     selection = (f"{len(summary['prompts'])} questions from " + ", ".join(d["name"] for d in summary["datasets"])
                  if summary.get("datasets") else ", ".join(p["id"] for p in summary["prompts"]))
     print(f"Selected routes: {', '.join(summary['routes'])}; lengths: {', '.join(map(str, summary['lengths']))}; "
@@ -331,7 +332,7 @@ def run(args):
         print(f"Prepared {len(summary['cells'])} cells, {len(summary['prompts'])} prompts each; no device execution.")
         return 0
     started = time.monotonic()
-    baselines = {}
+    baselines = getattr(args, "_shared_baselines", {})
     try:
         for cell in summary["cells"]:
             route, length = cell["verify_gdr"], cell["max_new_tokens"]
@@ -349,7 +350,8 @@ def run(args):
             if summary.get("datasets"):
                 options._prepared_inputs = (summary["prompts"], summary["datasets"])
             try:
-                if route != summary["routes"][0]:
+                reuse_ordinary = getattr(args, "_ordinary_baseline_required", False) or route != summary["routes"][0]
+                if reuse_ordinary:
                     if length not in baselines:
                         raise RuntimeError("ordinary baseline unavailable; refusing to rerun ordinary for the second route")
                     options._ordinary_baseline = baselines[length]
@@ -359,10 +361,10 @@ def run(args):
                 paths = list(cell_root.glob("prompt-suite-*/summary.json"))
                 if len(paths) != 1:
                     raise RuntimeError("expected exactly one saved prompt suite")
-                if route == summary["routes"][0]:
+                if not reuse_ordinary:
                     baselines[length] = paths[0].parent / "runner-batch.json"
                 cell["ordinary_baseline"] = str(baselines[length])
-                cell["ordinary_baseline_reused"] = route != summary["routes"][0]
+                cell["ordinary_baseline_reused"] = reuse_ordinary
                 cell.update(read_cell(paths[0], route, length, summary["prompts"]))
                 cell["suite_exit_code"] = code
                 if code and cell["status"] in suite.MEASURED_STATUSES:
