@@ -10,7 +10,7 @@ from .incremental_plan import ABI, MTP_ABI, validate_incremental_bundle, verify_
 from .utils import contained_path, file_record, load_json_object, sha256_file
 
 FACTORY = "qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs"
-COMMON = ("target_prefill", "target_decode", "draft", "draft_context")
+COMMON = ("target_prefill", "target_decode", "draft")
 _ROUTE_CONTRACT = {
     "abi", "verify_gdr", "target_states", "capsules", "state_policy",
     "verify_state_output_policy", "verify_discard_states",
@@ -118,7 +118,7 @@ def load_common_source(path, *, factory, config, destination, expected_sha256=No
         paths.append(om)
         graphs[name] = {"air": graph, "compiled": compiled, "om": om}
     if set(graphs) != set(COMMON):
-        raise ValueError("Common reuse requires prefill, decode, draft and draft_context; set include_ordinary_decode=true")
+        raise ValueError("Common reuse requires prefill, decode and draft; set include_ordinary_decode=true")
     ancestor = Path(destination)
     while not ancestor.exists():
         ancestor = ancestor.parent

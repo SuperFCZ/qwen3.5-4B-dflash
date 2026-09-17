@@ -16,7 +16,7 @@ ATTENTION_EXPORT_POLICY = "receiver_adn_all_seq_lengths_q_static_capacity_causal
 DRAFT_LENGTH_POLICY = "anchor_plus_runtime_K_masked_in_every_attention_layer"
 VERIFY_STATE_OUTPUT_POLICY = "raw_fp32_device_only_discard_first_pass_commit_second_pass"
 MTP_STATE_OUTPUT_POLICY = "internal_fp32_bank_gather_accepted_slot"
-ROLES = ("target_prefill", "target_decode", "target_verify", "draft", "draft_context")
+ROLES = ("target_prefill", "target_decode", "target_verify", "draft")
 DTYPES = {"int64": 8, "int16": 2, "float16": 2, "float32": 4}
 
 
@@ -118,10 +118,6 @@ def expected_signatures(c):
         ],
         "outputs": [descriptor("draft_top1", "int64", [1, 15]), *drafts],
     }
-    result["draft_context"] = {
-        "inputs": [feature(64), start, valid, *drafts],
-        "outputs": drafts,
-    }
     return result
 
 
@@ -135,8 +131,8 @@ def validate_incremental_bundle(graphs):
     c = candidates[0]["metadata"]["incremental_contract"]
     if type(c.get("draft_context_rows")) is not int or c["draft_context_rows"] != 16:
         raise ValueError("incremental Draft requires draft_context_rows=16; regenerate AIR/OM in a new bundle directory")
-    if c.get("draft_prefill_policy") != "context_only64_then_draft16":
-        raise ValueError("compact Draft needs the context-only prefill policy")
+    if c.get("draft_prefill_policy") != "single_draft16_subchunks":
+        raise ValueError("compact Draft needs single_draft16_subchunks; regenerate AIR/OM in a new bundle directory")
     roles = set(ROLES)
     required = roles - {"target_decode"}
     if (
@@ -145,7 +141,7 @@ def validate_incremental_bundle(graphs):
         or names not in (roles, required)
     ):
         raise ValueError(
-            "incremental bundle needs prefill, verify, draft, draft_context and optional ordinary decode"
+            "incremental bundle needs prefill, verify, one draft and optional ordinary decode"
         )
     c = candidates[0]["metadata"]["incremental_contract"]
     route = verify_gdr_route(c)
@@ -251,7 +247,8 @@ def write_incremental_plan(deployment_manifest, output, *, mode="paired", verify
     output = require_run_output(output)
     if output.exists():
         raise FileExistsError(output)
-    lines = [c["abi"], f"capacity {c['capacity']} {c['vocab_size']}"]
+    lines = [c["abi"], f"capacity {c['capacity']} {c['vocab_size']}",
+             f"draft_prefill_policy {c['draft_prefill_policy']}"]
     for name in ROLES:
         if name == "target_decode" and mode == "dflash":
             continue

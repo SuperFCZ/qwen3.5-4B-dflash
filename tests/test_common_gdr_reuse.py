@@ -110,11 +110,11 @@ def test_only_verify_is_exported_and_compiled_with_shared_common_files(shared_bu
         for p in next(g for g in air["graphs"] if g["name"] == graph["name"])["payload_files"]:
             assert os.path.samefile(source.parent / p["path"], dest.parent / p["path"])
     all_oms = [*source.parent.glob("om/*.om"), *dest.parent.glob("om/*.om")]
-    assert len(all_oms) == 10
-    assert len({(p.stat().st_dev, p.stat().st_ino) for p in all_oms}) == 6
+    assert len(all_oms) == 8
+    assert len({(p.stat().st_dev, p.stat().st_ino) for p in all_oms}) == 5
     assert all(p.read_bytes() == contents for p, contents in frozen.items())
     plan, _, _ = write_incremental_plan(dest, tmp_path / "shared-plan.txt", verify_gdr="mtp")
-    assert plan.read_text().count("\ngraph ") == 5
+    assert plan.read_text().count("\ngraph ") == 4
     # Finished destination is independently loadable even if source paths move.
     moved = source.parent.with_name("moved-source")
     source.parent.rename(moved)
@@ -135,7 +135,7 @@ def test_only_verify_is_exported_and_compiled_with_shared_common_files(shared_bu
         assert report["ordinary_parity"]["token_id_mismatches"] == 0
 
 
-def test_compact_draft_context_is_shared_between_routes(shared_build, tmp_path):
+def test_single_compact_draft_is_shared_between_routes(shared_build, tmp_path):
     calls, export, compile, _, _ = shared_build
     cfg = {"verify_gdr": "chunk"}
     chunk = compile(export("chunk", "compact-chunk", config=cfg))
@@ -155,12 +155,12 @@ def test_compact_draft_context_is_shared_between_routes(shared_build, tmp_path):
         right = next(g for g in mtp["graphs"] if g["name"] == name)
         assert os.path.samefile(source.parent / left["om"]["path"], destination.parent / right["om"]["path"])
     oms = [*source.parent.glob("om/*.om"), *destination.parent.glob("om/*.om")]
-    assert len({(p.stat().st_dev, p.stat().st_ino) for p in oms}) == 6
+    assert len({(p.stat().st_dev, p.stat().st_ino) for p in oms}) == 5
     plan, _, _ = write_incremental_plan(destination, tmp_path / "compact-plan.txt", verify_gdr="mtp")
-    assert plan.read_text().count("\ngraph ") == 5
+    assert plan.read_text().count("\ngraph ") == 4
 
 
-def test_recompile_determinism_covers_both_compact_draft_graphs(shared_build, tmp_path):
+def test_recompile_determinism_covers_the_single_draft_graph(shared_build, tmp_path):
     from qwen35_dflash.ascend310p.compiler import recompile_draft_om
     _, export, compile, _, _ = shared_build
     original = compile(export("chunk", "compact"))
@@ -174,7 +174,7 @@ def test_recompile_determinism_covers_both_compact_draft_graphs(shared_build, tm
         return subprocess.CompletedProcess(command, 0, "host ATC")
     result = recompile_draft_om(source, output=source.parent / "det1.json", deterministic=1,
                                atc_bin="/bin/true", runner=atc, atc_identity="fake-host-test")
-    assert calls == ["draft", "draft_context"]
+    assert calls == ["draft"]
     assert result["recompilation"]["graphs"] == calls
     for old, new in zip(original["graphs"], result["graphs"]):
         if not old["name"].startswith("draft"):
@@ -280,7 +280,7 @@ def test_reuse_requires_ordinary_decode_for_the_paired_benchmark(shared_build, t
     assert not calls["factory"] and not (tmp_path / "new").exists()
 
 
-def test_one_directory_has_exactly_six_oms_and_two_loadable_routes(shared_build, tmp_path, monkeypatch):
+def test_one_directory_has_exactly_five_oms_and_two_loadable_routes(shared_build, tmp_path, monkeypatch):
     calls, export, compile, original, _ = shared_build
     source = Path(original["manifest_path"])
     before = {p: p.read_bytes() for p in source.parent.rglob("*") if p.is_file()}
@@ -294,14 +294,14 @@ def test_one_directory_has_exactly_six_oms_and_two_loadable_routes(shared_build,
     assert calls["export"] == calls["atc"] == ["target_verify"]
     assert result["common_reuse"]["method"] == "same_directory"
     assert sorted(p.name for p in source.parent.glob("om/*.om")) == [
-        "decode.om", "draft.om", "draft_context.om", "prefill.om", "verify_chunk.om", "verify_mtp.om",
+        "decode.om", "draft.om", "prefill.om", "verify_chunk.om", "verify_mtp.om",
     ]
     assert all(p.read_bytes() == data for p, data in before.items())
     old_verify = next(g for g in original["graphs"] if g["name"] == "target_verify")
     new_verify = next(g for g in result["graphs"] if g["name"] == "target_verify")
     assert old_verify["atc_log"] != new_verify["atc_log"]
     for route, manifest in (("chunk", source), ("mtp", destination)):
-        write_incremental_plan(manifest, tmp_path / (route + "-six-om-plan.txt"), verify_gdr=route)
+        write_incremental_plan(manifest, tmp_path / (route + "-five-om-plan.txt"), verify_gdr=route)
         runner = os.environ.get("QWEN35_CPP_TEST_RUNNER")
         if runner:
             from qwen35_dflash.ascend310p.cpp_runtime import run_cpp_pair

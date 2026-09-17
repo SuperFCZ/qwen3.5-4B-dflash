@@ -328,8 +328,7 @@ class AclChunkExecutor::Impl {
     for (const auto& item : plan.graphs) {
       if (mode == "dflash" && item.first == "target_decode") continue;
       if (mode == "ordinary" &&
-          (item.first == "target_verify" || item.first == "draft" ||
-           item.first == "draft_context"))
+          (item.first == "target_verify" || item.first == "draft"))
         continue;
       selected.push_back(&item.second);
     }
@@ -658,16 +657,39 @@ class AclChunkExecutor::Impl {
       feature_rows = rows;
       cursor += rows;
       if (draft) {
-        // A full/large prompt chunk cannot enter the compact 16-row gear.
-        // Cache-only execution skips proposal attention/MLP/head entirely.
-        // Defer a final <=16-row chunk so the first Draft can append it itself.
-        if (offset + rows < ids.size() || rows > 16) {
+        // Reuse the one compact Draft OM for context preparation. Consume
+        // Target's 64-row output in <=16-row pieces without another model,
+        // weight allocation, feature buffer or KV bank.
+        for (std::size_t part = 0; part < rows; part += 16) {
+          feature_start = offset + part;
+          feature_rows = std::min<std::size_t>(16, rows - part);
+          Require(draft_cursor == feature_start, "Draft prefill cursor is inconsistent");
+          if (part) {
+            auto& features = *memory.at("features");
+            Require(features.spec.shape.size() == 3 && features.spec.shape[0] == 1 &&
+                        features.spec.shape[1] == 64,
+                    "Draft prefill requires the shared 64-row feature buffer");
+            const auto row_bytes = features.bytes / 64;
+            // Source and destination do not overlap. Later slices stay intact.
+            // The next graph runs on this stream, after the device-to-device copy.
+            Check(aclrtMemcpyAsync(features.device, features.bytes,
+                                   static_cast<char*>(features.device) + part * row_bytes,
+                                   16 * row_bytes, ACL_MEMCPY_DEVICE_TO_DEVICE, stream),
+                  "aclrtMemcpyAsync(Draft feature slice)");
+          }
+          // Leave the final piece for the first real proposal call.
+          if (feature_start + feature_rows == ids.size()) {
+            if (part)
+              Check(aclrtSynchronizeStream(stream), "aclrtSynchronizeStream(prefill slice)");
+            break;
+          }
           Scalar("start_position", static_cast<std::int64_t>(feature_start));
           Scalar("valid_rows", static_cast<std::int64_t>(feature_rows));
-          Call("draft_context");
+          Scalar("anchor", token);
+          Scalar("proposal_count", 1);
+          Call("draft");
           Swap('d');
-          draft_cursor = cursor;
-          feature_start = cursor;
+          draft_cursor = feature_start + feature_rows;
           feature_rows = 0;
         }
       }

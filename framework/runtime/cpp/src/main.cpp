@@ -657,7 +657,8 @@ void WriteReport(
   if (arguments.model_kind == "chunk") {
     output << "\"abi\":{\"id\":\""
            << JsonEscape(dynamic_cast<const qwen35::dflash::ChunkExecutor&>(executor).abi_id())
-           << "\",\"graph_count\":5,\"draft_context_rows\":16"
+           << "\",\"graph_count\":4,\"draft_context_rows\":16"
+           << ",\"draft_prefill_policy\":\"single_draft16_subchunks\""
            << ",\"sequence_length\":";
   } else {
     output << "\"abi\":{\"input_names\":[\"input_ids\",\"attention_mask\"],"
@@ -676,7 +677,7 @@ void WriteReport(
          << "\"om_io_binding\":\"" << (arguments.model_kind == "chunk" ? "prebound_ping_pong" : "static") << "\","
          << "\"repeatability_policy\":\"observe\","
          << "\"max_resident_models\":" << (arguments.model_kind == "chunk"
-              ? (arguments.low_memory || arguments.mode == "dflash" ? 4 : 5) : 1) << ','
+              ? (arguments.low_memory || arguments.mode == "dflash" ? 3 : 4) : 1) << ','
          << "\"synchronization\":\"one aclrtSynchronizeStream after queued H2D, execute, D2H\","
          << "\"model_load_excluded_from_latency\":true,"
          << "\"round_trace_enabled\":" << (arguments.trace_rounds ? "true" : "false") << ","

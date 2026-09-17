@@ -111,7 +111,11 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
   const bool profiled = active_file && std::filesystem::exists(active_file);
   const auto* variation_env = std::getenv("QWEN35_FAKE_PROFILE_VARIATION");
   const std::string variation = variation_env ? variation_env : "";
-  const auto call_number = ++profile_fixture_calls[model.role];
+  // Inject drift on repeated observations of the same Draft boundary. Context
+  // preparation uses this same OM now, but must not consume replay iterations.
+  const auto fixture_key = model.role == "draft"
+      ? model.role + ":" + std::to_string(start + valid) : model.role;
+  const auto call_number = ++profile_fixture_calls[fixture_key];
   if (const auto* path = std::getenv("QWEN35_FAKE_EVENT_LOG")) {
     const auto* active = std::getenv("TEST_ACTIVE");
     std::ofstream log(path, std::ios::app);
@@ -121,7 +125,11 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
   if (start < 0 || valid < 0 || (valid == 0 && model.role != "draft") || valid > 64) return 23;
   std::size_t committed = static_cast<std::size_t>(valid);
   if (model.role == "draft") {
-    if (valid && *static_cast<std::uint16_t*>(in.at("features")->data) != start) return 24;
+    if (valid > 16) return 23;
+    const auto feature_stride = in.at("features")->size / 64 / sizeof(std::uint16_t);
+    for (int row = 0; row < valid; ++row)
+      if (static_cast<std::uint16_t*>(in.at("features")->data)[row * feature_stride] != start + row)
+        return 24;
     const auto anchor = *static_cast<std::int64_t*>(in.at("anchor")->data);
     const auto proposal_count = *static_cast<std::int16_t*>(in.at("proposal_count")->data);
     if (proposal_count < 1 || proposal_count > 15) return 28;
@@ -149,8 +157,6 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
       proposals[7] = (proposals[7] + 7) % 64;
     if (variation == "draft_private_output" && !model.workspace)
       proposals[7] = (proposals[7] + 7) % 64;
-  } else if (model.role == "draft_context") {
-    if (*static_cast<std::uint16_t*>(in.at("features")->data) != start) return 24;
   } else {
     auto* ids = static_cast<std::int64_t*>(in.at("input_ids")->data);
     auto* predictions = static_cast<std::int64_t*>(out.at("target_top1")->data);
@@ -185,9 +191,13 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
     }
     if (out.count("features")) {
       std::memset(out.at("features")->data, 0, out.at("features")->size);
-      *static_cast<std::uint16_t*>(out.at("features")->data) = static_cast<std::uint16_t>(start);
+      const auto feature_stride = out.at("features")->size / 64 / sizeof(std::uint16_t);
+      for (int row = 0; row < valid; ++row)
+        static_cast<std::uint16_t*>(out.at("features")->data)[row * feature_stride] =
+            static_cast<std::uint16_t>(start + row);
       if (variation == "prefill_features" && model.role == "target_prefill" && call_number == 2)
-        static_cast<unsigned char*>(out.at("features")->data)[2] = 1;
+        static_cast<unsigned char*>(out.at("features")->data)[
+            ((valid - 1) / 16 * 16) * feature_stride * sizeof(std::uint16_t) + 2] = 1;
     }
   }
   for (const auto& item : in) {

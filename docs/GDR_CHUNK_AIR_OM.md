@@ -9,7 +9,7 @@ cd "$AI_RUN_DIR"
 
 配置里的 `VERIFY_GDR=chunk|mtp` 自动选择对应的 `DEPLOYMENT_MANIFEST`。
 两个 manifest 填实际已编译路径；共用 Prefill、Decode、Draft，各自引用自己的 Verify。
-Draft 固定采用 16 行紧凑执行，另共用 `draft_context.om` 构建预填充缓存，无需选择参数。
+Draft 固定采用 16 行紧凑执行，预填充和生成复用同一个 `draft.om`，无需选择参数。
 首次部署见文末[导出与编译](#导出与编译)。`QUANT_MODE` 只控制原生推理，OM 精度由编译产物决定。
 
 ## 统一测试：短 / 1K 上下文、Chunk / MTP、多长度
@@ -19,9 +19,8 @@ Draft 固定采用 16 行紧凑执行，另共用 `draft_context.om` 构建预�
 两种输入共用下面一条命令；投机始终开启。选择 `both` 时，**每个输出长度只测一次普通模型**：
 低内存模式依次运行普通模型、Chunk、MTP，MTP 复用同一份普通模型输出和时延。每模式仍按指定轮数预热、测量。
 
-使用当前 runner **1.9.0+**。已有紧凑 OM（含 `draft_context`）只需重建 runner：
-`cmake --build "$(dirname "$CPP_RUNNER")" --parallel 4`；首次构建见文末第 5 步。
-不含该图的部署需按文末步骤在新目录重新导出、编译；不要覆盖已有 OM。
+使用当前 runner **1.10.0+**，按文末步骤在新目录导出、编译并重建 runner。
+部署清单须包含 `draft_prefill_policy=single_draft16_subchunks`；不要手改旧清单或覆盖已有 OM。
 runner 默认预绑定 current/next 两套 I/O；报告中 `protocol.om_io_binding=prebound_ping_pong` 表示已启用。
 
 ```bash
@@ -59,8 +58,8 @@ runner 默认预绑定 current/next 两套 I/O；报告中 `protocol.om_io_bindi
 
 结果看 `gdr-lengths-*/summary.md` 和 `cases.csv`：整体及 short/long 分组的接受率、tok/s、加速比，
 普通 **Prefill / Decode**、DFlash **Prefill / Draft / Verify** 的平均 ms/call 与累计平均 ms/次生成。
-同时显示 **Draft Context**（缓存构建）。
-另列完整 Prefill / Decode 阶段耗时；DFlash Prefill 包含 Draft Context 调用，不能与图调用表重复相加。
+另列完整 Prefill / Decode 阶段耗时；DFlash Prefill 包含分段建缓存的 Draft 调用，
+这些调用也计入 Draft 图累计耗时，两表不能重复相加；准备阶段候选不计入接受率。
 统计均排除预热、模型加载和请求重置，缺失分项显示 N/A。
 每组子目录的 `generations.txt` 保存文字输出，`runner-batch.json.cases/` 保存逐轮原始记录。
 `--allow-output-differences` 接受跨模式输出差异；去掉则比较两模式第 0 次正式输出的 token/EOS。
@@ -183,7 +182,7 @@ profile_om() {
 `--profile-warmup 0` 不预热；改为 `1` 则在窗口外预热一次。输出上限 `16` 用于设置 15 个候选的预算，不会跑满生成。
 Decode/Draft/Verify 的窗口只含一次对应 OM 调用，必要的 Prefill、缓存和候选准备在窗口外执行。
 Prefill 采集整个输入：含聊天模板不超过 64 token 时一次 OM 调用，约 1K 输入则约 16 次。
-`draft_context.om` 属于 Draft/Verify 窗口外的缓存准备；以上命令不单独采集它。
+分段建缓存的 Draft 调用在 Draft/Verify 采集窗口外执行。
 
 每次输出到终端打印的 `Output` 目录，查看 `capture/<stage>-stage-summary.csv`、
 `capture/<stage>-operator-types.csv` 和 `capture/<stage>-hotspots.txt`，`<stage>` 为所选阶段或 `all`。
@@ -192,8 +191,9 @@ Verify 包含接受判断和图内状态提交；msprof 时延是采集窗口耗
 ## 导出与编译
 
 在环境配置中将 `OM_BUNDLE_DIR` 设为未使用的目录，重新 `source` 后执行第 1–5 步。
-长输入通过 Draft Context 只建缓存；生成固定使用 16 行 Draft，每轮一次 Draft + 一次 Verify。
-模型结构、权重、精度和算子不变。实际设备耗时和接受率需重新测量。
+只有一个 Draft OM，不增加第二份 Draft 模型权重或设备缓存。
+长输入按 16 行复用 Draft 建缓存，1K 输入需额外 63 次准备调用；会增加 Prefill 开销。
+生成每轮一次 Draft + 一次 Verify。模型结构、权重、精度和算子不变，实际显存、时延和接受率需重新测量。
 配置不再需要 `DRAFT_CONTEXT_ROWS`，已有 `factory.json` 中的 `draft_context_rows` 字段请删除。
 
 <details>
@@ -274,9 +274,9 @@ PY
   --atc "$ATC_BIN" --soc-version "$SOC_VERSION"
 ```
 
-完成后 `$OM_BUNDLE_DIR/om/` 有 **6 个文件**：
-`prefill.om`、`decode.om`、`draft.om`、`draft_context.om`、`verify_chunk.om`、`verify_mtp.om`。
-前四个由 Chunk/MTP 共用，不重复存储。
+完成后 `$OM_BUNDLE_DIR/om/` 有 **5 个文件**：
+`prefill.om`、`decode.om`、`draft.om`、`verify_chunk.om`、`verify_mtp.om`。
+前三个由 Chunk/MTP 共用，不重复存储；DFlash 运行时只加载 Prefill、Draft 和所选 Verify。
 两个部署清单分别是同目录的 `deployment-manifest.json`（Chunk）和
 `deployment-manifest-mtp.json`（MTP）。将环境配置的两个 manifest 路径改为这两个文件，重新 `source`，
 完成第 5 步重建 runner 后，再执行上面的统一测试。公共图不重复编译、不复制存储。
@@ -290,7 +290,7 @@ PY
 
 当前 ATC 输出会被收集，每张图结束后才写入 `$AI_RUN_DIR/log/dflash-atc/<本次编译目录>/<图名>.log`；
 编译期间可能长时间没有终端输出，不能仅据此判断卡死。
-Draft 和 Draft Context 默认 `--deterministic=0`（关闭）；已有 OM 不会随代码更新自动改变，需重编。
+Draft 默认 `--deterministic=0`（关闭）；已有 OM 不会随代码更新自动改变，需重编。
 多轮输出不一致只记录 `DRIFT_OBSERVED`，继续统计接受率和时延；详见[漂移问题](DFLASH_CURRENT_USAGE_AND_RESULTS.md#deterministic-与-fc-漂移)。
 
 中断后：对应路线已有 PASS 部署清单则无需重编。首次编译的 `om/` 为空，或增补 MTP 时尚未生成
@@ -357,7 +357,7 @@ PY
 ```
 
 新清单必须与原清单同目录、文件名未被使用；三个 Target OM 保持原文件。
-同时重编 Draft 和 Draft Context；此命令只改编译选项，不改变 AIR。
+只重编 Draft；此命令只改编译选项，不改变 AIR。
 把环境配置中的 `CHUNK_DEPLOYMENT_MANIFEST` 或 `MTP_DEPLOYMENT_MANIFEST` 改为新清单，重新 `source`。
 开启时将 `0` 改为 `1`，输出文件名也改为未使用的名称；省略参数默认为 `0`。
 更新后按第 5 步重建 C++ runner，多轮漂移会显示变化轮数、token 差异数和首个差异位置，

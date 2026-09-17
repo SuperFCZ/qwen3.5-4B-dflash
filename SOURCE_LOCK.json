@@ -1,6 +1,6 @@
 {
   "schema_version": 7,
-  "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental four-OM DFlash with compact Draft / optional fifth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
+  "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash with one compact Draft / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
   "package_revision": "r19",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
@@ -164,7 +164,7 @@
     "files": [
       {
         "source_file": "README.md",
-        "source_sha256": "fb1b82731976fd4b60ae53c3427aa5590fbcacdcfd2a29c8ed6638eb5d571bca"
+        "source_sha256": "01ac5ace4617209b35a73bc33db7ee183c2255e17b20fc2297f45144d4dbf8dc"
       },
       {
         "source_file": "config/gdr_chunk_air_om_factory.example.json",
@@ -172,7 +172,7 @@
       },
       {
         "source_file": "docs/DFLASH_ARCHITECTURE.md",
-        "source_sha256": "ba43a982dcd455b232dd5e15b62edc18e9276cf3ff8ce377f392c9ffcbf8a146"
+        "source_sha256": "d21f09655d0d49c1919d89d54f7c6259028c427dcb2e81982d17300d69630b10"
       },
       {
         "source_file": "docs/assets/dflash-draft-flow.svg",
@@ -180,19 +180,19 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "b7abc939c982ece71fc916cf8b55857f3784458ab6e6ee91b91cb97a9b258c0e"
+        "source_sha256": "7de646eb514d3aee2ca15d0a90dcd660e5e3275ec0444da87fefb77bce27947c"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
-        "source_sha256": "85fe303681a57386408fcf924d9ae55ad6e0bd701fabac40c80e622c41a4ca23"
+        "source_sha256": "786c49d2497f432c85ce9afb38a30f6893d7a02f5f81ed1eb5c6f71fdf82115c"
       },
       {
         "source_file": "framework/FRAMEWORK_LOCK.json",
-        "source_sha256": "38d67ade9b204bdb097986657e842ba36a6e362fee3444a29fdbf41a4bc428d2"
+        "source_sha256": "6e761aa0686b8cb07eafbc301c5f6b52fb5b08775889f4a5ed4a8f6d49e25ed8"
       },
       {
         "source_file": "framework/README.md",
-        "source_sha256": "58d4108a85cb164188e861ed866649cb9105c27647294857af4146a319cb4563"
+        "source_sha256": "a696ffb087d4ee564ad341e2fa76de9be4be7e990474634c49a81e8f32ba1c4e"
       },
       {
         "source_file": "framework/abi/closed-runtime-baseline-v1.json",
@@ -232,7 +232,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/compiler.py",
-        "source_sha256": "91e39220406635eac19c2b37b012e3c2156e57717f2926718d60f5d455e326fe"
+        "source_sha256": "4315553702f6b772b1449407c01aea61a4da64288cfbcc09212488d7451f6533"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/contracts.py",
@@ -240,7 +240,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/cpp_runtime.py",
-        "source_sha256": "f99c6f61daf6c15876a9d4216bee2d160a2baf4f9d4ab1bbe7fb8c01ee2c37d8"
+        "source_sha256": "42217a427aec59ea71c141e4130d3f940c37f5aa5e655f108455d24826ed8f9f"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/custom_op_export.py",
@@ -256,11 +256,11 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/incremental.py",
-        "source_sha256": "05c2def50966e925d85415c84a578a09d2bec6eb6151dea04e7ef5f22ebf34c4"
+        "source_sha256": "4152aa5b6447d260eed30e931e99762b9d0740ebf2615f1431fc48cffdbdfb41"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/incremental_plan.py",
-        "source_sha256": "dc42997c319f7b1ed348a8139ae8cfe8595d7ec5c1a5f1efbe62a8902323a732"
+        "source_sha256": "e4d7fdf46eca4fc0117ddaeb2525c5c8679f5e2537abce862080e53456286530"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/input_manifest.py",
@@ -296,7 +296,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/CMakeLists.txt",
-        "source_sha256": "f8a4ca91d694d95f7391bc318207346bc743f70f7a5dd8f979535ba2f4184291"
+        "source_sha256": "0799ad115ce74611ba378b49b6471db36bf598d770b21b9b905e4cd23191a4f8"
       },
       {
         "source_file": "framework/runtime/cpp/include/qwen35_dflash/acl_executor.hpp",
@@ -320,7 +320,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/src/acl_chunk.cpp",
-        "source_sha256": "34538297fb711d506476708f32f35593bd9efce62527fb09a5a2deb5b62be1c6"
+        "source_sha256": "df926ff66f6f674e26a0915e6c8820498d0d5a533532354c5d71d43c189d32e0"
       },
       {
         "source_file": "framework/runtime/cpp/src/acl_executor.cpp",
@@ -328,7 +328,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/src/chunk.cpp",
-        "source_sha256": "dac13ec4844a42632b358795539959130c870eebd0c1e88fa46efd5550459fb0"
+        "source_sha256": "eced7b0be5898d350749cdc8f5bd102e1bdd881fae690c7af6266d21fd14a71b"
       },
       {
         "source_file": "framework/runtime/cpp/src/generation.cpp",
@@ -336,7 +336,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/src/main.cpp",
-        "source_sha256": "63ce347976809e44e36ee5aa77e6db240b2fa9a66f42527f0c54e5e459cdc36e"
+        "source_sha256": "a50fb445730eddfa2ed7594c8af77f48cac72266f5cd0e99c0060733c76b70bb"
       },
       {
         "source_file": "framework/runtime/cpp/src/sha256.cpp",
@@ -352,7 +352,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/tests/fake_acl/fake_acl.cpp",
-        "source_sha256": "9896782d38fe64e6433f4f43faa68150dd227eaa62bbe13e8041695785473390"
+        "source_sha256": "6d1d5e6febf216fe9c4965e1cf1d10eafa57ab24e598ac384b72c19533f4b198"
       },
       {
         "source_file": "framework/runtime/cpp/tests/run_fake_runner.cmake",
@@ -372,7 +372,7 @@
       },
       {
         "source_file": "tests/test_cpp_stage_profile.py",
-        "source_sha256": "367e62b3063e01c0c7aed68b334aefa0a910bc05c61c33d204a5c48c94c26221"
+        "source_sha256": "c13604d88cad01a99dc2bfdd199165e74a2084edc44e6dc02e21611df5eeee9a"
       },
       {
         "source_file": "tests/test_custom_op_export.py",
@@ -380,7 +380,7 @@
       },
       {
         "source_file": "tests/test_incremental_air_om.py",
-        "source_sha256": "50f84d7180b2a079bfd02207cac166bcf94890dcca491a4b06ea612eea06ae22"
+        "source_sha256": "71c67ec227c4fbd660e17c5c2b701b2a5ebf06bc25aefb05c7cfde436d626276"
       },
       {
         "source_file": "tests/test_msprof_stage_script.py",
@@ -452,7 +452,7 @@
       },
       {
         "source_file": "tests/test_debug_draft_om.py",
-        "source_sha256": "b46fea0a25757e7b9c7ad7102da00523f20e68a378a7c292c5ff54833387b25d"
+        "source_sha256": "d62524518e0c871b4570d2edeccea803b87a52a77072acd72028da048e3da8d9"
       },
       {
         "source_file": "tools/analyze_draft_replay.py",
@@ -500,15 +500,15 @@
       },
       {
         "source_file": "tools/benchmark_prompts.py",
-        "source_sha256": "8acf6168fea4a7b553d6109e56220632701b24d0e72c5e2dff6f030c4ee394af"
+        "source_sha256": "a5181ded78df9bebe88dd62c42d637fc981af0722cf354ecd1d8ff204e902340"
       },
       {
         "source_file": "tests/test_prompt_suite.py",
-        "source_sha256": "6f7256c345955f4682572f2de7517108be1bfeedd31bbcbdf7c31697c3ea277c"
+        "source_sha256": "870aacd9e5678644b46df8017b9292df206485aa0b996cbb00d20faa4a2582ae"
       },
       {
         "source_file": "tests/test_draft_compile_determinism.py",
-        "source_sha256": "c9e3268adfbc9c9e8ef761c5f56e62a6b2300031b42c2bd71e64112770d87499"
+        "source_sha256": "2961a338f2d84f0d37f989ae693a54cd1031eaf862d52ddec9ccd745f346503c"
       },
       {
         "source_file": "tools/decode_outputs.py",
@@ -520,7 +520,7 @@
       },
       {
         "source_file": "docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md",
-        "source_sha256": "2335fea49b57001ff24159ca9af7680b43bf243ef43fb614e0b654470c4b09d5"
+        "source_sha256": "c654d1c2b3f7bf2e4604460300f88e82c046c8c0426e487443d5806b4193f554"
       },
       {
         "source_file": "framework/abi/dflash-mtp-v1.json",
@@ -556,19 +556,19 @@
       },
       {
         "source_file": "framework/abi/dflash-chunk-v4.json",
-        "source_sha256": "2ab3199fac97f7e3a3ba38b35dde8c08e80b6d9f8037901b738c7606b5f60c6e"
+        "source_sha256": "8d9d1843e7e7c12e7aa5741cc515201dbc8600292e6f48bc1550c6a0cbddf78e"
       },
       {
         "source_file": "framework/abi/dflash-mtp-v2.json",
-        "source_sha256": "03d365e86c43b771b3b63379cd84a66652b4a4d6b01c75431eb8a2105b0eefce"
+        "source_sha256": "af07dd95b55b635f4ebd8f18d9060f1e5d5f6f55a6f47c720c9eb53460409e0c"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/common_reuse.py",
-        "source_sha256": "19671cc6d65d822cec55adbd49cb40b78db80c5c23571d281787972ab39ec5b9"
+        "source_sha256": "5c8b52f2763d502a7d278289d207d6e8f2550cde7d99508d19f276efbedc78ba"
       },
       {
         "source_file": "tests/test_common_gdr_reuse.py",
-        "source_sha256": "f9a90ca7eee6eed0ecf06ebf86b0381ca49399a41861885d592ff12ede7ca208"
+        "source_sha256": "41604f0d0db79137f2d84c06cdf71ece663b356312b3f9232d17f517662b2306"
       },
       {
         "source_file": "docs/DFLASH_OPERATORS.md",
@@ -600,11 +600,11 @@
       },
       {
         "source_file": "tests/test_ordinary_baseline.py",
-        "source_sha256": "bf245c68b58fb5fae4f167bc7b74be0c2c8ce3a495221363840915f8b1ceb8e1"
+        "source_sha256": "75a8899cad9c69c1d347cfa9df5cfaea92af2dfeed4411c3e4785cdb64a7e316"
       },
       {
         "source_file": "tests/test_compact_draft_execution.py",
-        "source_sha256": "517b579acdc7762dddc217200dec6512251b9e91d5f0f02af36bf741a6938e27"
+        "source_sha256": "d29ea4f913f88dfc3f4e8674ed60fa6666434934191618e9e78dc91ef5063049"
       },
       {
         "source_file": "tests/test_prebound_om_io.py",
@@ -670,15 +670,16 @@
       "default_repetitions": 3,
       "timing_output": "ordinary prefill/decode and DFlash prefill/draft/verify mean synchronized ms/call and cumulative mean ms/generation; full prefill/decode phases separately include orchestration and context-building Draft; timings in terminal, Markdown, JSON and per-prompt CSV"
     },
-    "common_reuse": "same-directory two-route bundle has six OM files; export-air --reuse-common-from reuses validated prefill/decode/draft/draft_context AIR payloads and OMs; only Verify exported/compiled; separate directories may use hardlinks",
+    "common_reuse": "same-directory two-route bundle has five OM files; export-air --reuse-common-from reuses validated prefill/decode/draft AIR payloads and OMs; only Verify exported/compiled; separate directories may use hardlinks",
     "draft_execution": {
       "context_rows": 16,
-      "prefill": "shared draft_context OM; context KV only",
+      "prefill": "single_draft16_subchunks; ceil(input_tokens/16)-1 discarded-proposal preparation calls; no second Draft OM",
       "selection": "fixed compact execution; no legacy combined 64-row export or runtime branch",
-      "validation": "CPU equivalence and fake ACL scheduling only; TorchAir/ATC and Ascend310P measurements pending"
+      "validation": "CPU equivalence and fake ACL scheduling only; TorchAir/ATC and Ascend310P measurements pending",
+      "memory": "reuse existing 64-row feature buffer and current/next KV banks; no new device allocation for subchunks; physical peak memory pending target measurement"
     },
     "om_io_binding": {
-      "runner_version": "1.9.0",
+      "runner_version": "1.10.0",
       "policy": "prebound_ping_pong",
       "scope": "Host descriptor reuse; unchanged OMs, device buffer count and execution order",
       "validation": "Host fake-ACL equivalence only; real Ascend310P timing pending"

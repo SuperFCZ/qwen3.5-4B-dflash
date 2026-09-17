@@ -146,9 +146,9 @@ Verify 已包含提交操作。OM 计时包含同步与调用开销，不是单�
 #### 为什么长输入收益较小
 
 普通与 DFlash 共用 Target Prefill OM，长输入的该图累计耗时分别为 **1200.17 / 1198.38 ms**，基本相同。
-DFlash 每处理一个非末尾的 64-token 输入块，还调用完整 Draft 建立上下文 KV，并丢弃这次候选。
+本次实测版本每处理一个非末尾的 64-token 输入块，还调用完整 Draft 建立上下文 KV，并丢弃这次候选。
 本轮长输入需要 15～16 个 Prefill 块，因此多出 14～15 次 Draft 调用，每次约 **41.7 ms**。
-[Prefill 实现](../framework/runtime/cpp/src/acl_chunk.cpp#L610)
+当前紧凑单 Draft 改为每 16 行分段准备，不重复加载 Draft 权重；本表不代表该调度的显存或时延。
 
 这使 DFlash Prefill 阶段从普通的 **1200.69 ms** 增至 **1820.59 ms**，多约 **620 ms**。
 长输入 Decode 循环节省约 **890 ms**（4425.03 → 3534.95），抵消额外 Prefill 后，
@@ -173,8 +173,8 @@ DFlash 每处理一个非末尾的 64-token 输入块，还调用完整 Draft �
 冻结 FC 输出后，两种 RMSNorm 均稳定且逐位一致；冻结 norm 后 V projection 也稳定。
 尚未确定具体 kernel，不能归因于 AdnRmsNorm。
 
-`compile-om` 默认给 Draft 和 Draft Context 加 `--deterministic=0`（关闭）；
-`recompile-draft-om --deterministic 0/1` 同步切换这两张图，默认 `0`。
+`compile-om` 默认给 Draft 加 `--deterministic=0`（关闭）；
+`recompile-draft-om --deterministic 0/1` 切换该图的编译选项，默认 `0`。
 多轮输出不一致记录为 `DRIFT_OBSERVED`，保留各轮 token、停止原因、首个差异，
 继续汇总接受率和时延，状态为 `PASS_WITH_OBSERVATIONS`。吞吐使用各轮实际 token 总数；
 不将漂移标为稳定通过。已有结果表不会因更改默认设置而重算。

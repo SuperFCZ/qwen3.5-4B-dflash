@@ -83,8 +83,12 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
   Require(result.capacity >= 64 && result.capacity <= 32704 &&
               result.capacity % 64 == 0 && result.vocabulary > 0,
           "invalid chunk capacity/vocabulary");
+  std::string draft_policy;
+  Require(static_cast<bool>(input >> word >> draft_policy) &&
+              word == "draft_prefill_policy" && draft_policy == "single_draft16_subchunks",
+          "chunk plan needs single_draft16_subchunks; regenerate the plan with current AIR/OM and runner");
   const std::set<std::string> roles{"target_prefill", "target_decode",
-                                    "target_verify", "draft", "draft_context"};
+                                    "target_verify", "draft"};
   while (input >> word && word == "graph") {
     ChunkGraph graph;
     std::string filename;
@@ -96,8 +100,7 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
     graph.model = filename;
     if (!(mode == "dflash" && graph.name == "target_decode") &&
         !(mode == "ordinary" &&
-          (graph.name == "target_verify" || graph.name == "draft" ||
-           graph.name == "draft_context"))) {
+          (graph.name == "target_verify" || graph.name == "draft"))) {
       Require(Sha256File(graph.model) == graph.sha256,
               "chunk OM SHA-256 mismatch: " + graph.name);
     }
@@ -135,8 +138,8 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
   }
   Require(word == "done" && result.graphs.count("target_prefill") &&
               result.graphs.count("target_verify") &&
-              result.graphs.count("draft") && result.graphs.count("draft_context"),
-          "chunk plan needs prefill, verify, draft and draft_context; regenerate AIR/OM in a new bundle directory");
+              result.graphs.count("draft"),
+          "chunk plan needs prefill, verify and one draft; regenerate AIR/OM in a new bundle directory");
   Require(mode == "dflash" || result.graphs.count("target_decode"),
           "ordinary/paired execution requires target_decode");
   Require(!(input >> word), "unexpected data after chunk plan");

@@ -140,7 +140,7 @@ def _graph_atc_args(arguments: Sequence[str], *, name: str, incremental: bool) -
     settings = [s for s in result if s.split("=", 1)[0] == "--deterministic"]
     if len(settings) > 1 or (settings and settings[0] not in {"--deterministic=0", "--deterministic=1"}):
         raise ValueError("use exactly one --deterministic=0 or --deterministic=1")
-    if incremental and name in ("draft", "draft_context") and not settings:
+    if incremental and name == "draft" and not settings:
         result.append("--deterministic=0")
     return result
 
@@ -471,7 +471,7 @@ def recompile_draft_om(
     runner: Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]] | None = None,
     atc_identity: str | None = None,
 ) -> dict[str, Any]:
-    """Recompile Draft and context-only OM, retaining the Target OMs.
+    """Recompile the single Draft OM, retaining the Target OMs.
 
     The new manifest shares its parent's bundle root so existing hash-locked
     AIR payloads and Target OMs need neither copies nor path/ABI changes.
@@ -523,7 +523,7 @@ def recompile_draft_om(
         if file_record(old_om, relative_to=root) != graph["om"]:
             raise ValueError(f"OM integrity check failed: {graph['name']}")
 
-    selected = [g for g in graphs if g["name"] in ("draft", "draft_context")]
+    selected = [g for g in graphs if g["name"] == "draft"]
     graph_arguments = {}
     for graph in selected:
         name, old_command = graph["name"], graph["atc_command"]

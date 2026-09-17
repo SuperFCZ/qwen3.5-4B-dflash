@@ -332,6 +332,7 @@ def validate_cpp_runner_report(
     verify_gdr: str | None = None,
     low_memory: bool = False,
     draft_context_rows: int | None = None,
+    draft_prefill_policy: str | None = None,
     allow_output_differences: bool = False,
     warmup: int = 3,
     repetitions: int = 10,
@@ -367,18 +368,22 @@ def validate_cpp_runner_report(
     if protocol.get("low_memory", False) is not low_memory:
         raise RuntimeError("C++ runner low-memory mode differs from the request")
     abi = report.get("abi", {})
-    # Saved reports can predate the mandatory context-only prefill graph.
+    # Preserve analysis of saved reports; live bundles require a single Draft.
     # Live deployments are checked by validate_incremental_bundle before execution.
     reported_rows = abi.get("draft_context_rows", 64)
     if chunk_abi and (type(reported_rows) is not int or reported_rows not in (16, 64)
                       or draft_context_rows is not None and reported_rows != draft_context_rows):
         raise RuntimeError("C++ runner Draft execution gear differs")
-    compact_draft = chunk_abi and reported_rows == 16
+    reported_policy = abi.get("draft_prefill_policy")
+    if chunk_abi and (reported_policy not in (None, "single_draft16_subchunks")
+                      or draft_prefill_policy is not None and reported_policy != draft_prefill_policy):
+        raise RuntimeError("C++ runner Draft prefill policy differs")
+    extra_context_graph = chunk_abi and reported_rows == 16 and reported_policy is None
     if low_memory and (
         not chunk_abi
         or protocol.get("order") not in (
             "ordinary then DFlash with model unload between modes", "saved ordinary baseline then DFlash")
-        or protocol.get("max_resident_models") != 3 + compact_draft
+        or protocol.get("max_resident_models") != 3 + extra_context_graph
     ):
         raise RuntimeError("C++ runner low-memory protocol differs")
     abi = report.get("abi", {})
@@ -388,7 +393,7 @@ def validate_cpp_runner_report(
             require_verify_gdr({"abi": abi.get("id")}, verify_gdr)
         except ValueError as error:
             raise RuntimeError("C++ runner incremental ABI differs: " + str(error)) from error
-        if abi.get("graph_count") != 4 + compact_draft:
+        if abi.get("graph_count") != 4 + extra_context_graph:
             raise RuntimeError("C++ runner incremental graph count differs")
     if not chunk_abi and abi.get("input_names") != ["input_ids", "attention_mask"]:
         raise RuntimeError("C++ runner input ABI differs")
@@ -557,6 +562,7 @@ def run_cpp_pair(
         verify_gdr=verify_gdr,
         low_memory=low_memory,
         draft_context_rows=contract["draft_context_rows"] if chunk else None,
+        draft_prefill_policy=contract["draft_prefill_policy"] if chunk else None,
     )
     run_root = Path(os.environ["AI_RUN_DIR"]).expanduser().resolve()
     air_record = deployment.get("air_manifest")

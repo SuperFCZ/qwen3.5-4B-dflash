@@ -579,19 +579,6 @@ class DraftProposeGraph(nn.Module):
         return (torch.where(active[None], top1, torch.zeros_like(top1)),)
 
 
-class DraftContextOnlyGraph(nn.Module):
-    """Prime context KV without running the proposal transformer or LM head."""
-
-    def __init__(self, draft):
-        super().__init__()
-        self.context = DraftContextGraph(draft, 64)
-
-    def forward(self, features, start_position, valid_rows, *state):
-        visible = torch.arange(64, device=features.device) < valid_rows.to(torch.long)
-        features = torch.where(visible[None, :, None], features, torch.zeros_like(features))
-        return self.context(features, start_position, *state)
-
-
 class DraftGraph(nn.Module):
     """One OM appends context and generates a block, sharing all Draft weights."""
 
@@ -739,7 +726,7 @@ def incremental_graph_specs(
         "commit_capsules": "internal_to_target_verify_not_external_OM_IO",
     }
     contract["draft_context_rows"] = 16
-    contract["draft_prefill_policy"] = "context_only64_then_draft16"
+    contract["draft_prefill_policy"] = "single_draft16_subchunks"
     contract["verify_discard_states"] = verify_discard_descriptors(contract)
     common = {**metadata, "incremental_contract": contract}
     specs = []
@@ -762,7 +749,7 @@ def incremental_graph_specs(
         if not ops:
             meta.pop("custom_op_export_contract", None)
             meta.pop("custom_op_export_contracts", None)
-        if not ops or name in ("draft", "draft_context"):
+        if not ops or name == "draft":
             meta.pop("standard_op_export_contracts", None)
         specs.append(
             AirGraphSpec(
@@ -862,15 +849,5 @@ def incremental_graph_specs(
         ("draft_top1", *draft_names),
         (torch.zeros((1, 15), dtype=torch.long, device=device), *draft_state),
         draft_ops,
-    )
-    context_ops = tuple(
-        replace(op, minimum_occurrences=len(draft.layers) + 1)
-        for op in custom_ops if op.torch_op == "npu::adn_rms_norm"
-    )
-    add(
-        "draft_context", DraftContextOnlyGraph(draft),
-        (features, start, valid, *draft_state),
-        ("features", "start_position", "valid_rows", *draft_names),
-        draft_names, draft_state, context_ops,
     )
     return tuple(specs)

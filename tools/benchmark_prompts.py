@@ -100,7 +100,11 @@ def stage_timings(report):
     result = {}
     for label, (mode, stage) in STAGES.items():
         runs = report.get(mode, {}).get("measurements", [])
-        unused = [] if stage == "draft_context" and report.get("abi", {}).get("draft_context_rows") == 16 else None
+        # Historical context-only graph counters remain readable. The current
+        # single-Draft schedule records all its calls under "draft".
+        unused = [] if (stage == "draft_context"
+                        and report.get("abi", {}).get("draft_context_rows") == 16
+                        and report.get("abi", {}).get("draft_prefill_policy") is None) else None
         groups = [m.get("stage_ms", {}).get(stage, unused) for m in runs]
         if not groups or any(group is None for group in groups):
             result[label] = {"available": False}
@@ -161,7 +165,7 @@ def render_timings(rows, *, measured_only=True):
         lines.append(f"| {row['id']} | " + " | ".join(cells) + " |")
     lines += ["", "Measured repetitions only; warmups, model loading and request reset excluded.",
               "DFlash Prefill includes Target Prefill and context-building calls. "
-              "Cache-only calls are reported as Draft Context. "
+              "Those calls also appear in the corresponding graph totals. "
               "Phase and graph tables overlap and must not be added together.",
               "Graph times are synchronized OM calls, not kernel times. Missing timings are N/A."]
     return "\n".join(lines) + "\n"
@@ -722,6 +726,7 @@ def collect_results(args, prompts, raw, index, plan_hash, batch_hash, eos, exit_
                 max_draft_tokens=args.max_draft_tokens, chunk_abi=True, low_memory=args.low_memory,
                 verify_gdr=getattr(args, "verify_gdr", None),
                 draft_context_rows=getattr(args, "draft_context_rows", None),
+                draft_prefill_policy=getattr(args, "draft_prefill_policy", None),
                 warmup=warmup, repetitions=repetitions,
                 allow_output_differences=allow_differences)
             if report["eos_token_ids"] != eos or report["protocol"].get("round_trace_enabled") is not True:
@@ -817,6 +822,7 @@ def summarize_existing(args):
         warmup=int(argument("--warmup", "3")), repetitions=int(argument("--repetitions", "10")),
         prompt_group=request.get("prompt_group", "all"),
         draft_context_rows=request.get("draft_context_rows"),
+        draft_prefill_policy=request.get("draft_prefill_policy"),
         max_new_tokens=int(argument("--max-new-tokens")), max_draft_tokens=int(argument("--max-draft-tokens")),
         low_memory="--low-memory" in command, allow_output_differences=args.allow_output_differences)
     set_benchmark_counts(stored)
@@ -892,6 +898,7 @@ def run(args):
     from qwen35_dflash.ascend310p.incremental_plan import verify_gdr_route
     args.verify_gdr = verify_gdr_route(contract)
     args.draft_context_rows = contract["draft_context_rows"]
+    args.draft_prefill_policy = contract["draft_prefill_policy"]
     tokenizer, tokenizer_source = load_tokenizer(model_dir=args.model_dir)
     eos = args.eos_token_id or [248044]
     if any(token < 0 or token >= contract["vocab_size"] for token in eos):
@@ -925,6 +932,7 @@ def run(args):
         "warmup": args.warmup, "repetitions": args.repetitions,
         "verify_gdr": args.verify_gdr, "incremental_abi": contract["abi"],
         "draft_context_rows": args.draft_context_rows,
+        "draft_prefill_policy": args.draft_prefill_policy,
         "allow_output_differences": getattr(args, "allow_output_differences", False),
         "max_new_tokens": args.max_new_tokens, "max_draft_tokens": args.max_draft_tokens,
         "runtime_identity": identity, "tokenizer_source": tokenizer_source,
