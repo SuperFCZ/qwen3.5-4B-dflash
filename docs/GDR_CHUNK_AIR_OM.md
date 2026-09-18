@@ -61,7 +61,10 @@ PY
   --draft-quant-matmul weight_quant
 ```
 
-**2. 编译 OM。** 等上一步返回终端提示符后执行；逐图打印 START/DONE。
+只需要 FP16 时，导出命令使用 `--draft-quantizations fp16`；不加载量化权重。
+只需要一条验证路线时，导出命令使用 `--verify-gdr chunk` 或 `mtp`。
+
+**2. 编译 OM。** 等上一步返回终端提示符后执行；优先完成 FP16，逐图打印 START/DONE。
 
 ```bash
 "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p compile-om \
@@ -70,7 +73,23 @@ PY
 ```
 
 `--resume` 校验 AIR、OM 哈希、SoC、编译器和参数后复用已完成的组合，继续编译缺失的图。
-没有成功部署清单记录的残留 OM 会报出路径；保留并移到别处后再重试。
+每个成功组合立即写入 `draft-variants.json`，可直接测试。量化 Draft 编译失败会记录错误并继续其余组合，
+保留 FP16 及其他成功结果；同一失败图在两条 Verify 路线间不重复编译。
+
+**只编译或复用 FP16**，包括已导出三种 Draft、量化编译失败的目录：
+
+```bash
+"$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p compile-om \
+  --air-manifest "$OM_BUNDLE_DIR/air-manifest.json" \
+  --draft-quantizations fp16 \
+  --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --resume
+```
+
+已有 FP16 部署清单但缺少索引时，此命令会校验并补齐索引，无需重编。
+所选组合全部成功时退出码为 0；有编译失败时为 1。整体索引可为 `PARTIAL`，
+测试只要求选中的 Draft/Verify 条目为 `PASS`，不会加载失败或未编译的量化 Draft。
+没有成功部署清单记录的残留 OM 不会被复用；若属于本次所选组合会报出路径，保留并移到别处后再重试。
+未选中的残留 OM 保持原样。
 
 全部选择时，`$OM_BUNDLE_DIR/om/` 下只有 **7 个 OM**：
 
@@ -81,9 +100,8 @@ draft.om        draft_w4a16.om draft_w8a16.om
 ```
 
 `draft-variants.json` 索引各组合；部署清单与它同目录。运行时只加载选定的一个 Draft 和一个 Verify。
-只编译部分类型可改 `--draft-quantizations w8a16`；只要一条验证路线可改 `--verify-gdr chunk`。
-AIR 导出成功不代表 OM 编译成功；以第二步成功及 `draft-variants.json` 的 PASS 为准。
-编译日志位于 `$AI_RUN_DIR/log/dflash-atc/`。中断后直接重跑第二步，不需要重新导出 AIR。
+AIR 导出成功不代表 OM 编译成功；以 `draft-variants.json` 中对应条目的 `PASS` 为准。
+编译日志位于 `$AI_RUN_DIR/log/dflash-atc/`。重试编译不需要重新导出 AIR。
 
 **3. 构建 runner。**
 
@@ -108,15 +126,16 @@ scale 仍须实际转置为 `[K/128,N]`；该属性不作用于 scale，不能�
 外部压缩权重和 scale 接口不变，布局检查写入 `weight-quant-layout.json`。
 中间节点的 shape 从 TorchAir 转换时的类型元数据校验，不要求 GE 输出描述已完成 shape 推导。
 不自动关闭 ATC 融合；[同类转置融合规则](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta2/maintenref/graphubfusionref/atlasrr_30_0074.html)注明不可关闭。
-**兼容性：**当前接收端 CANN 9.0.0 / 310P 的 group-128、ND 权重在
-NK、KN 两种方向下均报 `no valid template is found`，尚未编译通过。
+**兼容性：**当前接收端 CANN 9.0.0 / 310P 的 ND 权重在 NK、KN 两种方向下，
+group-128 和一维 scale 的 per-channel 小图均报 `no valid template is found`。
+原生量化 OM 尚未编译通过；可先使用 FP16 Draft，其他格式及图模式路径仍待验证。
 per-channel 的 GE 接口明确要求 scale 为 `[N,1]` 或 `[N]`，拒绝 `[1,N]`；
-探测统一使用 Python API 与 GE 都接受的一维形式。该形式的本机编译结果仍待验证。
+探测统一使用一维形式，通过 shape 检查不代表有可用内核模板。
 [较早的官方文档](https://ascend.github.io/docs/sources/pytorch/api_doc.html#torch-npu-npu-weight-quant-batchmatmul)
 注明 310P 仅支持 per-channel；[当前接口文档](https://github.com/Ascend/op-plugin/blob/master/docs/zh/custom_APIs/torch_npu/torch_npu-npu_weight_quant_batchmatmul.md)
 列出了 per-group。使用时须匹配芯片、CANN 版本、格式和图模式，不能只按接口名判断支持范围。
 
-**先测 per-channel 小图**，取得有效的支持对照；不加载模型权重：
+更换工具链或格式后，可用 **per-channel 小图** 检查支持范围；不加载模型权重：
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
@@ -161,6 +180,24 @@ OM 峰值显存与完整模型接受率仍需统一测试和 profiling 验证。
 
 同一入口测试短输入、约 1K 长输入、离线开源数据集、三种 Draft 和两条 Verify。
 测试默认关闭 thinking；普通模型与所有 Draft 使用相同的非 thinking 输入模板。
+
+**只跑 FP16 Draft 的离线数据集**，读取目录内全部题目；量化编译失败不影响此命令：
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
+  --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
+  --runner-config "$RUNNER_CONFIG" --model-dir "$TARGET_DIR" \
+  --bundle-dir "$OM_BUNDLE_DIR" \
+  --draft-quantization fp16 --verify-gdr chunk --lengths 128 \
+  --dataset-dir /absolute/path/datasets --no-enable-thinking \
+  --warmup 0 --repetitions 1 \
+  --max-draft-tokens "$MAX_DRAFT_TOKENS" --device-id "$DEVICE_ID" \
+  --low-memory --allow-output-differences
+```
+
+上面为单次测量；重复测量可设 `--warmup 1 --repetitions 3`。
+需要 thinking 时改为 `--enable-thinking`。每个文件的接受率、吞吐与加速比保存在 `datasets.csv` 和分文件报告。
+
 下面命令合并 **8 条短 prompt + 12 条长 prompt + 每个离线文件前 10 题**：
 
 ```bash
@@ -235,6 +272,7 @@ DFlash Prefill 包含长输入建 Draft 缓存的调用，不能与图累计耗�
 
 `--profile-om` 可选一个或多个：`prefill decode draft draft_w4a16 draft_w8a16 verify_chunk verify_mtp`；
 `draft` 表示 FP16。例如只测量化 Draft：`--profile-om draft_w4a16 draft_w8a16`。
+部分编译目录也可使用；只选择已有 `PASS` 部署的 OM，例如 `--profile-om draft`。
 
 共享 Prefill/Decode 各采集一次，两个 Verify 优先使用 FP16 Draft 准备输入。
 各项依次加载、采集、卸载，不同时加载 7 个 OM；准备工作在窗口外，单项失败后继续其余项。

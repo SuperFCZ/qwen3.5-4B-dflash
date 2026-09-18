@@ -2,6 +2,7 @@
 import csv
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -16,11 +17,16 @@ pytestmark = pytest.mark.usefixtures("small_threads", "adn_rms_norm_cpu")
 
 
 @pytest.fixture
-def unified_args(matrix_args, unified_export, monkeypatch):
+def unified_args(matrix_args, unified_export, monkeypatch, request):
     export, atc, _ = unified_export
     air = export()
+    def compile_test(command, cwd):
+        if getattr(request, "param", None) == "quant-fail" and any(
+                s.endswith(("/om/draft_w4a16", "/om/draft_w8a16")) for s in command):
+            return subprocess.CompletedProcess(command, 255, "synthetic quantized ATC failure")
+        return atc(command, cwd)
     result = compile_air_bundle(air["manifest_path"], atc_bin="/bin/true", soc_version="Ascend310P3",
-                               runner=atc, atc_identity="fake-atc")
+                               runner=compile_test, atc_identity="fake-atc")
     matrix_args.bundle_dir = Path(result["manifest_path"]).parent
     matrix_args.draft_quantizations = ["fp16", "w4a16", "w8a16"]
     matrix_args.lengths = [4]
@@ -29,6 +35,29 @@ def unified_args(matrix_args, unified_export, monkeypatch):
     monkeypatch.delenv("ASCEND310P_SIMULATION_ONLY", raising=False)
     monkeypatch.delenv("PROFILING_MODE", raising=False)
     return matrix_args
+
+
+@pytest.mark.parametrize("unified_args", ["quant-fail"], indirect=True)
+def test_partial_compilation_runs_fp16_offline_and_refuses_failed_quant(unified_args, monkeypatch):
+    args = unified_args
+    assert json.loads((args.bundle_dir / "draft-variants.json").read_text())["status"] == "PARTIAL"
+    args.draft_quantizations, args.verify_gdr = ["fp16"], "chunk"
+    data = args.run_dir / "datasets"
+    data.mkdir()
+    (data / "gsm8k.jsonl").write_text('{"question":"one"}\n{"question":"two"}\n')
+    args.dataset_dir = data
+    args.prompts, args.num_questions, args.include_builtin_prompts = None, None, False
+    assert matrix.run(args) == 1  # Exercised end to end with fake ACL, never device evidence.
+    root, = args.run_dir.glob("gdr-lengths-*")
+    request = json.loads((root / "fp16/request.json").read_text())
+    assert len(request["prompts"]) == 2 and len(request["datasets"]) == 1
+    with (root / "datasets.csv").open() as stream:
+        rows = list(csv.DictReader(stream))
+    assert len(rows) == 1 and rows[0]["draft_quantization"] == "fp16"
+    args.draft_quantizations = ["w4a16"]
+    monkeypatch.setattr(suite, "run", lambda *a: pytest.fail("failed Draft must not launch"))
+    with pytest.raises(ValueError, match="w4a16/chunk has no compiled bundle"):
+        matrix.run(args)
 
 
 def test_one_run_combines_short_long_and_offline_files(unified_args, monkeypatch):

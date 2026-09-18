@@ -97,9 +97,9 @@ def export_matrix(factory, config, bundle_dir, *, variants, routes, draft_dirs,
 
 
 def compile_matrix(path, *, soc_version, atc_bin=None, extra_args=(), runner=None, atc_identity=None,
-                   resume=False):
-    """Compile each unique graph once; every deployment refers to the same om/."""
-    from .compiler import (compile_air_bundle, _validated_custom_op_audit,
+                   resume=False, draft_quantizations=None):
+    """Publish completed members independently; a failed Draft cannot hide FP16."""
+    from .compiler import (AtcCompileError, compile_air_bundle, _validated_custom_op_audit,
                            _validated_standard_op_overrides, _validated_completed_bundle,
                            _bundle_atc_args, _atc_identity, resolve_atc_executable, validate_soc_version)
     from .runtime_input_export import validated_runtime_input_abi
@@ -117,10 +117,18 @@ def compile_matrix(path, *, soc_version, atc_bin=None, extra_args=(), runner=Non
     if not expected or len(members) != len(expected) or {
             (m["draft_quantization"], m["verify_gdr"]) for m in members} != expected:
         raise ValueError("AIR matrix selections and members differ")
+    selected = list(variants if draft_quantizations is None else draft_quantizations)
+    if not selected or len(set(selected)) != len(selected) or any(v not in variants for v in selected):
+        raise ValueError("select distinct Draft types present in the AIR matrix")
+    # Finish the usable FP16 deployments before attempting optional Drafts,
+    # including when the AIR export listed quantized variants first.
+    members = sorted(members, key=lambda m: (VARIANTS.index(m["draft_quantization"]),
+                                            routes.index(m["verify_gdr"])))
     if not resume and ((root / "draft-variants.json").exists() or any((root / "om").glob("*.om"))):
         raise FileExistsError("matrix output already contains compiled artifacts; use a new bundle directory")
     seen, environment, air_members = {}, None, {}
-    # Check every member and payload before the first ATC invocation.
+    # Check the catalog and shared contracts in full. Audit payloads for this
+    # request and every saved deployment before the first ATC invocation.
     for member in members:
         variant, route = member["draft_quantization"], member["verify_gdr"]
         if variant not in VARIANTS or route not in ("chunk", "mtp"):
@@ -143,15 +151,17 @@ def compile_matrix(path, *, soc_version, atc_bin=None, extra_args=(), runner=Non
         contract = validate_incremental_bundle(air["graphs"])
         if contract is None or contract.get("draft_quantization", "fp16") != variant or contract["verify_gdr"] != route:
             raise ValueError("matrix member labels differ from the graph contract")
+        needed = variant in selected or (root / member["deployment_manifest"]).exists()
         for graph in air["graphs"]:
-            _validated_custom_op_audit(graph)
-            _validated_standard_op_overrides(graph)
-            validated_runtime_input_abi(graph, required=True, allow_test_double=runner is not None)
-            for payload in graph["payload_files"]:
-                _verified_file(root, payload)
-            _verified_file(root, graph["air"])
-            if graph.get("constant_inputs") or (graph["name"] == "draft" and variant != "fp16"):
-                verify_constant_inputs(graph, root)
+            if needed:
+                _validated_custom_op_audit(graph)
+                _validated_standard_op_overrides(graph)
+                validated_runtime_input_abi(graph, required=True, allow_test_double=runner is not None)
+                for payload in graph["payload_files"]:
+                    _verified_file(root, payload)
+                _verified_file(root, graph["air"])
+                if graph.get("constant_inputs") or (graph["name"] == "draft" and variant != "fp16"):
+                    verify_constant_inputs(graph, root)
             key = artifact_stem(graph)
             if key in seen:
                 validate_shared_graph(seen[key], graph)
@@ -159,7 +169,15 @@ def compile_matrix(path, *, soc_version, atc_bin=None, extra_args=(), runner=Non
                 seen[key] = graph
     if sorted(seen) != catalog.get("unique_graphs"):
         raise ValueError("AIR matrix unique graph inventory differs")
-    cache, bundles, completed = {}, {}, {}
+    cache, bundles, completed, failures = {}, {}, {}, {}
+    index_path = root / "draft-variants.json"
+    previous = {}
+    if resume and index_path.exists():
+        previous = load_json_object(index_path)
+        if (previous.get("artifact_kind") != "qwen35-draft-variants"
+                or previous.get("air_manifest") != file_record(path, relative_to=root)):
+            raise ValueError("resume index does not match the AIR matrix")
+    ignored_oms = []
     if resume:
         atc_path = resolve_atc_executable(atc_bin)
         soc_version = validate_soc_version(soc_version)
@@ -186,27 +204,79 @@ def compile_matrix(path, *, soc_version, atc_bin=None, extra_args=(), runner=Non
                     cache[stem] = (graph, options[graph["name"]])
         admitted = {root / graph["om"]["path"] for graph, _ in cache.values()}
         unknown = set((root / "om").glob("*.om")) - admitted
-        if unknown:
+        required_oms = {root / "om" / (artifact_stem(g) + ".om")
+                        for (v, _), air in air_members.items() if v in selected for g in air["graphs"]}
+        # A failed unselected quantization may have left an unverified OM.
+        # Keep it untouched and unindexed; only selected dependencies block.
+        blocking = unknown if set(selected) == set(variants) else unknown & required_oms
+        if blocking:
             raise ValueError("resume found OM files without a verified passing deployment; "
                              "retain/move these files aside before retrying: "
-                             + ", ".join(str(p) for p in sorted(unknown)))
+                             + ", ".join(str(p) for p in sorted(blocking)))
+        ignored_oms = [str(p.relative_to(root)) for p in sorted(unknown)]
     for member in members:
         variant, route = member["draft_quantization"], member["verify_gdr"]
+        entry = dict(checkpoint=member["checkpoint"], status="NOT_RUN")
         if (variant, route) in completed:
-            compiled = completed[(variant, route)]
+            manifest = Path(completed[(variant, route)]["manifest_path"])
+            entry.update(manifest=manifest.name, manifest_sha256=sha256_file(manifest), status="PASS")
+        elif variant not in selected:
+            old = previous.get("bundles", {}).get(variant, {}).get(route, {})
+            if old.get("status") in {"FAIL", "INTERRUPTED"}:
+                entry.update(status=old["status"], error=old.get("error"))
+        bundles.setdefault(variant, {})[route] = entry
+
+    def publish():
+        states = [entry["status"] for entries in bundles.values() for entry in entries.values()]
+        requested = [bundles[v][r]["status"] for v in selected for r in routes]
+        request_status = ("PASS" if all(s == "PASS" for s in requested) else
+                          "FAIL" if any(s in {"FAIL", "INTERRUPTED"} for s in requested) else "NOT_RUN")
+        status = ("PASS" if all(s == "PASS" for s in states) else
+                  "PARTIAL" if "PASS" in states else
+                  "FAIL" if any(s in {"FAIL", "INTERRUPTED"} for s in states) else "NOT_RUN")
+        result = dict(schema_version=2, artifact_kind="qwen35-draft-variants", status=status,
+                      request_status=request_status, requested_draft_quantizations=selected,
+                      draft_quantizations=variants, routes=routes, bundles=bundles,
+                      # These records were hashed on compile/resume. Reuse
+                      # them instead of rehashing multi-GB OMs at each publish.
+                      unique_oms=[dict(cache[name][0]["om"]) for name in sorted(cache)],
+                      unverified_unselected_oms=ignored_oms,
+                      air_manifest=file_record(path, relative_to=root), layout="shared_directory")
+        atomic_write_json(index_path, result)
+        return dict(result, manifest_path=str(index_path))
+
+    publish()
+    for member in members:
+        variant, route = member["draft_quantization"], member["verify_gdr"]
+        if variant not in selected:
+            continue
+        if (variant, route) in completed:
             print(f"[compile-om] {variant}/{route} REUSE completed bundle", flush=True)
-        else:
+            continue
+        try:
             compiled = compile_air_bundle(contained_path(root, member["air_manifest"]["path"]),
                 soc_version=soc_version, atc_bin=atc_bin, extra_args=extra_args, runner=runner,
-                atc_identity=atc_identity, _shared_compiled=cache,
+                atc_identity=atc_identity, _shared_compiled=cache, _failed_compiled=failures,
                 _deployment_name=member["deployment_manifest"])
+        except AtcCompileError as error:
+            bundles[variant][route].update(status="FAIL", error=str(error))
+            publish()
+            print(f"[compile-om] {variant}/{route} FAIL: {error}", flush=True)
+            continue
+        except BaseException as error:
+            bundles[variant][route].update(
+                status="INTERRUPTED" if isinstance(error, KeyboardInterrupt) else "FAIL",
+                error=f"{type(error).__name__}: {error}")
+            publish()
+            raise
         manifest = Path(compiled["manifest_path"])
         bundles.setdefault(variant, {})[route] = dict(
             manifest=manifest.name, manifest_sha256=sha256_file(manifest),
             checkpoint=member["checkpoint"], status="PASS")
-    result = dict(schema_version=2, artifact_kind="qwen35-draft-variants", status="PASS",
-                  draft_quantizations=variants, routes=routes, bundles=bundles,
-                  unique_oms=[file_record(root / "om" / (name + ".om"), relative_to=root) for name in sorted(cache)],
-                  air_manifest=file_record(path, relative_to=root), layout="shared_directory")
-    output = atomic_write_json(root / "draft-variants.json", result)
-    return dict(result, manifest_path=str(output))
+        publish()
+        print(f"[compile-om] {variant}/{route} PASS; indexed in {index_path}", flush=True)
+    result = publish()
+    ready = [f"{v}/{r}" for v in variants for r in routes if bundles[v][r]["status"] == "PASS"]
+    print(f"[compile-om] {result['status']} request={result['request_status']}; "
+          f"available={', '.join(ready) or 'none'}; index={index_path}", flush=True)
+    return result

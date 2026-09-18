@@ -14,7 +14,7 @@ from qwen35_dflash.ascend310p.atc_fusion import (
     FUSION_OPTION, WEIGHT_QUANT_TRANSPOSE_PASS as PASS, normalized_atc_options,
 )
 from qwen35_dflash.ascend310p.compiler import (
-    AtcCompileError, compile_air_bundle, _bundle_atc_args, _atc_failure_detail,
+    compile_air_bundle, _bundle_atc_args, _atc_failure_detail,
 )
 
 pytestmark = pytest.mark.usefixtures("small_threads", "adn_rms_norm_cpu", "weight_quant_cpu")
@@ -101,13 +101,17 @@ def interrupted_matrix(unified_export):
     export, atc, calls = unified_export
     air = export(backend="weight_quant")
     root = Path(air["manifest_path"]).parent
-    def fail_w4(command, cwd):
-        if any(s.endswith("/om/draft_w4a16") for s in command):
+    def fail_quant(command, cwd):
+        if any(s.endswith(("/om/draft_w4a16", "/om/draft_w8a16")) for s in command):
             return subprocess.CompletedProcess(command, 1, f"Compilation_Error(E20007): {PASS} failed")
         return atc(command, cwd)
-    with pytest.raises(AtcCompileError, match="transpose/NZ graph fusion"):
-        compile_air_bundle(air["manifest_path"], atc_bin="/bin/true", soc_version="Ascend310P3",
-                           runner=fail_w4, atc_identity="fake-atc")
+    result = compile_air_bundle(air["manifest_path"], atc_bin="/bin/true", soc_version="Ascend310P3",
+                               runner=fail_quant, atc_identity="fake-atc")
+    assert result["status"] == "PARTIAL" and result["request_status"] == "FAIL"
+    assert all(entry["status"] == "PASS" for entry in result["bundles"]["fp16"].values())
+    for variant in ("w4a16", "w8a16"):
+        assert all(entry["status"] == "FAIL" and "transpose/NZ graph fusion" in entry["error"]
+                   for entry in result["bundles"][variant].values())
     assert len(list((root / "om").glob("*.om"))) == 5
     return air, root, atc, calls
 

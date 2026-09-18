@@ -1,6 +1,7 @@
 """Unified command/flat storage checks; fake export/ATC are host evidence only."""
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -83,3 +84,120 @@ def test_normal_cli_accepts_matrix_and_compile_stays_separate(monkeypatch):
     compile_args = parser.parse_args(["compile-om", "--air-manifest", "/bundle/air-manifest.json",
                                      "--atc", "/atc", "--soc-version", "Ascend310P3"])
     assert compile_args.handler is cli.command_compile
+
+
+def test_quant_failure_publishes_fp16_and_continues_other_quant(unified_export, tmp_path):
+    export, atc, _ = unified_export
+    # FP16 must be ready first even if the export listed another Draft first.
+    air = export(variants=("w4a16", "w8a16", "fp16"))
+    root = Path(air["manifest_path"]).parent
+    attempted = []
+    def fail_w4(command, cwd):
+        stem = Path(next(s.split("=", 1)[1] for s in command if s.startswith("--output="))).name
+        attempted.append(stem)
+        if stem == "draft_w4a16":
+            index = json.loads((root / "draft-variants.json").read_text())
+            assert all(e["status"] == "PASS" for e in index["bundles"]["fp16"].values())
+            return subprocess.CompletedProcess(command, 255, "quantized tiling failed")
+        return atc(command, cwd)
+    result = compile_air_bundle(air["manifest_path"], atc_bin="/bin/true", soc_version="Ascend310P3",
+                               runner=fail_w4, atc_identity="host-test")
+    assert result["status"] == "PARTIAL" and result["request_status"] == "FAIL"
+    assert attempted.count("draft_w4a16") == 1
+    assert attempted.count("draft_w8a16") == 1
+    assert len(result["unique_oms"]) == 6
+    for variant in ("fp16", "w8a16"):
+        for route, entry in result["bundles"][variant].items():
+            assert entry["status"] == "PASS"
+            write_incremental_plan(root / entry["manifest"], tmp_path / f"{variant}-{route}.plan")
+    for entry in result["bundles"]["w4a16"].values():
+        assert entry["status"] == "FAIL" and "quantized tiling failed" in entry["error"]
+        assert "manifest" not in entry
+    before = {p: p.read_bytes() for p in (root / "om").glob("*.om")}
+    # Recover/use FP16 without trying W4 again; retain the W8 PASS and W4 error.
+    selected = compile_air_bundle(air["manifest_path"], atc_bin="/bin/true", soc_version="Ascend310P3",
+        runner=lambda *a: pytest.fail("FP16 is already compiled"), atc_identity="host-test",
+        resume=True, draft_quantizations=["fp16"])
+    assert selected["request_status"] == "PASS" and selected["status"] == "PARTIAL"
+    assert selected["bundles"] == result["bundles"]
+    assert all(p.read_bytes() == data for p, data in before.items())
+
+
+def test_fp16_subset_skips_quant_payloads_and_recovers_missing_index(unified_export):
+    export, atc, calls = unified_export
+    air = export()
+    root = Path(air["manifest_path"]).parent
+    quant_air = json.loads((root / "air-manifest-w4a16-chunk.json").read_text())
+    draft = next(g for g in quant_air["graphs"] if g["name"] == "draft")
+    (root / draft["air"]["path"]).write_bytes(b"unused corrupted quantized AIR")
+    result = compile_air_bundle(air["manifest_path"], atc_bin="/bin/true", soc_version="Ascend310P3",
+        runner=atc, atc_identity="host-test", draft_quantizations=["fp16"])
+    assert result["request_status"] == "PASS" and result["status"] == "PARTIAL"
+    assert len(result["unique_oms"]) == 5
+    assert len([c for c in calls if c[0] == "compile"]) == 5
+    assert result["bundles"]["w4a16"]["chunk"]["status"] == "NOT_RUN"
+    # Reproduce an older compiler that wrote FP16 manifests but no index.
+    (root / "draft-variants.json").unlink()
+    leftover = root / "om/draft_w4a16.om"
+    leftover.write_bytes(b"failed ATC partial output")
+    result = compile_air_bundle(air["manifest_path"], atc_bin="/bin/true", soc_version="Ascend310P3",
+        runner=lambda *a: pytest.fail("must reuse FP16"), atc_identity="host-test",
+        resume=True, draft_quantizations=["fp16"])
+    assert result["request_status"] == "PASS"
+    assert result["unverified_unselected_oms"] == ["om/draft_w4a16.om"]
+    assert leftover.read_bytes() == b"failed ATC partial output"
+    assert leftover.name not in {Path(r["path"]).name for r in result["unique_oms"]}
+
+
+def test_shared_target_failure_never_publishes_a_passing_member(unified_export):
+    export, atc, _ = unified_export
+    air = export()
+    attempted = []
+    def fail_prefill(command, cwd):
+        stem = Path(next(s.split("=", 1)[1] for s in command if s.startswith("--output="))).name
+        attempted.append(stem)
+        if stem == "prefill":
+            return subprocess.CompletedProcess(command, 255, "target failed")
+        return atc(command, cwd)
+    result = compile_air_bundle(air["manifest_path"], atc_bin="/bin/true", soc_version="Ascend310P3",
+                               runner=fail_prefill, atc_identity="host-test")
+    assert result["status"] == "FAIL" and result["request_status"] == "FAIL"
+    assert attempted.count("prefill") == 1
+    assert all(e["status"] == "FAIL" for entries in result["bundles"].values() for e in entries.values())
+    assert not list(Path(air["manifest_path"]).parent.glob("deployment-manifest*.json"))
+
+
+def test_interrupt_quant_compile_retains_fp16_index(unified_export):
+    export, atc, _ = unified_export
+    air = export()
+    def interrupt(command, cwd):
+        if any(s.endswith("/om/draft_w4a16") for s in command):
+            raise KeyboardInterrupt()
+        return atc(command, cwd)
+    with pytest.raises(KeyboardInterrupt):
+        compile_air_bundle(air["manifest_path"], atc_bin="/bin/true", soc_version="Ascend310P3",
+                           runner=interrupt, atc_identity="host-test")
+    index = json.loads((Path(air["manifest_path"]).parent / "draft-variants.json").read_text())
+    assert index["status"] == "PARTIAL" and index["request_status"] == "FAIL"
+    assert all(e["status"] == "PASS" for e in index["bundles"]["fp16"].values())
+    assert index["bundles"]["w4a16"]["chunk"]["status"] == "INTERRUPTED"
+
+
+@pytest.mark.parametrize("selection", [[], ["fp16", "fp16"], ["unknown"]])
+def test_invalid_compile_subset_rejected_before_atc(unified_export, selection):
+    export, _, _ = unified_export
+    air = export()
+    with pytest.raises(ValueError, match="select distinct"):
+        compile_air_bundle(air["manifest_path"], atc_bin="/bin/true", soc_version="Ascend310P3",
+            runner=lambda *a: pytest.fail("invalid selection"), draft_quantizations=selection)
+
+
+@pytest.mark.parametrize("request_status,exit_code", [("PASS", 0), ("FAIL", 1)])
+def test_compile_cli_partial_status_is_based_on_requested_drafts(monkeypatch, request_status, exit_code):
+    args = cli.build_parser().parse_args(["compile-om", "--air-manifest", "/air-manifest.json",
+        "--soc-version", "Ascend310P3", "--draft-quantizations", "fp16", "--resume"])
+    def compile_selected(*a, **kw):
+        assert kw["draft_quantizations"] == ["fp16"] and kw["resume"]
+        return dict(status="PARTIAL", request_status=request_status)
+    monkeypatch.setattr(cli, "compile_air_bundle", compile_selected)
+    assert args.handler(args) == exit_code

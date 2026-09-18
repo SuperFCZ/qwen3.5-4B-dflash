@@ -77,6 +77,7 @@ def test_all_selects_seven_unique_oms_and_two_verify_routes(inputs):
 def test_partial_w8_mtp_bundle_can_profile_just_draft(inputs):
     args, root, index = inputs
     args.profile_om = ["draft_w8a16"]
+    index["status"] = "PARTIAL"
     index["bundles"] = {"w8a16": {"mtp": index["bundles"]["w8a16"]["mtp"]}}
     write_json(root / "draft-variants.json", index)
     jobs, _ = bundle.select_jobs(args)

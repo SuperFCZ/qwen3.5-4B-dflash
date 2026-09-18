@@ -28,8 +28,9 @@ def select_jobs(args):
     index_path = root / "draft-variants.json"
     index_bytes = index_path.read_bytes()
     index = json.loads(index_bytes)
-    if index.get("artifact_kind") != "qwen35-draft-variants" or index.get("status") != "PASS":
-        raise ValueError("--bundle-dir needs a passing compiled draft-variants.json")
+    if (index.get("artifact_kind") != "qwen35-draft-variants"
+            or index.get("status") not in {"PASS", "PARTIAL"}):
+        raise ValueError("--bundle-dir needs a compiled draft-variants.json with passing members")
     bundles, cache, jobs = index.get("bundles", {}), {}, []
     shared = {}
     for name in selected:

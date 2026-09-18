@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash with one compact Draft / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
-  "package_revision": "r31",
+  "package_revision": "r32",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
     "version": 7,
@@ -180,7 +180,7 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "e691292ac42767a4d94741323f6a7418aa957f4f0db3d6ed062f99cb180fd9df"
+        "source_sha256": "144ce23b4476f51960bddd0fc657d7ca2b24b0ab44a0df971b82d6977adddf41"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -228,11 +228,11 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/cli.py",
-        "source_sha256": "af93badb625e4dc3f04cd08d4ac26a88eab7b3b0e04a02ecb1abdb47b173c678"
+        "source_sha256": "6a653c98a8982302119fb1b9f218f8328a1a938cacf1fd09916bef28c7ea42ed"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/compiler.py",
-        "source_sha256": "791831e50f3c118760b539279ae41476579fd97f88c4b854a38a545dd81ca859"
+        "source_sha256": "611bf18765d0a121e9ea62186ae439ff7e31bf981929b48ae917a2dbd9272183"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/contracts.py",
@@ -616,11 +616,11 @@
       },
       {
         "source_file": "tools/profile_om_bundle.py",
-        "source_sha256": "7dce8f8e85da68c03ad5bcce75dcd6259e7a771bfdda16d60a27663b27a077a6"
+        "source_sha256": "4fead1f0abd6c02f2c0f52daf68123d3562e105d0a8d89cc235f54798b2aa779"
       },
       {
         "source_file": "tests/test_profile_om_bundle.py",
-        "source_sha256": "33da57b90f376adbdf6d149175b70a0d8c8eacf67194defbbc972282420091a8"
+        "source_sha256": "a466f0f0bda848e4cac0a3b79e44445a3c1c95186fb8daac964492bab7951cf0"
       }
     ],
     "supported_abis": [
@@ -768,15 +768,15 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/bundle_matrix.py",
-        "source_sha256": "72d9f9af28b619b6cc311aa0e94d8d301c1fc43fa56f5c666af1c0f22edadd14"
+        "source_sha256": "440bbc9d8873ba15783734a17849e0b9ce1ae3b816894b487ae7ec2f38800eff"
       },
       {
         "source_file": "tests/test_unified_draft_bundle.py",
-        "source_sha256": "ce978ae5b7c29d770f08813ab7ca7a053be539ad8ffe3dd88dc6f453b1c417d6"
+        "source_sha256": "c829b90f2e3928e5c2e8f1219f04a11ae422c045c857a8feb574e80aef48033e"
       },
       {
         "source_file": "tests/test_unified_benchmarks.py",
-        "source_sha256": "dec7fccb5c4bb0a7fe614fb47ad6e79ac55a88500647550053b5659a66c4bee3"
+        "source_sha256": "2314cb92d28550344d0fa062ef41d6a269a390619c40634bcd7770a4db8009b8"
       },
       {
         "source_file": "models/dflash_v1/weight_quant_matmul.py",
@@ -800,7 +800,7 @@
       },
       {
         "source_file": "tests/test_weight_quant_atc_fusion.py",
-        "source_sha256": "e091136beb217297e87eab8725195f042c02c22c4c3a31130b70fd10ec30a1d5"
+        "source_sha256": "5fa374b4e305d0cd65939876953778d949df89c508f6a8047870a27bd1dc8764"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/weight_quant_layout.py",

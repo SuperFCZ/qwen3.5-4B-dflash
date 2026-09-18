@@ -505,7 +505,9 @@ def compile_air_bundle(
     runner: Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]] | None = None,
     atc_identity: str | None = None,
     resume: bool = False,
+    draft_quantizations: Sequence[str] | None = None,
     _shared_compiled: dict | None = None,
+    _failed_compiled: dict | None = None,
     _deployment_name: str | None = None,
 ) -> dict[str, Any]:
     """Compile all AIR graphs with ``framework=1`` into the same run bundle."""
@@ -517,7 +519,9 @@ def compile_air_bundle(
     if air_manifest.get("artifact_kind") == AIR_KIND:
         return compile_matrix(manifest_path, soc_version=soc_version, atc_bin=atc_bin,
                               extra_args=extra_args, runner=runner, atc_identity=atc_identity,
-                              resume=resume)
+                              resume=resume, draft_quantizations=draft_quantizations)
+    if draft_quantizations is not None:
+        raise ValueError("--draft-quantizations requires the unified AIR matrix air-manifest.json")
     if resume:
         raise ValueError("--resume requires the unified AIR matrix air-manifest.json")
     if air_manifest.get("status") != "PASS":
@@ -571,6 +575,10 @@ def compile_air_bundle(
         raise FileExistsError(f"OM output directory is not empty: {om_root}")
     for graph in graphs:
         key = artifact_stem(graph)
+        if _failed_compiled is not None and key in _failed_compiled:
+            # A shared failed graph cannot produce another valid deployment.
+            # Preserve its first diagnostic instead of invoking ATC per route.
+            raise _failed_compiled[key]
         if _shared_compiled is not None and key in _shared_compiled:
             original, options = _shared_compiled[key]
             validate_shared_graph(original, {k: v for k, v in graph.items() if k in original})
@@ -598,11 +606,16 @@ def compile_air_bundle(
             current = link_common_om(reused, graph, root, om_root)
         else:
             print(f"[compile-om] {key} START", flush=True)
-            current = _compile_air_graph(
-                graph, root=root, om_root=om_root, log_root=log_root, atc_path=atc_path,
-                exact_soc_version=exact_soc_version, arguments=graph_arguments[graph["name"]],
-                execute=execute,
-            )
+            try:
+                current = _compile_air_graph(
+                    graph, root=root, om_root=om_root, log_root=log_root, atc_path=atc_path,
+                    exact_soc_version=exact_soc_version, arguments=graph_arguments[graph["name"]],
+                    execute=execute,
+                )
+            except AtcCompileError as error:
+                if _failed_compiled is not None:
+                    _failed_compiled[key] = error
+                raise
             print(f"[compile-om] {key} DONE", flush=True)
         compiled.append(current)
         if _shared_compiled is not None and key not in _shared_compiled:

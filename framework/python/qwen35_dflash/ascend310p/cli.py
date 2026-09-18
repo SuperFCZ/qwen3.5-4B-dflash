@@ -94,9 +94,10 @@ def command_compile(args: argparse.Namespace) -> int:
         atc_bin=args.atc,
         extra_args=args.atc_arg,
         resume=args.resume,
+        draft_quantizations=getattr(args, "draft_quantizations", None),
     )
     _print(payload)
-    return 0
+    return 0 if payload.get("request_status", payload["status"]) == "PASS" else 1
 
 
 def command_recompile_draft(args: argparse.Namespace) -> int:
@@ -118,7 +119,7 @@ def command_build(args: argparse.Namespace) -> int:
         extra_args=args.atc_arg,
     )
     _print(payload)
-    return 0
+    return 0 if payload.get("request_status", payload["status"]) == "PASS" else 1
 
 
 def command_build_cpp(args: argparse.Namespace) -> int:
@@ -418,6 +419,8 @@ def build_parser() -> argparse.ArgumentParser:
     compile_parser.add_argument("--air-manifest", type=Path, required=True)
     compile_parser.add_argument("--resume", action="store_true",
                                 help="reuse hash-checked completed members of a partial unified OM build")
+    compile_parser.add_argument("--draft-quantizations", nargs="+", choices=("fp16", "w4a16", "w8a16"),
+                                help="compile only these Drafts from a unified AIR matrix (default: all exported Drafts)")
     _add_atc_arguments(compile_parser)
     compile_parser.set_defaults(handler=command_compile)
 
