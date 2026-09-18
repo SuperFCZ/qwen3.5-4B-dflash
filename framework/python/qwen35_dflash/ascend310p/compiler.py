@@ -12,7 +12,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .runtime_input_export import validated_runtime_input_abi
 from .atc_fusion import (WEIGHT_QUANT_TRANSPOSE_PASS, fusion_switch_record,
-                         normalized_atc_options, weight_quant_fusion_args)
+                         normalized_atc_options)
 
 from .utils import (
     atomic_write_json,
@@ -52,10 +52,11 @@ def _atc_failure_detail(stdout: str, graph: Mapping[str, Any]) -> str:
     if WEIGHT_QUANT_TRANSPOSE_PASS in stdout:
         detail += (
             "\nWeight-quant transpose/NZ graph fusion failed before OM execution. "
-            "The compiler disables only this pass for native quantized Drafts on 310P; "
-            "check the logged --fusion_switch_file and any explicit per-pass 'on' setting. "
-            "If it still fails with the pass off, retain the full ATC log and fusion report; "
-            "this does not prove the MatMul kernel is unsupported."
+            "An off switch has not prevented this pass on the receiver. "
+            "Re-export with the NK transpose-attribute normalization and run "
+            "tools/probe_draft_matmul_atc.py before rebuilding a full Draft. "
+            "Retain weight-quant-layout.json and the complete ATC log if it still fails; "
+            "group-128 kernel support requires a separate target check."
         )
     if ("ChunkGatedDeltaRule" in stdout and
             re.search(r"DT_FLOAT of output\s*\[core_attn\]", stdout)):
@@ -265,6 +266,8 @@ def _validated_custom_op_audit(graph: Mapping[str, Any]) -> list[dict[str, Any]]
             raise ValueError(
                 "AIR custom-operator audit differs from its declared contract"
             )
+    from .weight_quant_layout import validate_weight_quant_layout
+    validate_weight_quant_layout(graph)
     return result
 
 
@@ -328,8 +331,8 @@ def _dynamic_atc_args(graph, arguments):
 def _bundle_atc_args(graphs, extra_args, *, incremental, soc_version):
     arguments = _chunk_precision_args(_validate_extra_args(extra_args), incremental=incremental)
     graph_arguments = {
-        graph["name"]: weight_quant_fusion_args(graph, _dynamic_atc_args(graph, _graph_atc_args(
-            arguments, name=graph["name"], incremental=incremental)), soc_version=soc_version)
+        graph["name"]: _dynamic_atc_args(graph, _graph_atc_args(
+            arguments, name=graph["name"], incremental=incremental))
         for graph in graphs
     }
     return arguments, graph_arguments
@@ -667,8 +670,6 @@ def recompile_draft_om(
         graph_arguments[name] = _graph_atc_args(
             _chunk_precision_args(inherited, incremental=True), name=name, incremental=True)
         graph_arguments[name] = _dynamic_atc_args(air_by_name[name], graph_arguments[name])
-        graph_arguments[name] = weight_quant_fusion_args(
-            air_by_name[name], graph_arguments[name], soc_version=soc)
     atc_path = resolve_atc_executable(
         atc_bin or os.environ.get("ASCEND310P_ATC_BIN") or selected[0]["atc_command"][0])
     stage = Path(tempfile.mkdtemp(prefix=f"draft-det{deterministic}-", dir=root))

@@ -102,15 +102,28 @@ W4/W8 默认采用 CANN [WeightQuantBatchMatmulV2](https://github.com/Ascend/op-
 `inner_precise=0`。W8 直接传 INT8 权重；W4 压缩存储，临时无损展开为 INT8 后调用。
 这是 A16 权重量化接口，不能按 W8A8 的纯整数矩阵乘理解；Embedding/LM Head 保持 FP16。
 
-导出前会执行小型 NPU 检查，不支持 group-128 时直接报告原因；不会自动退回慢路径。
-导出后检查五层 Draft 的 26 个融合节点是否保留。
-310P 上编译量化 Draft 时，默认通过 ATC 的
-[`fusion_switch_file`](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/850/devaids/atctool/atlasatcparam_16_0053.html)
-仅关闭 `WeightQuantBatchMatmulV2TransposeNZFusionPass`，规避其重连节点失败。
-量化 MatMul、其它融合和图内数值精度保持原设置；开关文件及哈希写入编译记录。
-这是针对 CANN 9.0.0 报错的编译规避，实机编译结果仍需确认；原生 NPU 小测试通过不等于 ATC 融合通过。
-已有 `weight_quant` AIR 可直接用第二步 `--resume` 重试，无需更新 runner。
-针对 CANN 9.0.0 / torch_npu 2.8 的实际安装，建议先跑下面的 MatMul 对照，不加载模型：
+AIR 保存前将权重和 scale 的二维转置一并折叠为 `transpose_weight=true`，
+保留 `[N,K]` INT8 权重、`[N,K/128]` scale 和原接口，并输出 `weight-quant-layout.json`。
+不自动关闭 ATC 融合；[同类转置融合规则](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta2/maintenref/graphubfusionref/atlasrr_30_0074.html)注明不可关闭。
+此图适配已做主机验证，310P 编译及数值仍需实测。
+
+**先测小图编译**，不加载模型权重，覆盖 W4/W8、16/64 动态档和 gate/up 的实际矩阵尺寸：
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
+  --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --device-id "$DEVICE_ID" \
+  --bits 4 8 --projection tiny gate_up \
+  --output-dir "$AI_RUN_DIR/matmul-atc-check"
+```
+
+只测最小图可设 `--projection tiny`。结果与 AIR/OM 位于指定目录；ATC 日志位于
+`$AI_RUN_DIR/log/dflash-atc/`。这是编译检查，不能代替 OM 数值或性能验证。
+该 A16W8 接口在不同芯片上的 group 支持有约束；必须确认本机 group-128 编译通过。
+`E20007 / WeightQuantBatchMatmulV2TransposeNZFusionPass` 发生在图优化阶段，
+保留小图报告和日志即可定位，无需反复编译整个模型。
+
+导出前还有原生 NPU 数值检查，导出后检查五层 Draft 的 26 个融合节点。
+原生调用通过不代表 ATC 编译通过；单独测原生 MatMul 时延使用：
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_draft_matmul.py" \
@@ -122,7 +135,7 @@ W4/W8 默认采用 CANN [WeightQuantBatchMatmulV2](https://github.com/Ascend/op-
 OM 峰值显存与完整模型接受率仍需统一测试和 profiling 验证。
 压缩常驻权重字节数不增加，不缓存完整 FP16 权重；CANN 内部工作区不能据此推断。
 
-切换 MatMul **需要重新导出 AIR，再编译 OM**，沿用上面的正常编译命令和新目录。
+修改 MatMul 或其 AIR 布局后，**需要重新导出 AIR，再编译 OM**，使用上面的正常命令和新目录。
 仅重编已有 AIR 不会改变图内算子；本次不需要更新 C++ runner。
 对照路径可在导出时设 `--draft-quant-matmul dequant`，或在 factory JSON 中设
 `"draft_quant_matmul": "dequant"`；该设置仅影响 W4/W8，FP16 Draft 与 Target 计算不变。

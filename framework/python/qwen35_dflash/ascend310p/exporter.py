@@ -227,7 +227,9 @@ def export_air_bundle(
                     if spec.name == "target_verify" else ()
                 ),
             )
-            if spec.metadata.get("incremental_contract") else nullcontext(None)
+            if (spec.metadata.get("incremental_contract") or any(
+                op.ge_op_type == "WeightQuantBatchMatmulV2" for op in spec.custom_ops
+            )) else nullcontext(None)
         )
         with (
             torch.inference_mode(), _working_directory(graph_dir),

@@ -275,6 +275,13 @@ def canonical_runtime_input_abi(
             }
             result = original(inputs, export_graph, file_path, weight_name)
             _normalize_public_nodes(export_graph, bindings)
+            from .weight_quant_layout import normalize_weight_quant_layout
+            weight_quant = normalize_weight_quant_layout(export_graph)
+            if weight_quant["node_count"]:
+                audit["weight_quant_layout"] = weight_quant
+                atomic_write_json(Path(file_path) / "weight-quant-layout.json", weight_quant)
+                print("[export-air] WeightQuantBatchMatmulV2 layout=NK "
+                      f"transpose_weight=true nodes={weight_quant['node_count']}", flush=True)
             gdr_dtypes = _gdr_output_dtype_audit(export_graph)
             if gdr_dtypes["node_count"]:
                 audit["gdr_output_dtypes"] = gdr_dtypes

@@ -11,9 +11,9 @@ from test_incremental_air_om import small_threads
 from rms_norm_test_support import adn_rms_norm_cpu
 from weight_quant_test_support import weight_quant_cpu
 from qwen35_dflash.ascend310p.atc_fusion import (
-    FUSION_OPTION, WEIGHT_QUANT_TRANSPOSE_PASS as PASS, weight_quant_fusion_args,
+    FUSION_OPTION, WEIGHT_QUANT_TRANSPOSE_PASS as PASS, normalized_atc_options,
 )
-from qwen35_dflash.ascend310p.compiler import AtcCompileError, compile_air_bundle
+from qwen35_dflash.ascend310p.compiler import AtcCompileError, compile_air_bundle, _bundle_atc_args
 
 pytestmark = pytest.mark.usefixtures("small_threads", "adn_rms_norm_cpu", "weight_quant_cpu")
 
@@ -27,40 +27,22 @@ def fusion_file(args):
     return Path(next(s.split("=", 1)[1] for s in args if s.startswith(FUSION_OPTION + "=")))
 
 
-def test_only_native_draft_on_310p_gets_targeted_switch(tmp_path, monkeypatch):
-    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+def test_native_draft_no_longer_injects_an_ineffective_fusion_switch():
     flags = ["--deterministic=0", "--precision_mode=must_keep_origin_dtype"]
-    args = weight_quant_fusion_args(native_graph(), flags, soc_version="Ascend310P3")
-    path = fusion_file(args)
-    assert json.loads(path.read_text()) == {"Switch": {"GraphFusion": {PASS: "off"}}}
-    assert args[:-1] == flags
-    for graph, soc in ((native_graph("target_verify"), "Ascend310P3"),
-                       ({"name": "draft"}, "Ascend310P3"), (native_graph(), "Ascend910B1")):
-        assert weight_quant_fusion_args(graph, flags, soc_version=soc) == flags
+    _, arguments = _bundle_atc_args([native_graph()], flags, incremental=False, soc_version="Ascend310P3")
+    assert arguments["draft"] == flags
 
 
-@pytest.mark.parametrize("explicit", [None, "on", "off"])
+@pytest.mark.parametrize("explicit", ["on", "off"])
 @pytest.mark.parametrize("style", ["json", "text"])
-def test_user_switches_preserved_and_never_modified(tmp_path, monkeypatch, explicit, style):
-    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
-    config = {"Switch": {"GraphFusion": {"OtherPass": "off"}, "UBFusion": {"OtherUB": "on"}}}
-    if explicit:
-        config["Switch"]["GraphFusion"][PASS] = explicit
-    original = (json.dumps(config) if style == "json" else "OtherPass:off\nOtherUB:on\n"
-                + (f"{PASS}:{explicit}\n" if explicit else ""))
-    source = tmp_path / "user.cfg"
-    source.write_text(original)
-    args = weight_quant_fusion_args(native_graph(), [f"{FUSION_OPTION}={source}"], soc_version="Ascend310P3")
-    path = fusion_file(args)
-    assert source.read_text() == original and path != source
-    if style == "json":
-        result = json.loads(path.read_text())
-        assert result["Switch"]["GraphFusion"][PASS] == (explicit or "off")
-        assert result["Switch"]["GraphFusion"]["OtherPass"] == "off"
-        assert result["Switch"]["UBFusion"] == config["Switch"]["UBFusion"]
-    else:
-        assert f"{PASS}:{explicit or 'off'}" in path.read_text()
-        assert "OtherPass:off\nOtherUB:on" in path.read_text()
+def test_explicit_user_switches_preserved_and_hashed(tmp_path, explicit, style):
+    text = (json.dumps({"Switch": {"GraphFusion": {PASS: explicit}}})
+            if style == "json" else f"{PASS}:{explicit}\n")
+    source = tmp_path / "user.cfg"; source.write_text(text)
+    flags = [f"{FUSION_OPTION}={source}"]
+    _, arguments = _bundle_atc_args([native_graph()], flags, incremental=False, soc_version="Ascend310P3")
+    assert arguments["draft"] == flags and source.read_text() == text
+    assert normalized_atc_options(flags)[0].startswith(FUSION_OPTION + "=sha256:")
 
 
 def interrupted_matrix(unified_export):
@@ -84,7 +66,7 @@ def test_resume_reuses_five_completed_oms_and_builds_only_quantized_drafts(unifi
     commands = []
     def resume_atc(command, cwd):
         commands.append(command)
-        assert PASS in fusion_file(command).read_text()
+        assert not any(s.startswith(FUSION_OPTION + "=") for s in command)
         return atc(command, cwd)
     result = compile_air_bundle(air["manifest_path"], atc_bin="/bin/true", soc_version="Ascend310P3",
                                runner=resume_atc, atc_identity="fake-atc", resume=True)
@@ -98,7 +80,7 @@ def test_resume_reuses_five_completed_oms_and_builds_only_quantized_drafts(unifi
         for entry in entries.values():
             data = json.loads((root / entry["manifest"]).read_text())
             for g in data["graphs"]:
-                expected = variant != "fp16" and g["name"] == "draft"
+                expected = False
                 assert bool(g.get("atc_fusion_switch")) == expected
                 assert any(s.startswith(FUSION_OPTION + "=") for s in g["atc_command"]) == expected
     count = len(commands)
@@ -130,8 +112,11 @@ def test_resume_rejects_unverified_state_before_any_atc(unified_export, damage):
 def test_resume_rejects_changed_fusion_config(unified_export):
     export, atc, _ = unified_export
     air = export(variants=("w8a16",), routes=("chunk",), backend="weight_quant")
+    config = Path(air["manifest_path"]).parent / "user-fusion.cfg"
+    config.write_text("OtherPass:off\n")
+    flags = [f"{FUSION_OPTION}={config}"]
     result = compile_air_bundle(air["manifest_path"], atc_bin="/bin/true", soc_version="Ascend310P3",
-                               runner=atc, atc_identity="fake-atc")
+                               extra_args=flags, runner=atc, atc_identity="fake-atc")
     root = Path(result["manifest_path"]).parent
     data = json.loads((root / result["bundles"]["w8a16"]["chunk"]["manifest"]).read_text())
     draft = next(g for g in data["graphs"] if g["name"] == "draft")
@@ -139,7 +124,7 @@ def test_resume_rejects_changed_fusion_config(unified_export):
     attempted = []
     with pytest.raises(ValueError, match="integrity|hash"):
         compile_air_bundle(air["manifest_path"], atc_bin="/bin/true", soc_version="Ascend310P3",
-                           runner=lambda *a: attempted.append(a), atc_identity="fake-atc", resume=True)
+                           extra_args=flags, runner=lambda *a: attempted.append(a), atc_identity="fake-atc", resume=True)
     assert not attempted
 
 
