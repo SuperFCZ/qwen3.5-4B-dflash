@@ -29,6 +29,7 @@ source /absolute/path/dflash-env.sh
 |---|---|
 | 直接运行 Torch-NPU，切换 Chunk / MTP | [Torch-NPU 使用](docs/DFLASH_RUN_AND_VALIDATE.md) |
 | 编译三种 Draft、两条 Verify，共 7 个 OM | [导出与编译](docs/GDR_CHUNK_AIR_OM.md#导出与编译) |
+| 对照量化 Draft 的 CANN MatMul 时延与误差 | [量化 MatMul](docs/GDR_CHUNK_AIR_OM.md#量化-draft-matmul) |
 | 合并短 / 1K 输入与离线 JSONL/JSON 数据集，对比 Draft 精度 | [统一测试](docs/GDR_CHUNK_AIR_OM.md#统一测试) |
 | 复用已有普通模型数据，只运行 DFlash | [基线复用](docs/GDR_CHUNK_AIR_OM.md#复用已有普通模型数据) |
 | 了解 Draft → Verify → Commit | [流程与架构](docs/DFLASH_ARCHITECTURE.md) |

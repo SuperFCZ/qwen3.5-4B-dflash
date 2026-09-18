@@ -43,7 +43,8 @@ def variant_builder(tmp_path, monkeypatch):
                     continue
                 quant = GroupQuantLinear(pack_device_weight(torch.ones_like(module.weight, dtype=torch.int8), bits),
                     torch.full((module.out_features, module.in_features // 128), .5, dtype=torch.float16),
-                    bits=bits, in_features=module.in_features, ops=draft.ops)
+                    bits=bits, in_features=module.in_features, ops=draft.ops,
+                    matmul_backend=cfg.get("draft_quant_matmul", "dequant"))
                 parent, attr = path.rsplit('.', 1) if '.' in path else ('', path)
                 setattr(draft.get_submodule(parent), attr, quant)
             draft.draft_quantization = variant
@@ -61,6 +62,10 @@ def variant_builder(tmp_path, monkeypatch):
         def dynamo_export(self, *args, model, export_path, export_name, **kw):
             calls.append(("export", export_name))
             (Path(export_path) / (export_name + ".air")).write_text(json.dumps(active[export_name].metadata["tensor_abi"]))
+            ops = active[export_name].custom_ops
+            if ops:
+                (Path(export_path) / "dynamo.pbtxt").write_text("".join(
+                    f'op {{ op: "{op.ge_op_type}" }}\n' * op.minimum_occurrences for op in ops))
     def atc(command, cwd):
         name = Path(next(c.split("=", 1)[1] for c in command if c.startswith("--model="))).stem
         path = Path(next(c.split("=", 1)[1] + ".om" for c in command if c.startswith("--output=")))

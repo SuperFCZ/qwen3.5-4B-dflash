@@ -77,7 +77,9 @@ def prepare(args):
                 draft_quantizations=variants, routes=routes, bundles=bundles, jobs=jobs,
                 source_factory_config={"path": str(args.factory_config), "sha256": sha256_file(args.factory_config)},
                 scope="published checkpoint variants; not a controlled bitwidth-only comparison",
-                execution="compressed resident weights; group dequantization and FP16 MatMul; target validation pending")
+                execution={"draft_quant_matmul": config.get("draft_quant_matmul", "weight_quant"),
+                           "activation_dtype": "float16", "group_size": 128,
+                           "packed_weights_resident": True, "target_validation": "pending"})
     path = atomic_write_json(root / "draft-variants.json", plan)
     print(f"Build plan: {path}; {len(jobs)} steps; no device execution yet.", flush=True)
     return path

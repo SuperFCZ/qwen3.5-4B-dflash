@@ -19,6 +19,7 @@ from .dflash_weights import require_official_dflash_checkpoint, sha256_file
 
 
 DRAFT_QUANTIZATIONS = ("fp16", "w8a16", "w4a16")
+DRAFT_QUANT_MATMUL_BACKENDS = ("weight_quant", "dequant")
 QUANTIZED_DRAFTS = {
     "w8a16": {
         "repository": "naveenrajk/Qwen3.5-4B-DFlash-W8A16",
@@ -99,14 +100,16 @@ def pack_device_weight(q: Tensor, bits: int) -> Tensor:
 class GroupQuantLinear(nn.Module):
     """Compressed resident weights; FP16 activations and output.
 
-    W4 unpack uses exact byte arithmetic in FP16 (all integers <=255 are
-    representable). Cast/Floor/Mul/Sub/Reshape/MatMul are standard NPU/GE ops;
-    the 310P per-channel-only fused weight-quant API is not used. Dense weights
-    are not cached by this module; compiled workspace/lifetimes must be profiled.
+    ``weight_quant`` consumes INT8 codes and group scales through CANN's
+    WeightQuantBatchMatmulV2. W4 stays packed at rest and unpacks to INT8
+    transiently: 310P does not expose native INT4 weights through this API.
+    ``dequant`` is the explicit FP16-dequantization oracle for A/B checks.
+    Neither route retains a dense FP16 weight; compiled workspace must be
+    measured on the target device.
     """
 
     def __init__(self, packed: Tensor, scale: Tensor, *, bits: int,
-                 in_features: int, ops: Any) -> None:
+                 in_features: int, ops: Any, matmul_backend: str = "dequant") -> None:
         super().__init__()
         if bits not in (4, 8) or in_features <= 0 or in_features % 128:
             raise ValueError("quantized Linear requires W4/W8 and K divisible by 128")
@@ -121,6 +124,9 @@ class GroupQuantLinear(nn.Module):
         self.bits = bits
         self.group_size = 128
         self.ops = ops
+        if matmul_backend not in DRAFT_QUANT_MATMUL_BACKENDS:
+            raise ValueError("draft_quant_matmul must be weight_quant or dequant")
+        self.matmul_backend = matmul_backend
         self.register_buffer("qweight", packed)
         self.register_buffer("scales", scale)
 
@@ -133,17 +139,32 @@ class GroupQuantLinear(nn.Module):
         values = values.reshape(self.out_features, self.in_features // 128, 128)
         return (values * self.scales.unsqueeze(-1)).reshape(self.out_features, self.in_features)
 
+    def integer_weight(self) -> Tensor:
+        """Return signed [N,K] codes without applying scales or retaining a copy."""
+        if self.bits == 8:
+            return self.qweight
+        # All byte arithmetic is exact in FP16. Cast each half BEFORE stacking
+        # to avoid materializing a full [N,K] FP16 matrix for the native path.
+        values = self.qweight.to(torch.float16)
+        high = torch.floor(values * (1.0 / 16.0))
+        low = (values - high * 16.0 - 8.0).to(torch.int8)
+        high = (high - 8.0).to(torch.int8)
+        return torch.stack((low, high), dim=-1).reshape(self.out_features, self.in_features)
+
     @classmethod
     def concatenate(cls, left, right):
-        if not isinstance(right, cls) or (left.bits, left.in_features) != (right.bits, right.in_features):
+        if not isinstance(right, cls) or (left.bits, left.in_features, left.matmul_backend) != (right.bits, right.in_features, right.matmul_backend):
             raise ValueError("packed projections need matching quantization and input dimensions")
         return cls(torch.cat((left.qweight, right.qweight), dim=0),
                    torch.cat((left.scales, right.scales), dim=0), bits=left.bits,
-                   in_features=left.in_features, ops=left.ops)
+                   in_features=left.in_features, ops=left.ops, matmul_backend=left.matmul_backend)
 
     def forward(self, value: Tensor) -> Tensor:
         if value.dtype != torch.float16:
             raise ValueError("W8A16/W4A16 Draft activations must be float16")
+        if self.matmul_backend == "weight_quant":
+            from .weight_quant_matmul import weight_quant_linear
+            return weight_quant_linear(value, self.integer_weight(), self.scales)
         return self.ops.linear(value, self.dequantize())
 
 
@@ -218,6 +239,13 @@ def load_quantized_draft(model_class: type[nn.Module], model_dir: str | Path, *,
     root = Path(model_dir).expanduser().resolve()
     config = Qwen35DFlashConfig.from_pretrained(root)
     bits = QUANTIZED_DRAFTS[variant]["num_bits"]
+    backend = getattr(ops, "quant_matmul_backend", None) or (
+        "weight_quant" if str(device).startswith("npu") else "dequant")
+    if backend not in DRAFT_QUANT_MATMUL_BACKENDS:
+        raise ValueError("draft_quant_matmul must be weight_quant or dequant")
+    if backend == "weight_quant":
+        from .weight_quant_matmul import require_weight_quant_matmul
+        require_weight_quant_matmul()
     # Meta construction avoids ever allocating a full FP16 draft alongside the
     # compressed buffers. Each Linear is replaced before device placement.
     model = model_class(config, ops=ops, device="meta", dtype=dtype)
@@ -237,7 +265,7 @@ def load_quantized_draft(model_class: type[nn.Module], model_dir: str | Path, *,
                 if not torch.isfinite(scales).all().item() or not (scales > 0).all().item():
                     raise ValueError(f"nonfinite or nonpositive Draft scale: {path}")
                 module = GroupQuantLinear(packed, scales.to(device=device), bits=bits,
-                                          in_features=shape[1], ops=model.ops)
+                                          in_features=shape[1], ops=model.ops, matmul_backend=backend)
                 if "." in path:
                     parent, attribute = path.rsplit(".", 1)
                     setattr(model.get_submodule(parent), attribute, module)
@@ -246,7 +274,12 @@ def load_quantized_draft(model_class: type[nn.Module], model_dir: str | Path, *,
     model.rotary = DFlashRotaryEmbedding(config, device=device)
     model.draft_quantization = variant
     model.draft_quantization_audit = {
-        **audit, "execution": "device-group-dequant-fp16-matmul",
+        **audit, "execution": ("cann-weight-quant-batchmatmul-v2" if backend == "weight_quant"
+                                else "device-group-dequant-fp16-matmul"),
+        "matmul_backend": backend, "group_size": 128,
+        "matmul_weight_dtype": "int8" if backend == "weight_quant" else "float16",
+        "w4_unpack": "transient-int8" if bits == 4 and backend == "weight_quant" else None,
+        "inner_precise": 0 if backend == "weight_quant" else None,
         "persistent_dense_linear_weights": False, "activation_dtype": "float16",
         "new_custom_operators": [], "device": str(device),
     }

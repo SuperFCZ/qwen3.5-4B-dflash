@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash with one compact Draft / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
-  "package_revision": "r24",
+  "package_revision": "r25",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
     "version": 7,
@@ -164,7 +164,7 @@
     "files": [
       {
         "source_file": "README.md",
-        "source_sha256": "bcc415039b1c45fc3c6ca5daebbca2f474dfc1fd05e96c2a3e63fe64090b0345"
+        "source_sha256": "126c5674f1674adbfc10abe913933b057551aa8cc08b60ae3b44931e2a4746ba"
       },
       {
         "source_file": "config/gdr_chunk_air_om_factory.example.json",
@@ -172,7 +172,7 @@
       },
       {
         "source_file": "docs/DFLASH_ARCHITECTURE.md",
-        "source_sha256": "028576e908808ea6768445c35777167a69efad66a4573b04aa0f3528c4086356"
+        "source_sha256": "b9bdd9495090fb57ae31daeab105b85e29970709b098197dfb535e1f6db8bded"
       },
       {
         "source_file": "docs/assets/dflash-draft-flow.svg",
@@ -180,7 +180,7 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "899cf69b55f5730e99549d4b7b92aad005f75628c48005141345667e6f7a7634"
+        "source_sha256": "8693757d7b502a0a5ebbb1259f0136a775dd41dd6dc467f04017f263d0eb1068"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -228,7 +228,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/cli.py",
-        "source_sha256": "08af62bfefcd774df27c0793f0babc992f6eb55b740491d2e921c1c942532401"
+        "source_sha256": "16a9a4f06a1ef1bcb7f69d8e0581bdeb28a42164e7e2023960fd661ecbebebe7"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/compiler.py",
@@ -244,7 +244,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/custom_op_export.py",
-        "source_sha256": "32d1eaf26666edc29e217e3d4f2a9b61d568fde2819dad8b19e44775d7b27dea"
+        "source_sha256": "d079b93f55dc9a2b22f3b46f8257214c02c46cb72072681f884531270587f4e1"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/exporter.py",
@@ -256,7 +256,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/incremental.py",
-        "source_sha256": "5bf772b5ab95b9e515f56bd9c62bef195365c7e67d18b74c4eae78da65702104"
+        "source_sha256": "caf9688bef7e334058757145dce1324571abdcb5c9820b5843d2b326343f5612"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/incremental_plan.py",
@@ -272,7 +272,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/quant_factory.py",
-        "source_sha256": "69f8c52b8a68249415903d1b1fc278007c48d6a617570b73f407135d6bd3ec4b"
+        "source_sha256": "80c437760a82327208189c6aca170eb6edef349ec2a5845c83fe0c0459cadc52"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/recompute_backend.py",
@@ -564,7 +564,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/common_reuse.py",
-        "source_sha256": "2298261ded6d9838999094b1ba03bc0b82661d5b42c344ed4b2e7bf11e58c74c"
+        "source_sha256": "d14353afb41adf6d08031f484810030f138e5c0a8078a73c89fa0704d0467c68"
       },
       {
         "source_file": "tests/test_common_gdr_reuse.py",
@@ -714,7 +714,7 @@
     ],
     "reference_branch": "feature/draft-quantization",
     "reference_commit": "b3f044e4cca2f909454d060c04fd4209aa17b227",
-    "execution": "group-128 compressed read-only runtime inputs flattened to 1-D carriers; logical shapes restored by views; 99 dynamic gear dimensions for five-layer Draft within ACL limit 128; standard-op dequantization and FP16 MatMul",
+    "execution": "group-128 compressed read-only runtime inputs; 99 dynamic gear dimensions; CANN WeightQuantBatchMatmulV2 by default, FP16 activation and INT8 codes, W4 unpacked transiently; inner_precise=0; explicit dequant FP16 reference selectable",
     "shared_target_feature_layers": [
       1,
       5,
@@ -728,11 +728,11 @@
       25,
       29
     ],
-    "validation": "host arithmetic/export and fake ACL tests; real checkpoints, ATC and device measurements pending for this incremental integration",
+    "validation": "CPU arithmetic, full cached Draft and dynamic export with explicit native-op oracle; receiver CANN 9.0.0 / torch_npu 2.8.0.post1+gitc7b6b32 AIR/ATC, full-output parity, speed and peak memory pending",
     "sources": [
       {
         "source_file": "models/dflash_v1/draft_quantization.py",
-        "source_sha256": "ca8862ff3913187c98b19fb6016ca71c628de11f350d05b65176d21cdfd82424"
+        "source_sha256": "10718beb9f64b37ef57d2e3b53affab450e8cac5c8c32cb51327e99f3b2be845"
       },
       {
         "source_file": "models/dflash_v1/prepare_draft.py",
@@ -744,23 +744,23 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/draft_variants.py",
-        "source_sha256": "22c6f9ca74d1f02fdc0d312948fc914bb35fb19c49a4e1581daa303d55a27217"
+        "source_sha256": "5eb34a12a2ba205965565045ac1c9b5abff3fe2ee43cd10f85467cf48f849a99"
       },
       {
         "source_file": "tools/build_draft_variants.py",
-        "source_sha256": "d9f4bafa3a08169de0b55e08a91a039bcafa4201cfce36f42a6b038216e75378"
+        "source_sha256": "25a1ed46ea848a455d32bbb373a1fee909b816ccd277e3bc8c74712af3aefd5e"
       },
       {
         "source_file": "tools/benchmark_draft_variants.py",
-        "source_sha256": "95f28466ba609845582c71185ed41c1a6d0f772d455e7b54ad7f74291c3e2cfc"
+        "source_sha256": "3ee8db726e6064a679e3cd3766ee033bba2de4239c00e4b92d459880f6b62051"
       },
       {
         "source_file": "tests/test_draft_quantization.py",
-        "source_sha256": "7621eb3b3e59d8a95485f16b70088468428e036d78a16e8b8cedf4a5b2769742"
+        "source_sha256": "6226d72c945a7ff06b9049ebae8c8b2d3784ee066812b15c2fe7368f43d03a2d"
       },
       {
         "source_file": "tests/test_draft_variant_bundles.py",
-        "source_sha256": "df76c388dd04ef7939dcac520da42a7a4c6f3af33b5910e0c52a4069944d0717"
+        "source_sha256": "76e3da2a79652940a70f9712b72005057729701589f22ea4e2965f56e28d5cdb"
       },
       {
         "source_file": "tests/test_draft_comparison.py",
@@ -777,6 +777,22 @@
       {
         "source_file": "tests/test_unified_benchmarks.py",
         "source_sha256": "dec7fccb5c4bb0a7fe614fb47ad6e79ac55a88500647550053b5659a66c4bee3"
+      },
+      {
+        "source_file": "models/dflash_v1/weight_quant_matmul.py",
+        "source_sha256": "f774d2d584121e6802800a8c9bb164c70f49e00e9d3f9cb031cd304e264e7bb0"
+      },
+      {
+        "source_file": "tools/benchmark_draft_matmul.py",
+        "source_sha256": "39ecb7dc6b4a400012309022bbb38e3b7027f1d4d988536c141c01963c59d423"
+      },
+      {
+        "source_file": "tests/weight_quant_test_support.py",
+        "source_sha256": "113c3b48bb909bc33decc5f56d12a4e372852427c89eba2d0440769db3703c2e"
+      },
+      {
+        "source_file": "tests/test_weight_quant_matmul_export.py",
+        "source_sha256": "55bc44cac7d7d7d7231c768a05f245d7dee4abaf5fab329f56540661c32c601d"
       }
     ],
     "workflow": "normal export-air / compile-om and benchmark_gdr_lengths.py; flat seven-OM directory; mixed builtin/offline tests; ordinary baseline path reuse"

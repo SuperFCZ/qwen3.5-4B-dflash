@@ -244,10 +244,14 @@ class AirDFlashOps:
     attention formula when comparing proposal tokens and acceptance rates.
     """
 
-    def __init__(self, *, attention_matmul_dtype: str = "float16") -> None:
+    def __init__(self, *, attention_matmul_dtype: str = "float16",
+                 quant_matmul_backend: str | None = None) -> None:
         if attention_matmul_dtype not in ("float16", "float32"):
             raise ValueError("draft_attention_matmul_dtype must be float16 or float32")
         self.attention_matmul_dtype = getattr(torch, attention_matmul_dtype)
+        if quant_matmul_backend not in (None, "weight_quant", "dequant"):
+            raise ValueError("draft_quant_matmul must be weight_quant or dequant")
+        self.quant_matmul_backend = quant_matmul_backend
 
     def _attention_matmul(self, left: Tensor, right: Tensor) -> Tensor:
         # Cast operands, including FP32 softmax probabilities, before MatMul.
@@ -477,7 +481,13 @@ def _prepare_quant_export(config: Mapping[str, Any], torchair_module: Any,
         prepare_custom_op_export(spec, torchair_module)
         for spec in _target_custom_op_exports(config, incremental=incremental)
     ]
+    quant_probe = None
+    if config.get("draft_quantization", "fp16") != "fp16" and config.get("draft_quant_matmul", "weight_quant") == "weight_quant":
+        from models.dflash_v1.weight_quant_matmul import TORCH_OP, GE_OP, preflight_weight_quant_matmul
+        sessions.append(prepare_custom_op_export(CustomOpExportSpec(TORCH_OP, GE_OP), torchair_module))
+        quant_probe = preflight_weight_quant_matmul(str(config.get("device", "npu:0")))
     return {
+        "draft_weight_quant_probe": quant_probe,
         "operators": [{"torch_target": s.spec.torch_target, "ge_op_type": s.spec.ge_op_type,
                        "torch_schema": s.schema,
                        "fake_kernel": s.fake_kernel, "converter_policy": s.converter_policy}
@@ -516,7 +526,9 @@ def create_quant_recompute_graph(
         raise ValueError("quant AIR export supports Target/Draft float16 only")
     dtype = _DTYPES[dtype_name]
     draft_attention_matmul_dtype = config.get("draft_attention_matmul_dtype", "float16")
-    draft_ops = AirDFlashOps(attention_matmul_dtype=draft_attention_matmul_dtype)
+    draft_quant_matmul = config.get("draft_quant_matmul", "weight_quant")
+    draft_ops = AirDFlashOps(attention_matmul_dtype=draft_attention_matmul_dtype,
+                            quant_matmul_backend=draft_quant_matmul)
     include_ordinary_decode = config.get("include_ordinary_decode", True)
     variant = config.get("draft_quantization", "fp16")
     if variant not in ("fp16", "w4a16", "w8a16"):

@@ -15,8 +15,9 @@ from torch.nn import functional as F
 
 from rms_norm_test_support import adn_rms_norm_cpu
 from test_incremental_air_om import small_threads
+from weight_quant_test_support import weight_quant_cpu
 
-pytestmark = pytest.mark.usefixtures("adn_rms_norm_cpu", "small_threads")
+pytestmark = pytest.mark.usefixtures("adn_rms_norm_cpu", "small_threads", "weight_quant_cpu")
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "framework/python"))
@@ -61,12 +62,13 @@ def test_packed_words_match_independent_scalar_bit_reader(bits):
 
 
 @pytest.mark.parametrize("bits", [4, 8])
-def test_group_linear_matches_dense_fp16_and_keeps_compressed_storage(bits):
+@pytest.mark.parametrize("backend", ["dequant", "weight_quant"])
+def test_group_linear_matches_dense_fp16_and_keeps_compressed_storage(bits, backend):
     torch.manual_seed(417)
     q = torch.randint(-(1 << (bits-1)), 1 << (bits-1), (6, 256), dtype=torch.int8)
-    scales = torch.tensor([[0.003, 0.09]] * 6, dtype=torch.float16)
+    scales = torch.tensor([[0.003 * (i + 1), 0.09 / (i + 1)] for i in range(6)], dtype=torch.float16)
     linear = GroupQuantLinear(pack_device_weight(q, bits), scales, bits=bits,
-                              in_features=256, ops=AirDFlashOps())
+                              in_features=256, ops=AirDFlashOps(), matmul_backend=backend)
     # Build the reference independently, one group at a time in FP32.
     expected_weight = torch.cat([(q[:, :128].float() * scales[:, :1].float()).half(),
                                  (q[:, 128:].float() * scales[:, 1:].float()).half()], dim=1)
@@ -80,7 +82,8 @@ def test_group_linear_matches_dense_fp16_and_keeps_compressed_storage(bits):
 
 
 @pytest.mark.parametrize("bits", [4, 8])
-def test_complete_quantized_draft_matches_dense_and_cached_attention(bits):
+@pytest.mark.parametrize("backend", ["dequant", "weight_quant"])
+def test_complete_quantized_draft_matches_dense_and_cached_attention(bits, backend):
     torch.manual_seed(591)
     draft = DFlashDraftModel(config(), ops=AirDFlashOps(), dtype=torch.float16).eval()
     with torch.no_grad():
@@ -91,7 +94,7 @@ def test_complete_quantized_draft_matches_dense_and_cached_attention(bits):
         q = torch.randint(-7, 8, module.weight.shape, dtype=torch.int8)
         scale = torch.full((module.out_features, module.in_features // 128), 0.005, dtype=torch.float16)
         quant = GroupQuantLinear(pack_device_weight(q, bits), scale, bits=bits,
-                                 in_features=module.in_features, ops=draft.ops)
+                                 in_features=module.in_features, ops=draft.ops, matmul_backend=backend)
         # Independent vectorized reference uses integer q, not the unpacker.
         weight = (q.float() * scale.float().repeat_interleave(128, dim=1)).half()
         with torch.no_grad(): dense.get_submodule(path).weight.copy_(weight)
@@ -111,10 +114,11 @@ def test_complete_quantized_draft_matches_dense_and_cached_attention(bits):
 
 
 class LinearGraph(nn.Module):
-    def __init__(self, bits):
+    def __init__(self, bits, backend="dequant"):
         super().__init__()
         self.linear = GroupQuantLinear(pack_device_weight(torch.ones(2, 128, dtype=torch.int8), bits),
-            torch.full((2, 1), 0.5, dtype=torch.float16), bits=bits, in_features=128, ops=AirDFlashOps())
+            torch.full((2, 1), 0.5, dtype=torch.float16), bits=bits, in_features=128,
+            ops=AirDFlashOps(), matmul_backend=backend)
 
     def forward(self, ids, mask):
         value = (ids * mask).half()
@@ -122,8 +126,9 @@ class LinearGraph(nn.Module):
 
 
 @pytest.mark.parametrize("bits", [4, 8])
-def test_exported_graph_consumes_runtime_compressed_weights(bits, tmp_path):
-    base = AirGraphSpec(name="draft", role="generation-recompute", model=LinearGraph(bits),
+@pytest.mark.parametrize("backend", ["dequant", "weight_quant"])
+def test_exported_graph_consumes_runtime_compressed_weights(bits, backend, tmp_path):
+    base = AirGraphSpec(name="draft", role="generation-recompute", model=LinearGraph(bits, backend),
                         example_args=(torch.ones(1, 128, dtype=torch.long), torch.ones(1, 128, dtype=torch.long)),
                         input_names=("input_ids", "attention_mask"), output_names=("result",))
     reference = base.model(*base.example_args)
@@ -175,12 +180,14 @@ def test_unknown_or_wrong_checkpoint_is_rejected(tmp_path):
 def test_cli_version_selection():
     from qwen35_dflash.ascend310p.cli import build_parser, _factory_config
     om = build_parser().parse_args(['export-air', '--factory', 'x:y', '--bundle-dir', 'b',
-                                   '--draft-quantization', 'w8a16'])
+                                   '--draft-quantization', 'w8a16', '--draft-quant-matmul', 'weight_quant'])
     assert _factory_config(om)['draft_quantization'] == 'w8a16'
+    assert _factory_config(om)['draft_quant_matmul'] == 'weight_quant'
 
 
 @pytest.mark.parametrize("bits", [4, 8])
-def test_incremental_quantized_draft_shared_features_and_dynamic_export(bits, row_update):
+@pytest.mark.parametrize("backend", ["dequant", "weight_quant"])
+def test_incremental_quantized_draft_shared_features_and_dynamic_export(bits, backend, row_update):
     from qwen35_dflash.ascend310p.incremental import DraftGraph
 
     torch.manual_seed(174)
@@ -197,7 +204,8 @@ def test_incremental_quantized_draft_shared_features_and_dynamic_export(bits, ro
         scale = torch.full((module.out_features, module.in_features // 128), 0.004, dtype=torch.float16)
         with torch.no_grad():
             dense.get_submodule(path).weight.copy_((q.float() * scale.float().repeat_interleave(128, dim=1)).half())
-        quant = GroupQuantLinear(pack_device_weight(q, bits), scale, bits=bits, in_features=module.in_features, ops=draft.ops)
+        quant = GroupQuantLinear(pack_device_weight(q, bits), scale, bits=bits, in_features=module.in_features,
+                                 ops=draft.ops, matmul_backend=backend)
         parent, attr = path.rsplit('.', 1) if '.' in path else ('', path)
         setattr(draft.get_submodule(parent), attr, quant)
     embedding, head = nn.Embedding(32, 128).half(), nn.Linear(128, 32, bias=False).half()
@@ -222,4 +230,23 @@ def test_incremental_quantized_draft_shared_features_and_dynamic_export(bits, ro
             actual = exported(*inputs, *spec.example_args[len(args):])
             for left, right in zip(reference, actual):
                 torch.testing.assert_close(left, right, rtol=0, atol=0)
-    assert not any("weight_quant" in str(n.target) for n in exported.graph.nodes)
+    native = [n for n in exported.graph.nodes if "weight_quant_batchmatmul" in str(n.target)]
+    assert len(native) == (11 if backend == "weight_quant" else 0)
+    for node in native:
+        assert node.args[0].meta['val'].dtype == torch.float16
+        assert node.args[1].meta['val'].dtype == torch.int8
+
+
+def test_w4_unpack_exhausts_every_byte_and_keeps_nibble_order():
+    packed = torch.arange(256).to(torch.uint8).reshape(4, 64)
+    layer = GroupQuantLinear(packed, torch.ones(4, 1).half(), bits=4,
+                             in_features=128, ops=AirDFlashOps(), matmul_backend="weight_quant")
+    expected = torch.tensor([v for b in range(256) for v in ((b % 16) - 8, (b // 16) - 8)], dtype=torch.int8)
+    assert torch.equal(layer.integer_weight().flatten(), expected)
+    assert layer.qweight.dtype == torch.uint8 and layer.qweight.numel() == 256
+
+
+def test_concatenate_does_not_mix_native_and_decomposed_paths():
+    left, right = LinearGraph(8, "weight_quant").linear, LinearGraph(8, "dequant").linear
+    with pytest.raises(ValueError, match="matching"):
+        GroupQuantLinear.concatenate(left, right)

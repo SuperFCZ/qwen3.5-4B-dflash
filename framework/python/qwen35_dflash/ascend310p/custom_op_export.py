@@ -34,6 +34,7 @@ NPU_CACHE_UPDATE_TORCH_OP = "npu::npu_cache_update_"
 NPU_CHUNK_GATED_DELTA_RULE_TORCH_OP = "npu::npu_chunk_gated_delta_rule"
 NPU_DYNAMIC_QUANT_TORCH_OP = "npu::npu_dynamic_quant"
 NPU_QUANT_MATMUL_TORCH_OP = "npu::npu_quant_matmul"
+NPU_WEIGHT_QUANT_MATMUL_TORCH_OP = "npu::npu_weight_quant_batchmatmul"
 NPU_SCATTER_ND_UPDATE_TORCH_OP = "npu::npu_scatter_nd_update_"
 NPU_FUNCTIONAL_SCATTER_ND_UPDATE_TORCH_OP = "npu::npu_scatter_nd_update"
 
@@ -43,6 +44,7 @@ NPU_CACHE_UPDATE_DEFAULT_GE_OP_TYPE = "CacheUpdate"
 NPU_CHUNK_GATED_DELTA_RULE_DEFAULT_GE_OP_TYPE = "ChunkGatedDeltaRule"
 NPU_DYNAMIC_QUANT_DEFAULT_GE_OP_TYPE = "DynamicQuant"
 NPU_QUANT_MATMUL_DEFAULT_GE_OP_TYPE = "QuantBatchMatmulV4444"
+NPU_WEIGHT_QUANT_MATMUL_DEFAULT_GE_OP_TYPE = "WeightQuantBatchMatmulV2"
 NPU_SCATTER_ND_UPDATE_DEFAULT_GE_OP_TYPE = "ScatterNdUpdate"
 
 _GDR_GE_PROTO_BLOCK = re.compile(
@@ -782,6 +784,32 @@ def _fake_npu_quant_matmul(
     return x1.new_empty(output_shape, dtype=dtype)
 
 
+def _fake_npu_weight_quant_matmul(x, weight, antiquant_scale,
+                                antiquant_offset=None, quant_scale=None, quant_offset=None,
+                                bias=None, antiquant_group_size=0, inner_precise=0, weight_dtype=None):
+    # Only the Draft A16W8 contract; never an implementation of the numerics.
+    if (x.ndim != 2 or weight.ndim != 2 or x.dtype != torch.float16
+            or weight.dtype != torch.int8 or antiquant_scale.dtype != torch.float16
+            or weight_dtype is not None or quant_scale is not None or quant_offset is not None
+            or antiquant_offset is not None or bias is not None
+            or antiquant_group_size not in (0, 128) or inner_precise != 0):
+        raise ValueError("Draft WeightQuantBatchMatmulV2 requires grouped A16W8 high-precision mode")
+    torch._check(x.shape[1] == weight.shape[0])
+    groups = 1 if antiquant_group_size == 0 else weight.shape[0] // 128
+    torch._check(antiquant_scale.shape[0] == groups)
+    torch._check(antiquant_scale.shape[1] == weight.shape[1])
+    return x.new_empty((x.shape[0], weight.shape[1]))
+
+
+def _validate_npu_weight_quant_matmul_meta(operation):
+    x = torch.empty((16, 2560), dtype=torch.float16, device="meta")
+    w = torch.empty((19456, 2560), dtype=torch.int8, device="meta").t()
+    s = torch.empty((19456, 20), dtype=torch.float16, device="meta").t()
+    result = operation(x, w, s, antiquant_group_size=128, inner_precise=0)
+    _expect_tensor(result, shape=(16, 19456), dtype=torch.float16,
+                   label="npu::npu_weight_quant_batchmatmul output")
+
+
 def _fake_npu_scatter_nd_update_(
     input: torch.Tensor,
     indices: torch.Tensor,
@@ -972,6 +1000,18 @@ def _validate_functional_scatter_nd_update_meta(operation: Any) -> None:
 
 
 _ADAPTERS = {
+    NPU_WEIGHT_QUANT_MATMUL_TORCH_OP: _OperatorAdapter(
+        torch_op=NPU_WEIGHT_QUANT_MATMUL_TORCH_OP,
+        argument_names=("x", "weight", "antiquant_scale", "antiquant_offset", "quant_scale",
+                        "quant_offset", "bias", "antiquant_group_size", "inner_precise"),
+        argument_types=("Tensor", "Tensor", "Tensor", "Optional[Tensor]", "Optional[Tensor]",
+                        "Optional[Tensor]", "Optional[Tensor]", "int", "int"),
+        kwarg_only=(False,) * 9,
+        return_types=("Tensor",),
+        fake_kernel=_fake_npu_weight_quant_matmul,
+        validate_meta=_validate_npu_weight_quant_matmul_meta,
+        converter_policy=_TORCHAIR_BUILTIN_CONVERTER,
+    ),
     NPU_FUNCTIONAL_SCATTER_ND_UPDATE_TORCH_OP: _OperatorAdapter(
         torch_op=NPU_FUNCTIONAL_SCATTER_ND_UPDATE_TORCH_OP,
         argument_names=(("input", "self"), "indices", "updates"),
@@ -1185,6 +1225,12 @@ def _validate_schema(operation: Any, adapter: _OperatorAdapter) -> str:
     types = tuple(str(item.type) for item in schema.arguments)
     kwarg_only = tuple(bool(item.kwarg_only) for item in schema.arguments)
     return_types = tuple(str(item.type) for item in schema.returns)
+    # Newer torch_npu adds an optional weight_dtype for newer chips. Draft
+    # never sets it; accept only this known, default-None schema extension.
+    if (adapter.torch_op == NPU_WEIGHT_QUANT_MATMUL_TORCH_OP and len(names) == 10
+            and names[-1] == "weight_dtype" and types[-1] == "Optional[int]"
+            and not kwarg_only[-1] and schema.arguments[-1].default_value is None):
+        names, types, kwarg_only = names[:-1], types[:-1], kwarg_only[:-1]
     names_match = len(names) == len(adapter.argument_names) and all(
         _argument_name_matches(actual, expected)
         for actual, expected in zip(names, adapter.argument_names)

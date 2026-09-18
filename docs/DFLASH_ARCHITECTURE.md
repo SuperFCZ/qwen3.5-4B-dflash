@@ -58,7 +58,10 @@ OM Draft 的 QK/PV 矩阵乘默认 FP16，缩放、Mask、Softmax 为 FP32；
 
 Chunk/MTP 共用选定精度的 Draft OM，把上下文更新和候选生成合在一次调用中。
 三精度对比时，共享 Target 输出特征层的并集；每个 Draft 选取自己的特征输入。
-发布的 W4/W8 checkpoint 为五层，FP16 为六层；量化路径保留压缩权重输入，在图内按组解量化后做 FP16 MatMul。
+发布的 W4/W8 checkpoint 为五层，FP16 为六层。量化路径保留压缩权重输入，默认使用 CANN
+`WeightQuantBatchMatmulV2`：FP16 激活 × INT8 权重，group-128 scale，`inner_precise=0`；
+W4 在调用前将 packed byte 无损展开为 INT8，不保留完整 FP16 权重。
+`draft_quant_matmul=dequant` 可选显式解量化对照；实际 OM 时延和峰值显存须测量。
 三种 Draft 分开运行，不同时驻留；[构建与对比命令](GDR_CHUNK_AIR_OM.md#统一测试)。
 逻辑接口为 `(features, start_position, valid_rows, anchor, proposal_count, 历史 KV)`
 → `(候选 token, 更新后的 KV)`，位置和有效长度控制可见范围。

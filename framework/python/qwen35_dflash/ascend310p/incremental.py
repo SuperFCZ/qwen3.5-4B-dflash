@@ -996,10 +996,17 @@ def incremental_graph_specs(
         for op in custom_ops if op.torch_op == "npu::adn_rms_norm"
         or (draft_row_update is not None and op.torch_op == "npu::npu_scatter_nd_update")
     )
+    draft_graph = DraftGraph(draft, embedding, target.get_output_embeddings(),
+                             row_update=draft_row_update, consume_source=True, feature_layers=feature_layers)
+    from models.dflash_v1.draft_quantization import GroupQuantLinear
+    from models.dflash_v1.weight_quant_matmul import TORCH_OP, GE_OP
+    native_linears = sum(isinstance(m, GroupQuantLinear) and m.matmul_backend == "weight_quant"
+                         for m in draft_graph.modules())
+    if native_linears:
+        draft_ops += (CustomOpExportSpec(TORCH_OP, GE_OP, minimum_occurrences=native_linears),)
     add(
         "draft",
-        DraftGraph(draft, embedding, target.get_output_embeddings(),
-                   row_update=draft_row_update, consume_source=True, feature_layers=feature_layers),
+        draft_graph,
         (features, start, valid, start.clone(),
          torch.full_like(valid, 15), *draft_state),
         ("features", "start_position", "valid_rows", "anchor", "proposal_count", *draft_names),

@@ -49,6 +49,8 @@ def _factory_config(args):
         config["verify_gdr"] = args.verify_gdr
     if getattr(args, "draft_quantization", None) is not None:
         config["draft_quantization"] = args.draft_quantization
+    if getattr(args, "draft_quant_matmul", None) is not None:
+        config["draft_quant_matmul"] = args.draft_quant_matmul
     return config
 
 
@@ -370,6 +372,8 @@ def _add_atc_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_draft_matrix_arguments(parser):
+    parser.add_argument("--draft-quant-matmul", choices=("weight_quant", "dequant"),
+                        help="quantized Draft MatMul: CANN grouped A16W8 (default) or explicit decomposed baseline")
     parser.add_argument("--draft-quantizations", nargs="+", choices=("fp16", "w4a16", "w8a16"),
                         help="export selected Drafts with shared Target graphs into one bundle")
     for variant in ("fp16", "w4a16", "w8a16"):

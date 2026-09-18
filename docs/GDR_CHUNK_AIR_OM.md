@@ -57,7 +57,8 @@ PY
 "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p export-air \
   --factory qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs \
   --factory-config "$AI_RUN_DIR/factory.json" --bundle-dir "$OM_BUNDLE_DIR" \
-  --verify-gdr both --draft-quantizations fp16 w4a16 w8a16
+  --verify-gdr both --draft-quantizations fp16 w4a16 w8a16 \
+  --draft-quant-matmul weight_quant
 ```
 
 **2. 编译 OM。** 等上一步返回终端提示符后执行；逐图打印 START/DONE。
@@ -91,6 +92,31 @@ AIR 导出成功不代表 OM 编译成功；以第二步成功及 `draft-variant
 
 在 `RUNNER_CONFIG` 指向的 JSON 中填写实际 `device_model`、`cann`、`driver`、`firmware`，
 另设 `"runtime": "AscendCL C++"`、`"pad_token_id": 0`。
+
+## 量化 Draft MatMul
+
+W4/W8 默认采用 CANN [WeightQuantBatchMatmulV2](https://github.com/Ascend/op-plugin/blob/cdca1dbc8949cc32bab4a5b2291bf9d9cddcf052/docs/zh/custom_APIs/torch_npu/torch_npu-npu_weight_quant_batchmatmul.md)，保留 FP16 激活、group-128 scale 和
+`inner_precise=0`。W8 直接传 INT8 权重；W4 压缩存储，临时无损展开为 INT8 后调用。
+这是 A16 权重量化接口，不能按 W8A8 的纯整数矩阵乘理解；Embedding/LM Head 保持 FP16。
+
+导出前会执行小型 NPU 检查，不支持 group-128 时直接报告原因；不会自动退回慢路径。
+导出后检查五层 Draft 的 26 个融合节点是否保留。
+针对 CANN 9.0.0 / torch_npu 2.8 的实际安装，建议先跑下面的 MatMul 对照，不加载模型：
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_draft_matmul.py" \
+  --device-id "$DEVICE_ID" --bits 4 8 --projection gate_up q kv down fc \
+  --warmup 1 --repetitions 3 --output "$AI_RUN_DIR/draft-matmul.json"
+```
+
+输出相同输入下的时延、数值差异和 PyTorch 分配器峰值；这是合成输入的原生调用测试，
+OM 峰值显存与完整模型接受率仍需统一测试和 profiling 验证。
+压缩常驻权重字节数不增加，不缓存完整 FP16 权重；CANN 内部工作区不能据此推断。
+
+切换 MatMul **需要重新导出 AIR，再编译 OM**，沿用上面的正常编译命令和新目录。
+仅重编已有 AIR 不会改变图内算子；本次不需要更新 C++ runner。
+对照路径可在导出时设 `--draft-quant-matmul dequant`，或在 factory JSON 中设
+`"draft_quant_matmul": "dequant"`；该设置仅影响 W4/W8，FP16 Draft 与 Target 计算不变。
 
 ## 统一测试
 
@@ -183,7 +209,7 @@ Recurrent state 存储/传输为 FP32，conv/KV 为 FP16。Draft 采用 16/64 �
 Draft 默认 `deterministic=0`，投机始终开启。
 
 公开 W4/W8 Draft 为五层，当前 FP16 为六层，特征层也不同，因此是不同 checkpoint 的对比。
-量化路径以压缩权重常驻，标准算子按 group-128 解量化后做 FP16 MatMul；Embedding/LM Head 仍为 FP16。
+量化路径以压缩权重常驻，MatMul 选择见[量化 Draft MatMul](#量化-draft-matmul)。
 压缩权重以一维输入传输，图内恢复形状；五层 Draft 的动态档位共 99 维，低于 ACL 的 128 维上限。
 若加载时报 `aclmdlGetInputDynamicDims failed: 500001`，请更新 runner，并在空目录重新导出、编译量化 Draft。
 真实 TorchAir/ATC 编译、峰值显存、接受率和加速效果须在 310P 上验证。

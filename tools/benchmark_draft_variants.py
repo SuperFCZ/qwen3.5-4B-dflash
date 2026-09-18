@@ -135,7 +135,7 @@ def save(root, prepared):
     lines += ["", suite.render_timings(timing, measured_only=False).rstrip(), "",
               "Ordinary runs once per prompt/output budget. Each Draft generates its own output; task quality is not evaluated.",
               "Published quantized checkpoints have five layers; the current FP16 checkpoint has six. This is not a bitwidth-only ablation.",
-              "Group dequantization uses standard ops and FP16 MatMul. Packed weights stay resident; peak temporary memory requires device profiling.",
+              "Quantized Drafts retain packed weights and FP16 activations. The AIR/deployment draft_checkpoint_audit records the MatMul backend; peak workspace requires device profiling.",
               "Per-Draft reports, cases.csv and per-file summaries are in fp16/, w4a16/, w8a16/."]
     first = next(iter(prepared.values()))._prepared_summary
     lines.insert(0, "Thinking: " + ("on" if first["protocol"].get("enable_thinking") else "off") + ".\n")
