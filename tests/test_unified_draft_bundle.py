@@ -20,9 +20,9 @@ def unified_export(variant_builder, tmp_path, monkeypatch):
                         lambda path, variant: {"variant": variant})
     monkeypatch.setattr("qwen35_dflash.ascend310p.input_manifest.build_quant_input_manifest",
                         lambda **kwargs: kwargs["output"].write_text("{}"))
-    def export(variants=("fp16", "w4a16", "w8a16"), routes=("chunk", "mtp")):
+    def export(variants=("fp16", "w4a16", "w8a16"), routes=("chunk", "mtp"), backend="dequant"):
         return bundle_matrix.export_matrix(FACTORY, dict(target_dir="target", quant_config="quant",
-            receiver_models_dir="receiver"), tmp_path / "bundle",
+            receiver_models_dir="receiver", draft_quant_matmul=backend), tmp_path / "bundle",
             variants=variants, routes=routes, draft_dirs={v: v for v in variants}, torchair_module=build.air)
     return export, build.atc, calls
 

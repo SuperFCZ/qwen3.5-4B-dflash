@@ -11,6 +11,8 @@ import tempfile
 from typing import Any, Callable, Mapping, Sequence
 
 from .runtime_input_export import validated_runtime_input_abi
+from .atc_fusion import (WEIGHT_QUANT_TRANSPOSE_PASS, fusion_switch_record,
+                         normalized_atc_options, weight_quant_fusion_args)
 
 from .utils import (
     atomic_write_json,
@@ -47,6 +49,14 @@ def _atc_failure_detail(stdout: str, graph: Mapping[str, Any]) -> str:
                      max(0, len(lines) - 8))
     excerpt = "\n".join(lines[start:start + 8])[:6000].strip()
     detail = f"\nATC diagnostic:\n{excerpt}" if excerpt else ""
+    if WEIGHT_QUANT_TRANSPOSE_PASS in stdout:
+        detail += (
+            "\nWeight-quant transpose/NZ graph fusion failed before OM execution. "
+            "The compiler disables only this pass for native quantized Drafts on 310P; "
+            "check the logged --fusion_switch_file and any explicit per-pass 'on' setting. "
+            "If it still fails with the pass off, retain the full ATC log and fusion report; "
+            "this does not prove the MatMul kernel is unsupported."
+        )
     if ("ChunkGatedDeltaRule" in stdout and
             re.search(r"DT_FLOAT of output\s*\[core_attn\]", stdout)):
         detail += (
@@ -315,6 +325,16 @@ def _dynamic_atc_args(graph, arguments):
     return output + [key + "=" + value for key, value in required.items()]
 
 
+def _bundle_atc_args(graphs, extra_args, *, incremental, soc_version):
+    arguments = _chunk_precision_args(_validate_extra_args(extra_args), incremental=incremental)
+    graph_arguments = {
+        graph["name"]: weight_quant_fusion_args(graph, _dynamic_atc_args(graph, _graph_atc_args(
+            arguments, name=graph["name"], incremental=incremental)), soc_version=soc_version)
+        for graph in graphs
+    }
+    return arguments, graph_arguments
+
+
 def _compile_air_graph(
     graph: Mapping[str, Any], *, root: Path, om_root: Path, log_root: Path,
     atc_path: Path, exact_soc_version: str, arguments: Sequence[str],
@@ -356,6 +376,7 @@ def _compile_air_graph(
         f"--soc_version={exact_soc_version}",
         *arguments,
     ]
+    fusion = fusion_switch_record(arguments)
     result = execute(command, air_path.parent)
     log_path = log_root / f"{name}.log"
     log_path.write_text(result.stdout or "", encoding="utf-8")
@@ -365,6 +386,8 @@ def _compile_air_graph(
             f"ATC failed for {name!r} with exit {result.returncode}; log={log_path}"
             + _atc_failure_detail(result.stdout or "", graph)
         )
+    if fusion != fusion_switch_record(arguments):
+        raise AtcCompileError("ATC fusion configuration changed during compilation")
     if not om_path.is_file() or om_path.stat().st_size == 0:
         raise AtcCompileError(
             f"ATC returned success but produced no non-empty OM for {name!r}; log={log_path}"
@@ -383,8 +406,51 @@ def _compile_air_graph(
         "om": file_record(om_path, relative_to=root),
         "atc_command": command,
         "atc_log": str(log_path.relative_to(run_dir)),
+        **({"atc_fusion_switch": fusion} if fusion is not None else {}),
         **{key: graph[key] for key in ("constant_inputs", "constant_inputs_table") if key in graph},
     }
+
+
+def _validated_completed_bundle(path, *, air_path, graphs, atc_path, soc_version,
+                                graph_arguments, identity):
+    """Admit a completed matrix member only with matching inputs and build identity."""
+    from .common_reuse import _verified_file, artifact_stem
+
+    root = path.parent
+    saved = load_json_object(path)
+    if (saved.get("status") != "PASS"
+            or saved.get("artifact_kind") != "qwen35-dflash-ascend310p-om-bundle"
+            or saved.get("air_manifest") != {"path": air_path.name, "sha256": sha256_file(air_path)}):
+        raise ValueError(f"resume requires a matching passing deployment/AIR manifest: {path}")
+    if (saved.get("target", {}).get("soc_version") != soc_version
+            or saved.get("compiler", {}).get("identity") != identity
+            or saved.get("compiler", {}).get("path") != str(atc_path)):
+        raise ValueError(f"resume compiler/SoC identity differs: {path}")
+    compiled = saved.get("graphs", [])
+    by_name = {graph["name"]: graph for graph in compiled}
+    if len(by_name) != len(compiled) or set(by_name) != {graph["name"] for graph in graphs}:
+        raise ValueError(f"resume graph inventory differs: {path}")
+    for graph in graphs:
+        original = by_name[graph["name"]]
+        for key in ("name", "role", "metadata", "air", "input_names", "output_names",
+                    "runtime_input_abi", "custom_op_audit", "standard_op_overrides",
+                    "constant_inputs", "constant_inputs_table"):
+            if original.get(key) != graph.get(key):
+                raise ValueError(f"resume graph differs: {artifact_stem(graph)}.{key}")
+        if original["om"]["path"] != f"om/{artifact_stem(graph)}.om":
+            raise ValueError("resume requires the matrix's shared om/ paths")
+        _verified_file(root, original["om"])
+        command = original.get("atc_command")
+        if not isinstance(command, list) or not command or not all(isinstance(s, str) for s in command):
+            raise ValueError("resume requires the original ATC command")
+        if original.get("atc_fusion_switch") != fusion_switch_record(command):
+            raise ValueError("resume fusion switch provenance/hash differs")
+        actual = [s for s in command if not s.startswith(("--model=", "--output="))]
+        expected = [str(atc_path), "--mode=0", "--framework=1", f"--soc_version={soc_version}",
+                    *graph_arguments[graph["name"]]]
+        if normalized_atc_options(actual) != normalized_atc_options(expected):
+            raise ValueError(f"resume ATC options differ: {artifact_stem(graph)}")
+    return saved
 
 
 def compile_air_bundle(
@@ -395,6 +461,7 @@ def compile_air_bundle(
     extra_args: Sequence[str] = (),
     runner: Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]] | None = None,
     atc_identity: str | None = None,
+    resume: bool = False,
     _shared_compiled: dict | None = None,
     _deployment_name: str | None = None,
 ) -> dict[str, Any]:
@@ -406,7 +473,10 @@ def compile_air_bundle(
     from .bundle_matrix import AIR_KIND, compile_matrix, validate_shared_graph
     if air_manifest.get("artifact_kind") == AIR_KIND:
         return compile_matrix(manifest_path, soc_version=soc_version, atc_bin=atc_bin,
-                              extra_args=extra_args, runner=runner, atc_identity=atc_identity)
+                              extra_args=extra_args, runner=runner, atc_identity=atc_identity,
+                              resume=resume)
+    if resume:
+        raise ValueError("--resume requires the unified AIR matrix air-manifest.json")
     if air_manifest.get("status") != "PASS":
         raise ValueError("AIR manifest is not passing")
     if air_manifest.get("artifact_kind") != "qwen35-dflash-torchair-bundle":
@@ -437,14 +507,8 @@ def compile_air_bundle(
             allow_test_double=runner is not None,
         )
 
-    arguments = _chunk_precision_args(
-        _validate_extra_args(extra_args), incremental=incremental is not None,
-    )
-    graph_arguments = {
-        graph["name"]: _dynamic_atc_args(graph, _graph_atc_args(
-            arguments, name=graph["name"], incremental=incremental is not None))
-        for graph in graphs
-    }
+    arguments, graph_arguments = _bundle_atc_args(
+        graphs, extra_args, incremental=incremental is not None, soc_version=exact_soc_version)
     from .common_reuse import artifact_stem, validate_common_compile, link_common_om
     reused = None
     if "common_reuse" in air_manifest:
@@ -603,6 +667,8 @@ def recompile_draft_om(
         graph_arguments[name] = _graph_atc_args(
             _chunk_precision_args(inherited, incremental=True), name=name, incremental=True)
         graph_arguments[name] = _dynamic_atc_args(air_by_name[name], graph_arguments[name])
+        graph_arguments[name] = weight_quant_fusion_args(
+            air_by_name[name], graph_arguments[name], soc_version=soc)
     atc_path = resolve_atc_executable(
         atc_bin or os.environ.get("ASCEND310P_ATC_BIN") or selected[0]["atc_command"][0])
     stage = Path(tempfile.mkdtemp(prefix=f"draft-det{deterministic}-", dir=root))

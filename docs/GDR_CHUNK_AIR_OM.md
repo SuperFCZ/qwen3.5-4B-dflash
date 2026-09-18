@@ -66,8 +66,11 @@ PY
 ```bash
 "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p compile-om \
   --air-manifest "$OM_BUNDLE_DIR/air-manifest.json" \
-  --atc "$ATC_BIN" --soc-version "$SOC_VERSION"
+  --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --resume
 ```
+
+`--resume` 校验 AIR、OM 哈希、SoC、编译器和参数后复用已完成的组合，继续编译缺失的图。
+没有成功部署清单记录的残留 OM 会报出路径；保留并移到别处后再重试。
 
 全部选择时，`$OM_BUNDLE_DIR/om/` 下只有 **7 个 OM**：
 
@@ -80,7 +83,7 @@ draft.om        draft_w4a16.om draft_w8a16.om
 `draft-variants.json` 索引各组合；部署清单与它同目录。运行时只加载选定的一个 Draft 和一个 Verify。
 只编译部分类型可改 `--draft-quantizations w8a16`；只要一条验证路线可改 `--verify-gdr chunk`。
 AIR 导出成功不代表 OM 编译成功；以第二步成功及 `draft-variants.json` 的 PASS 为准。
-编译日志位于 `$AI_RUN_DIR/log/dflash-atc/`。失败的部分产物保留，重试使用新目录。
+编译日志位于 `$AI_RUN_DIR/log/dflash-atc/`。中断后直接重跑第二步，不需要重新导出 AIR。
 
 **3. 构建 runner。**
 
@@ -101,6 +104,12 @@ W4/W8 默认采用 CANN [WeightQuantBatchMatmulV2](https://github.com/Ascend/op-
 
 导出前会执行小型 NPU 检查，不支持 group-128 时直接报告原因；不会自动退回慢路径。
 导出后检查五层 Draft 的 26 个融合节点是否保留。
+310P 上编译量化 Draft 时，默认通过 ATC 的
+[`fusion_switch_file`](https://www.hiascend.com/document/detail/en/CANNCommunityEdition/850/devaids/atctool/atlasatcparam_16_0053.html)
+仅关闭 `WeightQuantBatchMatmulV2TransposeNZFusionPass`，规避其重连节点失败。
+量化 MatMul、其它融合和图内数值精度保持原设置；开关文件及哈希写入编译记录。
+这是针对 CANN 9.0.0 报错的编译规避，实机编译结果仍需确认；原生 NPU 小测试通过不等于 ATC 融合通过。
+已有 `weight_quant` AIR 可直接用第二步 `--resume` 重试，无需更新 runner。
 针对 CANN 9.0.0 / torch_npu 2.8 的实际安装，建议先跑下面的 MatMul 对照，不加载模型：
 
 ```bash

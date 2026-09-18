@@ -186,6 +186,7 @@ def reuse_record(source):
 
 
 def validate_common_compile(air, root, *, atc_path, soc_version, arguments, identity):
+    from .atc_fusion import fusion_switch_record, normalized_atc_options
     record = air["common_reuse"]
     reference = record["deployment_manifest"]
     source = load_common_source(
@@ -211,7 +212,9 @@ def validate_common_compile(air, root, *, atc_path, soc_version, arguments, iden
                     f"--soc_version={soc_version}", *arguments[name]]
         actual = [s for s in item["compiled"]["atc_command"]
                   if not s.startswith(("--model=", "--output="))]
-        if actual != expected:
+        if item["compiled"].get("atc_fusion_switch") != fusion_switch_record(actual):
+            raise ValueError(f"Common reuse fusion switch provenance/hash differs: {name}")
+        if normalized_atc_options(actual) != normalized_atc_options(expected):
             raise ValueError(f"Common reuse ATC options differ: {name}, including deterministic/precision")
     if source["deployment"]["compiler"]["identity"] != identity:
         raise ValueError("Common reuse ATC identity differs")

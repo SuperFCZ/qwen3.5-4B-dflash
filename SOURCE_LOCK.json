@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash with one compact Draft / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
-  "package_revision": "r25",
+  "package_revision": "r26",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
     "version": 7,
@@ -180,7 +180,7 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "8693757d7b502a0a5ebbb1259f0136a775dd41dd6dc467f04017f263d0eb1068"
+        "source_sha256": "cbe389d5d3cf2c936c66845bd5b8a6e70c42b93dcd2c33de95b58511fabfeb84"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -228,11 +228,11 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/cli.py",
-        "source_sha256": "16a9a4f06a1ef1bcb7f69d8e0581bdeb28a42164e7e2023960fd661ecbebebe7"
+        "source_sha256": "af93badb625e4dc3f04cd08d4ac26a88eab7b3b0e04a02ecb1abdb47b173c678"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/compiler.py",
-        "source_sha256": "894977a59470ea397e59d0779a2054b80dd3aa8524be0e7be8b724ac9c0ff9ef"
+        "source_sha256": "6e2d16749ad0479b11b8ac85a59e907c7435f59f1d73bd7f5424b5281800f179"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/contracts.py",
@@ -564,7 +564,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/common_reuse.py",
-        "source_sha256": "d14353afb41adf6d08031f484810030f138e5c0a8078a73c89fa0704d0467c68"
+        "source_sha256": "1e8dc3c483beece4661f7e8a7a68c92acad756579a17d09aa010110d8ea5b444"
       },
       {
         "source_file": "tests/test_common_gdr_reuse.py",
@@ -768,11 +768,11 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/bundle_matrix.py",
-        "source_sha256": "6a068884cd008e3489fba82d9fdc07e90f4620b94964328d828d1bb99d592c7c"
+        "source_sha256": "72d9f9af28b619b6cc311aa0e94d8d301c1fc43fa56f5c666af1c0f22edadd14"
       },
       {
         "source_file": "tests/test_unified_draft_bundle.py",
-        "source_sha256": "ff6157e2d69b18f8f6f77e92b7554dbf6131a524397daa3e586060f8f9c553e4"
+        "source_sha256": "ce978ae5b7c29d770f08813ab7ca7a053be539ad8ffe3dd88dc6f453b1c417d6"
       },
       {
         "source_file": "tests/test_unified_benchmarks.py",
@@ -793,8 +793,24 @@
       {
         "source_file": "tests/test_weight_quant_matmul_export.py",
         "source_sha256": "55bc44cac7d7d7d7231c768a05f245d7dee4abaf5fab329f56540661c32c601d"
+      },
+      {
+        "source_file": "framework/python/qwen35_dflash/ascend310p/atc_fusion.py",
+        "source_sha256": "7bcbd58f5e459827e676f4642aafeee75263c94a04328fd0485d8ed29bcc3a77"
+      },
+      {
+        "source_file": "tests/test_weight_quant_atc_fusion.py",
+        "source_sha256": "1e89c1e5828e11220f0dca9d2c9783986507f49cf350b6e1ac39ec1e6debd363"
       }
     ],
-    "workflow": "normal export-air / compile-om and benchmark_gdr_lengths.py; flat seven-OM directory; mixed builtin/offline tests; ordinary baseline path reuse"
+    "workflow": "normal export-air / compile-om and benchmark_gdr_lengths.py; flat seven-OM directory; mixed builtin/offline tests; ordinary baseline path reuse",
+    "atc_compatibility": {
+      "target": "Ascend310P",
+      "disabled_graph_fusion": "WeightQuantBatchMatmulV2TransposeNZFusionPass",
+      "scope": "Native weight-quant Drafts only; explicit per-pass user setting preserved",
+      "evidence": "Receiver CANN 9.0.0 E20007 RemoveEdge/relink failure; private failing edge unknown",
+      "validation": "Host option/provenance/recovery tests; receiver ATC compilation and NPU output/timing pending",
+      "recovery": "compile-om --resume reuses matching completed matrix deployments; unrecorded or corrupted OM files rejected"
+    }
   }
 }

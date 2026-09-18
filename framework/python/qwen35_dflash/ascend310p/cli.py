@@ -93,6 +93,7 @@ def command_compile(args: argparse.Namespace) -> int:
         soc_version=args.soc_version,
         atc_bin=args.atc,
         extra_args=args.atc_arg,
+        resume=args.resume,
     )
     _print(payload)
     return 0
@@ -415,6 +416,8 @@ def build_parser() -> argparse.ArgumentParser:
         "compile-om", help="compile a hash-locked AIR bundle with ATC"
     )
     compile_parser.add_argument("--air-manifest", type=Path, required=True)
+    compile_parser.add_argument("--resume", action="store_true",
+                                help="reuse hash-checked completed members of a partial unified OM build")
     _add_atc_arguments(compile_parser)
     compile_parser.set_defaults(handler=command_compile)
 

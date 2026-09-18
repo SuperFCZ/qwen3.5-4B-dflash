@@ -96,10 +96,12 @@ def export_matrix(factory, config, bundle_dir, *, variants, routes, draft_dirs,
     return dict(result, manifest_path=str(path))
 
 
-def compile_matrix(path, *, soc_version, atc_bin=None, extra_args=(), runner=None, atc_identity=None):
+def compile_matrix(path, *, soc_version, atc_bin=None, extra_args=(), runner=None, atc_identity=None,
+                   resume=False):
     """Compile each unique graph once; every deployment refers to the same om/."""
     from .compiler import (compile_air_bundle, _validated_custom_op_audit,
-                           _validated_standard_op_overrides)
+                           _validated_standard_op_overrides, _validated_completed_bundle,
+                           _bundle_atc_args, _atc_identity, resolve_atc_executable, validate_soc_version)
     from .runtime_input_export import validated_runtime_input_abi
     from .draft_constants import verify_constant_inputs
     from .utils import sha256_file
@@ -115,9 +117,9 @@ def compile_matrix(path, *, soc_version, atc_bin=None, extra_args=(), runner=Non
     if not expected or len(members) != len(expected) or {
             (m["draft_quantization"], m["verify_gdr"]) for m in members} != expected:
         raise ValueError("AIR matrix selections and members differ")
-    if (root / "draft-variants.json").exists() or any((root / "om").glob("*.om")):
+    if not resume and ((root / "draft-variants.json").exists() or any((root / "om").glob("*.om"))):
         raise FileExistsError("matrix output already contains compiled artifacts; use a new bundle directory")
-    seen, environment = {}, None
+    seen, environment, air_members = {}, None, {}
     # Check every member and payload before the first ATC invocation.
     for member in members:
         variant, route = member["draft_quantization"], member["verify_gdr"]
@@ -125,9 +127,10 @@ def compile_matrix(path, *, soc_version, atc_bin=None, extra_args=(), runner=Non
             raise ValueError("invalid Draft/route member")
         if member["deployment_manifest"] != deployment_name(variant, route):
             raise ValueError("unexpected matrix deployment filename")
-        if (root / member["deployment_manifest"]).exists():
+        if not resume and (root / member["deployment_manifest"]).exists():
             raise FileExistsError(root / member["deployment_manifest"])
         air = load_json_object(_verified_file(root, member["air_manifest"]))
+        air_members[(variant, route)] = air
         if air.get("status") != "PASS" or air.get("factory") != FACTORY:
             raise ValueError("matrix member is not a passing incremental AIR bundle")
         if air.get("artifact_kind") != "qwen35-dflash-torchair-bundle" or "common_reuse" in air:
@@ -156,13 +159,47 @@ def compile_matrix(path, *, soc_version, atc_bin=None, extra_args=(), runner=Non
                 seen[key] = graph
     if sorted(seen) != catalog.get("unique_graphs"):
         raise ValueError("AIR matrix unique graph inventory differs")
-    cache, bundles = {}, {}
+    cache, bundles, completed = {}, {}, {}
+    if resume:
+        atc_path = resolve_atc_executable(atc_bin)
+        soc_version = validate_soc_version(soc_version)
+        atc_identity = atc_identity or _atc_identity(atc_path)
+        # Admit every existing member before invoking any new ATC process.
+        for member in members:
+            deployment_path = root / member["deployment_manifest"]
+            if not deployment_path.exists():
+                continue
+            key = (member["draft_quantization"], member["verify_gdr"])
+            graphs = air_members[key]["graphs"]
+            _, options = _bundle_atc_args(graphs, extra_args, incremental=True, soc_version=soc_version)
+            saved = _validated_completed_bundle(deployment_path,
+                air_path=root / member["air_manifest"]["path"], graphs=graphs, atc_path=atc_path,
+                soc_version=soc_version, graph_arguments=options, identity=atc_identity)
+            completed[key] = dict(saved, manifest_path=str(deployment_path))
+            for graph in saved["graphs"]:
+                stem = artifact_stem(graph)
+                if stem in cache:
+                    validate_shared_graph(cache[stem][0], graph)
+                    if cache[stem][0]["om"] != graph["om"] or cache[stem][1] != options[graph["name"]]:
+                        raise ValueError(f"resume shared OM/options differ: {stem}")
+                else:
+                    cache[stem] = (graph, options[graph["name"]])
+        admitted = {root / graph["om"]["path"] for graph, _ in cache.values()}
+        unknown = set((root / "om").glob("*.om")) - admitted
+        if unknown:
+            raise ValueError("resume found OM files without a verified passing deployment; "
+                             "retain/move these files aside before retrying: "
+                             + ", ".join(str(p) for p in sorted(unknown)))
     for member in members:
         variant, route = member["draft_quantization"], member["verify_gdr"]
-        compiled = compile_air_bundle(contained_path(root, member["air_manifest"]["path"]),
-            soc_version=soc_version, atc_bin=atc_bin, extra_args=extra_args, runner=runner,
-            atc_identity=atc_identity, _shared_compiled=cache,
-            _deployment_name=member["deployment_manifest"])
+        if (variant, route) in completed:
+            compiled = completed[(variant, route)]
+            print(f"[compile-om] {variant}/{route} REUSE completed bundle", flush=True)
+        else:
+            compiled = compile_air_bundle(contained_path(root, member["air_manifest"]["path"]),
+                soc_version=soc_version, atc_bin=atc_bin, extra_args=extra_args, runner=runner,
+                atc_identity=atc_identity, _shared_compiled=cache,
+                _deployment_name=member["deployment_manifest"])
         manifest = Path(compiled["manifest_path"])
         bundles.setdefault(variant, {})[route] = dict(
             manifest=manifest.name, manifest_sha256=sha256_file(manifest),
