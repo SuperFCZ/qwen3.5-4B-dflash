@@ -13,7 +13,9 @@ from weight_quant_test_support import weight_quant_cpu
 from qwen35_dflash.ascend310p.atc_fusion import (
     FUSION_OPTION, WEIGHT_QUANT_TRANSPOSE_PASS as PASS, normalized_atc_options,
 )
-from qwen35_dflash.ascend310p.compiler import AtcCompileError, compile_air_bundle, _bundle_atc_args
+from qwen35_dflash.ascend310p.compiler import (
+    AtcCompileError, compile_air_bundle, _bundle_atc_args, _atc_failure_detail,
+)
 
 pytestmark = pytest.mark.usefixtures("small_threads", "adn_rms_norm_cpu", "weight_quant_cpu")
 
@@ -31,6 +33,28 @@ def test_native_draft_no_longer_injects_an_ineffective_fusion_switch():
     flags = ["--deterministic=0", "--precision_mode=must_keep_origin_dtype"]
     _, arguments = _bundle_atc_args([native_graph()], flags, incremental=False, soc_version="Ascend310P3")
     assert arguments["draft"] == flags
+
+
+@pytest.mark.parametrize("descriptor_length", [100, 5000])
+def test_tiling_diagnostic_preserves_attrs_and_constraint_after_tensor_descriptions(descriptor_length):
+    # Reproduce the receiver log structure: the actionable shape failure
+    # follows seven input slots, outputs and attributes, beyond eight lines.
+    reason = "op[WeightQuantBatchMatmulV2], Antiquant shape expect [2, 64], but is [64, 2]"
+    output = "\n".join([
+        "[Warning]: tiling struct conflict",
+        "Inner_Error_Compile_Fail(E90003): Tiling func of op_type WeightQuantBatchMatmulV2 failed",
+        "Compile_info: {'_cube_vector_core_type': 'AiCore'}",
+        *["Inputs: " + "x" * descriptor_length for _ in range(3)],
+        "None", "None", "None", "None", "Outputs: [64,64]",
+        "[OP_TILING] Attrs: transpose_weight=True antiquant_group_size=128",
+        "TraceBack (most recent call last):", reason,
+        "fail to analyze context info", "Op WeightQuantBatchMatmulV2 tiling failed",
+    ])
+    detail = _atc_failure_detail(output, native_graph())
+    assert "E90003" in detail and reason in detail
+    assert "[OP_TILING] Attrs: transpose_weight=True antiquant_group_size=128" in detail
+    assert "[K/group_size,N]" in detail and "Re-export AIR" in detail
+    assert len(detail) < 10500
 
 
 @pytest.mark.parametrize("explicit", ["on", "off"])

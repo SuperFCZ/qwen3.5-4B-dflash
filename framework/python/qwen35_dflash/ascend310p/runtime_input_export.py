@@ -290,7 +290,7 @@ def canonical_runtime_input_abi(
             if weight_quant["node_count"]:
                 audit["weight_quant_layout"] = weight_quant
                 atomic_write_json(Path(file_path) / "weight-quant-layout.json", weight_quant)
-                print("[export-air] WeightQuantBatchMatmulV2 layout=NK "
+                print("[export-air] WeightQuantBatchMatmulV2 layout=NK scale_layout=GN "
                       f"transpose_weight=true nodes={weight_quant['node_count']}", flush=True)
             gdr_dtypes = _gdr_output_dtype_audit(export_graph)
             if gdr_dtypes["node_count"]:

@@ -74,26 +74,35 @@ def fixture_graph(*, trans_type="Transpose", perm_dtype="DT_INT64", shared=False
 
 @pytest.mark.parametrize("trans_type", ["Transpose", "TransposeD"])
 @pytest.mark.parametrize("perm_dtype", ["DT_INT64", "DT_INT32"])
-def test_fold_both_axes_keep_optional_slots_and_preserve_group_math(trans_type, perm_dtype):
+@pytest.mark.parametrize("bits", [4, 8])
+def test_weight_only_fold_obeys_cann_group_scale_contract(trans_type, perm_dtype, bits):
     g = fixture_graph(trans_type=trans_type, perm_dtype=perm_dtype)
     before = {op.name: op.SerializeToString() for op in g.op if op.type == "Data"}
+    original_graph = copy.deepcopy(g)
     report = normalize_weight_quant_layout(g)
     op = next(op for op in g.op if op.type == GE_OP)
     assert report["policy"] == POLICY and report["node_count"] == 1
-    assert report["removed_transposes"] == ["st", "wt"]
-    assert list(op.input) == ["x:0", "w:0", "s:0", "", "", "", ""]
+    assert report["removed_transposes"] == ["wt"]
+    assert list(op.input) == ["x:0", "w:0", "st:0", "", "", "", ""]
     assert op.attr["transpose_weight"].b and not op.attr["transpose_x"].b
     assert list(op.input_desc[1].shape.dim) == [64, 256]
-    assert list(op.input_desc[2].shape.dim) == [64, 2]
+    assert list(op.input_desc[2].shape.dim) == [2, 64]
+    assert report["nodes"][0]["scale_layout"] == "GN"
     assert [d.name for d in op.input_desc] == ["x", "weight", "antiquant_scale"]
     assert before == {op.name: op.SerializeToString() for op in g.op if op.type == "Data"}
-    # Unequal scales for every group/channel catch a weight-only transpose fold.
-    x = ((torch.arange(16 * 256).reshape(16, 256) % 7) - 3).float() / 16
-    q = ((torch.arange(64 * 256).reshape(64, 256) % 11) - 5).float()
+    # Interpret the actual graph edges and CANN attributes. The scale axes
+    # are always [G,N], independently of transpose_weight (receiver tiling
+    # contract: "Antiquant shape expect [2, 64], but is [64, 2]").
+    # This catches both dropping the transpose and substituting a reshape.
+    q = ((torch.arange(64 * 256).reshape(64, 256) % (2 ** bits)) - 2 ** (bits - 1)).to(torch.int8)
     scale = (1 + torch.arange(64 * 2).reshape(64, 2) % 4).float() / 32
-    original = x @ (q.t() * scale.t().repeat_interleave(128, 0))
-    folded = x @ (q * scale.repeat_interleave(128, 1)).t()
-    assert torch.equal(original, folded)
+    for rows in (16, 64):
+        x = ((torch.arange(rows * 256).reshape(rows, 256) % 7) - 3).float() / 16
+        inputs = {"x": x.half(), "w": q, "s": scale.half()}
+        expected = sum((x[:, i:i + 128] @ q[:, i:i + 128].float().t()) * scale[:, i // 128]
+                       for i in range(0, 256, 128)).half()
+        assert torch.equal(evaluate_weight_quant_graph(original_graph, inputs), expected)
+        assert torch.equal(evaluate_weight_quant_graph(g, inputs), expected)
     snapshot = g.SerializeToString()
     repeated = normalize_weight_quant_layout(g)
     assert repeated["nodes"][0]["already_folded"]
@@ -103,8 +112,40 @@ def test_fold_both_axes_keep_optional_slots_and_preserve_group_math(trans_type, 
 def test_shared_transpose_retained_for_other_consumers():
     g = fixture_graph(shared=True)
     report = normalize_weight_quant_layout(g)
-    assert report["removed_transposes"] == ["st"]
+    assert report["removed_transposes"] == []
     assert next(op for op in g.op if op.name == "out").input[1] == "wt:0"
+
+
+def evaluate_weight_quant_graph(graph, inputs):
+    """Independent CPU interpretation of the logged CANN graph contract."""
+    nodes = {node.name: node for node in graph.op}
+    def value(edge):
+        node = nodes[edge.rpartition(":")[0]]
+        if node.type == "Data":
+            return inputs[node.name]
+        if node.type in {"Transpose", "TransposeD"}:
+            # Test fixtures use the exact two-axis swap.
+            return value(node.input[0]).t()
+        raise AssertionError(node.type)
+    op = next(node for node in graph.op if node.type == GE_OP)
+    x, weight, scale = (value(edge) for edge in op.input[:3])
+    if op.attr["transpose_x"].b: x = x.t()
+    if op.attr["transpose_weight"].b: weight = weight.t()
+    k, n = weight.shape
+    group = op.attr["antiquant_group_size"].i or k
+    assert tuple(scale.shape) == (k // group, n)
+    dense = weight.float() * scale.float().repeat_interleave(group, 0)
+    return (x.float() @ dense).half()
+
+
+def test_rejects_folded_weight_with_untransposed_scale_before_any_rewiring():
+    g = fixture_graph(); op = next(node for node in g.op if node.type == GE_OP)
+    op.attr["transpose_weight"].b = True
+    op.input[1:3] = ["w:0", "s:0"]  # The reported CANN 9.0.0 failing graph.
+    snapshot = g.SerializeToString()
+    with pytest.raises(ValueError, match="transpose_weight does not transpose scales"):
+        normalize_weight_quant_layout(g)
+    assert g.SerializeToString() == snapshot
 
 
 @pytest.mark.parametrize("damage", ["perm", "runtime_perm", "dtype", "shape", "scale", "optional", "precision", "control"])
@@ -144,6 +185,9 @@ def test_air_save_boundary_records_normalized_graph(monkeypatch, tmp_path):
     with pytest.raises(ValueError, match="re-export AIR"): validate_weight_quant_layout(broken)
     broken = copy.deepcopy(entry); broken["runtime_input_abi"]["weight_quant_layout"]["node_count"] = 2
     with pytest.raises(ValueError): validate_weight_quant_layout(broken)
+    broken = copy.deepcopy(entry)
+    broken["runtime_input_abi"]["weight_quant_layout"]["policy"] = "weight-quant-nk-transpose-attr-v1"
+    with pytest.raises(ValueError, match="re-export AIR"): validate_weight_quant_layout(broken)
 
 
 def test_unrelated_graph_unchanged():
@@ -192,7 +236,7 @@ def test_sparse_intermediate_descriptors_use_typed_metadata(monkeypatch, empty_s
         report = normalize_weight_quant_layout(g, metadata)
         assert report["metadata_source"] == "torchair.Tensor.set_meta"
         assert report["nodes"][0]["weight_shape"] == [64, 256]
-        assert report["nodes"][0]["scale_shape"] == [64, 2]
+        assert report["nodes"][0]["scale_shape"] == [2, 64]
         assert untouched == {node.name: node.SerializeToString() for node in g.op if node.type == "Data"}
         snapshot = g.SerializeToString()
         assert normalize_weight_quant_layout(g, metadata)["nodes"][0]["already_folded"]

@@ -1,4 +1,4 @@
-"""Fold the Draft's exact 2-D transposes before CANN's graph fusion.
+"""Fold the Draft's weight transpose before CANN's graph fusion.
 
 This is an AIR serialization rewrite of the built-in WeightQuantBatchMatmulV2,
 not a new NPU kernel. The public [N,K] integer weight and [N,K/128] scale ABI,
@@ -14,7 +14,7 @@ import struct
 import torch
 
 
-POLICY = "weight-quant-nk-transpose-attr-v1"
+POLICY = "weight-quant-nk-weight-gn-scale-v2"
 GE_OP = "WeightQuantBatchMatmulV2"
 
 
@@ -126,11 +126,12 @@ def _untranspose(nodes, edge, metadata):
 
 
 def normalize_weight_quant_layout(graph, tensor_metadata=None):
-    """Validate all candidates first, then fold weight/scale as one operation.
+    """Use physical w[N,K] with transpose_weight=true and scale[G,N].
 
-    GE interprets per-group scale in the same orientation as weight. Folding
-    weight alone would silently swap the group/channel axes. Optional inputs
-    keep their slots (including empty edges); they are never removed/relinked.
+    CANN's transpose_weight attribute applies ONLY to weight. Its group scale
+    axes remain [K/group_size,N], even with transposed weight. Keep the scale
+    transpose and its values; never replace it with a reshape. Validate all
+    candidates before rewiring. Optional input slots are preserved.
     """
     nodes = {op.name: op for op in graph.op}
     metadata = tensor_metadata or {}
@@ -151,25 +152,30 @@ def normalize_weight_quant_layout(graph, tensor_metadata=None):
         # Reject unrecognized numerics rather than guessing their layout.
         if any(edge and not edge.endswith(":-1") for edge in op.input[3:]):
             raise ValueError("Draft WeightQuant AIR expects absent optional quantization inputs")
-        for slot in (1, 2):
-            if folded:
-                parent, port = _source(nodes, op.input[slot])
-                if parent.type in {"Transpose", "TransposeD"}:
-                    raise ValueError("WeightQuant AIR is already transposed twice")
-                replacements.append((slot, op.input[slot], _resolved_desc(nodes, op.input[slot], metadata), None))
-            else:
-                edge, desc, removed = _untranspose(nodes, op.input[slot], metadata)
-                replacements.append((slot, edge, desc, removed))
+        if folded:
+            parent, _ = _source(nodes, op.input[1])
+            if parent.type in {"Transpose", "TransposeD"}:
+                raise ValueError("WeightQuant AIR is already transposed twice")
+            replacements.append((1, op.input[1], _resolved_desc(nodes, op.input[1], metadata), None))
+        else:
+            edge, desc, removed = _untranspose(nodes, op.input[1], metadata)
+            replacements.append((1, edge, desc, removed))
+        # Still check any scale transpose against its source/typed metadata,
+        # but do not remove or redirect it: the tiler requires [G,N].
+        scale_parent, _ = _source(nodes, op.input[2])
+        if scale_parent.type in {"Transpose", "TransposeD"}:
+            _untranspose(nodes, op.input[2], metadata)
+        replacements.append((2, op.input[2], _resolved_desc(nodes, op.input[2], metadata), None))
         weight, scale = replacements[0][2], replacements[1][2]
         x = _resolved_desc(nodes, op.input[0], metadata)
         n, k = weight.shape.dim if len(weight.shape.dim) == 2 else (0, 0)
         groups = 1 if group == 0 else k // group
         if (n <= 0 or k <= 0 or k % 128 or (group == 0 and k != 128)
-                or list(scale.shape.dim) != [n, groups]
+                or list(scale.shape.dim) != [groups, n]
                 or len(x.shape.dim) != 2 or x.shape.dim[1] != k
                 or [_dtype(x), _dtype(weight), _dtype(scale)] != ["DT_FLOAT16", "DT_INT8", "DT_FLOAT16"]):
             raise ValueError(f"WeightQuant {op.name} requires FP16 x[M,K], INT8 w[N,K], "
-                             f"FP16 s[N,K/128]; actual shapes/dtypes="
+                             f"FP16 s[K/128,N] (transpose_weight does not transpose scales); actual shapes/dtypes="
                              f"{[(list(d.shape.dim), _dtype(d)) for d in (x, weight, scale)]}")
         plans.append((op, replacements, folded))
     records, candidates = [], set()
@@ -184,6 +190,7 @@ def normalize_weight_quant_layout(graph, tensor_metadata=None):
         op.attr["transpose_weight"].b = True
         records.append({"name": op.name, "weight": op.input[1], "scale": op.input[2],
                         "transpose_weight": True, "already_folded": folded,
+                        "scale_layout": "GN",
                         "group_size": op.attr["antiquant_group_size"].i,
                         "weight_shape": list(op.input_desc[1].shape.dim),
                         "scale_shape": list(op.input_desc[2].shape.dim)})
@@ -235,6 +242,7 @@ def validate_weight_quant_layout(graph):
     audit = abi.get("weight_quant_layout", {})
     if (audit.get("policy") != POLICY or audit.get("status") != "PASS"
             or audit.get("node_count") != count or len(audit.get("nodes", [])) != count
-            or any(node.get("transpose_weight") is not True for node in audit.get("nodes", []))):
-        raise ValueError("Quantized Draft AIR lacks the NK transpose-attribute audit; re-export AIR "
+            or any(node.get("transpose_weight") is not True or node.get("scale_layout") != "GN"
+                   for node in audit.get("nodes", []))):
+        raise ValueError("Quantized Draft AIR lacks the NK weight / GN scale audit; re-export AIR "
                          "with the current source. Recompiling old AIR or disabling fusion cannot apply this fix.")

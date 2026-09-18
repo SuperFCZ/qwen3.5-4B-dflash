@@ -47,16 +47,36 @@ def _atc_failure_detail(stdout: str, graph: Mapping[str, Any]) -> str:
     if start is None:
         start = next((i for i, line in enumerate(lines) if "[ERROR]" in line),
                      max(0, len(lines) - 8))
-    excerpt = "\n".join(lines[start:start + 8])[:6000].strip()
+    # Tiling dumps list inputs/optional slots before the actual constraint.
+    # Keep the header bounded, and reserve room for attributes and traceback
+    # independently so tensor descriptions cannot hide the reason for failure.
+    excerpt = "\n".join(lines[start:start + 8])[:3500].strip()
+    attrs = next((line for line in lines[start:] if "[OP_TILING] Attrs:" in line), None)
+    if attrs and attrs not in excerpt:
+        excerpt += "\n" + attrs[:2000]
+    trace = next((i for i in range(start, len(lines))
+                  if "TraceBack (most recent call last)" in lines[i]
+                  or "Traceback (most recent call last)" in lines[i]), None)
+    if trace is not None:
+        context = "\n".join(lines[trace:trace + 8])[:4000]
+        if context:
+            excerpt += "\n" + context
     detail = f"\nATC diagnostic:\n{excerpt}" if excerpt else ""
     if WEIGHT_QUANT_TRANSPOSE_PASS in stdout:
         detail += (
             "\nWeight-quant transpose/NZ graph fusion failed before OM execution. "
             "An off switch has not prevented this pass on the receiver. "
-            "Re-export with the NK transpose-attribute normalization and run "
+            "Re-export with the NK weight / GN scale normalization and run "
             "tools/probe_draft_matmul_atc.py before rebuilding a full Draft. "
             "Retain weight-quant-layout.json and the complete ATC log if it still fails; "
             "group-128 kernel support requires a separate target check."
+        )
+    if "WeightQuantBatchMatmulV2" in stdout and "Antiquant shape expect" in stdout:
+        detail += (
+            "\nWeight-quant group scale must be [K/group_size,N], independently of "
+            "transpose_weight. Re-export AIR to retain the scale transpose; "
+            "do not reshape scales or change the quantization group size. "
+            "This shape error alone does not establish unsupported kernel functionality."
         )
     if ("ChunkGatedDeltaRule" in stdout and
             re.search(r"DT_FLOAT of output\s*\[core_attn\]", stdout)):
