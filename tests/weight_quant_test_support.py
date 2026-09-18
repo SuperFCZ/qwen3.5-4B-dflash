@@ -26,8 +26,12 @@ def weight_quant_cpu():
             assert x.dtype == antiquant_scale.dtype == torch.float16
             assert weight.dtype == torch.int8 and inner_precise == 0
             assert all(t is None for t in (antiquant_offset, quant_scale, quant_offset, bias))
-            group = antiquant_group_size or weight.shape[0]
-            dense = (weight.float() * antiquant_scale.float().repeat_interleave(group, 0)).half()
+            if antiquant_group_size == 0:
+                assert antiquant_scale.shape == (weight.shape[1],)
+                dense = (weight.float() * antiquant_scale.float()).half()
+            else:
+                assert antiquant_scale.shape == (weight.shape[0] // antiquant_group_size, weight.shape[1])
+                dense = (weight.float() * antiquant_scale.float().repeat_interleave(antiquant_group_size, 0)).half()
             return torch.mm(x, dense)
 
         implementation.impl("npu_weight_quant_batchmatmul", oracle)

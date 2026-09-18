@@ -795,9 +795,15 @@ def _fake_npu_weight_quant_matmul(x, weight, antiquant_scale,
             or antiquant_group_size not in (0, 128) or inner_precise != 0):
         raise ValueError("Draft WeightQuantBatchMatmulV2 requires grouped A16W8 high-precision mode")
     torch._check(x.shape[1] == weight.shape[0])
-    groups = 1 if antiquant_group_size == 0 else weight.shape[0] // 128
-    torch._check(antiquant_scale.shape[0] == groups)
-    torch._check(antiquant_scale.shape[1] == weight.shape[1])
+    if antiquant_group_size == 0:
+        if antiquant_scale.ndim != 1:
+            raise ValueError("Draft per-channel scale must use the portable [N] shape")
+        torch._check(antiquant_scale.shape[0] == weight.shape[1])
+    else:
+        if antiquant_scale.ndim != 2:
+            raise ValueError("Draft per-group scale must be [K/128,N]")
+        torch._check(antiquant_scale.shape[0] == weight.shape[0] // 128)
+        torch._check(antiquant_scale.shape[1] == weight.shape[1])
     return x.new_empty((x.shape[0], weight.shape[1]))
 
 

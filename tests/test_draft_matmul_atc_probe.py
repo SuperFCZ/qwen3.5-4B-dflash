@@ -32,6 +32,11 @@ def test_probe_keeps_flat_compressed_inputs_and_dynamic_gears(bits, group_size, 
     dense = (q.float() * scales.reshape(64, groups).float().repeat_interleave(group_size or 256, 1)).half()
     exported = torch.export.export(spec.model, spec.example_args, dynamic_shapes=(
         {0: torch.export.Dim("rows", min=16, max=64)}, None, None)).module()
+    # A [1,N] row broadcasts numerically on CPU but is rejected by the
+    # receiver's per-channel GE tiler. Assert the actual captured op operand.
+    native = next(node for node in exported.graph.nodes if node.op == "call_function"
+                  and node.target == torch.ops.npu.npu_weight_quant_batchmatmul.default)
+    assert tuple(native.args[2].meta["val"].shape) == ((groups, 64) if group_size else (64,))
     for rows in (16, 64):
         value = torch.ones(rows, 256).half() / 16
         # Runtime inputs must remain live and cannot be frozen into the AIR.

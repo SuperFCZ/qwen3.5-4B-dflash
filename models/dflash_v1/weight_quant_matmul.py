@@ -22,7 +22,7 @@ def require_weight_quant_matmul():
 
 
 def weight_quant_linear(value: Tensor, weight: Tensor, scales: Tensor) -> Tensor:
-    """Linear [N,K] -> CANN [K,N]; scales [N,K/128] -> [K/128,N].
+    """Linear [N,K] -> CANN [K,N]; grouped scales -> [K/128,N], single group -> [N].
 
     Keep transposes as views. TorchAir's built-in converter emits a fused
     WeightQuantBatchMatmulV2 with group_size=128, inner_precise=0. Casting the
@@ -37,8 +37,9 @@ def weight_quant_linear(value: Tensor, weight: Tensor, scales: Tensor) -> Tensor
         raise ValueError("weight_quant requires weight[N,K] and scales[N,K/128]")
     # CANN disallows group_size == K. A single group is exactly per-channel.
     group_size = 128 if k > 128 else 0
+    scale = scales.transpose(0, 1) if group_size else scales.reshape(n)
     result = require_weight_quant_matmul()(
-        value.reshape(-1, k), weight.transpose(0, 1), scales.transpose(0, 1),
+        value.reshape(-1, k), weight.transpose(0, 1), scale,
         antiquant_group_size=group_size, inner_precise=0,
     )
     return result.reshape(*value.shape[:-1], n)

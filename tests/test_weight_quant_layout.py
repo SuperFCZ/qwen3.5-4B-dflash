@@ -132,9 +132,13 @@ def evaluate_weight_quant_graph(graph, inputs):
     if op.attr["transpose_x"].b: x = x.t()
     if op.attr["transpose_weight"].b: weight = weight.t()
     k, n = weight.shape
-    group = op.attr["antiquant_group_size"].i or k
-    assert tuple(scale.shape) == (k // group, n)
-    dense = weight.float() * scale.float().repeat_interleave(group, 0)
+    group = op.attr["antiquant_group_size"].i
+    if group:
+        assert tuple(scale.shape) == (k // group, n)
+        dense = weight.float() * scale.float().repeat_interleave(group, 0)
+    else:
+        assert tuple(scale.shape) == (n,)
+        dense = weight.float() * scale.float()
     return (x.float() @ dense).half()
 
 
@@ -154,8 +158,8 @@ def test_synthetic_control_audit_cannot_be_used_for_a_checkpoint(group, layout):
     g = fixture_graph(); nodes = {node.name: node for node in g.op}
     op = nodes["quant"]
     if group == 0:
-        nodes["s"].output_desc[0].shape.dim[:] = [64, 1]
-        nodes["st"].output_desc[0].shape.dim[:] = [1, 64]
+        nodes["s"].output_desc[0].shape.dim[:] = [64]
+        op.input[2] = "s:0"
         op.attr["antiquant_group_size"].i = 0
     if layout == "kn":
         nodes["w"].output_desc[0].shape.dim[:] = [256, 64]
@@ -164,7 +168,8 @@ def test_synthetic_control_audit_cannot_be_used_for_a_checkpoint(group, layout):
     audit = normalize_weight_quant_layout(g, probe_config=config)
     assert audit["policy"] == PROBE_POLICY and audit["probe_config"] == config
     assert audit["nodes"][0]["transpose_weight"] is (layout == "nk")
-    assert audit["nodes"][0]["scale_shape"] == [2 if group else 1, 64]
+    assert audit["nodes"][0]["scale_shape"] == ([2, 64] if group else [64])
+    assert audit["nodes"][0]["scale_layout"] == ("GN" if group else "N")
     record = {"name": "weight_quant_probe", "role": "diagnostic",
               "custom_op_audit": [{"ge_op_type": GE_OP, "ge_node_occurrences": 1}],
               "runtime_input_abi": {"weight_quant_layout": audit},
@@ -181,10 +186,25 @@ def test_synthetic_control_audit_cannot_be_used_for_a_checkpoint(group, layout):
 
 def test_perchannel_control_does_not_relax_checkpoint_grouping():
     g = fixture_graph(); nodes = {node.name: node for node in g.op}
+    nodes["s"].output_desc[0].shape.dim[:] = [64]
+    nodes["quant"].input[2] = "s:0"
+    nodes["quant"].attr["antiquant_group_size"].i = 0
+    with pytest.raises(ValueError): normalize_weight_quant_layout(g)
+
+
+@pytest.mark.parametrize("layout", ["nk", "kn"])
+def test_receiver_rejected_perchannel_row_scale_fails_before_air_rewiring(layout):
+    g = fixture_graph(); nodes = {node.name: node for node in g.op}
     nodes["s"].output_desc[0].shape.dim[:] = [64, 1]
     nodes["st"].output_desc[0].shape.dim[:] = [1, 64]
     nodes["quant"].attr["antiquant_group_size"].i = 0
-    with pytest.raises(ValueError): normalize_weight_quant_layout(g)
+    if layout == "kn":
+        nodes["w"].output_desc[0].shape.dim[:] = [256, 64]
+        nodes["quant"].input[1] = "w:0"
+    before = g.SerializeToString()
+    with pytest.raises(ValueError, match=r"scale\[64\] for group_size=0"):
+        normalize_weight_quant_layout(g, probe_config={"group_size": 0, "weight_layout": layout})
+    assert g.SerializeToString() == before
 
 
 @pytest.mark.parametrize("damage", ["perm", "runtime_perm", "dtype", "shape", "scale", "optional", "precision", "control"])

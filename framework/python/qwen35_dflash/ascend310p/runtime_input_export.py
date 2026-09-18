@@ -293,7 +293,8 @@ def canonical_runtime_input_abi(
                 audit["weight_quant_layout"] = weight_quant
                 atomic_write_json(Path(file_path) / "weight-quant-layout.json", weight_quant)
                 node = weight_quant["nodes"][0]
-                print(f"[export-air] WeightQuantBatchMatmulV2 layout={node['weight_layout']} scale_layout=GN "
+                print(f"[export-air] WeightQuantBatchMatmulV2 layout={node['weight_layout']} "
+                      f"scale_layout={node['scale_layout']} scale_shape={node['scale_shape']} "
                       f"transpose_weight={str(node['transpose_weight']).lower()} "
                       f"group_size={node['group_size']} nodes={weight_quant['node_count']}", flush=True)
             gdr_dtypes = _gdr_output_dtype_audit(export_graph)

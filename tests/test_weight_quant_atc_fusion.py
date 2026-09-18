@@ -66,6 +66,25 @@ def test_no_template_diagnostic_does_not_claim_a_shape_error_or_all_group_suppor
     assert "synthetic per-channel control" in detail
 
 
+def test_probe_failure_does_not_instruct_repeating_the_same_matrix():
+    output = ("Inner_Error_Compile_Fail(E90003): WeightQuantBatchMatmulV2 tiling failed\n"
+              "TraceBack (most recent call last):\nDo op tiling failed, no valid template is found.")
+    graph = dict(native_graph("weight_quant_probe"), metadata={
+        "weight_quant_probe": {"group_size": 128, "weight_layout": "nk"}})
+    detail = _atc_failure_detail(output, graph)
+    assert "compare the other controls" in detail and "--group-size" not in detail
+
+
+def test_perchannel_shape_failure_is_an_invalid_control_not_unsupported_kernel():
+    reason = "per-channel antiquant_scale shape only support [n, 1] or [n,], actual input shape is [1, 64]"
+    output = ("Inner_Error_Compile_Fail(E90003): WeightQuantBatchMatmulV2 tiling failed\n"
+              "TraceBack (most recent call last):\n" + reason)
+    detail = _atc_failure_detail(output, native_graph("weight_quant_probe"))
+    assert reason in detail and "before kernel support was tested" in detail
+    assert "one-dimensional scale[N]" in detail
+    assert "No WeightQuant template matched" not in detail
+
+
 @pytest.mark.parametrize("explicit", ["on", "off"])
 @pytest.mark.parametrize("style", ["json", "text"])
 def test_explicit_user_switches_preserved_and_hashed(tmp_path, explicit, style):

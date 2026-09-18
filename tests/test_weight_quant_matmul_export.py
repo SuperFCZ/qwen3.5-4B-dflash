@@ -9,7 +9,7 @@ from weight_quant_test_support import weight_quant_cpu
 from test_draft_variant_bundles import variant_builder
 from test_incremental_air_om import small_threads
 from rms_norm_test_support import adn_rms_norm_cpu
-from models.dflash_v1.weight_quant_matmul import TORCH_OP, GE_OP, preflight_weight_quant_matmul
+from models.dflash_v1.weight_quant_matmul import TORCH_OP, GE_OP, preflight_weight_quant_matmul, weight_quant_linear
 from qwen35_dflash.ascend310p.contracts import CustomOpExportSpec
 from qwen35_dflash.ascend310p import custom_op_export as exports
 from qwen35_dflash.ascend310p.compiler import _validated_custom_op_audit
@@ -52,6 +52,24 @@ def test_bad_dtype_or_meta_result_is_rejected():
         exports._validate_npu_weight_quant_matmul_meta(lambda x, w, s, **kw: x.new_empty(16, 19456, dtype=torch.int8))
     with pytest.raises(ValueError, match="NPU"):
         preflight_weight_quant_matmul("cpu")
+
+
+@pytest.mark.parametrize("shape", [(1, 64), (64, 1)])
+def test_perchannel_meta_requires_vector_scale(shape):
+    x = torch.empty(16, 256, dtype=torch.float16)
+    w = torch.empty(256, 64, dtype=torch.int8)
+    with pytest.raises(ValueError, match=r"per-channel scale.*\[N\]"):
+        exports._fake_npu_weight_quant_matmul(x, w, torch.empty(shape).half(), antiquant_group_size=0)
+    result = exports._fake_npu_weight_quant_matmul(x, w, torch.empty(64).half(), antiquant_group_size=0)
+    assert result.shape == (16, 64) and result.dtype == torch.float16
+
+
+def test_single_group_linear_preserves_values_with_perchannel_vector():
+    q = ((torch.arange(64 * 128).reshape(64, 128) % 7) - 3).to(torch.int8)
+    x = ((torch.arange(16 * 128).reshape(16, 128) % 5) - 2).half() / 16
+    scale = (1 + torch.arange(64).reshape(64, 1) % 4).half() / 32
+    expected = (x.float() @ (q.float() * scale.float()).t()).half()
+    assert torch.equal(weight_quant_linear(x, q, scale), expected)
 
 
 def test_new_optional_dtype_schema_is_accepted_but_other_drift_is_rejected(weight_quant_cpu):

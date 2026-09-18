@@ -78,14 +78,26 @@ def _atc_failure_detail(stdout: str, graph: Mapping[str, Any]) -> str:
             "do not reshape scales or change the quantization group size. "
             "This shape error alone does not establish unsupported kernel functionality."
         )
+    if "WeightQuantBatchMatmulV2" in stdout and "per-channel antiquant_scale shape" in stdout:
+        detail += (
+            "\nThe per-channel control failed input validation, before kernel support was tested. "
+            "Re-export with one-dimensional scale[N]; the receiver rejects scale[1,N]. "
+            "Do not change group-128 checkpoint scales to per-channel."
+        )
     if "WeightQuantBatchMatmulV2" in stdout and "no valid template is found" in stdout:
         detail += (
             "\nNo WeightQuant template matched this SoC/layout/group/shape combination. "
             "This is distinct from an invalid scale shape and from the transpose fusion pass. "
-            "Run probe_draft_matmul_atc.py with --bits 8 --projection tiny "
-            "--group-size 0 128 --weight-layout nk kn to isolate support. "
-            "Group 0 is a synthetic per-channel control, not a replacement for checkpoint group-128 scales."
         )
+        if graph.get("metadata", {}).get("weight_quant_probe") is not None:
+            detail += ("Retain this probe result and compare the other controls. "
+                       "A control with invalid input shapes does not establish absent kernel support.")
+        else:
+            detail += (
+                "Run probe_draft_matmul_atc.py with --bits 8 --projection tiny "
+                "--group-size 0 128 --weight-layout nk kn to isolate support. "
+                "Group 0 is a synthetic per-channel control, not a replacement for checkpoint group-128 scales."
+            )
     if ("ChunkGatedDeltaRule" in stdout and
             re.search(r"DT_FLOAT of output\s*\[core_attn\]", stdout)):
         detail += (

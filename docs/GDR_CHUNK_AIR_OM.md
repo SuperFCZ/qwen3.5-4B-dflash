@@ -104,32 +104,36 @@ W4/W8 原生路径采用 CANN [WeightQuantBatchMatmulV2](https://github.com/Asce
 
 AIR 保存前将权重转置折叠为 `transpose_weight=true`，算子接收 `[N,K]` INT8 权重。
 scale 仍须实际转置为 `[K/128,N]`；该属性不作用于 scale，不能用 reshape 替代。
+仅单组 K=128 和合成 per-channel 对照使用一维 scale `[N]`。
 外部压缩权重和 scale 接口不变，布局检查写入 `weight-quant-layout.json`。
 中间节点的 shape 从 TorchAir 转换时的类型元数据校验，不要求 GE 输出描述已完成 shape 推导。
 不自动关闭 ATC 融合；[同类转置融合规则](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta2/maintenref/graphubfusionref/atlasrr_30_0074.html)注明不可关闭。
-**兼容性：**当前接收端 CANN 9.0.0 / 310P 的 group-128、ND 权重、NK 转置配置在
-16/64 两档均报 `no valid template is found`，尚未编译通过。
+**兼容性：**当前接收端 CANN 9.0.0 / 310P 的 group-128、ND 权重在
+NK、KN 两种方向下均报 `no valid template is found`，尚未编译通过。
+per-channel 的 GE 接口明确要求 scale 为 `[N,1]` 或 `[N]`，拒绝 `[1,N]`；
+探测统一使用 Python API 与 GE 都接受的一维形式。该形式的本机编译结果仍待验证。
 [较早的官方文档](https://ascend.github.io/docs/sources/pytorch/api_doc.html#torch-npu-npu-weight-quant-batchmatmul)
 注明 310P 仅支持 per-channel；[当前接口文档](https://github.com/Ascend/op-plugin/blob/master/docs/zh/custom_APIs/torch_npu/torch_npu-npu_weight_quant_batchmatmul.md)
 列出了 per-group。使用时须匹配芯片、CANN 版本、格式和图模式，不能只按接口名判断支持范围。
 
-**先测四组小图**，区分分组方式和权重方向；不加载模型权重：
+**先测 per-channel 小图**，取得有效的支持对照；不加载模型权重：
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
   --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --device-id "$DEVICE_ID" \
-  --bits 8 --projection tiny --group-size 0 128 --weight-layout nk kn \
-  --output-dir "$AI_RUN_DIR/matmul-atc-support"
+  --bits 8 --projection tiny --group-size 0 --weight-layout nk kn \
+  --output-dir "$AI_RUN_DIR/matmul-atc-perchannel"
 ```
 
 `0` 是合成数据的 per-channel 对照，`128` 是模型使用的分组大小；不会转换模型的 scale。
 `nk` 表示物理权重 `[N,K]`、`transpose_weight=true`，`kn` 表示
 `[K,N]`、`transpose_weight=false`。每组均编译 M=16/64 两档。
 
-同一方向仅 group-0 通过，说明该 ND 组合的限制与分组有关；同一分组仅 KN 通过，
-说明方向影响模板选择。四组都失败时还需核对格式及安装包，不能据此断言整个算子不支持。
-group-128 小图通过后，再用 `--bits 4 8 --projection tiny gate_up` 和通过的
-`--weight-layout` 复测。探测参数不改变正式 Draft 的 NK 布局。
+输入 shape 错误表示对照无效，不能据此判断内核支持。若 group-0 通过，
+也只证明 per-channel 可用，不能直接用于模型的 group-128 权重。
+需要完整矩阵时可设 `--group-size 0 128`；group-128 小图通过后，
+再用 `--bits 4 8 --projection tiny gate_up` 和通过的 `--weight-layout` 复测。
+探测参数不改变正式 Draft 的 NK 布局和 group-128 分组。
 
 结果、布局审计与 AIR/OM 位于指定目录，ATC 日志位于 `$AI_RUN_DIR/log/dflash-atc/`。
 失败项保留阶段、堆栈和 tiling 约束，不影响其余组继续测试。重试使用新输出目录。

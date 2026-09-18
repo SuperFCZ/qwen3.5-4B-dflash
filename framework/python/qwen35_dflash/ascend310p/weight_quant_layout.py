@@ -15,7 +15,7 @@ import torch
 
 
 POLICY = "weight-quant-nk-weight-gn-scale-v2"
-PROBE_POLICY = "weight-quant-synthetic-support-probe-v1"
+PROBE_POLICY = "weight-quant-synthetic-support-probe-v2"
 GE_OP = "WeightQuantBatchMatmulV2"
 
 
@@ -138,7 +138,7 @@ def _untranspose(nodes, edge, metadata):
 def normalize_weight_quant_layout(graph, tensor_metadata=None, *, probe_config=None):
     """Use physical w[N,K] with transpose_weight=true and scale[G,N].
 
-    Explicit synthetic probes may test KN weights and per-channel scales.
+    Explicit synthetic probes may test KN weights. Per-channel scales use [N].
     CANN's transpose_weight attribute applies ONLY to weight. Its group scale
     axes remain [K/group_size,N], even with transposed weight. Keep the scale
     transpose and its values; never replace it with a reshape. Validate all
@@ -192,12 +192,14 @@ def normalize_weight_quant_layout(graph, tensor_metadata=None, *, probe_config=N
         if layout == "kn":
             k, n = n, k
         groups = 1 if group == 0 else k // group
+        expected_scale = [n] if group == 0 else [groups, n]
         if (n <= 0 or k <= 0 or k % 128 or (probe is None and group == 0 and k != 128)
-                or list(scale.shape.dim) != [groups, n]
+                or list(scale.shape.dim) != expected_scale
                 or len(x.shape.dim) != 2 or x.shape.dim[1] != k
                 or [_dtype(x), _dtype(weight), _dtype(scale)] != ["DT_FLOAT16", "DT_INT8", "DT_FLOAT16"]):
             raise ValueError(f"WeightQuant {op.name} requires FP16 x[M,K], INT8 w[{layout.upper()}], "
-                             f"FP16 s[G,N] (transpose_weight does not transpose scales); actual shapes/dtypes="
+                             f"FP16 scale{expected_scale} for group_size={group} "
+                             f"(transpose_weight does not transpose scales); actual shapes/dtypes="
                              f"{[(list(d.shape.dim), _dtype(d)) for d in (x, weight, scale)]}")
         plans.append((op, replacements, folded))
     records, candidates = [], set()
@@ -213,7 +215,7 @@ def normalize_weight_quant_layout(graph, tensor_metadata=None, *, probe_config=N
         records.append({"name": op.name, "weight": op.input[1], "scale": op.input[2],
                         "transpose_weight": layout == "nk", "already_folded": folded,
                         "weight_layout": layout.upper(),
-                        "scale_layout": "GN",
+                        "scale_layout": "N" if op.attr["antiquant_group_size"].i == 0 else "GN",
                         "group_size": op.attr["antiquant_group_size"].i,
                         "weight_shape": list(op.input_desc[1].shape.dim),
                         "scale_shape": list(op.input_desc[2].shape.dim)})
@@ -274,8 +276,10 @@ def validate_weight_quant_layout(graph):
     if (audit.get("policy") != expected_policy or audit.get("status") != "PASS"
             or audit.get("probe_config") != probe
             or audit.get("node_count") != count or len(audit.get("nodes", [])) != count
-            or any(node.get("transpose_weight") is not expected_transpose or node.get("scale_layout") != "GN"
+            or any(node.get("transpose_weight") is not expected_transpose
+                   or node.get("scale_layout") != ("N" if node.get("group_size") == 0 else "GN")
+                   or (node.get("group_size") == 0 and len(node.get("scale_shape", [])) != 1)
                    or (probe is not None and node.get("group_size") != probe["group_size"])
                    for node in audit.get("nodes", []))):
-        raise ValueError("Quantized Draft AIR lacks the NK weight / GN scale audit; re-export AIR "
+        raise ValueError("WeightQuant AIR lacks the group-specific weight/scale audit; re-export AIR "
                          "with the current source. Recompiling old AIR or disabling fusion cannot apply this fix.")

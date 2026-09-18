@@ -50,8 +50,12 @@ class ProbeLinear(torch.nn.Module):
             qweight = torch.stack((low, high), dim=-1)
         weight = (qweight.reshape(self.n, self.k).t() if self.weight_layout == "nk"
                   else qweight.reshape(self.k, self.n))
+        # CANN 9.0.0 on the receiver rejects [1,N] in per-channel mode.
+        # [N] is unambiguous in both the Python API and the GE tiler.
+        scale = (scales.reshape(self.n) if self.group_size == 0
+                 else scales.reshape(self.n, self.groups).t())
         return torch.ops.npu.npu_weight_quant_batchmatmul.default(
-            x, weight, scales.reshape(self.n, self.groups).t(),
+            x, weight, scale,
             antiquant_group_size=self.group_size, inner_precise=0,
         )
 
