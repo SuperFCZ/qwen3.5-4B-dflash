@@ -60,8 +60,15 @@ def parser(default_stage="all") -> argparse.ArgumentParser:
                         help="Existing run directory (default: AI_RUN_DIR)")
     result.add_argument("--runner", type=Path, default=os.environ.get("CPP_RUNNER"),
                         help="Matching AscendCL runner (default: CPP_RUNNER)")
-    result.add_argument("--deployment-manifest", type=Path,
+    manifests = result.add_mutually_exclusive_group()
+    manifests.add_argument("--deployment-manifest", type=Path,
                         help="Default: RUN_DIR/artifacts/deployment-manifest.json")
+    manifests.add_argument("--bundle-dir", type=Path,
+                          help="shared OM directory containing draft-variants.json")
+    result.add_argument("--profile-om", nargs="+",
+                        choices=("all", "prefill", "decode", "draft", "draft_w4a16", "draft_w8a16",
+                                 "verify_chunk", "verify_mtp"),
+                        help="with --bundle-dir: profile selected OMs serially (default: all seven)")
     prompt = result.add_mutually_exclusive_group()
     prompt.add_argument("--prompt-report", type=Path,
                         help="Read prompt_token_ids and EOS from this infer-cpp report; "
@@ -84,7 +91,7 @@ def parser(default_stage="all") -> argparse.ArgumentParser:
     return result
 
 
-def run_profile(args: argparse.Namespace) -> Path:
+def run_profile(args: argparse.Namespace, *, output: Path | None = None) -> Path:
     mode, stage = args.profile_mode, args.profile_stage
     available = stages_for_mode(mode, "cpp")
     if stage != "all" and stage not in available:
@@ -116,7 +123,13 @@ def run_profile(args: argparse.Namespace) -> Path:
         raise ValueError("simulation-only target cannot produce msprof device measurements")
     parent = run / "msprof"
     parent.mkdir(parents=True, exist_ok=True)
-    output = Path(tempfile.mkdtemp(prefix=f"{mode}-{stage}-", dir=parent))
+    if output is None:
+        output = Path(tempfile.mkdtemp(prefix=f"{mode}-{stage}-", dir=parent))
+    else:
+        output = output.resolve()
+        if not output.is_relative_to(parent):
+            raise ValueError("profile output must be below RUN_DIR/msprof")
+        output.mkdir(exist_ok=False)
     plan, capture = output / "plan.txt", output / "capture"
     environment = dict(os.environ)
     environment["AI_RUN_DIR"] = str(run)
@@ -170,6 +183,12 @@ def run_profile(args: argparse.Namespace) -> Path:
 def main(argv: list[str] | None = None, *, default_stage="all") -> int:
     args = parser(default_stage).parse_args(argv)
     try:
+        if args.bundle_dir:
+            from profile_om_bundle import run_bundle_profile
+            output = run_bundle_profile(args, run_single=run_profile)
+            return 0 if json.loads((output / "summary.json").read_text())["status"] == "PASS_CAPTURE" else 1
+        if args.profile_om:
+            raise ValueError("--profile-om requires --bundle-dir")
         run_profile(args)
     except subprocess.CalledProcessError as error:
         print(f"profile_om: command failed (exit {error.returncode}); "

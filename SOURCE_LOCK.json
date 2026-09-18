@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash with one compact Draft / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
-  "package_revision": "r23",
+  "package_revision": "r24",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
     "version": 7,
@@ -180,7 +180,7 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "d64f94bb7f5ac91dd45bf3ec76341db72e7710d49343b6aaa528b3c812a38448"
+        "source_sha256": "899cf69b55f5730e99549d4b7b92aad005f75628c48005141345667e6f7a7634"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -428,7 +428,7 @@
       },
       {
         "source_file": "tools/profile_om.py",
-        "source_sha256": "52b712ff6c36992c30aac4a14043db82f3d6086df783a518db450139ab7902dd"
+        "source_sha256": "3329cdd377a4ee4826ace7b5c9b2405b29b6326dbfa88dae34b0beddc5f3d7a9"
       },
       {
         "source_file": "models/dflash_v1/msprof_summary.py",
@@ -613,6 +613,14 @@
       {
         "source_file": "tests/test_draft_execution_optimizations.py",
         "source_sha256": "c400506082d48e3f5268d2f68cbef48e3fa36e22c54fc451a80a885fdbd64c5c"
+      },
+      {
+        "source_file": "tools/profile_om_bundle.py",
+        "source_sha256": "7dce8f8e85da68c03ad5bcce75dcd6259e7a771bfdda16d60a27663b27a077a6"
+      },
+      {
+        "source_file": "tests/test_profile_om_bundle.py",
+        "source_sha256": "33da57b90f376adbdf6d149175b70a0d8c8eacf67194defbbc972282420091a8"
       }
     ],
     "supported_abis": [

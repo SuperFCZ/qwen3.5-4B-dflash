@@ -156,19 +156,26 @@ DFlash Prefill 包含长输入建 Draft 缓存的调用，不能与图累计耗�
 
 ## 单 OM profiling
 
-在环境文件选择 `DRAFT_QUANTIZATION`、`VERIFY_GDR`，重新 `source` 后执行：
+将环境文件中的 `SAVED_BATCH` 设为已有测试的 `runner-batch.json` 路径。
+下面使用 `zh_explain` 的输入，依次采集全部 7 个 OM，无需完整生成：
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/profile_om.py" \
   --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
-  --deployment-manifest "$SELECTED_DRAFT_DEPLOYMENT_MANIFEST" --verify-gdr "$VERIFY_GDR" \
+  --bundle-dir "$OM_BUNDLE_DIR" --profile-om all \
   --prompt-report "${SAVED_BATCH}.cases/zh_explain.json" \
-  --profile-mode dflash --profile-stage draft --device-id "$DEVICE_ID" \
+  --device-id "$DEVICE_ID" \
   --max-new-tokens 16 --max-draft-tokens 15 --profile-warmup 0
 ```
 
-普通模型用 `--profile-mode ordinary --profile-stage prefill` 或 `decode`；
-DFlash 可选 `prefill`、`draft`、`verify`。阶段 `all` 采集当前模式全部图，准备工作在窗口外执行。
+`--profile-om` 可选一个或多个：`prefill decode draft draft_w4a16 draft_w8a16 verify_chunk verify_mtp`；
+`draft` 表示 FP16。例如只测量化 Draft：`--profile-om draft_w4a16 draft_w8a16`。
+
+共享 Prefill/Decode 各采集一次，两个 Verify 优先使用 FP16 Draft 准备输入。
+各项依次加载、采集、卸载，不同时加载 7 个 OM；准备工作在窗口外，单项失败后继续其余项。
+Prefill 窗口覆盖全部输入块，其余窗口各测一次调用。输入 token 直接沿用 `--prompt-report`，包括其 thinking 设置。
+结果在 `msprof/oms-*/summary.csv`；各 OM 子目录保存独立的算子明细、热点和原始采集文件。
+这些是带 profiling 开销的独立窗口时延，不能相加作为整段生成时延。
 
 ## 精度与执行口径
 
