@@ -98,7 +98,7 @@ AIR 导出成功不代表 OM 编译成功；以第二步成功及 `draft-variant
 
 ## 量化 Draft MatMul
 
-W4/W8 默认采用 CANN [WeightQuantBatchMatmulV2](https://github.com/Ascend/op-plugin/blob/cdca1dbc8949cc32bab4a5b2291bf9d9cddcf052/docs/zh/custom_APIs/torch_npu/torch_npu-npu_weight_quant_batchmatmul.md)，保留 FP16 激活、group-128 scale 和
+W4/W8 原生路径采用 CANN [WeightQuantBatchMatmulV2](https://github.com/Ascend/op-plugin/blob/cdca1dbc8949cc32bab4a5b2291bf9d9cddcf052/docs/zh/custom_APIs/torch_npu/torch_npu-npu_weight_quant_batchmatmul.md)，保留 FP16 激活、group-128 scale 和
 `inner_precise=0`。W8 直接传 INT8 权重；W4 压缩存储，临时无损展开为 INT8 后调用。
 这是 A16 权重量化接口，不能按 W8A8 的纯整数矩阵乘理解；Embedding/LM Head 保持 FP16。
 
@@ -107,25 +107,33 @@ scale 仍须实际转置为 `[K/128,N]`；该属性不作用于 scale，不能�
 外部压缩权重和 scale 接口不变，布局检查写入 `weight-quant-layout.json`。
 中间节点的 shape 从 TorchAir 转换时的类型元数据校验，不要求 GE 输出描述已完成 shape 推导。
 不自动关闭 ATC 融合；[同类转置融合规则](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta2/maintenref/graphubfusionref/atlasrr_30_0074.html)注明不可关闭。
-此图适配已做主机验证，310P 编译及数值仍需实测。
+**兼容性：**当前接收端 CANN 9.0.0 / 310P 的 group-128、ND 权重、NK 转置配置在
+16/64 两档均报 `no valid template is found`，尚未编译通过。
+[较早的官方文档](https://ascend.github.io/docs/sources/pytorch/api_doc.html#torch-npu-npu-weight-quant-batchmatmul)
+注明 310P 仅支持 per-channel；[当前接口文档](https://github.com/Ascend/op-plugin/blob/master/docs/zh/custom_APIs/torch_npu/torch_npu-npu_weight_quant_batchmatmul.md)
+列出了 per-group。使用时须匹配芯片、CANN 版本、格式和图模式，不能只按接口名判断支持范围。
 
-**先测小图编译**，不加载模型权重，覆盖 W4/W8、16/64 动态档和 gate/up 的实际矩阵尺寸：
+**先测四组小图**，区分分组方式和权重方向；不加载模型权重：
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
   --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --device-id "$DEVICE_ID" \
-  --bits 4 8 --projection tiny gate_up \
-  --output-dir "$AI_RUN_DIR/matmul-atc-check"
+  --bits 8 --projection tiny --group-size 0 128 --weight-layout nk kn \
+  --output-dir "$AI_RUN_DIR/matmul-atc-support"
 ```
 
-只测最小图可设 `--projection tiny`。结果与 AIR/OM 位于指定目录；ATC 日志位于
-`$AI_RUN_DIR/log/dflash-atc/`。这是编译检查，不能代替 OM 数值或性能验证。
-重试时使用新的输出目录。失败报告会标出 `prepare/export/compile` 阶段并保存异常堆栈；
-图检查失败时，`weight-quant-layout.json` 还会记录节点、shape 和 dtype；
-ATC 失败摘要保留 tiling 属性及 traceback 中的具体约束。
-该 A16W8 接口在不同芯片上的 group 支持有约束；必须确认本机 group-128 编译通过。
-若出现 `Antiquant shape expect [G,N], but is [N,G]`，更新代码并重新导出 AIR；
-仅重编已有 AIR 无法修正布局。复测先用 `--projection tiny`，通过后再测 `tiny gate_up`。
+`0` 是合成数据的 per-channel 对照，`128` 是模型使用的分组大小；不会转换模型的 scale。
+`nk` 表示物理权重 `[N,K]`、`transpose_weight=true`，`kn` 表示
+`[K,N]`、`transpose_weight=false`。每组均编译 M=16/64 两档。
+
+同一方向仅 group-0 通过，说明该 ND 组合的限制与分组有关；同一分组仅 KN 通过，
+说明方向影响模板选择。四组都失败时还需核对格式及安装包，不能据此断言整个算子不支持。
+group-128 小图通过后，再用 `--bits 4 8 --projection tiny gate_up` 和通过的
+`--weight-layout` 复测。探测参数不改变正式 Draft 的 NK 布局。
+
+结果、布局审计与 AIR/OM 位于指定目录，ATC 日志位于 `$AI_RUN_DIR/log/dflash-atc/`。
+失败项保留阶段、堆栈和 tiling 约束，不影响其余组继续测试。重试使用新输出目录。
+这是编译检查，不能代替 OM 数值或性能验证。
 
 导出前还有原生 NPU 数值检查，导出后检查五层 Draft 的 26 个融合节点。
 原生调用通过不代表 ATC 编译通过；单独测原生 MatMul 时延使用：

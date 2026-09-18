@@ -15,7 +15,17 @@ import torch
 
 
 POLICY = "weight-quant-nk-weight-gn-scale-v2"
+PROBE_POLICY = "weight-quant-synthetic-support-probe-v1"
 GE_OP = "WeightQuantBatchMatmulV2"
+
+
+def validate_probe_config(config):
+    """The synthetic probe may vary support controls, never checkpoint scales."""
+    if (not isinstance(config, dict) or set(config) != {"weight_layout", "group_size"}
+            or config["weight_layout"] not in {"nk", "kn"}
+            or type(config["group_size"]) is not int or config["group_size"] not in (0, 128)):
+        raise ValueError("WeightQuant synthetic probe requires weight_layout=nk/kn and group_size=0/128")
+    return config
 
 
 def _dtype(desc):
@@ -125,9 +135,10 @@ def _untranspose(nodes, edge, metadata):
     return transpose.input[0], before, transpose.name
 
 
-def normalize_weight_quant_layout(graph, tensor_metadata=None):
+def normalize_weight_quant_layout(graph, tensor_metadata=None, *, probe_config=None):
     """Use physical w[N,K] with transpose_weight=true and scale[G,N].
 
+    Explicit synthetic probes may test KN weights and per-channel scales.
     CANN's transpose_weight attribute applies ONLY to weight. Its group scale
     axes remain [K/group_size,N], even with transposed weight. Keep the scale
     transpose and its values; never replace it with a reshape. Validate all
@@ -135,6 +146,8 @@ def normalize_weight_quant_layout(graph, tensor_metadata=None):
     """
     nodes = {op.name: op for op in graph.op}
     metadata = tensor_metadata or {}
+    probe = validate_probe_config(probe_config) if probe_config is not None else None
+    layout = probe["weight_layout"] if probe is not None else "nk"
     plans = []
     for op in graph.op:
         if op.type != GE_OP:
@@ -146,13 +159,20 @@ def normalize_weight_quant_layout(graph, tensor_metadata=None):
         group = op.attr["antiquant_group_size"].i
         if group not in (0, 128):
             raise ValueError("Draft WeightQuant AIR requires the original group-128 scales")
+        if probe is not None and group != probe["group_size"]:
+            raise ValueError("WeightQuant synthetic probe group differs from its declared control")
         folded = bool(op.attr["transpose_weight"].b)
         replacements = []
         # The project uses symmetric quantization and no bias/output quantization.
         # Reject unrecognized numerics rather than guessing their layout.
         if any(edge and not edge.endswith(":-1") for edge in op.input[3:]):
             raise ValueError("Draft WeightQuant AIR expects absent optional quantization inputs")
-        if folded:
+        if layout == "kn":
+            parent, _ = _source(nodes, op.input[1])
+            if folded or parent.type in {"Transpose", "TransposeD"}:
+                raise ValueError("KN probe requires physical [K,N] weights without a transpose")
+            replacements.append((1, op.input[1], _resolved_desc(nodes, op.input[1], metadata), None))
+        elif folded:
             parent, _ = _source(nodes, op.input[1])
             if parent.type in {"Transpose", "TransposeD"}:
                 raise ValueError("WeightQuant AIR is already transposed twice")
@@ -169,13 +189,15 @@ def normalize_weight_quant_layout(graph, tensor_metadata=None):
         weight, scale = replacements[0][2], replacements[1][2]
         x = _resolved_desc(nodes, op.input[0], metadata)
         n, k = weight.shape.dim if len(weight.shape.dim) == 2 else (0, 0)
+        if layout == "kn":
+            k, n = n, k
         groups = 1 if group == 0 else k // group
-        if (n <= 0 or k <= 0 or k % 128 or (group == 0 and k != 128)
+        if (n <= 0 or k <= 0 or k % 128 or (probe is None and group == 0 and k != 128)
                 or list(scale.shape.dim) != [groups, n]
                 or len(x.shape.dim) != 2 or x.shape.dim[1] != k
                 or [_dtype(x), _dtype(weight), _dtype(scale)] != ["DT_FLOAT16", "DT_INT8", "DT_FLOAT16"]):
-            raise ValueError(f"WeightQuant {op.name} requires FP16 x[M,K], INT8 w[N,K], "
-                             f"FP16 s[K/128,N] (transpose_weight does not transpose scales); actual shapes/dtypes="
+            raise ValueError(f"WeightQuant {op.name} requires FP16 x[M,K], INT8 w[{layout.upper()}], "
+                             f"FP16 s[G,N] (transpose_weight does not transpose scales); actual shapes/dtypes="
                              f"{[(list(d.shape.dim), _dtype(d)) for d in (x, weight, scale)]}")
         plans.append((op, replacements, folded))
     records, candidates = [], set()
@@ -187,9 +209,10 @@ def normalize_weight_quant_layout(graph, tensor_metadata=None):
             op.input_desc[slot].name = name
             if removed:
                 candidates.add(removed)
-        op.attr["transpose_weight"].b = True
+        op.attr["transpose_weight"].b = layout == "nk"
         records.append({"name": op.name, "weight": op.input[1], "scale": op.input[2],
-                        "transpose_weight": True, "already_folded": folded,
+                        "transpose_weight": layout == "nk", "already_folded": folded,
+                        "weight_layout": layout.upper(),
                         "scale_layout": "GN",
                         "group_size": op.attr["antiquant_group_size"].i,
                         "weight_shape": list(op.input_desc[1].shape.dim),
@@ -201,7 +224,8 @@ def normalize_weight_quant_layout(graph, tensor_metadata=None):
     for i in range(len(graph.op) - 1, -1, -1):
         if graph.op[i].name in removed:
             del graph.op[i]
-    return {"policy": POLICY, "status": "PASS", "scope": "torchair-before-ge-save",
+    return {"policy": PROBE_POLICY if probe is not None else POLICY,
+            "probe_config": probe, "status": "PASS", "scope": "torchair-before-ge-save",
             "metadata_source": "torchair.Tensor.set_meta" if metadata else "GE descriptors",
             "node_count": len(records), "nodes": records, "removed_transposes": sorted(removed)}
 
@@ -240,9 +264,18 @@ def validate_weight_quant_layout(graph):
     if abi.get("status") == "NOT_APPLICABLE_EXPLICIT_TEST_DOUBLE":
         return
     audit = abi.get("weight_quant_layout", {})
-    if (audit.get("policy") != POLICY or audit.get("status") != "PASS"
+    probe = graph.get("metadata", {}).get("weight_quant_probe")
+    if probe is not None:
+        validate_probe_config(probe)
+        if graph.get("name") != "weight_quant_probe" or graph.get("role") != "diagnostic" or count != 1:
+            raise ValueError("WeightQuant probe controls are only valid for a single synthetic diagnostic graph")
+    expected_policy = PROBE_POLICY if probe is not None else POLICY
+    expected_transpose = probe is None or probe["weight_layout"] == "nk"
+    if (audit.get("policy") != expected_policy or audit.get("status") != "PASS"
+            or audit.get("probe_config") != probe
             or audit.get("node_count") != count or len(audit.get("nodes", [])) != count
-            or any(node.get("transpose_weight") is not True or node.get("scale_layout") != "GN"
+            or any(node.get("transpose_weight") is not expected_transpose or node.get("scale_layout") != "GN"
+                   or (probe is not None and node.get("group_size") != probe["group_size"])
                    for node in audit.get("nodes", []))):
         raise ValueError("Quantized Draft AIR lacks the NK weight / GN scale audit; re-export AIR "
                          "with the current source. Recompiling old AIR or disabling fusion cannot apply this fix.")

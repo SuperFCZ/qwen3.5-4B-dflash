@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Compile synthetic W4/W8 Draft linears through the production AIR path.
+"""Compile synthetic W4/W8 linears to isolate CANN template support.
 
 No checkpoint, Target model or C++ runner is loaded. This tests ATC graph
 compatibility, not OM execution, accuracy or performance.
+Group 0 is a synthetic per-channel control, never a checkpoint conversion.
 """
 from __future__ import annotations
 
 import argparse
 import gc
+import itertools
 from pathlib import Path
 import sys
 import traceback
@@ -17,7 +19,7 @@ sys.path[:0] = [str(REPO / "framework/python"), str(REPO)]
 
 import torch
 
-from models.dflash_v1.draft_quantization import GroupQuantLinear, pack_device_weight
+from models.dflash_v1.draft_quantization import pack_device_weight
 from models.dflash_v1.weight_quant_matmul import TORCH_OP, GE_OP, require_weight_quant_matmul
 from qwen35_dflash.ascend310p.contracts import AirGraphSpec, CustomOpExportSpec
 from qwen35_dflash.ascend310p.compiler import compile_air_bundle, resolve_atc_executable, validate_soc_version
@@ -30,32 +32,42 @@ SHAPES = {"tiny": (256, 64), "gate_up": (2560, 19456), "q": (2560, 4096),
 
 
 class ProbeLinear(torch.nn.Module):
-    def __init__(self, packed, scales, bits, k):
+    def __init__(self, n, k, bits, group_size, weight_layout):
         super().__init__()
-        self.n, self.k, self.bits = packed.shape[0], k, bits
-        self.linear = GroupQuantLinear(packed, scales, bits=bits, in_features=k,
-                                      ops=None, matmul_backend="weight_quant")
-        # Just as in DraftConstantInputs, weights are flat runtime inputs, not
-        # Const nodes that ATC can expand/fold into a dense FP16 checkpoint.
-        self.linear.qweight = packed.new_empty(0)
-        self.linear.scales = scales.new_empty(0)
+        self.n, self.k, self.bits = n, k, bits
+        self.group_size, self.weight_layout = group_size, weight_layout
+        self.groups = k // group_size if group_size else 1
 
     def forward(self, x, qweight, scales):
-        return torch.func.functional_call(self.linear, {
-            "qweight": qweight.view(self.n, self.k * self.bits // 8),
-            "scales": scales.view(self.n, self.k // 128),
-        }, (x,))
+        # Inputs stay live. KN controls are prepacked in that physical order;
+        # they do not depend on ATC folding a Transpose/contiguous pair.
+        # This W4 unpack is the same exact byte arithmetic as GroupQuantLinear.
+        if self.bits == 4:
+            values = qweight.to(torch.float16)
+            high = torch.floor(values * (1.0 / 16.0))
+            low = (values - high * 16.0 - 8.0).to(torch.int8)
+            high = (high - 8.0).to(torch.int8)
+            qweight = torch.stack((low, high), dim=-1)
+        weight = (qweight.reshape(self.n, self.k).t() if self.weight_layout == "nk"
+                  else qweight.reshape(self.k, self.n))
+        return torch.ops.npu.npu_weight_quant_batchmatmul.default(
+            x, weight, scales.reshape(self.n, self.groups).t(),
+            antiquant_group_size=self.group_size, inner_precise=0,
+        )
 
 
-def make_spec(bits, projection, device):
+def make_spec(bits, projection, device, group_size=128, weight_layout="nk"):
+    if group_size not in (0, 128) or weight_layout not in ("nk", "kn"):
+        raise ValueError("probe controls require group_size=0/128 and weight_layout=nk/kn")
     k, n = SHAPES[projection]
     generator = torch.Generator().manual_seed(812 + bits)
     q = torch.randint(-(1 << (bits - 1)), 1 << (bits - 1), (n, k),
                       generator=generator, dtype=torch.int8)
-    packed = pack_device_weight(q, bits).to(device)
-    scales = ((1 + torch.arange(n * (k // 128)).reshape(n, k // 128) % 4).half() / 32).to(device)
+    packed = pack_device_weight(q if weight_layout == "nk" else q.t().contiguous(), bits).to(device)
+    groups = k // group_size if group_size else 1
+    scales = ((1 + torch.arange(n * groups).reshape(n, groups) % 4).half() / 32).to(device)
     x = (torch.randn(16, k, generator=generator).half() / 16).to(device)
-    model = ProbeLinear(packed, scales, bits, k).eval()
+    model = ProbeLinear(n, k, bits, group_size, weight_layout).eval()
     args = (x, packed.view(-1), scales.view(-1))
     names = ("x", "qweight", "scales")
     signature = [{"name": name, "shape": list(t.shape), "dtype": str(t.dtype).removeprefix("torch.")}
@@ -64,7 +76,9 @@ def make_spec(bits, projection, device):
                         input_names=names, output_names=("y",), dynamic=True,
                         custom_ops=(CustomOpExportSpec(TORCH_OP, GE_OP),),
                         metadata={"tensor_abi": {"inputs": signature}, "dynamic_input_axes": {"x": [0]},
-                                  "bits": bits, "projection": projection, "group_size": 128})
+                                  "bits": bits, "projection": projection, "group_size": group_size,
+                                  "synthetic_control": group_size == 0,
+                                  "weight_quant_probe": {"group_size": group_size, "weight_layout": weight_layout}})
 
 
 def parser():
@@ -75,6 +89,10 @@ def parser():
     cli.add_argument("--device-id", type=int, default=0)
     cli.add_argument("--bits", nargs="+", choices=(4, 8), type=int, default=[4, 8])
     cli.add_argument("--projection", nargs="+", choices=tuple(SHAPES), default=["tiny"])
+    cli.add_argument("--group-size", nargs="+", choices=(0, 128), type=int, default=[128],
+                     help="128: checkpoint grouping; 0: synthetic per-channel support control only")
+    cli.add_argument("--weight-layout", nargs="+", choices=("nk", "kn"), default=["nk"],
+                     help="physical weight axes: NK with transpose_weight=true, or KN with false")
     return cli
 
 
@@ -97,37 +115,47 @@ def main(argv=None):
         require_weight_quant_matmul()
         report["environment"] = {"torch": str(torch.__version__), "torch_npu": str(torch_npu.__version__),
                                  "device": device, "device_name": torch.npu.get_device_name(args.device_id)}
-        for projection in dict.fromkeys(args.projection):
-            for bits in dict.fromkeys(args.bits):
-                case = {"bits": bits, "projection": projection, "status": "RUNNING", "phase": "prepare"}
-                report["cases"].append(case)
-                print(f"[matmul-atc] W{bits}A16 {projection} START", flush=True)
-                try:
-                    spec = make_spec(bits, projection, device)
-                    directory = root / f"w{bits}a16-{projection}"
-                    case["phase"] = "export"
-                    air = export_air_bundle(lambda _: (spec,), {}, directory)
-                    case["air_manifest"] = air["manifest_path"]
-                    case["layout"] = air["graphs"][0]["runtime_input_abi"]["weight_quant_layout"]
-                    case["phase"] = "compile"
-                    result = compile_air_bundle(air["manifest_path"], atc_bin=atc, soc_version=soc,
-                                               extra_args=["--precision_mode=must_keep_origin_dtype", "--deterministic=0"])
-                    case.update(status="PASS", phase="complete", deployment_manifest=result["manifest_path"])
-                except Exception as error:
-                    trace = root / f"w{bits}a16-{projection}-error.txt"
-                    trace.write_text(traceback.format_exc(), encoding="utf-8")
-                    case.update(status="FAIL", error=f"{type(error).__name__}: {error}", traceback=str(trace))
-                finally:
-                    spec = None
-                    torch._dynamo.reset(); gc.collect(); torch.npu.empty_cache()
-                print(f"[matmul-atc] W{bits}A16 {projection} {case['status']} phase={case['phase']}", flush=True)
-                if case["status"] == "FAIL": print(case["error"], flush=True)
-                atomic_write_json(root / "summary.json", report)
+        combinations = itertools.product(dict.fromkeys(args.projection), dict.fromkeys(args.bits),
+                                         dict.fromkeys(args.group_size), dict.fromkeys(args.weight_layout))
+        for projection, bits, group_size, layout in combinations:
+            case = {"bits": bits, "projection": projection, "group_size": group_size,
+                    "weight_layout": layout, "synthetic_control": group_size == 0,
+                    "status": "RUNNING", "phase": "prepare"}
+            report["cases"].append(case)
+            name = f"w{bits}a16-{projection}-g{group_size}-{layout}"
+            print(f"[matmul-atc] {name} START", flush=True)
+            try:
+                spec = make_spec(bits, projection, device, group_size, layout)
+                directory = root / name
+                case["phase"] = "export"
+                air = export_air_bundle(lambda _: (spec,), {}, directory)
+                case["air_manifest"] = air["manifest_path"]
+                case["layout"] = air["graphs"][0]["runtime_input_abi"]["weight_quant_layout"]
+                case["phase"] = "compile"
+                result = compile_air_bundle(air["manifest_path"], atc_bin=atc, soc_version=soc,
+                                           extra_args=["--precision_mode=must_keep_origin_dtype", "--deterministic=0"])
+                case.update(status="PASS", phase="complete", deployment_manifest=result["manifest_path"])
+            except Exception as error:
+                trace = root / f"{name}-error.txt"
+                trace.write_text(traceback.format_exc(), encoding="utf-8")
+                case.update(status="FAIL", error=f"{type(error).__name__}: {error}", traceback=str(trace))
+            finally:
+                spec = None
+                torch._dynamo.reset(); gc.collect(); torch.npu.empty_cache()
+            print(f"[matmul-atc] {name} {case['status']} phase={case['phase']}", flush=True)
+            if case["status"] == "FAIL": print(case["error"], flush=True)
+            atomic_write_json(root / "summary.json", report)
         report["status"] = "PASS" if all(c["status"] == "PASS" for c in report["cases"]) else "FAIL"
     except Exception as error:
         report.update(status="FAIL", error=f"{type(error).__name__}: {error}")
         print(report["error"], flush=True)
     atomic_write_json(root / "summary.json", report)
+    print("\n| Bits | Projection | Group size | Weight layout | Status | Phase |")
+    print("|---:|---|---:|---|---|---|")
+    for case in report["cases"]:
+        print(f"| {case['bits']} | {case['projection']} | {case['group_size']} | "
+              f"{case['weight_layout'].upper()} | {case['status']} | {case['phase']} |")
+    print("Group 0 is a synthetic per-channel control; checkpoint grouping is unchanged.")
     print(f"Report: {root / 'summary.json'}", flush=True)
     return 0 if report["status"] == "PASS" else 1
 

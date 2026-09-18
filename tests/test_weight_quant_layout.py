@@ -10,7 +10,7 @@ import torch
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from qwen35_dflash.ascend310p.weight_quant_layout import (
-    GE_OP, POLICY, capture_weight_quant_metadata, normalize_weight_quant_layout, validate_weight_quant_layout,
+    GE_OP, POLICY, PROBE_POLICY, capture_weight_quant_metadata, normalize_weight_quant_layout, validate_weight_quant_layout,
 )
 from qwen35_dflash.ascend310p.runtime_input_export import canonical_runtime_input_abi
 
@@ -146,6 +146,45 @@ def test_rejects_folded_weight_with_untransposed_scale_before_any_rewiring():
     with pytest.raises(ValueError, match="transpose_weight does not transpose scales"):
         normalize_weight_quant_layout(g)
     assert g.SerializeToString() == snapshot
+
+
+@pytest.mark.parametrize("group", [0, 128])
+@pytest.mark.parametrize("layout", ["nk", "kn"])
+def test_synthetic_control_audit_cannot_be_used_for_a_checkpoint(group, layout):
+    g = fixture_graph(); nodes = {node.name: node for node in g.op}
+    op = nodes["quant"]
+    if group == 0:
+        nodes["s"].output_desc[0].shape.dim[:] = [64, 1]
+        nodes["st"].output_desc[0].shape.dim[:] = [1, 64]
+        op.attr["antiquant_group_size"].i = 0
+    if layout == "kn":
+        nodes["w"].output_desc[0].shape.dim[:] = [256, 64]
+        op.input[1] = "w:0"
+    config = {"group_size": group, "weight_layout": layout}
+    audit = normalize_weight_quant_layout(g, probe_config=config)
+    assert audit["policy"] == PROBE_POLICY and audit["probe_config"] == config
+    assert audit["nodes"][0]["transpose_weight"] is (layout == "nk")
+    assert audit["nodes"][0]["scale_shape"] == [2 if group else 1, 64]
+    record = {"name": "weight_quant_probe", "role": "diagnostic",
+              "custom_op_audit": [{"ge_op_type": GE_OP, "ge_node_occurrences": 1}],
+              "runtime_input_abi": {"weight_quant_layout": audit},
+              "metadata": {"weight_quant_probe": config}}
+    validate_weight_quant_layout(record)
+    # The diagnostic permit does not relax the normal Draft compiler gate.
+    record["name"] = "draft"
+    with pytest.raises(ValueError, match="synthetic diagnostic"):
+        validate_weight_quant_layout(record)
+    record["metadata"] = {}
+    with pytest.raises(ValueError, match="re-export AIR"):
+        validate_weight_quant_layout(record)
+
+
+def test_perchannel_control_does_not_relax_checkpoint_grouping():
+    g = fixture_graph(); nodes = {node.name: node for node in g.op}
+    nodes["s"].output_desc[0].shape.dim[:] = [64, 1]
+    nodes["st"].output_desc[0].shape.dim[:] = [1, 64]
+    nodes["quant"].attr["antiquant_group_size"].i = 0
+    with pytest.raises(ValueError): normalize_weight_quant_layout(g)
 
 
 @pytest.mark.parametrize("damage", ["perm", "runtime_perm", "dtype", "shape", "scale", "optional", "precision", "control"])

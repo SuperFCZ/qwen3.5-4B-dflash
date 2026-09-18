@@ -229,6 +229,7 @@ def canonical_runtime_input_abi(
     public_output_names: Sequence[str] = (),
     verify_discard_output_names: Sequence[str] = (),
     capture_weight_quant_shapes: bool = False,
+    weight_quant_probe: Mapping[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
     audit: dict[str, Any] = {
         "policy": "public-tensor-storage-identity-v1",
@@ -281,7 +282,8 @@ def canonical_runtime_input_abi(
             result = original(inputs, export_graph, file_path, weight_name)
             _normalize_public_nodes(export_graph, bindings)
             try:
-                weight_quant = normalize_weight_quant_layout(export_graph, tensor_metadata)
+                weight_quant = normalize_weight_quant_layout(export_graph, tensor_metadata,
+                                                              probe_config=weight_quant_probe)
             except ValueError as error:
                 failure = weight_quant_layout_failure(export_graph, tensor_metadata, error)
                 audit["weight_quant_layout"] = failure
@@ -290,8 +292,10 @@ def canonical_runtime_input_abi(
             if weight_quant["node_count"]:
                 audit["weight_quant_layout"] = weight_quant
                 atomic_write_json(Path(file_path) / "weight-quant-layout.json", weight_quant)
-                print("[export-air] WeightQuantBatchMatmulV2 layout=NK scale_layout=GN "
-                      f"transpose_weight=true nodes={weight_quant['node_count']}", flush=True)
+                node = weight_quant["nodes"][0]
+                print(f"[export-air] WeightQuantBatchMatmulV2 layout={node['weight_layout']} scale_layout=GN "
+                      f"transpose_weight={str(node['transpose_weight']).lower()} "
+                      f"group_size={node['group_size']} nodes={weight_quant['node_count']}", flush=True)
             gdr_dtypes = _gdr_output_dtype_audit(export_graph)
             if gdr_dtypes["node_count"]:
                 audit["gdr_output_dtypes"] = gdr_dtypes

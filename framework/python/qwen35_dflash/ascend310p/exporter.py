@@ -148,6 +148,13 @@ def export_air_bundle(
     prepare = getattr(factory_callable, "prepare_export", None)
     preflight = prepare(dict(factory_config), torchair) if callable(prepare) else None
     specs = _normalize_specs(factory_callable(dict(factory_config)))
+    for spec in specs:
+        probe = spec.metadata.get("weight_quant_probe")
+        if probe is not None:
+            from .weight_quant_layout import validate_probe_config
+            validate_probe_config(probe)
+            if spec.name != "weight_quant_probe" or spec.role != "diagnostic":
+                raise ValueError("WeightQuant probe controls cannot be applied to model graphs")
     from .incremental_plan import validate_incremental_bundle
     validate_incremental_bundle([
         {"name": spec.name, "role": spec.role, "input_names": list(spec.input_names),
@@ -224,6 +231,7 @@ def export_air_bundle(
                 capture_weight_quant_shapes=any(
                     op.ge_op_type == "WeightQuantBatchMatmulV2" for op in spec.custom_ops
                 ),
+                weight_quant_probe=spec.metadata.get("weight_quant_probe"),
                 public_output_names=spec.output_names,
                 verify_discard_output_names=(
                     [s["name"] for s in spec.metadata["incremental_contract"]["verify_discard_states"]]

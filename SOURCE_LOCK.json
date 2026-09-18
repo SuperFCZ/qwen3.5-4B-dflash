@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash with one compact Draft / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
-  "package_revision": "r29",
+  "package_revision": "r30",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
     "version": 7,
@@ -180,7 +180,7 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "338dd8648f3da067290a494c7b8a506dfcab984e86dd34204036ca748a63d961"
+        "source_sha256": "1945248bd765ba14297138dda0735cb5ea0eb6537d975470b5b1757134d5a373"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -232,7 +232,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/compiler.py",
-        "source_sha256": "865725b7242e6c731b35912c42daf6ee2f052f31b96422319578a942f13d821e"
+        "source_sha256": "4cf166c7b4365f2948d6a4690557a86d4b7006e536121d8ad0701f5a29c6238a"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/contracts.py",
@@ -248,7 +248,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/exporter.py",
-        "source_sha256": "15ebe2d0bd6f0352bc1823f9711639d43b0026aacf0e34cf7ad625790ab6316d"
+        "source_sha256": "9b19ac7e87b1e9e13743d2fb1670e32726a0e9597aa91d92d935937f683dcb34"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/generation.py",
@@ -280,7 +280,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/runtime_input_export.py",
-        "source_sha256": "100ab1a713bad1b9a3c044fe9895e83c5ab9833ed82e704b6ffc4e714c7cd9af"
+        "source_sha256": "d8cc3241cf43c51b922b0066c1e64816f7990b275ec39c82f89e011c017c6f96"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/standard_op_export.py",
@@ -800,23 +800,23 @@
       },
       {
         "source_file": "tests/test_weight_quant_atc_fusion.py",
-        "source_sha256": "76a129aab2cf6e67252735953e6ebafbfb4690ea084f2ecb37a61c06a94875d1"
+        "source_sha256": "680a5aa316b854b0761ea5b9de196b7ebb6b124f86c91a1f90a7dac5a266644c"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/weight_quant_layout.py",
-        "source_sha256": "8f297a982fadb80063c8ac7619f6d2a7800c930d50d5515d1f74770de750b52f"
+        "source_sha256": "2215c36f5e706492dadd31e46d12475392acfb1e1a1fd4c8dc8238fae1d6f8d2"
       },
       {
         "source_file": "tools/probe_draft_matmul_atc.py",
-        "source_sha256": "1ab0d33693772bb2b9ff4134712fa93c4dc6f5fe51cbc3779984e85c2d0c4f41"
+        "source_sha256": "2c5286adc957f9916b5badf411d8bd3d1f5444341c620ce71e0c3fdfb49d85fd"
       },
       {
         "source_file": "tests/test_weight_quant_layout.py",
-        "source_sha256": "65e96f46d20766e851f31d8f070beccbb623bca4f0354bc5882bb03475782494"
+        "source_sha256": "b29f47b06edb5de748d71e91bdcfcb5f7904d873aeb5a7ff8b8219905787a776"
       },
       {
         "source_file": "tests/test_draft_matmul_atc_probe.py",
-        "source_sha256": "7430887f8a2901b85644ba7e258a6179e07d6d4c81af617c4d499941a822a1cf"
+        "source_sha256": "a271b89d96e1549f08e5fcb94ee8584b0b7091e7cccaa502f51555129c6a8a57"
       }
     ],
     "workflow": "normal export-air / compile-om and benchmark_gdr_lengths.py; flat seven-OM directory; mixed builtin/offline tests; ordinary baseline path reuse",
@@ -824,11 +824,12 @@
       "target": "Ascend310P",
       "graph_lowering": "weight-quant-nk-weight-gn-scale-v2; fold weight transpose only; retain scale transpose to [K/128,N]",
       "scope": "Original group-128 A16W8 values, precision and flat compressed input ABI; no new NPU kernel",
-      "evidence": "Receiver CANN 9.0.0 reached tiling and reported Antiquant shape expect [2,64], but is [64,2]; transpose_weight does not transpose scale",
-      "validation": "Host protobuf/data-flow/numerical tests follow the receiver scale-axis contract; corrected AIR compilation, OM outputs, speed and workspace pending on 310P",
-      "probe": "tools/probe_draft_matmul_atc.py; synthetic runtime weights and dynamic 16/64 gears; no checkpoints",
+      "evidence": "Receiver CANN 9.0.0 / Ascend310P: corrected GN scales pass shape analysis, but group-128 INT8 ND NK weights with transpose_weight=true have no valid WeightQuantBatchMatmulV2 tiling template for M=16/64",
+      "validation": "Host data-flow and export/audit isolation tests only; receiver production group-128/NK compile failed; diagnostic per-channel/per-group and NK/KN control compilation, OM values, speed and workspace pending on 310P",
+      "probe": "tools/probe_draft_matmul_atc.py --bits 8 --projection tiny --group-size 0 128 --weight-layout nk kn; synthetic runtime weights, M=16/64 gears, per-case failure and summary table; no checkpoint conversion",
       "recovery": "New layout requires AIR re-export; compile-om --resume only reuses identity-matching completed matrix deployments",
-      "shape_validation": "Typed TorchAir Tensor.set_meta snapshots resolve empty intermediate GE descriptors; known shape/dtype conflicts fail before rewiring"
+      "shape_validation": "Typed TorchAir Tensor.set_meta snapshots resolve empty intermediate GE descriptors; known shape/dtype conflicts fail before rewiring",
+      "probe_boundary": "Per-channel and KN controls are restricted to one synthetic diagnostic graph; production Draft retains original group-128 scales and NK layout"
     }
   }
 }

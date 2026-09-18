@@ -57,6 +57,15 @@ def test_tiling_diagnostic_preserves_attrs_and_constraint_after_tensor_descripti
     assert len(detail) < 10500
 
 
+def test_no_template_diagnostic_does_not_claim_a_shape_error_or_all_group_support_absent():
+    output = ("Inner_Error_Compile_Fail(E90003): WeightQuantBatchMatmulV2 tiling failed\n"
+              "TraceBack (most recent call last):\nDo op tiling failed, no valid template is found.")
+    detail = _atc_failure_detail(output, native_graph())
+    assert "No WeightQuant template matched this SoC/layout/group/shape combination" in detail
+    assert "--group-size 0 128 --weight-layout nk kn" in detail
+    assert "synthetic per-channel control" in detail
+
+
 @pytest.mark.parametrize("explicit", ["on", "off"])
 @pytest.mark.parametrize("style", ["json", "text"])
 def test_explicit_user_switches_preserved_and_hashed(tmp_path, explicit, style):
