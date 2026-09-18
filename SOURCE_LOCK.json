@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash with one compact Draft / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
-  "package_revision": "r27",
+  "package_revision": "r28",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
     "version": 7,
@@ -180,7 +180,7 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "a48eb9d7c486391d5f63d997feeadb414e8ff80057515312fead780f6e675e37"
+        "source_sha256": "c20edca17101cd8994835c99561f238c39d6f05bb97d7f059f7fa2893f3819fd"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -248,7 +248,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/exporter.py",
-        "source_sha256": "a1e07a82f8fb97cfb150a860938088fa674d6a82f23431085109fbf770999c90"
+        "source_sha256": "15ebe2d0bd6f0352bc1823f9711639d43b0026aacf0e34cf7ad625790ab6316d"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/generation.py",
@@ -280,7 +280,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/runtime_input_export.py",
-        "source_sha256": "08420c01b6f2483dbf127445aeef2911287532f990ce557595a6ec3132e7dffb"
+        "source_sha256": "ac13fd69984a4dd366173662856c9a47475ccd5a1a340eef0e79d0238cbeb453"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/standard_op_export.py",
@@ -804,19 +804,19 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/weight_quant_layout.py",
-        "source_sha256": "f1d6e3c2a3ea2a74b3614a6c3ce27c21a95dfe2865cc28630fb68bd835fa79f9"
+        "source_sha256": "787257f07c46d7be68727aaed81af462126cec756012c3cfa088c1a314187e0a"
       },
       {
         "source_file": "tools/probe_draft_matmul_atc.py",
-        "source_sha256": "cc6d6df82b2336ee361ba1fae5e842e31ed7fb73869b445edbe23af1bf2dc350"
+        "source_sha256": "1ab0d33693772bb2b9ff4134712fa93c4dc6f5fe51cbc3779984e85c2d0c4f41"
       },
       {
         "source_file": "tests/test_weight_quant_layout.py",
-        "source_sha256": "9786913ebcce26d6645ce5f16885957dd0f5292181f5970a52df7ae602524d87"
+        "source_sha256": "33536d53d7c059cf9fe20a1ed74fae31cebd5222d4f14909ebc041189c81a1e2"
       },
       {
         "source_file": "tests/test_draft_matmul_atc_probe.py",
-        "source_sha256": "2a363b87c3f5f8ad531092de507eb42c3a722183f863b8a34126abd490a670c9"
+        "source_sha256": "7430887f8a2901b85644ba7e258a6179e07d6d4c81af617c4d499941a822a1cf"
       }
     ],
     "workflow": "normal export-air / compile-om and benchmark_gdr_lengths.py; flat seven-OM directory; mixed builtin/offline tests; ordinary baseline path reuse",
@@ -827,7 +827,8 @@
       "evidence": "Receiver CANN 9.0.0 still ran WeightQuantBatchMatmulV2TransposeNZFusionPass with the off setting; no automatic fusion switch is added",
       "validation": "Host protobuf/data-flow tests; receiver ATC, group-128 kernel support, full Draft outputs, speed and workspace pending",
       "probe": "tools/probe_draft_matmul_atc.py; synthetic runtime weights and dynamic 16/64 gears; no checkpoints",
-      "recovery": "New layout requires AIR re-export; compile-om --resume only reuses identity-matching completed matrix deployments"
+      "recovery": "New layout requires AIR re-export; compile-om --resume only reuses identity-matching completed matrix deployments",
+      "shape_validation": "Typed TorchAir Tensor.set_meta snapshots resolve empty intermediate GE descriptors; known shape/dtype conflicts fail before rewiring"
     }
   }
 }

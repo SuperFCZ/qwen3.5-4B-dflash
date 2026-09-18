@@ -10,6 +10,7 @@ import argparse
 import gc
 from pathlib import Path
 import sys
+import traceback
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(REPO / "framework/python"), str(REPO)]
@@ -98,24 +99,28 @@ def main(argv=None):
                                  "device": device, "device_name": torch.npu.get_device_name(args.device_id)}
         for projection in dict.fromkeys(args.projection):
             for bits in dict.fromkeys(args.bits):
-                case = {"bits": bits, "projection": projection, "status": "RUNNING"}
+                case = {"bits": bits, "projection": projection, "status": "RUNNING", "phase": "prepare"}
                 report["cases"].append(case)
                 print(f"[matmul-atc] W{bits}A16 {projection} START", flush=True)
                 try:
                     spec = make_spec(bits, projection, device)
                     directory = root / f"w{bits}a16-{projection}"
+                    case["phase"] = "export"
                     air = export_air_bundle(lambda _: (spec,), {}, directory)
                     case["air_manifest"] = air["manifest_path"]
                     case["layout"] = air["graphs"][0]["runtime_input_abi"]["weight_quant_layout"]
+                    case["phase"] = "compile"
                     result = compile_air_bundle(air["manifest_path"], atc_bin=atc, soc_version=soc,
                                                extra_args=["--precision_mode=must_keep_origin_dtype", "--deterministic=0"])
-                    case.update(status="PASS", deployment_manifest=result["manifest_path"])
+                    case.update(status="PASS", phase="complete", deployment_manifest=result["manifest_path"])
                 except Exception as error:
-                    case.update(status="FAIL", error=f"{type(error).__name__}: {error}")
+                    trace = root / f"w{bits}a16-{projection}-error.txt"
+                    trace.write_text(traceback.format_exc(), encoding="utf-8")
+                    case.update(status="FAIL", error=f"{type(error).__name__}: {error}", traceback=str(trace))
                 finally:
                     spec = None
                     torch._dynamo.reset(); gc.collect(); torch.npu.empty_cache()
-                print(f"[matmul-atc] W{bits}A16 {projection} {case['status']}", flush=True)
+                print(f"[matmul-atc] W{bits}A16 {projection} {case['status']} phase={case['phase']}", flush=True)
                 if case["status"] == "FAIL": print(case["error"], flush=True)
                 atomic_write_json(root / "summary.json", report)
         report["status"] = "PASS" if all(c["status"] == "PASS" for c in report["cases"]) else "FAIL"

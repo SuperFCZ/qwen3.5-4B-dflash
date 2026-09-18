@@ -104,6 +104,7 @@ W4/W8 默认采用 CANN [WeightQuantBatchMatmulV2](https://github.com/Ascend/op-
 
 AIR 保存前将权重和 scale 的二维转置一并折叠为 `transpose_weight=true`，
 保留 `[N,K]` INT8 权重、`[N,K/128]` scale 和原接口，并输出 `weight-quant-layout.json`。
+中间节点的 shape 从 TorchAir 转换时的类型元数据校验，不要求 GE 输出描述已完成 shape 推导。
 不自动关闭 ATC 融合；[同类转置融合规则](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta2/maintenref/graphubfusionref/atlasrr_30_0074.html)注明不可关闭。
 此图适配已做主机验证，310P 编译及数值仍需实测。
 
@@ -118,6 +119,8 @@ AIR 保存前将权重和 scale 的二维转置一并折叠为 `transpose_weight
 
 只测最小图可设 `--projection tiny`。结果与 AIR/OM 位于指定目录；ATC 日志位于
 `$AI_RUN_DIR/log/dflash-atc/`。这是编译检查，不能代替 OM 数值或性能验证。
+重试时使用新的输出目录。失败报告会标出 `prepare/export/compile` 阶段并保存异常堆栈；
+图检查失败时，`weight-quant-layout.json` 还会记录节点、shape 和 dtype。
 该 A16W8 接口在不同芯片上的 group 支持有约束；必须确认本机 group-128 编译通过。
 `E20007 / WeightQuantBatchMatmulV2TransposeNZFusionPass` 发生在图优化阶段，
 保留小图报告和日志即可定位，无需反复编译整个模型。

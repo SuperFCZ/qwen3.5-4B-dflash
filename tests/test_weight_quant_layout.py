@@ -1,5 +1,6 @@
 """Protobuf graph/numerical checks; these do not execute CANN fusion."""
 import copy
+import json
 import struct
 from types import ModuleType, SimpleNamespace
 import sys
@@ -9,7 +10,7 @@ import torch
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from qwen35_dflash.ascend310p.weight_quant_layout import (
-    GE_OP, POLICY, normalize_weight_quant_layout, validate_weight_quant_layout,
+    GE_OP, POLICY, capture_weight_quant_metadata, normalize_weight_quant_layout, validate_weight_quant_layout,
 )
 from qwen35_dflash.ascend310p.runtime_input_export import canonical_runtime_input_abi
 
@@ -150,3 +151,115 @@ def test_unrelated_graph_unchanged():
     before = g.SerializeToString()
     assert normalize_weight_quant_layout(g)["node_count"] == 0
     assert g.SerializeToString() == before
+
+
+def fake_ge_tensor(monkeypatch):
+    # Mirrors the real Tensor.set_meta contract: it records dtype and symsize,
+    # but does NOT populate output_desc.shape for intermediate ops.
+    class Tensor:
+        def __init__(self, node):
+            self.tensor = node.name + ":0"
+            self.desc = node.output_desc[0]
+
+        def set_meta(self, meta_output, ge_outputs=None):
+            self.symsize = list(meta_output.size())
+            enum = self.desc.DESCRIPTOR.fields_by_name["dtype"].enum_type
+            name = "DT_INT8" if meta_output.dtype == torch.int8 else "DT_FLOAT16"
+            self.desc.dtype = enum.values_by_name[name].number
+            return "original-result"
+
+    module = ModuleType("torchair.ge._ge_graph"); module.Tensor = Tensor
+    monkeypatch.setitem(sys.modules, "torchair.ge._ge_graph", module)
+    return Tensor
+
+
+@pytest.mark.parametrize("empty_shape", [[], [-2]])
+def test_sparse_intermediate_descriptors_use_typed_metadata(monkeypatch, empty_shape):
+    g = fixture_graph()
+    tensor_type = fake_ge_tensor(monkeypatch)
+    original = tensor_type.set_meta
+    with capture_weight_quant_metadata(True) as metadata:
+        for node in g.op:
+            if node.name not in ("x", "w", "s", "wt", "st"):
+                continue
+            shape = [16 if d == -1 else d for d in node.output_desc[0].shape.dim]
+            dtype = torch.int8 if node.name in ("w", "wt") else torch.float16
+            node.output_desc[0].shape.dim[:] = empty_shape
+            assert tensor_type(node).set_meta(torch.empty(shape, dtype=dtype), None) == "original-result"
+        # A symbolic M axis is retained, not replaced by the sample's M=16.
+        metadata["x:0"]["shape"][0] = -1
+        untouched = {node.name: node.SerializeToString() for node in g.op if node.type == "Data"}
+        report = normalize_weight_quant_layout(g, metadata)
+        assert report["metadata_source"] == "torchair.Tensor.set_meta"
+        assert report["nodes"][0]["weight_shape"] == [64, 256]
+        assert report["nodes"][0]["scale_shape"] == [64, 2]
+        assert untouched == {node.name: node.SerializeToString() for node in g.op if node.type == "Data"}
+        snapshot = g.SerializeToString()
+        assert normalize_weight_quant_layout(g, metadata)["nodes"][0]["already_folded"]
+        assert snapshot == g.SerializeToString()
+    assert tensor_type.set_meta is original
+
+
+def test_capture_symbolic_dimension_never_concretizes_or_leaks_patch(monkeypatch):
+    from torch._subclasses.fake_tensor import FakeTensorMode
+    from torch.fx.experimental.symbolic_shapes import ShapeEnv
+    tensor_type = fake_ge_tensor(monkeypatch)
+    original = tensor_type.set_meta
+    g = fixture_graph(); env = ShapeEnv(); m = env.create_unbacked_symint()
+    with FakeTensorMode(shape_env=env):
+        x = torch.empty(m, 256, dtype=torch.float16)
+    with pytest.raises(RuntimeError, match="abort export"):
+        with capture_weight_quant_metadata(True) as metadata:
+            tensor_type(g.op[0]).set_meta(x)
+            assert metadata["x:0"] == {"shape": [-1, 256], "dtype": "DT_FLOAT16"}
+            raise RuntimeError("abort export")
+    assert tensor_type.set_meta is original
+
+
+@pytest.mark.parametrize("damage", ["metadata_shape", "metadata_dtype", "transpose_shape", "no_metadata"])
+def test_sparse_metadata_does_not_mask_real_conflicts(monkeypatch, damage):
+    g = fixture_graph(); nodes = {op.name: op for op in g.op}
+    metadata = {"w:0": {"shape": [64, 256], "dtype": "DT_INT8"}}
+    if damage == "metadata_shape": metadata["w:0"]["shape"] = [32, 256]
+    elif damage == "metadata_dtype": metadata["w:0"]["dtype"] = "DT_FLOAT16"
+    elif damage == "transpose_shape": nodes["wt"].output_desc[0].shape.dim[:] = [64, 256]
+    else:
+        metadata = {}; nodes["w"].output_desc[0].shape.dim[:] = []
+    before = g.SerializeToString()
+    with pytest.raises(ValueError): normalize_weight_quant_layout(g, metadata)
+    assert g.SerializeToString() == before
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+def test_export_boundary_captures_sparse_fx_shapes_and_retains_failure_report(monkeypatch, tmp_path, conflict):
+    g = fixture_graph(); g.op[0].output_desc[0].shape.dim[0] = 16
+    tensor_type = fake_ge_tensor(monkeypatch); original_set_meta = tensor_type.set_meta
+    public = [torch.zeros(16, 256).half(), torch.zeros(64, 256, dtype=torch.int8), torch.zeros(64, 2).half()]
+    torchair = ModuleType("torchair")
+    original = lambda *args: (False, 0)
+    module = SimpleNamespace(_convert_data_to_const=original)
+    monkeypatch.setitem(sys.modules, "torchair", torchair)
+    monkeypatch.setitem(sys.modules, "torchair._utils.export_utils", module)
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    def export():
+        with canonical_runtime_input_abi(torchair, public_inputs=public, public_names=["x", "w", "s"],
+                                         capture_weight_quant_shapes=True) as audit:
+            for node in g.op:
+                if node.name in ("wt", "st"):
+                    shape = list(node.output_desc[0].shape.dim)
+                    if conflict and node.name == "st": shape = [2, 32]
+                    dtype = torch.int8 if node.name == "wt" else torch.float16
+                    node.output_desc[0].shape.dim[:] = []
+                    tensor_type(node).set_meta(torch.empty(shape, dtype=dtype))
+            module._convert_data_to_const(public, g, str(tmp_path), {})
+        return audit
+    if conflict:
+        with pytest.raises(ValueError, match="report=.*weight-quant-layout.json"): export()
+    else:
+        assert export()["weight_quant_layout"]["metadata_source"] == "torchair.Tensor.set_meta"
+    report = json.loads((tmp_path / "weight-quant-layout.json").read_text())
+    assert report["status"] == ("FAIL" if conflict else "PASS")
+    if conflict:
+        assert report["nodes"][0]["inputs"][2]["fx_metadata"]["shape"] == [2, 32]
+        assert not next(op for op in g.op if op.type == GE_OP).attr["transpose_weight"].b
+    assert module._convert_data_to_const is original and tensor_type.set_meta is original_set_meta

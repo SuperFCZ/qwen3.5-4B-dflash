@@ -221,6 +221,9 @@ def export_air_bundle(
                 explicit_test_double=torchair_module is not None,
                 require_static_shapes=True,
                 dynamic_input_axes=spec.metadata.get("dynamic_input_axes"),
+                capture_weight_quant_shapes=any(
+                    op.ge_op_type == "WeightQuantBatchMatmulV2" for op in spec.custom_ops
+                ),
                 public_output_names=spec.output_names,
                 verify_discard_output_names=(
                     [s["name"] for s in spec.metadata["incremental_contract"]["verify_discard_states"]]

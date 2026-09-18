@@ -228,6 +228,7 @@ def canonical_runtime_input_abi(
     dynamic_input_axes: Mapping[str, Sequence[int]] | None = None,
     public_output_names: Sequence[str] = (),
     verify_discard_output_names: Sequence[str] = (),
+    capture_weight_quant_shapes: bool = False,
 ) -> Iterator[dict[str, Any]]:
     audit: dict[str, Any] = {
         "policy": "public-tensor-storage-identity-v1",
@@ -252,7 +253,11 @@ def canonical_runtime_input_abi(
     if not hasattr(dynamo_config, "specialize_float"):
         raise RuntimeError("this TorchDynamo lacks the required specialize_float policy")
 
-    with _PATCH_LOCK:
+    from .weight_quant_layout import (
+        capture_weight_quant_metadata, normalize_weight_quant_layout, weight_quant_layout_failure,
+    )
+
+    with _PATCH_LOCK, capture_weight_quant_metadata(capture_weight_quant_shapes) as tensor_metadata:
         original = export_utils._convert_data_to_const
 
         def convert(inputs, export_graph, file_path, weight_name):
@@ -275,8 +280,13 @@ def canonical_runtime_input_abi(
             }
             result = original(inputs, export_graph, file_path, weight_name)
             _normalize_public_nodes(export_graph, bindings)
-            from .weight_quant_layout import normalize_weight_quant_layout
-            weight_quant = normalize_weight_quant_layout(export_graph)
+            try:
+                weight_quant = normalize_weight_quant_layout(export_graph, tensor_metadata)
+            except ValueError as error:
+                failure = weight_quant_layout_failure(export_graph, tensor_metadata, error)
+                audit["weight_quant_layout"] = failure
+                report = atomic_write_json(Path(file_path) / "weight-quant-layout.json", failure)
+                raise ValueError(f"{error}; report={report}") from error
             if weight_quant["node_count"]:
                 audit["weight_quant_layout"] = weight_quant
                 atomic_write_json(Path(file_path) / "weight-quant-layout.json", weight_quant)

@@ -6,7 +6,12 @@ group size and precision remain unchanged. No weight is copied or dequantized.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+import copy
+import importlib
 import struct
+
+import torch
 
 
 POLICY = "weight-quant-nk-transpose-attr-v1"
@@ -15,7 +20,40 @@ GE_OP = "WeightQuantBatchMatmulV2"
 
 def _dtype(desc):
     enum = desc.DESCRIPTOR.fields_by_name["dtype"].enum_type
-    return enum.values_by_number[desc.dtype].name
+    value = enum.values_by_number.get(desc.dtype)
+    return value.name if value is not None else f"UNKNOWN({desc.dtype})"
+
+
+@contextmanager
+def capture_weight_quant_metadata(enabled):
+    """Retain typed FX shapes, which TorchAir does not put in every GE desc.
+
+    Tensor.set_meta sets dtype/symsize but may leave output_desc.shape empty.
+    Snapshot only names, shapes and dtypes while the existing export lock is
+    held. Never keep device tensors or specialize a symbolic dimension, and
+    leave TorchAir's descriptors and converter registration untouched.
+    """
+    metadata = {}
+    if not enabled:
+        yield metadata
+        return
+    tensor_type = importlib.import_module("torchair.ge._ge_graph").Tensor
+    original = tensor_type.set_meta
+
+    def record(tensor, meta_output, *args, **kwargs):
+        result = original(tensor, meta_output, *args, **kwargs)
+        if isinstance(meta_output, torch.Tensor):
+            metadata[tensor.tensor] = {
+                "shape": [dim if type(dim) is int else -1 for dim in meta_output.shape],
+                "dtype": _dtype(tensor.desc),
+            }
+        return result
+
+    tensor_type.set_meta = record
+    try:
+        yield metadata
+    finally:
+        tensor_type.set_meta = original
 
 
 def _source(nodes, edge):
@@ -24,6 +62,32 @@ def _source(nodes, edge):
     if node is None or not index.isdigit() or int(index) >= len(node.output_desc):
         raise ValueError(f"WeightQuant AIR has an invalid tensor edge: {edge!r}")
     return node, int(index)
+
+
+def _resolved_desc(nodes, edge, metadata):
+    node, port = _source(nodes, edge)
+    desc = copy.deepcopy(node.output_desc[port])
+    meta = metadata.get(edge)
+    if meta is None:
+        return desc
+    shape = list(desc.shape.dim)
+    actual = meta["shape"]
+    dtype = _dtype(desc)
+    if (dtype not in ("DT_UNDEFINED", meta["dtype"]) or
+            (shape not in ([], [-2]) and
+             (len(shape) != len(actual) or any(
+                 a >= 0 and b >= 0 and a != b for a, b in zip(shape, actual))))):
+        raise ValueError(f"WeightQuant descriptor/FX metadata conflict at {edge}: "
+                         f"descriptor={shape}/{dtype}, metadata={actual}/{meta['dtype']}")
+    # Empty intermediate shapes are unresolved descriptors at this boundary,
+    # not evidence for scalar tensors. Typed metadata supplies the rank.
+    resolved = actual if shape in ([], [-2]) else [
+        a if a >= 0 else b for a, b in zip(shape, actual)]
+    desc.shape.dim[:] = resolved
+    if dtype == "DT_UNDEFINED":
+        enum = desc.DESCRIPTOR.fields_by_name["dtype"].enum_type
+        desc.dtype = enum.values_by_name[meta["dtype"]].number
+    return desc
 
 
 def _permutation(nodes, transpose):
@@ -46,19 +110,22 @@ def _permutation(nodes, transpose):
     return list(struct.unpack("<2" + fmt, tensor.data))
 
 
-def _untranspose(nodes, edge):
+def _untranspose(nodes, edge, metadata):
     transpose, index = _source(nodes, edge)
     if index != 0 or _permutation(nodes, transpose) != [1, 0]:
         raise ValueError("WeightQuant AIR only folds the exact [1,0] permutation")
-    node, port = _source(nodes, transpose.input[0])
-    before, after = node.output_desc[port], transpose.output_desc[0]
+    before = _resolved_desc(nodes, transpose.input[0], metadata)
+    after = _resolved_desc(nodes, edge, metadata)
     if (len(before.shape.dim) != 2 or list(before.shape.dim)[::-1] != list(after.shape.dim)
             or before.dtype != after.dtype):
-        raise ValueError("WeightQuant transpose descriptor does not match its source")
+        raise ValueError(f"WeightQuant transpose {edge} does not match source {transpose.input[0]}: "
+                         f"before={list(before.shape.dim)}/{_dtype(before)}, "
+                         f"after={list(after.shape.dim)}/{_dtype(after)}; "
+                         "requires matching typed FX metadata or resolved GE descriptors")
     return transpose.input[0], before, transpose.name
 
 
-def normalize_weight_quant_layout(graph):
+def normalize_weight_quant_layout(graph, tensor_metadata=None):
     """Validate all candidates first, then fold weight/scale as one operation.
 
     GE interprets per-group scale in the same orientation as weight. Folding
@@ -66,6 +133,7 @@ def normalize_weight_quant_layout(graph):
     keep their slots (including empty edges); they are never removed/relinked.
     """
     nodes = {op.name: op for op in graph.op}
+    metadata = tensor_metadata or {}
     plans = []
     for op in graph.op:
         if op.type != GE_OP:
@@ -88,20 +156,21 @@ def normalize_weight_quant_layout(graph):
                 parent, port = _source(nodes, op.input[slot])
                 if parent.type in {"Transpose", "TransposeD"}:
                     raise ValueError("WeightQuant AIR is already transposed twice")
-                replacements.append((slot, op.input[slot], parent.output_desc[port], None))
+                replacements.append((slot, op.input[slot], _resolved_desc(nodes, op.input[slot], metadata), None))
             else:
-                edge, desc, removed = _untranspose(nodes, op.input[slot])
+                edge, desc, removed = _untranspose(nodes, op.input[slot], metadata)
                 replacements.append((slot, edge, desc, removed))
         weight, scale = replacements[0][2], replacements[1][2]
-        xnode, xport = _source(nodes, op.input[0])
-        x = xnode.output_desc[xport]
+        x = _resolved_desc(nodes, op.input[0], metadata)
         n, k = weight.shape.dim if len(weight.shape.dim) == 2 else (0, 0)
         groups = 1 if group == 0 else k // group
         if (n <= 0 or k <= 0 or k % 128 or (group == 0 and k != 128)
                 or list(scale.shape.dim) != [n, groups]
                 or len(x.shape.dim) != 2 or x.shape.dim[1] != k
                 or [_dtype(x), _dtype(weight), _dtype(scale)] != ["DT_FLOAT16", "DT_INT8", "DT_FLOAT16"]):
-            raise ValueError("WeightQuant AIR does not match FP16 x[M,K], INT8 w[N,K], FP16 s[N,K/128]")
+            raise ValueError(f"WeightQuant {op.name} requires FP16 x[M,K], INT8 w[N,K], "
+                             f"FP16 s[N,K/128]; actual shapes/dtypes="
+                             f"{[(list(d.shape.dim), _dtype(d)) for d in (x, weight, scale)]}")
         plans.append((op, replacements, folded))
     records, candidates = [], set()
     for op, replacements, folded in plans:
@@ -126,7 +195,31 @@ def normalize_weight_quant_layout(graph):
         if graph.op[i].name in removed:
             del graph.op[i]
     return {"policy": POLICY, "status": "PASS", "scope": "torchair-before-ge-save",
+            "metadata_source": "torchair.Tensor.set_meta" if metadata else "GE descriptors",
             "node_count": len(records), "nodes": records, "removed_transposes": sorted(removed)}
+
+
+def weight_quant_layout_failure(graph, metadata, error):
+    """Small failure report: descriptors/metadata only, never weight payloads."""
+    nodes = {op.name: op for op in graph.op}
+
+    def describe(edge, depth=1):
+        record = {"edge": edge}
+        try:
+            node, port = _source(nodes, edge)
+        except ValueError:
+            return record
+        desc = node.output_desc[port]
+        record.update(op_type=node.type, shape=list(desc.shape.dim), dtype=_dtype(desc),
+                      fx_metadata=metadata.get(edge))
+        if depth and node.type in {"Transpose", "TransposeD"}:
+            record["inputs"] = [describe(e, depth - 1) for e in node.input]
+        return record
+
+    records = [{"name": op.name, "inputs": [describe(e) for e in op.input]}
+               for op in graph.op if op.type == GE_OP]
+    return {"policy": POLICY, "status": "FAIL", "scope": "torchair-before-ge-save",
+            "error": str(error), "node_count": len(records), "nodes": records}
 
 
 def validate_weight_quant_layout(graph):
