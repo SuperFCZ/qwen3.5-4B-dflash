@@ -101,7 +101,7 @@ draft.om        draft_w4a16.om draft_w8a16.om
 
 `draft-variants.json` 索引各组合；部署清单与它同目录。运行时只加载选定的一个 Draft 和一个 Verify。
 AIR 导出成功不代表 OM 编译成功；以 `draft-variants.json` 中对应条目的 `PASS` 为准。
-编译日志位于 `$AI_RUN_DIR/log/dflash-atc/`。重试编译不需要重新导出 AIR。
+编译日志位于 `$AI_RUN_DIR/log/dflash-atc/`。未修改图时，重试编译无需重新导出 AIR。
 
 **3. 构建 runner。**
 
@@ -120,43 +120,40 @@ W4/W8 原生路径采用 CANN [WeightQuantBatchMatmulV2](https://github.com/Asce
 `inner_precise=0`。W8 直接传 INT8 权重；W4 压缩存储，临时无损展开为 INT8 后调用。
 这是 A16 权重量化接口，不能按 W8A8 的纯整数矩阵乘理解；Embedding/LM Head 保持 FP16。
 
-AIR 保存前将权重转置折叠为 `transpose_weight=true`，算子接收 `[N,K]` INT8 权重。
-scale 仍须实际转置为 `[K/128,N]`；该属性不作用于 scale，不能用 reshape 替代。
-仅单组 K=128 和合成 per-channel 对照使用一维 scale `[N]`。
-外部压缩权重和 scale 接口不变，布局检查写入 `weight-quant-layout.json`。
-中间节点的 shape 从 TorchAir 转换时的类型元数据校验，不要求 GE 输出描述已完成 shape 推导。
-不自动关闭 ATC 融合；[同类转置融合规则](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta2/maintenref/graphubfusionref/atlasrr_30_0074.html)注明不可关闭。
-**兼容性：**当前接收端 CANN 9.0.0 / 310P 的 ND 权重在 NK、KN 两种方向下，
-group-128 和一维 scale 的 per-channel 小图均报 `no valid template is found`。
-原生量化 OM 尚未编译通过；可先使用 FP16 Draft，其他格式及图模式路径仍待验证。
-per-channel 的 GE 接口明确要求 scale 为 `[N,1]` 或 `[N]`，拒绝 `[1,N]`；
-探测统一使用一维形式，通过 shape 检查不代表有可用内核模板。
-[较早的官方文档](https://ascend.github.io/docs/sources/pytorch/api_doc.html#torch-npu-npu-weight-quant-batchmatmul)
-注明 310P 仅支持 per-channel；[当前接口文档](https://github.com/Ascend/op-plugin/blob/master/docs/zh/custom_APIs/torch_npu/torch_npu-npu_weight_quant_batchmatmul.md)
-列出了 per-group。使用时须匹配芯片、CANN 版本、格式和图模式，不能只按接口名判断支持范围。
+310P 的 CANN 9.0.0 图模式使用 `WeightNz` 模板，要求 **FRACTAL_NZ 权重 +
+`transpose_weight=true`**。导出会折叠权重转置，并插入内置 `TransData`，
+将逻辑 `[N,K]` INT8 权重实际转换为 `[ceil(K/32),ceil(N/16),16,32]` NZ 存储。
+分组 scale 保持 `[K/128,N]`；仅 K=128 单组和合成 per-channel 对照使用 `[N]`。
+这与 [CANN 9.0.0 的模板选择](https://gitcode.com/cann/ops-nn/blob/fcebf031d193d641d2d1472a539bcc387b1e5f09/matmul/weight_quant_batch_matmul_v2/op_host/op_tiling/weight_quant_batch_matmul_v2_tiling_registry.cpp)
+和 [WeightNz 约束](https://gitcode.com/cann/ops-nn/blob/fcebf031d193d641d2d1472a539bcc387b1e5f09/matmul/weight_quant_batch_matmul_v2/op_host/op_tiling/weight_quant_batch_matmul_v2_weight_nz_tiling.cpp)一致。
+只折叠 transpose、仍保留 ND 权重时，310P 会报 `no valid template is found`。
 
-更换工具链或格式后，可用 **per-channel 小图** 检查支持范围；不加载模型权重：
+正常 W4/W8 导出默认使用此转换，不需新增参数。外部压缩权重、scale 和 C++ ABI 不变，
+不新增常驻 FP16 权重；临时 NZ 缓冲及 CANN 工作区的峰值需设备测量。
+`weight-quant-layout.json` 记录转换节点、逻辑/存储 shape 和 scale 布局。
+编译入口拒绝缺少此审计的旧量化 AIR；**必须重新导出 AIR，不能只重编旧 AIR**。
+
+先编译不加载模型权重的小图：
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
   --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --device-id "$DEVICE_ID" \
-  --bits 8 --projection tiny --group-size 0 --weight-layout nk kn \
-  --output-dir "$AI_RUN_DIR/matmul-atc-perchannel"
+  --bits 4 8 --projection tiny --group-size 128 \
+  --weight-format nz --weight-layout nk \
+  --output-dir "$AI_RUN_DIR/matmul-atc-nz"
 ```
 
-`0` 是合成数据的 per-channel 对照，`128` 是模型使用的分组大小；不会转换模型的 scale。
-`nk` 表示物理权重 `[N,K]`、`transpose_weight=true`，`kn` 表示
-`[K,N]`、`transpose_weight=false`。每组均编译 M=16/64 两档。
+小图通过后，将 `--projection tiny` 改为 `--projection gate_up q kv down fc`，
+使用新输出目录验证实际投影尺寸，再按正常流程导出、编译三种 Draft。
+每组包含 M=16/64 两档；默认即 `--weight-format nz --weight-layout nk --group-size 128`。
+诊断用 `--group-size 0` 是合成 per-channel 对照，不会转换模型分组；
+`--weight-format nd --weight-layout nk kn` 仅用于复现 ND 对照，不能用于正式 Draft。
 
-输入 shape 错误表示对照无效，不能据此判断内核支持。若 group-0 通过，
-也只证明 per-channel 可用，不能直接用于模型的 group-128 权重。
-需要完整矩阵时可设 `--group-size 0 128`；group-128 小图通过后，
-再用 `--bits 4 8 --projection tiny gate_up` 和通过的 `--weight-layout` 复测。
-探测参数不改变正式 Draft 的 NK 布局和 group-128 分组。
-
-结果、布局审计与 AIR/OM 位于指定目录，ATC 日志位于 `$AI_RUN_DIR/log/dflash-atc/`。
-失败项保留阶段、堆栈和 tiling 约束，不影响其余组继续测试。重试使用新输出目录。
-这是编译检查，不能代替 OM 数值或性能验证。
+结果和 AIR/OM 位于指定目录，ATC 日志在 `$AI_RUN_DIR/log/dflash-atc/`。
+失败项保留阶段、堆栈和 tiling 约束，其他组继续测试。重试使用新目录。
+**验证范围：**CPU 布局、数值与 AIR 序列化检查不代表设备通过；
+接收端 ATC 编译、OM 执行、完整模型接受率和时延仍需实测。
+探测的 `PASS` 仅指编译通过，报告单独标记 `execution_status=NOT_RUN`。
 
 导出前还有原生 NPU 数值检查，导出后检查五层 Draft 的 26 个融合节点。
 原生调用通过不代表 ATC 编译通过；单独测原生 MatMul 时延使用：

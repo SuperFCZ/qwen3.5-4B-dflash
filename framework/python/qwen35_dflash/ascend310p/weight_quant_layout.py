@@ -1,8 +1,9 @@
-"""Fold the Draft's weight transpose before CANN's graph fusion.
+"""Lower Draft weight-only MatMul to the built-in 310P WeightNz template.
 
 This is an AIR serialization rewrite of the built-in WeightQuantBatchMatmulV2,
 not a new NPU kernel. The public [N,K] integer weight and [N,K/128] scale ABI,
-group size and precision remain unchanged. No weight is copied or dequantized.
+group size and precision remain unchanged. A real TransData converts the
+transient INT8 weight to NZ; no persistent FP16 weight or custom kernel is used.
 """
 from __future__ import annotations
 
@@ -14,17 +15,20 @@ import struct
 import torch
 
 
-POLICY = "weight-quant-nk-weight-gn-scale-v2"
-PROBE_POLICY = "weight-quant-synthetic-support-probe-v2"
+POLICY = "weight-quant-nk-nz-weight-gn-scale-v3"
+PROBE_POLICY = "weight-quant-synthetic-support-probe-v3"
 GE_OP = "WeightQuantBatchMatmulV2"
 
 
 def validate_probe_config(config):
     """The synthetic probe may vary support controls, never checkpoint scales."""
-    if (not isinstance(config, dict) or set(config) != {"weight_layout", "group_size"}
+    if (not isinstance(config, dict) or set(config) != {"weight_layout", "group_size", "weight_format"}
             or config["weight_layout"] not in {"nk", "kn"}
+            or config["weight_format"] not in {"nd", "nz"}
+            or (config["weight_format"] == "nz" and config["weight_layout"] != "nk")
             or type(config["group_size"]) is not int or config["group_size"] not in (0, 128)):
-        raise ValueError("WeightQuant synthetic probe requires weight_layout=nk/kn and group_size=0/128")
+        raise ValueError("WeightQuant synthetic probe requires group_size=0/128, "
+                         "weight_format=nd/nz and weight_layout=nk/kn (NZ requires NK on 310P)")
     return config
 
 
@@ -135,10 +139,65 @@ def _untranspose(nodes, edge, metadata):
     return transpose.input[0], before, transpose.name
 
 
-def normalize_weight_quant_layout(graph, tensor_metadata=None, *, probe_config=None):
-    """Use physical w[N,K] with transpose_weight=true and scale[G,N].
+def _nz_shape(n, k):
+    # INT8 FRACTAL_NZ for logical [N,K]: K1,N1,N0,K0. K0 is 32 bytes.
+    return [(k + 31) // 32, (n + 15) // 16, 16, 32]
 
-    Explicit synthetic probes may test KN weights. Per-channel scales use [N].
+
+def _storage_desc(desc, *, layout, shape, origin_shape):
+    result = copy.deepcopy(desc)
+    result.layout = layout
+    result.shape.dim[:] = shape
+    # GE reads these integer format attributes when deserializing TorchAir IR.
+    # Keep logical/origin shape separate from the four-dimensional NZ storage.
+    result.attr["format_for_int"].i = 29 if layout == "FRACTAL_NZ" else 2
+    result.attr["origin_format_for_int"].i = 2
+    result.attr["origin_shape"].list.val_type = 2
+    result.attr["origin_shape"].list.i[:] = origin_shape
+    result.attr["origin_shape_initialized"].b = True
+    result.attr["origin_format_is_set"].b = True
+    return result
+
+
+def _weight_nz_node(op, edge, desc):
+    """Materialize the format conversion, never relabel ND bytes as NZ."""
+    n, k = desc.shape.dim
+    if (desc.layout not in ("", "ND") or
+            ("format_for_int" in desc.attr and desc.attr["format_for_int"].i != 2)):
+        raise ValueError("WeightQuant TransData requires a real ND source")
+    node = type(op)()
+    node.name, node.type = op.name + "_weight_nz", "TransData"
+    node.input.append(edge)
+    node.attr["src_format"].s = b"ND"
+    node.attr["dst_format"].s = b"FRACTAL_NZ"
+    node.attr["src_subformat"].i = node.attr["dst_subformat"].i = 0
+    node.attr["groups"].i = 1
+    src = _storage_desc(desc, layout="ND", shape=[n, k], origin_shape=[n, k])
+    dst = _storage_desc(desc, layout="FRACTAL_NZ", shape=_nz_shape(n, k), origin_shape=[n, k])
+    src.name, dst.name = "src", "dst"
+    node.input_desc.add().CopyFrom(src)
+    node.output_desc.add().CopyFrom(dst)
+    return node
+
+
+def _existing_weight_nz(nodes, op, metadata):
+    """Validate a previously lowered conversion before treating it as idempotent."""
+    node, port = _source(nodes, op.input[1])
+    if node.type != "TransData" or port != 0 or len(node.input) != 1:
+        raise ValueError("WeightQuant NZ input must come from the audited ND-to-NZ TransData")
+    desc = _resolved_desc(nodes, node.input[0], metadata)
+    if len(desc.shape.dim) != 2 or _dtype(desc) != "DT_INT8":
+        raise ValueError("WeightQuant NZ source must be INT8 weight[N,K]")
+    expected = _weight_nz_node(op, node.input[0], desc)
+    if node.SerializeToString(deterministic=True) != expected.SerializeToString(deterministic=True):
+        raise ValueError("WeightQuant NZ TransData descriptor/attributes changed")
+    return desc, node
+
+
+def normalize_weight_quant_layout(graph, tensor_metadata=None, *, probe_config=None):
+    """Use NZ w[N,K] with transpose_weight=true and ND scale[G,N].
+
+    Explicit synthetic probes may retain ND weights. Per-channel scales use [N].
     CANN's transpose_weight attribute applies ONLY to weight. Its group scale
     axes remain [K/group_size,N], even with transposed weight. Keep the scale
     transpose and its values; never replace it with a reshape. Validate all
@@ -148,6 +207,7 @@ def normalize_weight_quant_layout(graph, tensor_metadata=None, *, probe_config=N
     metadata = tensor_metadata or {}
     probe = validate_probe_config(probe_config) if probe_config is not None else None
     layout = probe["weight_layout"] if probe is not None else "nk"
+    weight_format = probe["weight_format"] if probe is not None else "nz"
     plans = []
     for op in graph.op:
         if op.type != GE_OP:
@@ -162,6 +222,8 @@ def normalize_weight_quant_layout(graph, tensor_metadata=None, *, probe_config=N
         if probe is not None and group != probe["group_size"]:
             raise ValueError("WeightQuant synthetic probe group differs from its declared control")
         folded = bool(op.attr["transpose_weight"].b)
+        conversion = None
+        insert_conversion = False
         replacements = []
         # The project uses symmetric quantization and no bias/output quantization.
         # Reject unrecognized numerics rather than guessing their layout.
@@ -176,7 +238,11 @@ def normalize_weight_quant_layout(graph, tensor_metadata=None, *, probe_config=N
             parent, _ = _source(nodes, op.input[1])
             if parent.type in {"Transpose", "TransposeD"}:
                 raise ValueError("WeightQuant AIR is already transposed twice")
-            replacements.append((1, op.input[1], _resolved_desc(nodes, op.input[1], metadata), None))
+            if parent.type == "TransData" and weight_format == "nz":
+                desc, conversion = _existing_weight_nz(nodes, op, metadata)
+                replacements.append((1, conversion.input[0], desc, None))
+            else:
+                replacements.append((1, op.input[1], _resolved_desc(nodes, op.input[1], metadata), None))
         else:
             edge, desc, removed = _untranspose(nodes, op.input[1], metadata)
             replacements.append((1, edge, desc, removed))
@@ -201,9 +267,18 @@ def normalize_weight_quant_layout(graph, tensor_metadata=None, *, probe_config=N
                              f"FP16 scale{expected_scale} for group_size={group} "
                              f"(transpose_weight does not transpose scales); actual shapes/dtypes="
                              f"{[(list(d.shape.dim), _dtype(d)) for d in (x, weight, scale)]}")
-        plans.append((op, replacements, folded))
+        if weight_format == "nz":
+            if conversion is None:
+                conversion = _weight_nz_node(op, replacements[0][1], weight)
+                if conversion.name in nodes:
+                    raise ValueError(f"WeightQuant TransData name already exists: {conversion.name}")
+                insert_conversion = True
+            slot, edge, _, removed = replacements[0]
+            replacements[0] = (slot, conversion.name + ":0", conversion.output_desc[0], removed)
+        plans.append((op, replacements, folded, conversion, insert_conversion, [n, k]))
     records, candidates = [], set()
-    for op, replacements, folded in plans:
+    insertions = {}
+    for op, replacements, folded, conversion, insert_conversion, logical_shape in plans:
         for slot, edge, desc, removed in replacements:
             name = op.input_desc[slot].name
             op.input[slot] = edge
@@ -212,13 +287,22 @@ def normalize_weight_quant_layout(graph, tensor_metadata=None, *, probe_config=N
             if removed:
                 candidates.add(removed)
         op.attr["transpose_weight"].b = layout == "nk"
+        if insert_conversion:
+            insertions[op.name] = conversion
         records.append({"name": op.name, "weight": op.input[1], "scale": op.input[2],
                         "transpose_weight": layout == "nk", "already_folded": folded,
                         "weight_layout": layout.upper(),
                         "scale_layout": "N" if op.attr["antiquant_group_size"].i == 0 else "GN",
                         "group_size": op.attr["antiquant_group_size"].i,
-                        "weight_shape": list(op.input_desc[1].shape.dim),
+                        "weight_shape": logical_shape if layout == "nk" else logical_shape[::-1],
+                        "weight_format": "FRACTAL_NZ" if weight_format == "nz" else "ND",
+                        "weight_storage_shape": list(op.input_desc[1].shape.dim),
+                        "format_conversion": conversion.name if conversion is not None else None,
                         "scale_shape": list(op.input_desc[2].shape.dim)})
+    # Preserve topological order and leave all public inputs/packed bytes intact.
+    for i in range(len(graph.op) - 1, -1, -1):
+        if graph.op[i].name in insertions:
+            graph.op.insert(i, insertions[graph.op[i].name])
     # Preserve transposes shared by other consumers, including control edges.
     used = ({edge.rpartition(":")[0] for op in graph.op for edge in op.input if edge}
             if candidates else set())
@@ -229,7 +313,8 @@ def normalize_weight_quant_layout(graph, tensor_metadata=None, *, probe_config=N
     return {"policy": PROBE_POLICY if probe is not None else POLICY,
             "probe_config": probe, "status": "PASS", "scope": "torchair-before-ge-save",
             "metadata_source": "torchair.Tensor.set_meta" if metadata else "GE descriptors",
-            "node_count": len(records), "nodes": records, "removed_transposes": sorted(removed)}
+            "node_count": len(records), "nodes": records, "removed_transposes": sorted(removed),
+            "inserted_transdata": [node.name for node in insertions.values()]}
 
 
 def weight_quant_layout_failure(graph, metadata, error):
@@ -243,9 +328,9 @@ def weight_quant_layout_failure(graph, metadata, error):
         except ValueError:
             return record
         desc = node.output_desc[port]
-        record.update(op_type=node.type, shape=list(desc.shape.dim), dtype=_dtype(desc),
+        record.update(op_type=node.type, shape=list(desc.shape.dim), dtype=_dtype(desc), layout=desc.layout,
                       fx_metadata=metadata.get(edge))
-        if depth and node.type in {"Transpose", "TransposeD"}:
+        if depth and node.type in {"Transpose", "TransposeD", "TransData"}:
             record["inputs"] = [describe(e, depth - 1) for e in node.input]
         return record
 
@@ -273,13 +358,29 @@ def validate_weight_quant_layout(graph):
             raise ValueError("WeightQuant probe controls are only valid for a single synthetic diagnostic graph")
     expected_policy = PROBE_POLICY if probe is not None else POLICY
     expected_transpose = probe is None or probe["weight_layout"] == "nk"
+    expected_format = "FRACTAL_NZ" if probe is None or probe["weight_format"] == "nz" else "ND"
+
+    def valid_storage(node):
+        shape = node.get("weight_shape", [])
+        if len(shape) != 2 or any(type(dim) is not int or dim <= 0 for dim in shape):
+            return False
+        if node.get("weight_format") != expected_format:
+            return False
+        if expected_format == "ND":
+            return node.get("weight_storage_shape") == shape and node.get("format_conversion") is None
+        return (node.get("weight_storage_shape") == _nz_shape(*shape)
+                and node.get("format_conversion") == node.get("name", "") + "_weight_nz"
+                and node.get("weight") == node["format_conversion"] + ":0")
+
     if (audit.get("policy") != expected_policy or audit.get("status") != "PASS"
             or audit.get("probe_config") != probe
             or audit.get("node_count") != count or len(audit.get("nodes", [])) != count
             or any(node.get("transpose_weight") is not expected_transpose
+                   or not valid_storage(node)
                    or node.get("scale_layout") != ("N" if node.get("group_size") == 0 else "GN")
                    or (node.get("group_size") == 0 and len(node.get("scale_shape", [])) != 1)
                    or (probe is not None and node.get("group_size") != probe["group_size"])
                    for node in audit.get("nodes", []))):
-        raise ValueError("WeightQuant AIR lacks the group-specific weight/scale audit; re-export AIR "
-                         "with the current source. Recompiling old AIR or disabling fusion cannot apply this fix.")
+        raise ValueError("WeightQuant AIR lacks the NZ conversion and group-specific weight/scale audit; "
+                         "re-export AIR with the current source. Recompiling old AIR or disabling "
+                         "fusion cannot apply this fix.")

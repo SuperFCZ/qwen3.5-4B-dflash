@@ -27,6 +27,9 @@ def weight_quant_linear(value: Tensor, weight: Tensor, scales: Tensor) -> Tensor
     Keep transposes as views. TorchAir's built-in converter emits a fused
     WeightQuantBatchMatmulV2 with group_size=128, inner_precise=0. Casting the
     activation to INT8 or folding K-group scales outside MatMul is forbidden.
+    The 310P AIR lowering folds the weight transpose and inserts built-in
+    TransData to NZ, matching ACLNN's conversion before its WeightNz kernel.
+    Eager success alone does not test this graph-mode conversion.
     """
     if value.dtype != torch.float16 or weight.dtype != torch.int8 or scales.dtype != torch.float16:
         raise ValueError("weight_quant requires FP16 activations/scales and INT8 weight codes")

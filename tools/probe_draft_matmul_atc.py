@@ -60,9 +60,11 @@ class ProbeLinear(torch.nn.Module):
         )
 
 
-def make_spec(bits, projection, device, group_size=128, weight_layout="nk"):
-    if group_size not in (0, 128) or weight_layout not in ("nk", "kn"):
-        raise ValueError("probe controls require group_size=0/128 and weight_layout=nk/kn")
+def make_spec(bits, projection, device, group_size=128, weight_layout="nk", weight_format="nz"):
+    if (group_size not in (0, 128) or weight_layout not in ("nk", "kn")
+            or weight_format not in ("nd", "nz") or (weight_format == "nz" and weight_layout != "nk")):
+        raise ValueError("probe controls require group_size=0/128, weight_format=nd/nz, "
+                         "weight_layout=nk/kn; NZ requires NK on 310P")
     k, n = SHAPES[projection]
     generator = torch.Generator().manual_seed(812 + bits)
     q = torch.randint(-(1 << (bits - 1)), 1 << (bits - 1), (n, k),
@@ -82,7 +84,8 @@ def make_spec(bits, projection, device, group_size=128, weight_layout="nk"):
                         metadata={"tensor_abi": {"inputs": signature}, "dynamic_input_axes": {"x": [0]},
                                   "bits": bits, "projection": projection, "group_size": group_size,
                                   "synthetic_control": group_size == 0,
-                                  "weight_quant_probe": {"group_size": group_size, "weight_layout": weight_layout}})
+                                  "weight_quant_probe": {"group_size": group_size, "weight_layout": weight_layout,
+                                                         "weight_format": weight_format}})
 
 
 def parser():
@@ -97,11 +100,15 @@ def parser():
                      help="128: checkpoint grouping; 0: synthetic per-channel support control only")
     cli.add_argument("--weight-layout", nargs="+", choices=("nk", "kn"), default=["nk"],
                      help="physical weight axes: NK with transpose_weight=true, or KN with false")
+    cli.add_argument("--weight-format", choices=("nz", "nd"), default="nz",
+                     help="nz: 310P TransData + WeightNz path; nd: explicit negative/control path")
     return cli
 
 
 def main(argv=None):
     cli = parser(); args = cli.parse_args(argv)
+    if args.weight_format == "nz" and "kn" in args.weight_layout:
+        cli.error("310P NZ requires --weight-layout nk; use --weight-format nd for KN controls")
     root = require_run_output(args.output_dir)
     if root.exists():
         cli.error("use a new output directory; existing probe evidence is retained")
@@ -110,7 +117,7 @@ def main(argv=None):
     root.mkdir(parents=True)
     report = {"schema_version": 1, "status": "RUNNING", "cpu_fallback": False,
               "scope": "synthetic AIR and ATC compilation only; no OM execution or speed claim",
-              "soc_version": soc, "cases": []}
+              "soc_version": soc, "execution_status": "NOT_RUN", "cases": []}
     try:
         import torch_npu
         import torchair
@@ -123,13 +130,14 @@ def main(argv=None):
                                          dict.fromkeys(args.group_size), dict.fromkeys(args.weight_layout))
         for projection, bits, group_size, layout in combinations:
             case = {"bits": bits, "projection": projection, "group_size": group_size,
-                    "weight_layout": layout, "synthetic_control": group_size == 0,
+                    "weight_layout": layout, "weight_format": args.weight_format,
+                    "synthetic_control": group_size == 0, "execution_status": "NOT_RUN",
                     "status": "RUNNING", "phase": "prepare"}
             report["cases"].append(case)
-            name = f"w{bits}a16-{projection}-g{group_size}-{layout}"
+            name = f"w{bits}a16-{projection}-g{group_size}-{layout}-{args.weight_format}"
             print(f"[matmul-atc] {name} START", flush=True)
             try:
-                spec = make_spec(bits, projection, device, group_size, layout)
+                spec = make_spec(bits, projection, device, group_size, layout, args.weight_format)
                 directory = root / name
                 case["phase"] = "export"
                 air = export_air_bundle(lambda _: (spec,), {}, directory)
@@ -154,12 +162,14 @@ def main(argv=None):
         report.update(status="FAIL", error=f"{type(error).__name__}: {error}")
         print(report["error"], flush=True)
     atomic_write_json(root / "summary.json", report)
-    print("\n| Bits | Projection | Group size | Weight layout | Status | Phase |")
-    print("|---:|---|---:|---|---|---|")
+    print("\n| Bits | Projection | Group size | Weight layout | Weight format | Status | Phase |")
+    print("|---:|---|---:|---|---|---|---|")
     for case in report["cases"]:
         print(f"| {case['bits']} | {case['projection']} | {case['group_size']} | "
-              f"{case['weight_layout'].upper()} | {case['status']} | {case['phase']} |")
+              f"{case['weight_layout'].upper()} | {case['weight_format'].upper()} | "
+              f"{case['status']} | {case['phase']} |")
     print("Group 0 is a synthetic per-channel control; checkpoint grouping is unchanged.")
+    print("PASS means AIR/ATC compilation only. OM execution, numerical parity and latency are NOT_RUN.")
     print(f"Report: {root / 'summary.json'}", flush=True)
     return 0 if report["status"] == "PASS" else 1
 

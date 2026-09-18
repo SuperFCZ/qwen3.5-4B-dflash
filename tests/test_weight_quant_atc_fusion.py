@@ -62,7 +62,8 @@ def test_no_template_diagnostic_does_not_claim_a_shape_error_or_all_group_suppor
               "TraceBack (most recent call last):\nDo op tiling failed, no valid template is found.")
     detail = _atc_failure_detail(output, native_graph())
     assert "No WeightQuant template matched this SoC/layout/group/shape combination" in detail
-    assert "--group-size 0 128 --weight-layout nk kn" in detail
+    assert "--weight-layout nk --weight-format nz" in detail
+    assert "requires FRACTAL_NZ weight and transpose_weight=true" in detail
     assert "synthetic per-channel control" in detail
 
 

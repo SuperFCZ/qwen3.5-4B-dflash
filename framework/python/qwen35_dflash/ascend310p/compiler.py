@@ -66,7 +66,7 @@ def _atc_failure_detail(stdout: str, graph: Mapping[str, Any]) -> str:
         detail += (
             "\nWeight-quant transpose/NZ graph fusion failed before OM execution. "
             "An off switch has not prevented this pass on the receiver. "
-            "Re-export with the NK weight / GN scale normalization and run "
+            "Re-export with the NK-to-NZ TransData / GN scale normalization and run "
             "tools/probe_draft_matmul_atc.py before rebuilding a full Draft. "
             "Retain weight-quant-layout.json and the complete ATC log if it still fails; "
             "group-128 kernel support requires a separate target check."
@@ -88,14 +88,16 @@ def _atc_failure_detail(stdout: str, graph: Mapping[str, Any]) -> str:
         detail += (
             "\nNo WeightQuant template matched this SoC/layout/group/shape combination. "
             "This is distinct from an invalid scale shape and from the transpose fusion pass. "
+            "CANN 9.0.0's 310P template requires FRACTAL_NZ weight and transpose_weight=true; "
+            "inspect weight-quant-layout.json for the actual TransData/storage shape. "
         )
         if graph.get("metadata", {}).get("weight_quant_probe") is not None:
             detail += ("Retain this probe result and compare the other controls. "
                        "A control with invalid input shapes does not establish absent kernel support.")
         else:
             detail += (
-                "Run probe_draft_matmul_atc.py with --bits 8 --projection tiny "
-                "--group-size 0 128 --weight-layout nk kn to isolate support. "
+                "Re-export AIR, then run probe_draft_matmul_atc.py with --bits 4 8 --projection tiny "
+                "--group-size 128 --weight-layout nk --weight-format nz. "
                 "Group 0 is a synthetic per-channel control, not a replacement for checkpoint group-128 scales."
             )
     if ("ChunkGatedDeltaRule" in stdout and

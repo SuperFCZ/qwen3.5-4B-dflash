@@ -60,6 +60,7 @@ Chunk/MTP 共用选定精度的 Draft OM，把上下文更新和候选生成合�
 三精度对比时，共享 Target 输出特征层的并集；每个 Draft 选取自己的特征输入。
 发布的 W4/W8 checkpoint 为五层，FP16 为六层。量化路径保留压缩权重输入，默认使用 CANN
 `WeightQuantBatchMatmulV2`：FP16 激活 × INT8 权重，group-128 scale，`inner_precise=0`；
+310P AIR 使用内置 `TransData` 转为 NZ 权重，并设置 `transpose_weight=true`。
 W4 在调用前将 packed byte 无损展开为 INT8，不保留完整 FP16 权重。
 `draft_quant_matmul=dequant` 可选显式解量化对照；实际 OM 时延和峰值显存须测量。
 三种 Draft 分开运行，不同时驻留；[构建与对比命令](GDR_CHUNK_AIR_OM.md#统一测试)。

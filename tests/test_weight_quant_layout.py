@@ -28,11 +28,15 @@ def graph_type():
                 field.type_name = "." + typename
         return item
     msg("Shape", [("dim", 3, 3, None)])
-    msg("Desc", [("name", 9, 1, None), ("dtype", 14, 1, "DType"), ("shape", 11, 1, "Shape")])
+    desc = msg("Desc", [("name", 9, 1, None), ("dtype", 14, 1, "DType"), ("shape", 11, 1, "Shape"),
+                        ("layout", 9, 1, None), ("attr", 11, 3, "Desc.Entry")])
+    entry = desc.nested_type.add(name="Entry"); entry.options.map_entry = True
+    entry.field.add(name="key", number=1, type=9, label=1)
+    entry.field.add(name="value", number=2, type=11, type_name=".Attr", label=1)
     msg("Tensor", [("desc", 11, 1, "Desc"), ("data", 12, 1, None)])
-    msg("Ints", [("i", 3, 3, None)])
+    msg("Ints", [("i", 3, 3, None), ("val_type", 3, 1, None)])
     msg("Attr", [("i", 3, 1, None), ("b", 8, 1, None), ("t", 11, 1, "Tensor"),
-                 ("list", 11, 1, "Ints")])
+                 ("list", 11, 1, "Ints"), ("s", 12, 1, None)])
     op = msg("Op", [("name", 9, 1, None), ("type", 9, 1, None), ("input", 9, 3, None),
                     ("input_desc", 11, 3, "Desc"), ("output_desc", 11, 3, "Desc"),
                     ("attr", 11, 3, "Op.Entry")])
@@ -77,19 +81,26 @@ def fixture_graph(*, trans_type="Transpose", perm_dtype="DT_INT64", shared=False
 @pytest.mark.parametrize("bits", [4, 8])
 def test_weight_only_fold_obeys_cann_group_scale_contract(trans_type, perm_dtype, bits):
     g = fixture_graph(trans_type=trans_type, perm_dtype=perm_dtype)
-    before = {op.name: op.SerializeToString() for op in g.op if op.type == "Data"}
+    before = {op.name: op.SerializeToString(deterministic=True) for op in g.op if op.type == "Data"}
     original_graph = copy.deepcopy(g)
     report = normalize_weight_quant_layout(g)
     op = next(op for op in g.op if op.type == GE_OP)
     assert report["policy"] == POLICY and report["node_count"] == 1
     assert report["removed_transposes"] == ["wt"]
-    assert list(op.input) == ["x:0", "w:0", "st:0", "", "", "", ""]
+    assert list(op.input) == ["x:0", "quant_weight_nz:0", "st:0", "", "", "", ""]
     assert op.attr["transpose_weight"].b and not op.attr["transpose_x"].b
-    assert list(op.input_desc[1].shape.dim) == [64, 256]
+    assert list(op.input_desc[1].shape.dim) == [8, 4, 16, 32]
+    assert list(op.input_desc[1].attr["origin_shape"].list.i) == [64, 256]
+    assert op.input_desc[1].layout == "FRACTAL_NZ"
+    assert op.input_desc[1].attr["format_for_int"].i == 29
+    assert report["inserted_transdata"] == ["quant_weight_nz"]
+    conversion = next(node for node in g.op if node.type == "TransData")
+    assert list(conversion.input) == ["w:0"]
+    assert conversion.attr["src_format"].s == b"ND" and conversion.attr["dst_format"].s == b"FRACTAL_NZ"
     assert list(op.input_desc[2].shape.dim) == [2, 64]
     assert report["nodes"][0]["scale_layout"] == "GN"
     assert [d.name for d in op.input_desc] == ["x", "weight", "antiquant_scale"]
-    assert before == {op.name: op.SerializeToString() for op in g.op if op.type == "Data"}
+    assert before == {op.name: op.SerializeToString(deterministic=True) for op in g.op if op.type == "Data"}
     # Interpret the actual graph edges and CANN attributes. The scale axes
     # are always [G,N], independently of transpose_weight (receiver tiling
     # contract: "Antiquant shape expect [2, 64], but is [64, 2]").
@@ -103,10 +114,10 @@ def test_weight_only_fold_obeys_cann_group_scale_contract(trans_type, perm_dtype
                        for i in range(0, 256, 128)).half()
         assert torch.equal(evaluate_weight_quant_graph(original_graph, inputs), expected)
         assert torch.equal(evaluate_weight_quant_graph(g, inputs), expected)
-    snapshot = g.SerializeToString()
+    snapshot = g.SerializeToString(deterministic=True)
     repeated = normalize_weight_quant_layout(g)
     assert repeated["nodes"][0]["already_folded"]
-    assert repeated["removed_transposes"] == [] and g.SerializeToString() == snapshot
+    assert repeated["removed_transposes"] == [] and g.SerializeToString(deterministic=True) == snapshot
 
 
 def test_shared_transpose_retained_for_other_consumers():
@@ -114,6 +125,66 @@ def test_shared_transpose_retained_for_other_consumers():
     report = normalize_weight_quant_layout(g)
     assert report["removed_transposes"] == []
     assert next(op for op in g.op if op.name == "out").input[1] == "wt:0"
+
+
+@pytest.mark.parametrize("channels", [1, 17, 67, 19456])
+def test_int8_nz_storage_padding_preserves_codes_scales_and_public_input(channels):
+    g = fixture_graph(); nodes = {node.name: node for node in g.op}
+    for name, shape in (("w", [channels, 256]), ("wt", [256, channels]),
+                        ("s", [channels, 2]), ("st", [2, channels]), ("quant", [-1, channels])):
+        nodes[name].output_desc[0].shape.dim[:] = shape
+    untouched = {node.name: node.SerializeToString(deterministic=True) for node in g.op if node.type == "Data"}
+    original = copy.deepcopy(g)
+    report = normalize_weight_quant_layout(g)
+    assert report["nodes"][0]["weight_storage_shape"] == [8, (channels + 15) // 16, 16, 32]
+    assert report["nodes"][0]["weight_shape"] == [channels, 256]
+    assert untouched == {node.name: node.SerializeToString(deterministic=True) for node in g.op if node.type == "Data"}
+    q = (torch.arange(channels * 256).reshape(channels, 256) % 256 - 128).to(torch.int8)
+    scale = (torch.arange(channels * 2).reshape(channels, 2) % 4 + 1).half() / 32
+    x = (torch.arange(16 * 256).reshape(16, 256) % 5 - 2).half() / 16
+    inputs = dict(x=x, w=q, s=scale)
+    assert torch.equal(evaluate_weight_quant_graph(original, inputs), evaluate_weight_quant_graph(g, inputs))
+    order = [node.name for node in g.op]
+    assert order.index("w") < order.index("quant_weight_nz") < order.index("quant")
+
+
+@pytest.mark.parametrize("damage", ["storage", "origin", "format", "dtype", "source", "name"])
+def test_corrupt_nz_conversion_rejected_without_mutating_graph(damage):
+    g = fixture_graph(); normalize_weight_quant_layout(g)
+    nodes = {node.name: node for node in g.op}; node = nodes["quant_weight_nz"]
+    if damage == "storage": node.output_desc[0].shape.dim[-1] = 16
+    elif damage == "origin": node.output_desc[0].attr["origin_shape"].list.i[:] = [256, 64]
+    elif damage == "format": node.output_desc[0].attr["format_for_int"].i = 2
+    elif damage == "dtype": node.output_desc[0].dtype = nodes["s"].output_desc[0].dtype
+    elif damage == "source": node.input[0] = "s:0"
+    else:
+        node.name = "unrecognized_conversion"; nodes["quant"].input[1] = node.name + ":0"
+    before = g.SerializeToString(deterministic=True)
+    with pytest.raises(ValueError, match="WeightQuant NZ"):
+        normalize_weight_quant_layout(g)
+    assert g.SerializeToString(deterministic=True) == before
+
+
+def test_missing_transdata_and_old_nd_audit_cannot_compile_as_native_draft():
+    g = fixture_graph(); audit = normalize_weight_quant_layout(g)
+    entry = {"custom_op_audit": [{"ge_op_type": GE_OP, "ge_node_occurrences": 1}],
+             "runtime_input_abi": {"weight_quant_layout": audit}}
+    validate_weight_quant_layout(entry)
+    for field, value in (("weight_format", "ND"), ("weight_storage_shape", [64, 256]),
+                         ("format_conversion", None)):
+        damaged = copy.deepcopy(entry)
+        damaged["runtime_input_abi"]["weight_quant_layout"]["nodes"][0][field] = value
+        with pytest.raises(ValueError, match="re-export AIR"):
+            validate_weight_quant_layout(damaged)
+
+
+def test_multiple_nodes_validate_before_inserting_any_conversion():
+    g = fixture_graph()
+    second = g.op.add(); second.CopyFrom(next(node for node in g.op if node.type == GE_OP))
+    second.name = "invalid_second"; second.input[2] = "s:0"
+    before = g.SerializeToString(deterministic=True)
+    with pytest.raises(ValueError): normalize_weight_quant_layout(g)
+    assert g.SerializeToString(deterministic=True) == before
 
 
 def evaluate_weight_quant_graph(graph, inputs):
@@ -126,9 +197,22 @@ def evaluate_weight_quant_graph(graph, inputs):
         if node.type in {"Transpose", "TransposeD"}:
             # Test fixtures use the exact two-axis swap.
             return value(node.input[0]).t()
+        if node.type == "TransData":
+            assert node.attr["src_format"].s == b"ND" and node.attr["dst_format"].s == b"FRACTAL_NZ"
+            matrix = value(node.input[0])
+            k1, n1, n0, k0 = node.output_desc[0].shape.dim
+            assert matrix.dtype == torch.int8 and n0 == 16 and k0 == 32
+            padded = torch.zeros(n1 * n0, k1 * k0, dtype=matrix.dtype)
+            padded[:matrix.shape[0], :matrix.shape[1]] = matrix
+            return padded.reshape(n1, n0, k1, k0).permute(2, 0, 1, 3).contiguous()
         raise AssertionError(node.type)
     op = next(node for node in graph.op if node.type == GE_OP)
     x, weight, scale = (value(edge) for edge in op.input[:3])
+    if op.input_desc[1].layout == "FRACTAL_NZ":
+        # Interpret the physical bytes, so a format-only relabel cannot pass.
+        k1, n1, n0, k0 = weight.shape
+        n, k = op.input_desc[1].attr["origin_shape"].list.i
+        weight = weight.permute(1, 2, 0, 3).reshape(n1 * n0, k1 * k0)[:n, :k]
     if op.attr["transpose_x"].b: x = x.t()
     if op.attr["transpose_weight"].b: weight = weight.t()
     k, n = weight.shape
@@ -146,10 +230,10 @@ def test_rejects_folded_weight_with_untransposed_scale_before_any_rewiring():
     g = fixture_graph(); op = next(node for node in g.op if node.type == GE_OP)
     op.attr["transpose_weight"].b = True
     op.input[1:3] = ["w:0", "s:0"]  # The reported CANN 9.0.0 failing graph.
-    snapshot = g.SerializeToString()
+    snapshot = g.SerializeToString(deterministic=True)
     with pytest.raises(ValueError, match="transpose_weight does not transpose scales"):
         normalize_weight_quant_layout(g)
-    assert g.SerializeToString() == snapshot
+    assert g.SerializeToString(deterministic=True) == snapshot
 
 
 @pytest.mark.parametrize("group", [0, 128])
@@ -164,7 +248,7 @@ def test_synthetic_control_audit_cannot_be_used_for_a_checkpoint(group, layout):
     if layout == "kn":
         nodes["w"].output_desc[0].shape.dim[:] = [256, 64]
         op.input[1] = "w:0"
-    config = {"group_size": group, "weight_layout": layout}
+    config = {"group_size": group, "weight_layout": layout, "weight_format": "nd"}
     audit = normalize_weight_quant_layout(g, probe_config=config)
     assert audit["policy"] == PROBE_POLICY and audit["probe_config"] == config
     assert audit["nodes"][0]["transpose_weight"] is (layout == "nk")
@@ -201,10 +285,10 @@ def test_receiver_rejected_perchannel_row_scale_fails_before_air_rewiring(layout
     if layout == "kn":
         nodes["w"].output_desc[0].shape.dim[:] = [256, 64]
         nodes["quant"].input[1] = "w:0"
-    before = g.SerializeToString()
+    before = g.SerializeToString(deterministic=True)
     with pytest.raises(ValueError, match=r"scale\[64\] for group_size=0"):
-        normalize_weight_quant_layout(g, probe_config={"group_size": 0, "weight_layout": layout})
-    assert g.SerializeToString() == before
+        normalize_weight_quant_layout(g, probe_config={"group_size": 0, "weight_layout": layout, "weight_format": "nd"})
+    assert g.SerializeToString(deterministic=True) == before
 
 
 @pytest.mark.parametrize("damage", ["perm", "runtime_perm", "dtype", "shape", "scale", "optional", "precision", "control"])
@@ -251,9 +335,9 @@ def test_air_save_boundary_records_normalized_graph(monkeypatch, tmp_path):
 
 def test_unrelated_graph_unchanged():
     g = graph_type()(); g.op.add(name="matmul", type="MatMul")
-    before = g.SerializeToString()
+    before = g.SerializeToString(deterministic=True)
     assert normalize_weight_quant_layout(g)["node_count"] == 0
-    assert g.SerializeToString() == before
+    assert g.SerializeToString(deterministic=True) == before
 
 
 def fake_ge_tensor(monkeypatch):
@@ -291,15 +375,15 @@ def test_sparse_intermediate_descriptors_use_typed_metadata(monkeypatch, empty_s
             assert tensor_type(node).set_meta(torch.empty(shape, dtype=dtype), None) == "original-result"
         # A symbolic M axis is retained, not replaced by the sample's M=16.
         metadata["x:0"]["shape"][0] = -1
-        untouched = {node.name: node.SerializeToString() for node in g.op if node.type == "Data"}
+        untouched = {node.name: node.SerializeToString(deterministic=True) for node in g.op if node.type == "Data"}
         report = normalize_weight_quant_layout(g, metadata)
         assert report["metadata_source"] == "torchair.Tensor.set_meta"
         assert report["nodes"][0]["weight_shape"] == [64, 256]
         assert report["nodes"][0]["scale_shape"] == [2, 64]
-        assert untouched == {node.name: node.SerializeToString() for node in g.op if node.type == "Data"}
-        snapshot = g.SerializeToString()
+        assert untouched == {node.name: node.SerializeToString(deterministic=True) for node in g.op if node.type == "Data"}
+        snapshot = g.SerializeToString(deterministic=True)
         assert normalize_weight_quant_layout(g, metadata)["nodes"][0]["already_folded"]
-        assert snapshot == g.SerializeToString()
+        assert snapshot == g.SerializeToString(deterministic=True)
     assert tensor_type.set_meta is original
 
 
@@ -328,9 +412,9 @@ def test_sparse_metadata_does_not_mask_real_conflicts(monkeypatch, damage):
     elif damage == "transpose_shape": nodes["wt"].output_desc[0].shape.dim[:] = [64, 256]
     else:
         metadata = {}; nodes["w"].output_desc[0].shape.dim[:] = []
-    before = g.SerializeToString()
+    before = g.SerializeToString(deterministic=True)
     with pytest.raises(ValueError): normalize_weight_quant_layout(g, metadata)
-    assert g.SerializeToString() == before
+    assert g.SerializeToString(deterministic=True) == before
 
 
 @pytest.mark.parametrize("conflict", [False, True])
