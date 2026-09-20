@@ -4,72 +4,67 @@
 
 ## 开源数据集：输出上限 512 token
 
-5 个文件共 **2563 条问题**，全部完成，文件级状态均为 `PASS_WITH_DIFFERENCES`。
+**FP16 Draft、Chunk 验证、thinking 开启；每个模式/每题 0 次预热、1 次测量。**
+5 个文件共 **2563 / 2563 条问题**完成，文件级状态均为 `PASS_WITH_DIFFERENCES`。
 512 是输出上限，EOS 可提前结束；吞吐按实际生成 token 计算。
 
-| 数据集 | 完成 / 选择 | 接受 / 提出 | 接受率 | token/投机轮 | 普通 tok/s | DFlash tok/s | 加速比 |
+| 数据集文件 | 完成 / 选择 | 接受 / 提出 | 接受率 | token/投机轮 | 普通 tok/s | DFlash tok/s | 加速比 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| GSM8K | 1319 / 1319 | 540050 / 1864109 | 28.97% | 5.28 | 28.57 | 57.71 | 2.05× |
-| HumanEval | 164 / 164 | 64724 / 284205 | 22.77% | 4.37 | 28.42 | 47.30 | 1.64× |
-| MATH500 | 500 / 500 | 209499 / 684994 | 30.58% | 5.52 | 28.56 | 60.19 | 2.11× |
-| MBPP | 500 / 500 | 194777 / 905655 | 21.51% | 4.18 | 28.64 | 46.13 | 1.60× |
-| MTBench | 80 / 80 | 30992 / 145620 | 21.28% | 4.15 | 28.56 | 45.43 | 1.60× |
+| gsm8k.jsonl | 1319 / 1319 | 540146 / 1864893 | 28.96% | 5.28 | 28.54 | 72.92 | 2.59× |
+| humaneval.jsonl | 164 / 164 | 64701 / 284489 | 22.74% | 4.37 | 28.41 | 59.68 | 2.07× |
+| math500.jsonl | 500 / 500 | 209575 / 683780 | 30.65% | 5.53 | 28.53 | 76.16 | 2.67× |
+| mbpp.jsonl | 500 / 500 | 194904 / 904058 | 21.56% | 4.19 | 28.62 | 58.48 | 2.04× |
+| mtbench.jsonl | 80 / 80 | 30994 / 145503 | 21.30% | 4.15 | 28.53 | 57.46 | 2.02× |
+| **全部** | **2563 / 2563** | **1040320 / 3882723** | **26.79%** | **4.96** | **28.54** | **68.61** | **2.42×** |
 
-整体加权接受率 **26.77%**；按样本数加权的阶段耗时估算，普通平均 **17.89 s/次**，
-DFlash **9.37 s/次**，加速约 **1.91×**、耗时减少约 **47.6%**。
-接受率使用总接受数 / 总提出数；整体加速使用总普通耗时 / 总 DFlash 耗时，不平均各文件的百分比或加速倍数。
-计时包含 Prefill，排除模型加载、预热和请求重置。
+接受率 = 总接受数 / 总提出数；加速比 = 普通总耗时 / DFlash 总耗时，不平均各文件的百分比或倍数。
+计时包含 Prefill，排除模型加载、预热和请求重置。两模式各自生成输出，
+实际 token 数可不同，吞吐比与时间加速比不一定相同。
+输出一致性仍未通过，任务质量未评估；单次测量未验证多轮稳定性。
 
-### 与开源数据集 128 token 记录对比
+### 阶段与 OM 时延
 
-两轮各完成相同数量的 2563 条问题；128 token 记录为 **0 次预热、1 次测量**，512 token 摘录未列出次数。
+普通 Decode **34.85 ms/次**，Draft **19.80 ms/次**，Verify **51.35 ms/次**。
 
-| 输出上限 | 接受 / 提出 | 加权接受率 | 整体加速（估算） |
+**整体阶段耗时：平均 ms/次生成。**
+
+| 普通 Prefill | 普通 Decode 循环 | DFlash Prefill | DFlash Decode 循环 |
 |---:|---:|---:|---:|
-| 128 | 259136 / 955125 | 27.13% | 1.74× |
-| 512 | 1040042 / 3884583 | 26.77% | 1.91× |
+| 117.92 | 17787.30 | 130.71 | 7278.87 |
 
-整体接受率仅下降 **0.36 个百分点**；数学类加速达到 **2.05–2.11×**，代码类达到 **1.60–1.64×**。
-MTBench 接受率从 27.04% 降至 21.28%，加速从 1.71× 降至 1.60×，需要结合逐题、分位置统计分析。
-更长生成摊薄了 Prefill 开销；本轮 Draft 平均单次也从约 42.5 ms 降至 38.9 ms。
-两轮 OM、编译选项和运行环境未核对，不能将 Draft 变快归因于输出长度或 deterministic 开关。
+**整体 OM 调用耗时：平均 ms/次调用 / 累计平均 ms/次生成。**
 
-### 512 token 阶段与 OM 时延
-
-普通 Decode 约 **34.81 ms/次**，Draft 约 **38.88 ms/次**，Verify 约 **51.3 ms/次**。
-一轮 Draft + Verify 约 90.2 ms，相当于 2.59 次普通 Decode；忽略 Prefill 等开销时，
-各文件平均 **4.15–5.52 token/轮**的产出足以带来加速。
+| 普通 Target Prefill | 普通 Target Decode | DFlash Target Prefill | Draft | Verify |
+|---:|---:|---:|---:|---:|
+| 74.80 / 117.84 | 34.85 / 17775.07 | 75.17 / 118.42 | 19.80 / 2036.55 | 51.35 / 5250.75 |
 
 <details>
 <summary>各数据集阶段耗时与 OM 调用明细</summary>
 
 **阶段耗时：平均 ms/次生成。**
 
-| 数据集 | 普通 Prefill | 普通 Decode 循环 | DFlash Prefill | DFlash Decode 循环 |
+| 数据集文件 | 普通 Prefill | 普通 Decode 循环 | DFlash Prefill | DFlash Decode 循环 |
 |---|---:|---:|---:|---:|
-| GSM8K | 117.96 | 17794.37 | 140.66 | 8610.69 |
-| HumanEval | 210.39 | 17553.94 | 280.28 | 10537.60 |
-| MATH500 | 129.42 | 17799.12 | 157.91 | 8342.13 |
-| MBPP | 74.00 | 17734.79 | 74.30 | 11024.22 |
-| MTBench | 127.22 | 17797.86 | 154.56 | 11083.20 |
+| gsm8k.jsonl | 118.08 | 17816.29 | 130.86 | 6796.74 |
+| humaneval.jsonl | 210.48 | 17564.14 | 249.54 | 8324.82 |
+| math500.jsonl | 129.50 | 17815.70 | 145.60 | 6572.40 |
+| mbpp.jsonl | 74.03 | 17751.00 | 74.49 | 8680.01 |
+| mtbench.jsonl | 127.27 | 17816.20 | 142.81 | 8742.21 |
 
 **OM 调用耗时：平均 ms/次调用 / 累计平均 ms/次生成。**
 
-| 数据集 | 普通 Target Prefill | 普通 Target Decode | DFlash Target Prefill | Draft | Verify |
+| 数据集文件 | 普通 Target Prefill | 普通 Target Decode | DFlash Target Prefill | Draft | Verify |
 |---|---:|---:|---:|---:|---:|
-| GSM8K | 74.81 / 117.91 | 34.81 / 17782.85 | 75.02 / 118.25 | 38.88 / 3732.72 | 51.30 / 4896.11 |
-| HumanEval | 75.14 / 210.30 | 34.81 / 17542.67 | 75.17 / 210.40 | 38.87 / 4611.92 | 51.28 / 5991.08 |
-| MATH500 | 74.87 / 129.37 | 34.81 / 17787.58 | 75.00 / 129.59 | 38.88 / 3623.76 | 51.29 / 4743.37 |
-| MBPP | 73.96 / 73.96 | 34.81 / 17723.27 | 74.26 / 74.26 | 38.88 / 4752.40 | 51.27 / 6267.62 |
-| MTBench | 74.80 / 127.15 | 34.81 / 17786.47 | 74.91 / 127.35 | 38.87 / 4804.74 | 51.27 / 6301.39 |
-
-DFlash Prefill 阶段包含 Target Prefill 和构建上下文的 Draft 调用；Draft 的 OM 累计耗时也包含这些调用，
-两张表不能相加。Verify 包含提交操作；OM 时延含同步与调用开销，不是单个算子时延。
+| gsm8k.jsonl | 74.86 / 118.00 | 34.85 / 17803.11 | 75.21 / 118.55 | 19.81 / 1902.63 | 51.35 / 4902.68 |
+| humaneval.jsonl | 75.17 / 210.39 | 34.84 / 17553.17 | 75.50 / 211.30 | 19.81 / 2352.93 | 51.34 / 6005.67 |
+| math500.jsonl | 74.91 / 129.44 | 34.84 / 17804.24 | 75.29 / 130.10 | 19.80 / 1842.87 | 51.36 / 4741.65 |
+| mbpp.jsonl | 73.99 / 73.99 | 34.85 / 17739.91 | 74.45 / 74.45 | 19.79 / 2414.18 | 51.33 / 6261.54 |
+| mtbench.jsonl | 74.82 / 127.20 | 34.84 / 17805.22 | 75.23 / 127.89 | 19.80 / 2446.29 | 51.32 / 6306.30 |
 
 </details>
 
-两模式比较各自生成的输出；`PASS_WITH_DIFFERENCES` 不表示答案质量相当，也不是 GSM8K 正确率或代码 pass@1。
-整体加速由打印到小数点后两位的阶段均值和样本数估算，精确值应读取原始 JSON。
+DFlash Prefill 阶段包含 Target Prefill 和构建上下文的调用；这些调用也计入对应的 OM 累计耗时，
+两张表不能相加。Verify 包含提交操作；OM 时延是同步图调用耗时，不是单个算子时延。
 
 ## 自定义 prompt：128 token
 
@@ -183,23 +178,24 @@ Python 开关不影响已有 OM。FC 探针稳定不保证完整 Decode/Verify �
 
 ## 数据来源
 
-本文数据采集早于紧凑 Draft 成为默认实现；当前执行路径的设备时延和接受率待重新测量。
-
-本次仅整理用户提供的日志，未重新执行设备测试、读取远端原始 JSON 或评估任务正确率。
-日志摘录未含 OM 哈希、state dtype 和实际 deterministic 编译参数，不能据此确认部署精度配置。
+数据按各节所列运行配置记录；仅整理用户提供的日志，未重新执行设备测试或读取远端原始 JSON。
+日志摘录未含 OM 哈希、state dtype 和实际 deterministic 编译参数。
 
 | 记录 | 运行目录 | 协议 |
 |---|---|---|
-| 开源数据集，512 输出上限 | `gdr-lengths-_sjokvei` | 摘录未列出预热/测量次数 |
-| 开源数据集，128 输出上限 | `gdr-lengths-v0adngrp` | 0 次预热 + 1 次测量 |
+| FP16 开源数据集，512 输出上限 | `gdr-lengths-x2l5aydx/fp16` | thinking 开启；0 次预热 + 1 次测量 |
 | 自定义短/1K prompt，128 输出 | `gdr-lengths-vwh9cbqo` | 1 次预热 + 3 次测量 |
 
 ```text
-$AI_RUN_DIR/gdr-lengths-_sjokvei/chunk-512/prompt-suite-hp0n7twa/summary.json
-$AI_RUN_DIR/gdr-lengths-_sjokvei/chunk-512/prompt-suite-hp0n7twa/generations.txt
-$AI_RUN_DIR/gdr-lengths-v0adngrp/summary.json
+$AI_RUN_DIR/gdr-lengths-x2l5aydx/summary.json
+$AI_RUN_DIR/gdr-lengths-x2l5aydx/fp16/summary.json
+$AI_RUN_DIR/gdr-lengths-x2l5aydx/fp16/cases.csv
+$AI_RUN_DIR/gdr-lengths-x2l5aydx/fp16/chunk-512/prompt-suite-isyol8hb/summary.json
+$AI_RUN_DIR/gdr-lengths-x2l5aydx/fp16/chunk-512/prompt-suite-isyol8hb/generations.txt
 $AI_RUN_DIR/gdr-lengths-vwh9cbqo/summary.json
 $AI_RUN_DIR/gdr-lengths-vwh9cbqo/cases.csv
 $AI_RUN_DIR/gdr-lengths-vwh9cbqo/chunk-128/prompt-suite-05akpid6/summary.json
 $AI_RUN_DIR/gdr-lengths-vwh9cbqo/chunk-128/prompt-suite-05akpid6/generations.txt
 ```
+
+分文件报告保留于对应汇总目录的 `datasets/<dataset-id>/summary.json` 和 `summary.md`，文件汇总见 `datasets.csv`。
