@@ -195,34 +195,54 @@ OM 加载和推理不执行本项目的权重预打包；group-128 scale、FP16 
 
 **2. 先验证新常量表示的 ATC 小图。** 这与已通过的运行时 `TransData` 小图不同。
 
-r34、r35 的接收端 tiny/gate_up 均在 `InferShapeForWeightQuantBatchMatmulV2`
-失败。r35 日志已确认新描述生效，但二维 `Const.value` 加存储属性仍未解决问题。
-`BIT_EXACT` 只验证 CPU 字节排列，不能证明 ATC 的常量推导正确；此前怀疑的
-`Kb=32` 尚无接收端实际维度作证据。已通过的运行时 `TransData` 路径可以继续使用。
+r36 接收端三项对照均失败，已经捕获真实原因：`Ka[256] != Kb[32]`。
+权重逻辑形状 `[64,256]` 被替换为 NZ 存储形状 `[8,4,16,32]`，常量或其 Data 代理
+的输出进一步变成 `[8,4,1,1,16,32]`。静态 M16 也失败，因此不是仅由动态档位引起。
+ND 常量 + TransData 对照先按二维形状推导成功，折叠后也出现同样的形状损坏。
+这些结果不否定此前已经运行的外部动态权重 + TransData 路径。
 
-r36 保留失败表示用于复现，新增一次执行的 **tiny 三项对照**：预打包常量 + 动态
-16/64、相同预打包常量 + 静态 M16、相同原始 ND 常量 + `TransData` + 动态 16/64。
-三项的权重、scale、group-128、精度和仅 x 的公开接口一致；失败后继续收集其他项。
-这用于定位常量表示和动态展开的差别，不把任何一个对照当成生产修复。
+r37 只对校验过字节、填充、形状和消费端描述的离线 NZ 常量设置 GE
+`_out_shape_locked=true`（属性名有前导下划线），保留它的物理形状和二维 origin。
+WeightQuant 与公开输入不设置该属性，K/N、scale 和 tiling 检查继续执行。
+该机制来自 [GE InferShapePass](https://gitcode.com/cann/ge/blob/fe07bcd9d7e0ad8f487dd59b7ad73ff7f0736809/compiler/graph/passes/shape_optimize/infershape_pass.cc)
+及其 [属性定义](https://gitcode.com/cann/ge/blob/fe07bcd9d7e0ad8f487dd59b7ad73ff7f0736809/graph_metadef/graph/attr/ge_attr_define.cc)；
+[动态 Const→Data 处理](https://gitcode.com/cann/ge/blob/fe07bcd9d7e0ad8f487dd59b7ad73ff7f0736809/compiler/graph/passes/multi_batch/multi_batch_clone_pass.cc)
+保留算子属性。引用的 GE 源码版本尚未与接收端二进制一一对应，修复仍需实际编译验证。
+离线权重文件格式不变，可以复用；旧 AIR 缺少形状锁，需要重新导出。
+
+先运行 **tiny 三项对照**：修复后的预打包动态 16/64、预打包静态 M16、
+原本可用的动态权重 + TransData。三项的权重、scale、group-128 和精度一致；
+前两项只有 x 输入，最后一项另外保留权重与 scale 输入。r36 已失败的 ND 常量对照
+不再作为通过基准；所有项失败后仍会继续收集后续结果。
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
   --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --device-id "$DEVICE_ID" \
   --bits 8 --projection tiny --prepack-weights --diagnose-prepack \
-  --output-dir "$AI_RUN_DIR/matmul-atc-prepacked-r36"
+  --output-dir "$AI_RUN_DIR/matmul-atc-prepacked-r37"
 ```
 
 终端输出及 `diagnostics.txt` 汇总编译状态、实际 `Ka/Kb` 错误（若日志提供）和
-`InferShapeBlackBox` 中的输入/权重/scale、常量输出及 value 描述。每项的
+`InferShapeBlackBox` 中的输入/权重/scale、常量输出、value 描述及形状锁状态。每项的
 `*-diagnostics/` 保存 `atc-debug.log`、`command.json`、原始图和 `shape-diagnostics.json`。
 导出前另存 `weight-quant-descriptors.json`，便于对比哪个阶段改变了维度。
 解析失败或没有 dump 时明确记录缺失，原文件保留；不从导出前描述猜测失败维度。
 
 诊断仅对 ATC 子进程启用 `--log=debug`、`DUMP_GE_GRAPH=2` 和全阶段图采集，
 不改变父 shell 环境。图采集不含权重数据，日志与 dump 限于本次输出目录；
-不设置 `IGNORE_INFER_ERROR`，已有该绕过设置时拒绝运行。
+不设置 `IGNORE_INFER_ERROR`，已有非空值（包括 `0`）时拒绝运行。
+调试日志仅提到某融合 pass 的名字不再误报为该 pass 失败。
 参考 [CANN 图 dump 说明](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/800alpha003/devaids/devtools/atc/atlasatc_16_0115.html)
 和 [CANN 9.0.0 形状检查源码](https://gitcode.com/cann/ops-nn/blob/fcebf031d193d641d2d1472a539bcc387b1e5f09/matmul/weight_quant_batch_matmul_v2/op_host/weight_quant_batch_matmul_v2_infershape.cpp)。
+
+三项通过后，再检查实际慢投影尺寸：
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
+  --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --device-id "$DEVICE_ID" \
+  --bits 8 --projection gate_up down fc --prepack-weights \
+  --output-dir "$AI_RUN_DIR/matmul-atc-prepacked-r37-projections"
+```
 
 **3. 待预打包方案通过 ATC 和数值验证后，再验证完整 Draft。** 在正常 `export-air` 命令中增加
 `--draft-weight-prepack-manifest "$AI_RUN_DIR/w8-nz-weights/manifest.json"`，
@@ -233,13 +253,14 @@ factory JSON 也可设置同名下划线字段 `draft_weight_prepack_manifest`�
 
 五层 W8 导出应打印 `W8 offline NZ constants=26 weight_transdata=0 roundtrip=BIT_EXACT`。
 该行还应包含 `const_value_format=ND storage_format=FRACTAL_NZ`
-及 `descriptor=logical-value-physical-nz-output-v2`；前者是逻辑描述，实际权重仍是 NZ 字节。
+及 `descriptor=locked-logical-value-physical-nz-output-v3`
+和 `const_output_shape_locked=true weightquant_inference=enabled`；实际权重仍是 NZ 字节。
 `weight-quant-layout.json` 的 `prepack` 保存原始/NZ 哈希与移除节点；
 新 W8 权重由 OM 管理，无外部 `constant-inputs.tsv`，动态档位输入总维数从 99 降为 47。
 通用 C++ runner 可读取新清单，无需修改或重建。
 
-当前离线预打包方案的接收端 ATC 状态是 **FAIL**，r36 增加了诊断工具，未更换该表示。
-CPU 字节还原、AIR 图连接和模拟 bundle 检查不能覆盖此故障；OM 数值和时延仍未验证。
+接收端 r34–r36 离线预打包的 ATC 状态是 **FAIL**；r37 为待接收端验证的常量形状锁修复。
+CPU 字节还原、AIR 图连接和模拟 bundle 检查不能替代实际编译；OM 数值和时延仍未验证。
 复测应检查固定权重 `*_weight_nz*` 的 `TransData` 是否消失，并比较 Draft ms/call、
 整次生成时间与接受率。其他激活格式转换仍可能存在；不把全部 `TransData` 时间当作已实现收益。
 

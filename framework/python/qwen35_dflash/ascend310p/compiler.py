@@ -72,7 +72,14 @@ def _atc_failure_detail(stdout: str, graph: Mapping[str, Any]) -> str:
                        "Run the tiny --prepack-weights --diagnose-prepack controls to capture "
                        "CANN debug logs and InferShapeBlackBox descriptors. "
                        "Pre-save descriptors and BIT_EXACT packing alone do not establish ATC compatibility.")
-    if WEIGHT_QUANT_TRANSPOSE_PASS in stdout:
+    # Debug logs also name registered, skipped and successful passes. Diagnose
+    # fusion only from an actual failure of this pass, not its mere presence.
+    pass_name = re.escape(WEIGHT_QUANT_TRANSPOSE_PASS)
+    fusion_failed = re.search(
+        rf"(?:{pass_name}[\]\s,]*failed\b|Failed to run graph fusion pass\s*\[{pass_name}[,\]])",
+        stdout, re.IGNORECASE,
+    )
+    if fusion_failed:
         detail += (
             "\nWeight-quant transpose/NZ graph fusion failed before OM execution. "
             "An off switch has not prevented this pass on the receiver. "

@@ -12,7 +12,7 @@ import torch
 
 from qwen35_dflash.ascend310p.runtime_input_export import canonical_runtime_input_abi
 from qwen35_dflash.ascend310p.weight_prepack import (
-    CONST_DESC_POLICY, PREPACK_POLICY, _const_value_desc,
+    CONST_DESC_POLICY, CONST_SHAPE_LOCK, PREPACK_POLICY, _const_value_desc, validate_prepacked_graph,
     pack_int8_nz, load_prepacked_weights, prepack_weight_quant_constants,
 )
 from qwen35_dflash.ascend310p.weight_quant_layout import normalize_weight_quant_layout, validate_weight_quant_layout
@@ -127,6 +127,9 @@ def test_air_nz_constants_equal_original_graph_for_both_gears(tmp_path, shared, 
     assert ("w" in {n.name for n in g.op}) is shared
     nz = next(n for n in g.op if n.name == "quant_weight_nz")
     assert nz.type == "Const" and not nz.input
+    assert nz.attr["_out_shape_locked"].b is True
+    assert CONST_SHAPE_LOCK == "_out_shape_locked"  # GE's literal has a leading underscore.
+    assert [n.name for n in g.op if CONST_SHAPE_LOCK in n.attr and n.attr[CONST_SHAPE_LOCK].b] == [nz.name]
     tensor_desc = nz.attr["value"].t.desc
     assert list(tensor_desc.shape.dim) == [64, 256]
     assert tensor_desc.layout == "ND" and tensor_desc.attr["format_for_int"].i == 2
@@ -155,7 +158,7 @@ def test_air_nz_constants_equal_original_graph_for_both_gears(tmp_path, shared, 
     with pytest.raises(ValueError): validate_weight_quant_layout(broken)
     for field, bad in (("descriptor_policy", None), ("value_shape", [8, 4, 16, 32]),
                        ("value_format", "FRACTAL_NZ"), ("value_storage_shape", [64, 256]),
-                       ("value_storage_format", "ND")):
+                       ("value_storage_format", "ND"), ("output_shape_locked", False)):
         broken = copy.deepcopy(entry)
         bad_audit = broken["runtime_input_abi"]["weight_quant_layout"]
         # Keep duplicate audit records internally consistent; validate the
@@ -167,6 +170,34 @@ def test_air_nz_constants_equal_original_graph_for_both_gears(tmp_path, shared, 
     del legacy["runtime_input_abi"]["weight_quant_layout"]["prepack"]["descriptor_policy"]
     with pytest.raises(ValueError, match="re-export AIR"):
         validate_weight_quant_layout(legacy)
+
+
+@pytest.mark.parametrize("damage", ["physical_origin", "double_nz", "consumer", "payload", "unlocked",
+                                    "public_input_lock", "weightquant_lock"])
+def test_shape_lock_cannot_hide_bad_carrier_or_lock_runtime_computation(tmp_path, damage):
+    g = fixture_graph()
+    q = (torch.arange(64 * 256).reshape(64, 256) % 256 - 128).to(torch.int8)
+    const(next(n for n in g.op if n.name == "w"), q)
+    audit = prepack_weight_quant_constants(g, normalize_weight_quant_layout(g), {"w:0": q},
+                                          load_prepacked_weights(cached_weight(tmp_path, q)))
+    nz = next(n for n in g.op if n.name == "quant_weight_nz")
+    quant = next(n for n in g.op if n.name == "quant")
+    if damage == "physical_origin":
+        nz.output_desc[0].attr["origin_shape"].list.i[:] = [8, 4, 16, 32]
+    elif damage == "double_nz":
+        nz.output_desc[0].shape.dim[:] = [8, 4, 1, 1, 16, 32]
+    elif damage == "consumer":
+        quant.input_desc[1].attr["origin_shape"].list.i[:] = [8, 4, 16, 32]
+    elif damage == "payload":
+        nz.attr["value"].t.data = q.numpy().tobytes()  # same length, wrong ordering
+    elif damage == "unlocked":
+        del nz.attr[CONST_SHAPE_LOCK]
+    elif damage == "public_input_lock":
+        next(n for n in g.op if n.name == "x").attr[CONST_SHAPE_LOCK].b = True
+    else:
+        quant.attr[CONST_SHAPE_LOCK].b = True
+    with pytest.raises(ValueError):
+        validate_prepacked_graph(g, audit)
 
 
 @pytest.mark.parametrize("damage", ["runtime_input", "weight_changed", "payload_changed", "rehashed_wrong_layout"])

@@ -36,6 +36,7 @@ def dump_model():
     node.input_desc[1].attr["origin_shape"].list.i[:] = [8, 4, 16, 32]
     weight = next(op for op in subgraph.op if op.name == "wt")
     weight.type = "Const"
+    weight.attr["_out_shape_locked"].b = True
     weight.output_desc[0].CopyFrom(node.input_desc[1])
     weight.attr["value"].t.desc.shape.dim[:] = [64, 256]
     weight.attr["value"].t.desc.layout = "ND"
@@ -51,6 +52,8 @@ def test_snapshot_preserves_conflicting_metadata_and_omits_payloads():
     assert nodes[0]["inputs"][1]["dtype"] == "DT_INT8"
     producer = next(node for node in nodes[0]["producers"] if node["name"] == "wt")
     assert producer["value_descriptor"]["shape"] == [64, 256]
+    assert producer["_out_shape_locked"] is True
+    assert "_out_shape_locked" not in nodes[0]
     assert "MUST_NOT_APPEAR" not in json.dumps(nodes)
     assert model.SerializeToString(deterministic=True) == before
 
@@ -67,6 +70,29 @@ def test_primary_error_before_generic_atc_summary_is_not_lost():
     detail = _atc_failure_detail("WeightQuantBatchMatmulV2: The Shape Check failed", {})
     assert "diagnose-prepack" in detail
     assert "Kb[32]" not in detail  # absence of evidence is not a diagnosed shape
+
+
+@pytest.mark.parametrize("pass_log", [
+    "Register graph fusion pass WeightQuantBatchMatmulV2TransposeNZFusionPass",
+    "Run graph fusion pass [WeightQuantBatchMatmulV2TransposeNZFusionPass] successfully",
+    "WeightQuantBatchMatmulV2TransposeNZFusionPass is off",
+])
+def test_debug_pass_mentions_do_not_misdiagnose_shape_failure(pass_log):
+    log = (pass_log + "\n[ERROR] WeightQuantBatchMatmulV2 Ka[256] != Kb[32]\n"
+           "x_shape: [16, 256], weight_shape: [8, 4, 16, 32]\n"
+           "InferShapeForWeightQuantBatchMatmulV2: The Shape Check failed")
+    detail = _atc_failure_detail(log, {})
+    assert "Ka[256] != Kb[32]" in detail
+    assert "transpose/NZ graph fusion failed" not in detail
+    assert "off switch" not in detail
+
+
+@pytest.mark.parametrize("failure", [
+    "Graph fusion pass WeightQuantBatchMatmulV2TransposeNZFusionPass failed.",
+    "Failed to run graph fusion pass [WeightQuantBatchMatmulV2TransposeNZFusionPass, built-in-ai-core-graph-pass]",
+])
+def test_actual_fusion_failure_is_still_diagnosed(failure):
+    assert "transpose/NZ graph fusion failed" in _atc_failure_detail(failure, {})
 
 
 def test_real_subprocess_scopes_debug_env_and_retains_failed_graph(monkeypatch, tmp_path):
@@ -99,6 +125,7 @@ def test_real_subprocess_scopes_debug_env_and_retains_failed_graph(monkeypatch, 
                 shape_diagnostics_path=str(diag.report_path))
     summary = diagnostic_summary(case)
     assert "origin=[8, 4, 16, 32]" in summary and "value: shape=[64, 256] format=ND" in summary
+    assert "shape_locked=True" in summary and "shape_locked=False" in summary
     assert "MUST_NOT_APPEAR" not in diag.report_path.read_text()
     assert (diag.root / "command.json").is_file()
     with pytest.raises(ValueError, match="separate directory"):
@@ -118,9 +145,10 @@ def test_unparseable_dump_is_retained_and_cannot_be_reported_as_captured(monkeyp
     assert not report["snapshots"]
 
 
-def test_diagnostic_runner_keeps_inference_errors_enabled(monkeypatch, tmp_path):
+@pytest.mark.parametrize("value", ["1", "0", "false"])
+def test_diagnostic_runner_keeps_inference_errors_enabled(monkeypatch, tmp_path, value):
     monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
-    monkeypatch.setenv("IGNORE_INFER_ERROR", "1")
+    monkeypatch.setenv("IGNORE_INFER_ERROR", value)
     def unexpected(*args, **kwargs):
         pytest.fail("must not invoke ATC with inference validation disabled")
     monkeypatch.setattr(subprocess, "run", unexpected)

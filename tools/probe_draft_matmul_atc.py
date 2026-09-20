@@ -161,7 +161,7 @@ def parser():
                      help="test offline W8 NZ constants; requires --bits 8 --group-size 128 --weight-layout nk --weight-format nz")
     cli.add_argument("--diagnose-prepack", action="store_true",
                      help="tiny-only: capture ATC shapes for prepacked dynamic, prepacked static M16, "
-                          "and ND-Const + TransData dynamic controls; requires --prepack-weights")
+                          "and live-weight + TransData dynamic controls; requires --prepack-weights")
     return cli
 
 
@@ -191,11 +191,11 @@ def main(argv=None):
         require_weight_quant_matmul()
         report["environment"] = {"torch": str(torch.__version__), "torch_npu": str(torch_npu.__version__),
                                  "device": device, "device_name": torch.npu.get_device_name(args.device_id)}
-        controls = ("prepacked-dynamic", "prepacked-static16", "ndconst-dynamic") if args.diagnose_prepack else ("default",)
+        controls = ("prepacked-dynamic", "prepacked-static16", "runtime-dynamic") if args.diagnose_prepack else ("default",)
         combinations = itertools.product(dict.fromkeys(args.projection), dict.fromkeys(args.bits),
                                          dict.fromkeys(args.group_size), dict.fromkeys(args.weight_layout), controls)
         for projection, bits, group_size, layout, control in combinations:
-            prepacked = args.prepack_weights and control != "ndconst-dynamic"
+            prepacked = args.prepack_weights and control != "runtime-dynamic"
             case = {"bits": bits, "projection": projection, "group_size": group_size,
                     "weight_layout": layout, "weight_format": args.weight_format,
                     "offline_weight_prepack": prepacked, "control": control,
@@ -212,8 +212,6 @@ def main(argv=None):
                 options = {"prepack_dir": root / (name + "-offline")} if prepacked else {}
                 if control == "prepacked-static16":
                     options["static_rows"] = 16
-                if control == "ndconst-dynamic":
-                    options["immutable_nd"] = True
                 spec = make_spec(bits, projection, device, group_size, layout, args.weight_format, **options)
                 directory = root / name
                 case["phase"] = "export"
@@ -259,8 +257,10 @@ def main(argv=None):
     if args.diagnose_prepack:
         from qwen35_dflash.ascend310p.atc_diagnostics import diagnostic_summary
         text = "\n\n".join(diagnostic_summary(case) for case in report["cases"])
-        text += ("\n\nControls isolate immutable Const representation and dynamic-gear expansion. "
-                 "A passing ND constant control does not prove compile-time folding or faster OM execution.\n")
+        text += ("\n\nPrepacked static/dynamic controls use locked immutable NZ constants. "
+                 "The live-weight control retains runtime TransData and its weight/scale inputs. "
+                 "Weights, group scales and math match; the public input counts intentionally differ. "
+                 "Compile PASS does not establish OM numerical parity or faster execution.\n")
         (root / "diagnostics.txt").write_text(text, encoding="utf-8")
         print(text)
         print(f"Compact diagnostics: {root / 'diagnostics.txt'}")

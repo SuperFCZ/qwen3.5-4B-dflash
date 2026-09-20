@@ -41,7 +41,7 @@ def weight_quant_snapshot(graph):
                 "outputs": [describe_tensor(d) for d in node.output_desc]}
         if "value" in node.attr:
             item["value_descriptor"] = describe_tensor(node.attr["value"].t.desc)
-        for key in ("transpose_x", "transpose_weight"):
+        for key in ("transpose_x", "transpose_weight", "_out_shape_locked"):
             if key in node.attr:
                 item[key] = node.attr[key].b
         if "antiquant_group_size" in node.attr:
@@ -112,7 +112,8 @@ class AtcShapeDiagnostics:
                      "ASCEND_GLOBAL_LOG_LEVEL": "0", "ASCEND_SLOG_PRINT_TO_STDOUT": "1",
                      "ASCEND_PROCESS_LOG_PATH": str(logs)}
         env.update(overrides)
-        if env.get("IGNORE_INFER_ERROR") not in (None, "", "0"):
+        # GE enables this bypass for ANY nonempty string, including "0".
+        if env.get("IGNORE_INFER_ERROR"):
             raise ValueError("shape diagnostics require normal inference checks; unset IGNORE_INFER_ERROR")
         args = [a for a in command if not a.startswith("--log=")] + ["--log=debug"]
         atomic_write_json(self.root / "command.json", {"command": args, "cwd": str(cwd),
@@ -185,7 +186,8 @@ def diagnostic_summary(case):
         lines.append(f"  GE dump: {snapshot['path']}")
         for graph in snapshot["graphs"]:
             for node in graph["nodes"][:2]:
-                lines.append(f"  Node: {node['name']}")
+                lines.append(f"  Node: {node['name']} "
+                             f"shape_locked={node.get('_out_shape_locked', False)}")
                 for index, label in ((0, "x"), (1, "weight"), (2, "scale")):
                     if index < len(node["inputs"]):
                         desc = node["inputs"][index]
@@ -197,7 +199,8 @@ def diagnostic_summary(case):
                         continue
                     for desc in producer["outputs"]:
                         lines.append(f"    producer {producer['type']}: shape={desc['shape']} "
-                                     f"origin={desc.get('origin_shape', 'MISSING')} format={desc['format']}")
+                                     f"origin={desc.get('origin_shape', 'MISSING')} format={desc['format']} "
+                                     f"shape_locked={producer.get('_out_shape_locked', False)}")
                     if "value_descriptor" in producer:
                         desc = producer["value_descriptor"]
                         lines.append(f"    value: shape={desc['shape']} format={desc['format']} "

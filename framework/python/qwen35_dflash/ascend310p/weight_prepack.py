@@ -18,10 +18,13 @@ from .utils import contained_path, load_json_object, sha256_file
 
 
 PREPACK_POLICY = "w8-int8-nz-const-v1"
-# The offline bytes are still v1. Both r34 and this r35 descriptor candidate
-# failed on the receiver. A byte-exact carrier/host shape check does not prove
-# compatibility with CANN's Const inference and dynamic-gear passes.
-CONST_DESC_POLICY = "logical-value-physical-nz-output-v2"
+# Offline bytes remain v1. r36 proved that re-inference of the v2 Const
+# output replaces origin [N,K] with the physical NZ shape, then packs it again.
+# GE InferShapePass supports a node-local lock for an already fixed output.
+# Only validated immutable NZ constants get it; WeightQuant inference stays on.
+CONST_DESC_POLICY = "locked-logical-value-physical-nz-output-v3"
+# ge_attr_define.cc: ATTR_NAME_OUT_SHAPE_LOCKED (leading underscore required).
+CONST_SHAPE_LOCK = "_out_shape_locked"
 
 
 def _const_value_desc(physical_desc):
@@ -30,8 +33,9 @@ def _const_value_desc(physical_desc):
     Match TensorAdapter::NormalizeGeTensorDesc: shape/format describe the
     logical tensor, storage_shape/storage_format describe the actual bytes.
     Its output and the WeightQuant input retain the physical NZ descriptor
-    with origin_shape=[N,K]. This is an encoding candidate, not a verified
-    Const-inference contract: r35 still fails ATC and needs post-pass evidence.
+    with origin_shape=[N,K]. A separate node-local output-shape lock protects
+    this immutable output from re-inference. Receiver compilation must still
+    verify that CANN preserves that contract through all graph passes.
     """
     logical = list(physical_desc.attr["origin_shape"].list.i)
     storage = list(physical_desc.shape.dim)
@@ -156,9 +160,15 @@ def prepack_weight_quant_constants(graph, layout_audit, immutable_weights, cache
         conversion.output_desc.add().CopyFrom(desc)
         conversion.attr["value"].t.desc.CopyFrom(_const_value_desc(desc))
         conversion.attr["value"].t.data = data
+        # InferShapePass::CallInferShapeFunc honors this on Const and on the
+        # Data proxy created by MultiBatchClonePass (which preserves attrs).
+        # The constant's exact shape is known from its verified offline bytes;
+        # never put this flag on the WeightQuant consumer or a public input.
+        conversion.attr[CONST_SHAPE_LOCK].b = True
         item = {"name": name, "source": edge, "dtype": "int8", "format": "FRACTAL_NZ",
                 "logical_shape": list(matrix.shape), "storage_shape": cached["storage_shape"],
                 "descriptor_policy": CONST_DESC_POLICY,
+                "output_shape_locked": True,
                 "value_shape": list(matrix.shape), "value_format": "ND",
                 "value_storage_shape": cached["storage_shape"], "value_storage_format": "FRACTAL_NZ",
                 "logical_bytes": matrix.numel(), "storage_bytes": len(data),
@@ -184,7 +194,51 @@ def prepack_weight_quant_constants(graph, layout_audit, immutable_weights, cache
         "node_count": len(records), "removed_weight_transdata": [r["name"] for r in records],
         "removed_nd_constants": sorted(removed), "constants": records}
     layout_audit["inserted_transdata"] = []
+    validate_prepacked_graph(graph, layout_audit)
     return layout_audit
+
+
+def validate_prepacked_graph(graph, audit):
+    """Check every locked output against its bytes and consumer before save.
+
+    This validates the exporter, not the installed CANN implementation. It
+    deliberately does not repair conflicting descriptors or suppress any
+    WeightQuant shape/tiling error.
+    """
+    nodes = {node.name: node for node in graph.op}
+    expected = {r["name"] for r in audit["prepack"]["constants"]}
+    locked = {n.name for n in graph.op if CONST_SHAPE_LOCK in n.attr
+              and n.attr[CONST_SHAPE_LOCK].b}
+    if locked != expected:
+        raise ValueError("NZ shape lock must apply only to audited immutable weight constants")
+    for record in audit["nodes"]:
+        op = nodes[record["name"]]
+        node, port = _source(nodes, op.input[1])
+        entry = record["prepacked_constant"]
+        if (op.type != GE_OP or not op.attr["transpose_weight"].b
+                or op.attr["transpose_x"].b or op.attr["antiquant_group_size"].i != 128
+                or node.type != "Const" or node.input or port != 0
+                or len(node.output_desc) != 1 or "value" not in node.attr
+                or not valid_prepacked_record(record)):
+            raise ValueError("invalid locked NZ weight/consumer contract")
+        desc = node.output_desc[0]
+        value = node.attr["value"].t
+        if (list(desc.shape.dim) != record["weight_storage_shape"]
+                or list(desc.attr["origin_shape"].list.i) != record["weight_shape"]
+                or desc.layout != "FRACTAL_NZ" or _dtype(desc) != "DT_INT8"
+                or desc.attr["format_for_int"].i != 29
+                or desc.attr["origin_format_for_int"].i != 2
+                or not desc.attr["origin_shape_initialized"].b
+                or value.desc != _const_value_desc(desc)
+                or len(value.data) != entry["storage_bytes"]
+                or hashlib.sha256(value.data).hexdigest() != entry["storage_sha256"]):
+            raise ValueError("locked NZ constant descriptor or payload differs from offline weight")
+        # Descriptor names may describe different ports, all shape/format
+        # fields on the edge must otherwise agree.
+        consumer = copy.deepcopy(op.input_desc[1])
+        consumer.name = desc.name
+        if consumer != desc:
+            raise ValueError("WeightQuant input differs from locked NZ constant output")
 
 
 def valid_prepacked_record(node):
@@ -199,6 +253,7 @@ def valid_prepacked_record(node):
             and node.get("weight") == record["name"] + ":0"
             and record.get("dtype") == "int8" and record.get("format") == "FRACTAL_NZ"
             and record.get("descriptor_policy") == CONST_DESC_POLICY
+            and record.get("output_shape_locked") is True
             and record.get("value_shape") == shape and record.get("value_format") == "ND"
             and record.get("value_storage_shape") == storage and record.get("value_storage_format") == "FRACTAL_NZ"
             and record.get("logical_shape") == shape and record.get("storage_shape") == storage

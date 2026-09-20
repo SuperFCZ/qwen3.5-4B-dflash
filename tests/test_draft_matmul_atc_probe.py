@@ -221,7 +221,11 @@ def test_three_diagnostics_run_to_completion_even_after_atc_failure(monkeypatch,
     assert rc == 1 and len(set(runners)) == 3
     assert [spec.dynamic for spec in captured] == [True, False, True]
     assert ["draft_weight_prepack_manifest" in spec.metadata for spec in captured] == [True, True, False]
+    assert captured[2].input_names == ("x", "qweight", "scales")
+    assert captured[2].metadata["weight_quant_probe"]["weight_format"] == "nz"
     report = json.loads((root / "summary.json").read_text())
     assert [case["status"] for case in report["cases"]] == ["FAIL", "PASS", "PASS"]
+    assert [case["control"] for case in report["cases"]] == [
+        "prepacked-dynamic", "prepacked-static16", "runtime-dynamic"]
     assert all(case["execution_status"] == "NOT_RUN" for case in report["cases"])
     assert "prepacked-static16" in (root / "diagnostics.txt").read_text()

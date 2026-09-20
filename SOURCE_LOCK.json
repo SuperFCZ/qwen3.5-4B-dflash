@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash with one compact Draft / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
-  "package_revision": "r36",
+  "package_revision": "r37",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
     "version": 7,
@@ -180,7 +180,7 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "f2c0e53469f8dac3d3305786e6dce2ae3bf3549f144710c905b03f2814e615cc"
+        "source_sha256": "24feb8942e60abfa13cab030a26f92ddde511ef9279987dcd32b1d4f531abb6d"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -232,7 +232,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/compiler.py",
-        "source_sha256": "4c136d727a4d0bb37152b87a61c09fd13c519631aeb28cdcd8ee0cb6d8285939"
+        "source_sha256": "d60c9cfaa3986a558485aabebc0e53a65acf10f61f7983c1a92fb157bb2e8a6c"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/contracts.py",
@@ -280,7 +280,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/runtime_input_export.py",
-        "source_sha256": "7b30e7ec2d0666bc90201609d7761583365c1d63bb950158f184058dc1bcb4a5"
+        "source_sha256": "5fba7a9c23a4e91d2f55e93a63a06d8dd4526e87c6740a4f6f1cbb748d37ab28"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/standard_op_export.py",
@@ -624,7 +624,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/weight_prepack.py",
-        "source_sha256": "f172566d7041ec627fa4ec48f230e35c8f957c18796a2371c24129f9ae88c9c7"
+        "source_sha256": "64a6a62d0df26bae760d366a0877ae61c8aa5f8567a12cbdb7cdc6bf7322e7d2"
       },
       {
         "source_file": "tools/pack_draft_weights_nz.py",
@@ -632,15 +632,15 @@
       },
       {
         "source_file": "tests/test_weight_prepack.py",
-        "source_sha256": "cd844c23c08c830751966cafc946b1bf3e3df2d66d9481f0fef972edb27607d4"
+        "source_sha256": "18a88ad5eb2edb88c6f1f792d45ce85714fd954580acb35dc4de1582aa656627"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/atc_diagnostics.py",
-        "source_sha256": "f87a07927e987fd958de7bb4419726d2c7084775fe95f3c108c17be7bdb3bbd2"
+        "source_sha256": "a6b575589c34ed598c4eaf056b47a5c2f59d74ac996ecec3fe237bc9358c8d8a"
       },
       {
         "source_file": "tests/test_atc_shape_diagnostics.py",
-        "source_sha256": "0ffeb1319d332092ce334b5ab37217f7c25625b6cdf69cbc6f2239313c2b510e"
+        "source_sha256": "72d52650fa95aa13f8b12b3495555ae94e7ad8c24d9583998b2392b2c94bf5ee"
       }
     ],
     "supported_abis": [
@@ -828,7 +828,7 @@
       },
       {
         "source_file": "tools/probe_draft_matmul_atc.py",
-        "source_sha256": "7a4ba1523e0e64dc3a137530b05a7500ca241fa09667373120135aab6ab26d21"
+        "source_sha256": "60fbe36e6bd6d0e284b5c2ccad9b1606134580ffb3352b6e188866bf2326570b"
       },
       {
         "source_file": "tests/test_weight_quant_layout.py",
@@ -836,11 +836,11 @@
       },
       {
         "source_file": "tests/test_draft_matmul_atc_probe.py",
-        "source_sha256": "338440fa9a3bbb9d5f4b50a00d36e72f247a19041346a4a2431ba908d02bdddc"
+        "source_sha256": "92d4a9127820ed77e0bd22b8eb1004c854869e0c96b49b02c5f935b71516bc0c"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/weight_prepack.py",
-        "source_sha256": "f172566d7041ec627fa4ec48f230e35c8f957c18796a2371c24129f9ae88c9c7"
+        "source_sha256": "64a6a62d0df26bae760d366a0877ae61c8aa5f8567a12cbdb7cdc6bf7322e7d2"
       },
       {
         "source_file": "tools/pack_draft_weights_nz.py",
@@ -848,15 +848,15 @@
       },
       {
         "source_file": "tests/test_weight_prepack.py",
-        "source_sha256": "cd844c23c08c830751966cafc946b1bf3e3df2d66d9481f0fef972edb27607d4"
+        "source_sha256": "18a88ad5eb2edb88c6f1f792d45ce85714fd954580acb35dc4de1582aa656627"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/atc_diagnostics.py",
-        "source_sha256": "f87a07927e987fd958de7bb4419726d2c7084775fe95f3c108c17be7bdb3bbd2"
+        "source_sha256": "a6b575589c34ed598c4eaf056b47a5c2f59d74ac996ecec3fe237bc9358c8d8a"
       },
       {
         "source_file": "tests/test_atc_shape_diagnostics.py",
-        "source_sha256": "0ffeb1319d332092ce334b5ab37217f7c25625b6cdf69cbc6f2239313c2b510e"
+        "source_sha256": "72d52650fa95aa13f8b12b3495555ae94e7ad8c24d9583998b2392b2c94bf5ee"
       }
     ],
     "workflow": "normal export-air / compile-om and benchmark_gdr_lengths.py; flat seven-OM directory; mixed builtin/offline tests; ordinary baseline path reuse",
@@ -878,16 +878,29 @@
         "policy": "w8-int8-nz-const-v1",
         "converter": "tools/pack_draft_weights_nz.py --manifest <existing W8 member manifest> --output-dir <new run directory>",
         "activation": "export-air --draft-weight-prepack-manifest <offline manifest>; native W8 only, default paths preserved",
-        "representation": "Immutable original INT8 weights matched by logical shape and hash to reusable NZ files; byte-exact restore and zero padding checked. Const.value uses logical ND[N,K] with storage_format=FRACTAL_NZ and storage_shape, while output/consumer descriptors retain physical NZ and origin[N,K]. Offline v1 weight files remain compatible.",
+        "representation": "Offline v1 NZ files remain compatible. Const.value is logical ND[N,K] with NZ storage attributes; output and consumer are physical NZ with origin[N,K]. Only audited immutable NZ Const nodes carry _out_shape_locked=true. Byte/hash/zero-padding and edge consistency are checked before save. Public inputs and WeightQuant consumers must remain unlocked.",
         "runtime": "W8 weights reside in OM constants; 26 weight TransData removed from five-layer AIR; public dynamic input rank sum 47. Existing generic runner consumes the new manifest.",
-        "validation": "Offline byte permutation and host graph/ABI checks pass, but they do not execute CANN Const inference. r35 target compilation is FAIL, not NOT_RUN or fixed. r36 retains that representation for diagnosis; real-device compilation of the three controls and OM numerical/latency checks remain NOT_RUN locally.",
+        "validation": "r34-r36 receiver compilation remains FAIL. r37 adds a node-local fixed-output shape lock using GE source, rather than disabling WeightQuant inference. Host checks do not prove the installed compiler honors this attribute through every pass. r37 receiver compile, OM numerical parity and device latency are NOT_RUN; no new performance or model parity claim.",
         "probe": "probe_draft_matmul_atc.py --bits 8 --projection tiny gate_up --prepack-weights",
-        "descriptor_policy": "logical-value-physical-nz-output-v2",
+        "descriptor_policy": "locked-logical-value-physical-nz-output-v3",
         "receiver_r34": "Prepacked tiny and gate_up both FAIL during InferShapeForWeightQuantBatchMatmulV2 on CANN 9.0.0 / Ascend310P; byte-exact host roundtrip did not establish valid Const inference metadata.",
         "ge_descriptor_reference": "https://gitcode.com/cann/ge/blob/56305bf5718657c1bcfd2fe9473d9ecd68ce2b97/graph_metadef/graph/normal_graph/tensor.cc",
         "receiver_r35": "Both tiny and gate_up FAIL in InferShapeForWeightQuantBatchMatmulV2 with descriptor=logical-value-physical-nz-output-v2 confirmed in receiver output. Actual failing shapes are absent from the provided log; Ka/Kb or dynamic-gear corruption remains unconfirmed.",
-        "diagnostic_probe": "probe_draft_matmul_atc.py --bits 8 --projection tiny --prepack-weights --diagnose-prepack; prepacked dynamic 16/64, prepacked static M16, ND Const plus TransData dynamic. Matched synthetic weights/scales/math and only-x ABI; child-only ATC debug env; raw GE graphs and actual WeightQuant/producer/value descriptors retained with primary shape errors.",
-        "diagnostic_scope": "diagnostics.txt is a compact collection report, not a repair or performance claim. No IGNORE_INFER_ERROR, no precision or grouping change, no promotion from host shape tests. ND Const compile success would not prove TransData folding or faster execution."
+        "diagnostic_probe": "probe_draft_matmul_atc.py --bits 8 --projection tiny --prepack-weights --diagnose-prepack; locked prepacked dynamic16/64, locked prepacked static16, live-weight TransData dynamic positive control. Same values and math; live control intentionally has extra weight/scale inputs. Captures actual graph descriptors including _out_shape_locked on producer and WeightQuant.",
+        "diagnostic_scope": "Real child-only ATC debug capture. Nonempty IGNORE_INFER_ERROR, including 0, is rejected. Merely mentioning a fusion pass in debug logs does not establish a fusion failure. Compile PASS still does not establish OM accuracy or performance.",
+        "receiver_r36": "CANN 9.0.0 / torch_npu 2.8.0.post1+gitc7b6b32 / Ascend310P: prepacked dynamic, prepacked static M16, and ND Const + TransData dynamic all FAIL. Actual Ka[256] != Kb[32]; WeightQuant weight origin becomes [8,4,16,32] instead of [64,256]. Producer Const/Data becomes NZ[8,4,1,1,16,32] with origin[8,4,16,32]. ND Const control first infers [64,256] correctly, then a folded Const has the same corrupted origin. Static failure rules out dynamic gears as the sole cause.",
+        "shape_lock_reference": {
+          "repository": "https://gitcode.com/cann/ge",
+          "commit": "fe07bcd9d7e0ad8f487dd59b7ad73ff7f0736809",
+          "version_scope": "upstream master, not verified as exact receiver binary source",
+          "paths": [
+            "graph_metadef/graph/attr/ge_attr_define.cc",
+            "compiler/graph/passes/shape_optimize/infershape_pass.cc",
+            "compiler/graph/passes/multi_batch/multi_batch_clone_pass.cc",
+            "compiler/graph/passes/multi_batch/subgraph_multi_dims_clone_pass.cc"
+          ],
+          "mechanism": "ATTR_NAME_OUT_SHAPE_LOCKED is _out_shape_locked; InferShapePass skips only that node output re-inference; multi-batch Const-to-Data preserves other node attrs."
+        }
       }
     }
   }
