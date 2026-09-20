@@ -62,6 +62,16 @@ def _atc_failure_detail(stdout: str, graph: Mapping[str, Any]) -> str:
         if context:
             excerpt += "\n" + context
     detail = f"\nATC diagnostic:\n{excerpt}" if excerpt else ""
+    if "WeightQuantBatchMatmulV2" in stdout:
+        from .atc_diagnostics import weight_quant_inference_lines
+        primary = weight_quant_inference_lines(stdout)
+        if primary:
+            detail = "\nWeightQuant inference evidence:\n" + "\n".join(primary) + detail
+        elif "The Shape Check failed" in stdout:
+            detail += ("\nThe summary omits the actual failing input dimensions. "
+                       "Run the tiny --prepack-weights --diagnose-prepack controls to capture "
+                       "CANN debug logs and InferShapeBlackBox descriptors. "
+                       "Pre-save descriptors and BIT_EXACT packing alone do not establish ATC compatibility.")
     if WEIGHT_QUANT_TRANSPOSE_PASS in stdout:
         detail += (
             "\nWeight-quant transpose/NZ graph fusion failed before OM execution. "

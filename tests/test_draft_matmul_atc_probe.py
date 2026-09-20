@@ -152,3 +152,76 @@ def test_offline_prepack_probe_preserves_native_math_and_declares_only_x(monkeyp
         assert torch.equal(candidate.model(x), baseline.model(x, *baseline.example_args[1:]))
     with pytest.raises(ValueError, match="requires W8"):
         make_spec(4, "tiny", "cpu", prepack_dir=tmp_path / "bad")
+
+
+@pytest.mark.parametrize("rows", [16, 64])
+def test_diagnostic_controls_hold_weights_math_and_public_abi_fixed(monkeypatch, tmp_path, rows):
+    from qwen35_dflash.ascend310p.compiler import _dynamic_atc_args
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    dynamic = make_spec(8, "tiny", "cpu", prepack_dir=tmp_path / "dynamic")
+    static = make_spec(8, "tiny", "cpu", prepack_dir=tmp_path / "static", static_rows=rows)
+    ndconst = make_spec(8, "tiny", "cpu", immutable_nd=True)
+    for spec in (static, ndconst):
+        assert spec.input_names == dynamic.input_names == ("x",)
+        assert torch.equal(spec.model.qweight, dynamic.model.qweight)
+        assert torch.equal(spec.model.scales, dynamic.model.scales)
+        x = torch.randn(rows, 256).half() / 16
+        assert torch.equal(spec.model(x), dynamic.model(x))
+    assert static.dynamic is False and "dynamic_input_axes" not in static.metadata
+    assert _dynamic_atc_args({"metadata": static.metadata}, []) == []
+    assert dynamic.dynamic and ndconst.dynamic
+    assert "draft_weight_prepack_manifest" not in ndconst.metadata
+    assert "weight_quant_probe" not in ndconst.metadata  # production layout normalization
+    exported = torch.export.export(static.model, static.example_args).module()
+    assert torch.equal(exported(*static.example_args), static.model(*static.example_args))
+
+
+def test_prepack_diagnostics_restricts_to_tiny_before_creating_files(monkeypatch, tmp_path):
+    import probe_draft_matmul_atc as probe
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    for more in (["--projection", "gate_up", "--prepack-weights"], []):
+        with pytest.raises(SystemExit):
+            probe.main(["--output-dir", str(tmp_path / "unused"), "--atc", "/bin/true",
+                        "--soc-version", "Ascend310P3", "--bits", "8", "--diagnose-prepack", *more])
+    assert not (tmp_path / "unused").exists()
+
+
+def test_three_diagnostics_run_to_completion_even_after_atc_failure(monkeypatch, tmp_path):
+    import probe_draft_matmul_atc as probe
+    from qwen35_dflash.ascend310p.atc_diagnostics import AtcShapeDiagnostics
+    npu = ModuleType("torch_npu"); npu.__version__ = "test-double"
+    monkeypatch.setitem(sys.modules, "torch_npu", npu)
+    monkeypatch.setitem(sys.modules, "torchair", ModuleType("torchair"))
+    monkeypatch.setattr(torch, "npu", SimpleNamespace(set_device=lambda _: None,
+                        get_device_name=lambda _: "fake", empty_cache=lambda: None), raising=False)
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    original = probe.make_spec
+    monkeypatch.setattr(probe, "make_spec", lambda bits, projection, device, *args, **kw:
+                        original(bits, projection, "cpu", *args, **kw))
+    captured, runners = [], []
+    def export(factory, config, directory):
+        spec = factory(config)[0]; captured.append(spec)
+        return {"manifest_path": str(directory / "air.json"),
+                "graphs": [{"runtime_input_abi": {"weight_quant_layout": {}}}]}
+    def compile_air(manifest, **kw):
+        runners.append(kw["runner"].root)
+        assert kw["extra_args"] == ["--precision_mode=must_keep_origin_dtype", "--deterministic=0"]
+        if len(runners) == 1:
+            raise RuntimeError("The Shape Check failed")
+        return {"manifest_path": str(Path(manifest).with_name("deployment.json"))}
+    monkeypatch.setattr(probe, "export_air_bundle", export)
+    monkeypatch.setattr(probe, "compile_air_bundle", compile_air)
+    def collect(diag):
+        diag.report_path = diag.root / "shape-diagnostics.json"
+        return {"status": "TEST_DOUBLE", "snapshots": [], "inference_lines": []}
+    monkeypatch.setattr(AtcShapeDiagnostics, "collect", collect)
+    root = tmp_path / "probe"
+    rc = probe.main(["--output-dir", str(root), "--atc", "/bin/true", "--soc-version", "Ascend310P3",
+                     "--bits", "8", "--prepack-weights", "--diagnose-prepack"])
+    assert rc == 1 and len(set(runners)) == 3
+    assert [spec.dynamic for spec in captured] == [True, False, True]
+    assert ["draft_weight_prepack_manifest" in spec.metadata for spec in captured] == [True, True, False]
+    report = json.loads((root / "summary.json").read_text())
+    assert [case["status"] for case in report["cases"]] == ["FAIL", "PASS", "PASS"]
+    assert all(case["execution_status"] == "NOT_RUN" for case in report["cases"])
+    assert "prepacked-static16" in (root / "diagnostics.txt").read_text()

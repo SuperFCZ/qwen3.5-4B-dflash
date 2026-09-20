@@ -49,12 +49,12 @@ def const(node, value):
     node.attr["value"].t.data = value.numpy().tobytes()
 
 
-def infer_const_consumer_shape(constant, x_shape):
-    """Host shape check for Const -> transposed WeightQuant (not an ATC run).
+def check_const_value_shape(constant, x_shape):
+    """Check our value descriptor encoding, NOT the result of CANN inference.
 
-    Check the freshly inferred Const shape, not its old origin_shape attribute.
-    CANN 9.0 ShapeCheckAndInfer compares x[-1] with weight[-1] for INT8/NK.
-    Feeding the r34 physical TensorDef through this step reproduces Kb=32.
+    CANN 9.0 checks the logical K dimensions, but this helper does not execute
+    the passes that choose/propagate them. The r35 receiver failure shows that
+    passing this check is insufficient. Actual compiler snapshots are needed.
     """
     shape = list(constant.attr["value"].t.desc.shape.dim)
     if x_shape[-1] != shape[-1]:
@@ -65,7 +65,7 @@ def infer_const_consumer_shape(constant, x_shape):
 
 @pytest.mark.parametrize("n,k", [(64, 256), (19456, 2560), (2560, 9728), (2560, 12800)])
 @pytest.mark.parametrize("m", [16, 64])
-def test_const_value_inference_uses_logical_k_not_nz_lane_width(n, k, m):
+def test_const_value_encoding_keeps_logical_k_and_physical_storage(n, k, m):
     # Shape-only counterpart of the tiny/full projection probes. No large
     # weight allocation or target kernel simulation is needed for this gate.
     graph = fixture_graph()
@@ -80,11 +80,11 @@ def test_const_value_inference_uses_logical_k_not_nz_lane_width(n, k, m):
     node.attr["value"].t.desc.CopyFrom(desc)
     # This regression must fail for r34 even though its origin_shape is right.
     with pytest.raises(ValueError, match=r"!= Kb\[32\]"):
-        infer_const_consumer_shape(node, [m, k])
+        check_const_value_shape(node, [m, k])
     node.attr["value"].t.desc.CopyFrom(_const_value_desc(desc))
     saved = type(graph).FromString(graph.SerializeToString())
     saved_weight = next(op for op in saved.op if op.name == "w")
-    assert infer_const_consumer_shape(saved_weight, [m, k]) == [m, n]
+    assert check_const_value_shape(saved_weight, [m, k]) == [m, n]
     # Inference metadata must not turn the outgoing carrier into ND.
     assert saved_weight.output_desc[0] == desc
     assert list(saved_weight.attr["value"].t.desc.attr["storage_shape"].list.i) == list(desc.shape.dim)
@@ -140,7 +140,7 @@ def test_air_nz_constants_equal_original_graph_for_both_gears(tmp_path, shared, 
     g = type(g).FromString(g.SerializeToString())
     nz = next(node for node in g.op if node.name == "quant_weight_nz")
     for rows in (16, 64):
-        assert infer_const_consumer_shape(nz, [rows, 256]) == [rows, 64]
+        assert check_const_value_shape(nz, [rows, 256]) == [rows, 64]
         x = (torch.arange(rows * 256).reshape(rows, 256) % 7 - 3).half() / 16
         args = dict(x=x, w=q, s=s)
         assert torch.equal(evaluate_weight_quant_graph(g, args), evaluate_weight_quant_graph(original, args))
@@ -210,7 +210,7 @@ def test_actual_air_save_hook_binds_immutable_values_before_conversion(monkeypat
     assert audit["weight_quant_layout"]["prepack"]["node_count"] == 1
     assert audit["weight_quant_layout"]["prepack"]["descriptor_policy"] == CONST_DESC_POLICY
     nz = next(op for op in g.op if op.name == "quant_weight_nz")
-    assert infer_const_consumer_shape(nz, [16, 256]) == [16, 64]
+    assert check_const_value_shape(nz, [16, 256]) == [16, 64]
     assert not any(n.type == "TransData" for n in g.op)
     assert module._convert_data_to_const is original
 

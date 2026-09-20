@@ -195,25 +195,36 @@ OM 加载和推理不执行本项目的权重预打包；group-128 scale、FP16 
 
 **2. 先验证新常量表示的 ATC 小图。** 这与已通过的运行时 `TransData` 小图不同。
 
-r34 的接收端测试在 `InferShapeForWeightQuantBatchMatmulV2` 失败。
-该版把四维 NZ 存储描述同时写入 `Const.value`；常量推导后可能把末维 32
-当成矩阵的逻辑 K。r35 将 `Const.value` 改为二维逻辑 `[N,K]` / `ND`，
-使用 `storage_shape`、`storage_format=FRACTAL_NZ` 明确标记其实际 NZ 字节，
-输出端口及 WeightQuant 输入仍保留四维 NZ shape 与二维 `origin_shape`。
-这对应 GE 的 `TensorAdapter::NormalizeGeTensorDesc` 表示；
-算子的逻辑 K 检查见 [CANN 9.0.0 ShapeCheckAndInfer](https://gitcode.com/cann/ops-nn/blob/fcebf031d193d641d2d1472a539bcc387b1e5f09/matmul/weight_quant_batch_matmul_v2/op_host/weight_quant_batch_matmul_v2_infershape.cpp)，
-描述转换见 [GE TensorAdapter](https://gitcode.com/cann/ge/blob/56305bf5718657c1bcfd2fe9473d9ecd68ce2b97/graph_metadef/graph/normal_graph/tensor.cc)。
-**旧 NZ 权重文件可复用，旧 AIR 必须重新导出**；编译前审计会拒绝 r34 的常量描述。
-不设置 `IGNORE_INFER_ERROR`，保留正常形状检查。
+r34、r35 的接收端 tiny/gate_up 均在 `InferShapeForWeightQuantBatchMatmulV2`
+失败。r35 日志已确认新描述生效，但二维 `Const.value` 加存储属性仍未解决问题。
+`BIT_EXACT` 只验证 CPU 字节排列，不能证明 ATC 的常量推导正确；此前怀疑的
+`Kb=32` 尚无接收端实际维度作证据。已通过的运行时 `TransData` 路径可以继续使用。
+
+r36 保留失败表示用于复现，新增一次执行的 **tiny 三项对照**：预打包常量 + 动态
+16/64、相同预打包常量 + 静态 M16、相同原始 ND 常量 + `TransData` + 动态 16/64。
+三项的权重、scale、group-128、精度和仅 x 的公开接口一致；失败后继续收集其他项。
+这用于定位常量表示和动态展开的差别，不把任何一个对照当成生产修复。
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
   --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --device-id "$DEVICE_ID" \
-  --bits 8 --projection tiny gate_up --prepack-weights \
-  --output-dir "$AI_RUN_DIR/matmul-atc-prepacked-r35"
+  --bits 8 --projection tiny --prepack-weights --diagnose-prepack \
+  --output-dir "$AI_RUN_DIR/matmul-atc-prepacked-r36"
 ```
 
-**3. 在新目录导出并编译。** 在正常 `export-air` 命令中增加
+终端输出及 `diagnostics.txt` 汇总编译状态、实际 `Ka/Kb` 错误（若日志提供）和
+`InferShapeBlackBox` 中的输入/权重/scale、常量输出及 value 描述。每项的
+`*-diagnostics/` 保存 `atc-debug.log`、`command.json`、原始图和 `shape-diagnostics.json`。
+导出前另存 `weight-quant-descriptors.json`，便于对比哪个阶段改变了维度。
+解析失败或没有 dump 时明确记录缺失，原文件保留；不从导出前描述猜测失败维度。
+
+诊断仅对 ATC 子进程启用 `--log=debug`、`DUMP_GE_GRAPH=2` 和全阶段图采集，
+不改变父 shell 环境。图采集不含权重数据，日志与 dump 限于本次输出目录；
+不设置 `IGNORE_INFER_ERROR`，已有该绕过设置时拒绝运行。
+参考 [CANN 图 dump 说明](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/800alpha003/devaids/devtools/atc/atlasatc_16_0115.html)
+和 [CANN 9.0.0 形状检查源码](https://gitcode.com/cann/ops-nn/blob/fcebf031d193d641d2d1472a539bcc387b1e5f09/matmul/weight_quant_batch_matmul_v2/op_host/weight_quant_batch_matmul_v2_infershape.cpp)。
+
+**3. 待预打包方案通过 ATC 和数值验证后，再验证完整 Draft。** 在正常 `export-air` 命令中增加
 `--draft-weight-prepack-manifest "$AI_RUN_DIR/w8-nz-weights/manifest.json"`，
 并将 `--bundle-dir` 换成新目录，如 `$AI_RUN_DIR/om-bundle-nz`。
 然后对该新目录的 `air-manifest.json` 执行正常 `compile-om`。
@@ -227,7 +238,8 @@ factory JSON 也可设置同名下划线字段 `draft_weight_prepack_manifest`�
 新 W8 权重由 OM 管理，无外部 `constant-inputs.tsv`，动态档位输入总维数从 99 降为 47。
 通用 C++ runner 可读取新清单，无需修改或重建。
 
-当前验证覆盖 CPU 字节还原、AIR 图连接和模拟 bundle 编译；310P ATC、OM 数值和时延仍待验证。
+当前离线预打包方案的接收端 ATC 状态是 **FAIL**，r36 增加了诊断工具，未更换该表示。
+CPU 字节还原、AIR 图连接和模拟 bundle 检查不能覆盖此故障；OM 数值和时延仍未验证。
 复测应检查固定权重 `*_weight_nz*` 的 `TransData` 是否消失，并比较 Draft ms/call、
 整次生成时间与接受率。其他激活格式转换仍可能存在；不把全部 `TransData` 时间当作已实现收益。
 

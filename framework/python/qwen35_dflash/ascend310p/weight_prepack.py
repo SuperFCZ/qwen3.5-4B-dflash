@@ -18,9 +18,9 @@ from .utils import contained_path, load_json_object, sha256_file
 
 
 PREPACK_POLICY = "w8-int8-nz-const-v1"
-# The offline bytes are still v1. Only their AIR representation changes: r34
-# copied the physical output descriptor into Const.value, so Const inference
-# could propagate K0=32 as the logical reduction dimension.
+# The offline bytes are still v1. Both r34 and this r35 descriptor candidate
+# failed on the receiver. A byte-exact carrier/host shape check does not prove
+# compatibility with CANN's Const inference and dynamic-gear passes.
 CONST_DESC_POLICY = "logical-value-physical-nz-output-v2"
 
 
@@ -29,9 +29,9 @@ def _const_value_desc(physical_desc):
 
     Match TensorAdapter::NormalizeGeTensorDesc: shape/format describe the
     logical tensor, storage_shape/storage_format describe the actual bytes.
-    Const shape inference consumes value.shape. Its output and the WeightQuant
-    input retain the physical NZ descriptor with origin_shape=[N,K]. Do not
-    copy the physical descriptor back onto value after normalizing it.
+    Its output and the WeightQuant input retain the physical NZ descriptor
+    with origin_shape=[N,K]. This is an encoding candidate, not a verified
+    Const-inference contract: r35 still fails ATC and needs post-pass evidence.
     """
     logical = list(physical_desc.attr["origin_shape"].list.i)
     storage = list(physical_desc.shape.dim)

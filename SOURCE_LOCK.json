@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash with one compact Draft / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
-  "package_revision": "r35",
+  "package_revision": "r36",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
     "version": 7,
@@ -180,7 +180,7 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "8c5b65542aab2cb848af1edd118acc8f574774c1f8cbd13efbccaefed84194d4"
+        "source_sha256": "f2c0e53469f8dac3d3305786e6dce2ae3bf3549f144710c905b03f2814e615cc"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -232,7 +232,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/compiler.py",
-        "source_sha256": "63c88043d519d662b987b600800d27562a569cb32a82e0225dfc14728541edfb"
+        "source_sha256": "4c136d727a4d0bb37152b87a61c09fd13c519631aeb28cdcd8ee0cb6d8285939"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/contracts.py",
@@ -280,7 +280,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/runtime_input_export.py",
-        "source_sha256": "f16e853d51524367abe67f7a9ebb220075b6f9dfd452dd3e49a6b48905cf0363"
+        "source_sha256": "7b30e7ec2d0666bc90201609d7761583365c1d63bb950158f184058dc1bcb4a5"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/standard_op_export.py",
@@ -624,7 +624,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/weight_prepack.py",
-        "source_sha256": "ef09f14155b53f69066c288a1df26bb9f77e6e022e63fb38563b38b6776e0402"
+        "source_sha256": "f172566d7041ec627fa4ec48f230e35c8f957c18796a2371c24129f9ae88c9c7"
       },
       {
         "source_file": "tools/pack_draft_weights_nz.py",
@@ -632,7 +632,15 @@
       },
       {
         "source_file": "tests/test_weight_prepack.py",
-        "source_sha256": "3ec281a59fb2200bcfd1b316b823e2b44f65ee4ba1f22734b0c3842f9c87620b"
+        "source_sha256": "cd844c23c08c830751966cafc946b1bf3e3df2d66d9481f0fef972edb27607d4"
+      },
+      {
+        "source_file": "framework/python/qwen35_dflash/ascend310p/atc_diagnostics.py",
+        "source_sha256": "f87a07927e987fd958de7bb4419726d2c7084775fe95f3c108c17be7bdb3bbd2"
+      },
+      {
+        "source_file": "tests/test_atc_shape_diagnostics.py",
+        "source_sha256": "0ffeb1319d332092ce334b5ab37217f7c25625b6cdf69cbc6f2239313c2b510e"
       }
     ],
     "supported_abis": [
@@ -820,7 +828,7 @@
       },
       {
         "source_file": "tools/probe_draft_matmul_atc.py",
-        "source_sha256": "5ce6eb511a73fb02b54fe5e98efb2bef7b568e97eccdfb562c8a320a4d397a32"
+        "source_sha256": "7a4ba1523e0e64dc3a137530b05a7500ca241fa09667373120135aab6ab26d21"
       },
       {
         "source_file": "tests/test_weight_quant_layout.py",
@@ -828,11 +836,11 @@
       },
       {
         "source_file": "tests/test_draft_matmul_atc_probe.py",
-        "source_sha256": "d5884610b064bee3e804cb35dcf80be284c45e33e181dd27db1c3fbf7116ec0c"
+        "source_sha256": "338440fa9a3bbb9d5f4b50a00d36e72f247a19041346a4a2431ba908d02bdddc"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/weight_prepack.py",
-        "source_sha256": "ef09f14155b53f69066c288a1df26bb9f77e6e022e63fb38563b38b6776e0402"
+        "source_sha256": "f172566d7041ec627fa4ec48f230e35c8f957c18796a2371c24129f9ae88c9c7"
       },
       {
         "source_file": "tools/pack_draft_weights_nz.py",
@@ -840,7 +848,15 @@
       },
       {
         "source_file": "tests/test_weight_prepack.py",
-        "source_sha256": "3ec281a59fb2200bcfd1b316b823e2b44f65ee4ba1f22734b0c3842f9c87620b"
+        "source_sha256": "cd844c23c08c830751966cafc946b1bf3e3df2d66d9481f0fef972edb27607d4"
+      },
+      {
+        "source_file": "framework/python/qwen35_dflash/ascend310p/atc_diagnostics.py",
+        "source_sha256": "f87a07927e987fd958de7bb4419726d2c7084775fe95f3c108c17be7bdb3bbd2"
+      },
+      {
+        "source_file": "tests/test_atc_shape_diagnostics.py",
+        "source_sha256": "0ffeb1319d332092ce334b5ab37217f7c25625b6cdf69cbc6f2239313c2b510e"
       }
     ],
     "workflow": "normal export-air / compile-om and benchmark_gdr_lengths.py; flat seven-OM directory; mixed builtin/offline tests; ordinary baseline path reuse",
@@ -864,11 +880,14 @@
         "activation": "export-air --draft-weight-prepack-manifest <offline manifest>; native W8 only, default paths preserved",
         "representation": "Immutable original INT8 weights matched by logical shape and hash to reusable NZ files; byte-exact restore and zero padding checked. Const.value uses logical ND[N,K] with storage_format=FRACTAL_NZ and storage_shape, while output/consumer descriptors retain physical NZ and origin[N,K]. Offline v1 weight files remain compatible.",
         "runtime": "W8 weights reside in OM constants; 26 weight TransData removed from five-layer AIR; public dynamic input rank sum 47. Existing generic runner consumes the new manifest.",
-        "validation": "Host regression rejects the r34 physical Const.value shape (Kb=32), checks logical shapes at M16/64 and production projection dimensions, round-trip serialization, exact numerical graph behavior and stale-AIR audits. Corrected r35 ATC/OM execution, performance and memory remain NOT_RUN locally.",
+        "validation": "Offline byte permutation and host graph/ABI checks pass, but they do not execute CANN Const inference. r35 target compilation is FAIL, not NOT_RUN or fixed. r36 retains that representation for diagnosis; real-device compilation of the three controls and OM numerical/latency checks remain NOT_RUN locally.",
         "probe": "probe_draft_matmul_atc.py --bits 8 --projection tiny gate_up --prepack-weights",
         "descriptor_policy": "logical-value-physical-nz-output-v2",
         "receiver_r34": "Prepacked tiny and gate_up both FAIL during InferShapeForWeightQuantBatchMatmulV2 on CANN 9.0.0 / Ascend310P; byte-exact host roundtrip did not establish valid Const inference metadata.",
-        "ge_descriptor_reference": "https://gitcode.com/cann/ge/blob/56305bf5718657c1bcfd2fe9473d9ecd68ce2b97/graph_metadef/graph/normal_graph/tensor.cc"
+        "ge_descriptor_reference": "https://gitcode.com/cann/ge/blob/56305bf5718657c1bcfd2fe9473d9ecd68ce2b97/graph_metadef/graph/normal_graph/tensor.cc",
+        "receiver_r35": "Both tiny and gate_up FAIL in InferShapeForWeightQuantBatchMatmulV2 with descriptor=logical-value-physical-nz-output-v2 confirmed in receiver output. Actual failing shapes are absent from the provided log; Ka/Kb or dynamic-gear corruption remains unconfirmed.",
+        "diagnostic_probe": "probe_draft_matmul_atc.py --bits 8 --projection tiny --prepack-weights --diagnose-prepack; prepacked dynamic 16/64, prepacked static M16, ND Const plus TransData dynamic. Matched synthetic weights/scales/math and only-x ABI; child-only ATC debug env; raw GE graphs and actual WeightQuant/producer/value descriptors retained with primary shape errors.",
+        "diagnostic_scope": "diagnostics.txt is a compact collection report, not a repair or performance claim. No IGNORE_INFER_ERROR, no precision or grouping change, no promotion from host shape tests. ND Const compile success would not prove TransData folding or faster execution."
       }
     }
   }

@@ -72,11 +72,16 @@ class ConstantProbeLinear(torch.nn.Module):
         return weight_quant_linear(x, self.qweight, self.scales)
 
 
-def make_spec(bits, projection, device, group_size=128, weight_layout="nk", weight_format="nz", *, prepack_dir=None):
+def make_spec(bits, projection, device, group_size=128, weight_layout="nk", weight_format="nz", *,
+              prepack_dir=None, static_rows=None, immutable_nd=False):
     if (group_size not in (0, 128) or weight_layout not in ("nk", "kn")
             or weight_format not in ("nd", "nz") or (weight_format == "nz" and weight_layout != "nk")):
         raise ValueError("probe controls require group_size=0/128, weight_format=nd/nz, "
                          "weight_layout=nk/kn; NZ requires NK on 310P")
+    if static_rows not in (None, 16, 64):
+        raise ValueError("static probe rows must be 16 or 64")
+    if immutable_nd and prepack_dir is not None:
+        raise ValueError("the ND constant control cannot also replace the weight with NZ Const")
     k, n = SHAPES[projection]
     generator = torch.Generator().manual_seed(812 + bits)
     q = torch.randint(-(1 << (bits - 1)), 1 << (bits - 1), (n, k),
@@ -84,20 +89,33 @@ def make_spec(bits, projection, device, group_size=128, weight_layout="nk", weig
     packed = pack_device_weight(q if weight_layout == "nk" else q.t().contiguous(), bits).to(device)
     groups = k // group_size if group_size else 1
     scales = ((1 + torch.arange(n * groups).reshape(n, groups) % 4).half() / 32).to(device)
-    x = (torch.randn(16, k, generator=generator).half() / 16).to(device)
+    x = (torch.randn(static_rows or 16, k, generator=generator).half() / 16).to(device)
     model = ProbeLinear(n, k, bits, group_size, weight_layout).eval()
     args = (x, packed.view(-1), scales.view(-1))
     names = ("x", "qweight", "scales")
     signature = [{"name": name, "shape": list(t.shape), "dtype": str(t.dtype).removeprefix("torch.")}
                  for name, t in zip(names, args)]
     spec = AirGraphSpec(name="weight_quant_probe", role="diagnostic", model=model, example_args=args,
-                        input_names=names, output_names=("y",), dynamic=True,
+                        input_names=names, output_names=("y",), dynamic=static_rows is None,
                         custom_ops=(CustomOpExportSpec(TORCH_OP, GE_OP),),
                         metadata={"tensor_abi": {"inputs": signature}, "dynamic_input_axes": {"x": [0]},
                                   "bits": bits, "projection": projection, "group_size": group_size,
                                   "synthetic_control": group_size == 0,
                                   "weight_quant_probe": {"group_size": group_size, "weight_layout": weight_layout,
                                                          "weight_format": weight_format}})
+    if static_rows is not None:
+        spec = replace(spec, metadata={key: value for key, value in spec.metadata.items()
+                                       if key != "dynamic_input_axes"})
+    if immutable_nd:
+        if (bits, group_size, weight_layout, weight_format) != (8, 128, "nk", "nz"):
+            raise ValueError("ND constant control requires W8/group128/NK/NZ")
+        # Same immutable q/scales, native math and only-x ABI as the prepack
+        # case, but let the existing TransData remain in AIR. This diagnoses
+        # the Const boundary; it does not promise ATC will fold TransData.
+        metadata = {key: value for key, value in spec.metadata.items() if key != "weight_quant_probe"}
+        metadata.update(tensor_abi={"inputs": signature[:1]}, synthetic_nd_constant=True)
+        spec = replace(spec, model=ConstantProbeLinear(packed, scales), example_args=(x,),
+                       input_names=("x",), metadata=metadata)
     if prepack_dir is not None:
         if (bits, group_size, weight_layout, weight_format) != (8, 128, "nk", "nz"):
             raise ValueError("offline constant probe requires W8/group128/NK/NZ")
@@ -141,6 +159,9 @@ def parser():
                      help="nz: 310P TransData + WeightNz path; nd: explicit negative/control path")
     cli.add_argument("--prepack-weights", action="store_true",
                      help="test offline W8 NZ constants; requires --bits 8 --group-size 128 --weight-layout nk --weight-format nz")
+    cli.add_argument("--diagnose-prepack", action="store_true",
+                     help="tiny-only: capture ATC shapes for prepacked dynamic, prepacked static M16, "
+                          "and ND-Const + TransData dynamic controls; requires --prepack-weights")
     return cli
 
 
@@ -151,6 +172,8 @@ def main(argv=None):
     if args.prepack_weights and (args.bits != [8] or args.group_size != [128]
                                 or args.weight_layout != ["nk"] or args.weight_format != "nz"):
         cli.error("--prepack-weights requires --bits 8 --group-size 128 --weight-layout nk --weight-format nz")
+    if args.diagnose_prepack and (not args.prepack_weights or args.projection != ["tiny"]):
+        cli.error("--diagnose-prepack requires --prepack-weights --bits 8 --projection tiny")
     root = require_run_output(args.output_dir)
     if root.exists():
         cli.error("use a new output directory; existing probe evidence is retained")
@@ -168,19 +191,29 @@ def main(argv=None):
         require_weight_quant_matmul()
         report["environment"] = {"torch": str(torch.__version__), "torch_npu": str(torch_npu.__version__),
                                  "device": device, "device_name": torch.npu.get_device_name(args.device_id)}
+        controls = ("prepacked-dynamic", "prepacked-static16", "ndconst-dynamic") if args.diagnose_prepack else ("default",)
         combinations = itertools.product(dict.fromkeys(args.projection), dict.fromkeys(args.bits),
-                                         dict.fromkeys(args.group_size), dict.fromkeys(args.weight_layout))
-        for projection, bits, group_size, layout in combinations:
+                                         dict.fromkeys(args.group_size), dict.fromkeys(args.weight_layout), controls)
+        for projection, bits, group_size, layout, control in combinations:
+            prepacked = args.prepack_weights and control != "ndconst-dynamic"
             case = {"bits": bits, "projection": projection, "group_size": group_size,
                     "weight_layout": layout, "weight_format": args.weight_format,
-                    "offline_weight_prepack": args.prepack_weights,
+                    "offline_weight_prepack": prepacked, "control": control,
                     "synthetic_control": group_size == 0, "execution_status": "NOT_RUN",
                     "status": "RUNNING", "phase": "prepare"}
             report["cases"].append(case)
             name = f"w{bits}a16-{projection}-g{group_size}-{layout}-{args.weight_format}"
+            if control != "default":
+                name += "-" + control
+            case["name"] = name
             print(f"[matmul-atc] {name} START", flush=True)
+            diagnostics = None
             try:
-                options = {"prepack_dir": root / (name + "-offline")} if args.prepack_weights else {}
+                options = {"prepack_dir": root / (name + "-offline")} if prepacked else {}
+                if control == "prepacked-static16":
+                    options["static_rows"] = 16
+                if control == "ndconst-dynamic":
+                    options["immutable_nd"] = True
                 spec = make_spec(bits, projection, device, group_size, layout, args.weight_format, **options)
                 directory = root / name
                 case["phase"] = "export"
@@ -188,14 +221,23 @@ def main(argv=None):
                 case["air_manifest"] = air["manifest_path"]
                 case["layout"] = air["graphs"][0]["runtime_input_abi"]["weight_quant_layout"]
                 case["phase"] = "compile"
+                compile_options = {}
+                if args.diagnose_prepack:
+                    from qwen35_dflash.ascend310p.atc_diagnostics import AtcShapeDiagnostics
+                    diagnostics = AtcShapeDiagnostics(root / (name + "-diagnostics"))
+                    compile_options["runner"] = diagnostics
                 result = compile_air_bundle(air["manifest_path"], atc_bin=atc, soc_version=soc,
-                                           extra_args=["--precision_mode=must_keep_origin_dtype", "--deterministic=0"])
+                                           extra_args=["--precision_mode=must_keep_origin_dtype", "--deterministic=0"],
+                                           **compile_options)
                 case.update(status="PASS", phase="complete", deployment_manifest=result["manifest_path"])
             except Exception as error:
                 trace = root / f"{name}-error.txt"
                 trace.write_text(traceback.format_exc(), encoding="utf-8")
                 case.update(status="FAIL", error=f"{type(error).__name__}: {error}", traceback=str(trace))
             finally:
+                if diagnostics is not None:
+                    case["shape_diagnostics"] = diagnostics.collect()
+                    case["shape_diagnostics_path"] = str(diagnostics.report_path)
                 spec = None
                 torch._dynamo.reset(); gc.collect(); torch.npu.empty_cache()
             print(f"[matmul-atc] {name} {case['status']} phase={case['phase']}", flush=True)
@@ -214,6 +256,14 @@ def main(argv=None):
               f"{case['status']} | {case['phase']} |")
     print("Group 0 is a synthetic per-channel control; checkpoint grouping is unchanged.")
     print("PASS means AIR/ATC compilation only. OM execution, numerical parity and latency are NOT_RUN.")
+    if args.diagnose_prepack:
+        from qwen35_dflash.ascend310p.atc_diagnostics import diagnostic_summary
+        text = "\n\n".join(diagnostic_summary(case) for case in report["cases"])
+        text += ("\n\nControls isolate immutable Const representation and dynamic-gear expansion. "
+                 "A passing ND constant control does not prove compile-time folding or faster OM execution.\n")
+        (root / "diagnostics.txt").write_text(text, encoding="utf-8")
+        print(text)
+        print(f"Compact diagnostics: {root / 'diagnostics.txt'}")
     print(f"Report: {root / 'summary.json'}", flush=True)
     return 0 if report["status"] == "PASS" else 1
 

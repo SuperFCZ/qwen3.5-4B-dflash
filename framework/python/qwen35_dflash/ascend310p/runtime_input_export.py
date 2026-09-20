@@ -300,6 +300,11 @@ def canonical_runtime_input_abi(
             if weight_quant["node_count"]:
                 audit["weight_quant_layout"] = weight_quant
                 atomic_write_json(Path(file_path) / "weight-quant-layout.json", weight_quant)
+                from .atc_diagnostics import weight_quant_snapshot
+                atomic_write_json(Path(file_path) / "weight-quant-descriptors.json", {
+                    "scope": "torchair-before-ge-save; not CANN InferShape evidence",
+                    "nodes": weight_quant_snapshot(export_graph),
+                })
                 node = weight_quant["nodes"][0]
                 print(f"[export-air] WeightQuantBatchMatmulV2 layout={node['weight_layout']} "
                       f"weight_format={node['weight_format']} storage_shape={node['weight_storage_shape']} "
