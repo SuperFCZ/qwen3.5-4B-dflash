@@ -520,7 +520,7 @@
       },
       {
         "source_file": "docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md",
-        "source_sha256": "788404de735982c69d8e0680579cde143e98b3dd9c3419a904c8371129ac86c6"
+        "source_sha256": "b026b43e2b1c1f948ae92ae6418e4127dcd5be183fb4b45e9a7c1f182720cac1"
       },
       {
         "source_file": "framework/abi/dflash-mtp-v1.json",
