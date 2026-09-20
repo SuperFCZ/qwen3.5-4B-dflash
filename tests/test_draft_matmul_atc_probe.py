@@ -136,3 +136,19 @@ def test_model_export_cannot_enable_synthetic_perchannel_control(monkeypatch, tm
         with pytest.raises(ValueError, match="cannot be applied to model graphs"):
             export_air_bundle(lambda _: (spec,), {}, tmp_path / name,
                               torchair_module=SimpleNamespace())
+
+
+def test_offline_prepack_probe_preserves_native_math_and_declares_only_x(monkeypatch, tmp_path):
+    from qwen35_dflash.ascend310p.weight_prepack import PREPACK_POLICY, load_prepacked_weights
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    baseline = make_spec(8, "tiny", "cpu")
+    candidate = make_spec(8, "tiny", "cpu", prepack_dir=tmp_path / "offline")
+    assert candidate.input_names == ("x",)
+    assert candidate.metadata["draft_weight_storage"] == PREPACK_POLICY
+    assert "weight_quant_probe" not in candidate.metadata
+    assert load_prepacked_weights(candidate.metadata["draft_weight_prepack_manifest"])["weights"]
+    for rows in (16, 64):
+        x = torch.randn(rows, 256).half() / 16
+        assert torch.equal(candidate.model(x), baseline.model(x, *baseline.example_args[1:]))
+    with pytest.raises(ValueError, match="requires W8"):
+        make_spec(4, "tiny", "cpu", prepack_dir=tmp_path / "bad")

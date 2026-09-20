@@ -1,7 +1,7 @@
 """Explicit read-only compressed Draft inputs for AIR/OM.
 
-Weights must be graph inputs: leaving dequantization fed by Const permits an
-exporter/compiler to fold a compressed checkpoint into a dense FP16 OM.
+Decomposed/W4 weights stay graph inputs so dequantization cannot fold into a
+dense FP16 OM. Native W8 may explicitly use audited offline INT8 NZ constants.
 """
 from __future__ import annotations
 
@@ -45,6 +45,18 @@ def expose_draft_constants(spec: AirGraphSpec) -> AirGraphSpec:
             names.extend((name + ".qweight", name + ".scales"))
     if not names:
         return spec
+    if (spec.metadata.get("draft_weight_prepack_manifest")
+            and spec.metadata.get("draft_quantization") == "w8a16"):
+        from .weight_prepack import PREPACK_POLICY
+        if (spec.name != "draft" or not spec.metadata.get("incremental_contract")
+                or any(m.bits != 8 or m.matmul_backend != "weight_quant"
+                       for m in spec.model.modules() if isinstance(m, GroupQuantLinear))):
+            raise ValueError("offline NZ weights require the native W8 incremental Draft")
+        # Keep immutable model buffers for TorchAir's constant binding. The
+        # AIR save hook replaces only their weight conversion with a genuine
+        # NZ Const read from the hash-checked offline manifest.
+        return replace(spec, metadata=dict(spec.metadata, draft_weight_storage=PREPACK_POLICY,
+                                           constant_tensors=[], constant_tensor_shapes={}))
     buffers = dict(spec.model.named_buffers())
     shapes = tuple(tuple(buffers[name].shape) for name in names)
     # ACL dynamic gears concatenate the ranks of ALL inputs into 128 slots.
@@ -106,6 +118,19 @@ def verify_constant_inputs(graph: dict, root: Path) -> Path | None:
         raise ValueError("unknown Draft quantization in graph metadata")
     contract = graph.get("metadata", {}).get("incremental_contract")
     expected_count = (2 + 5 * len(contract["draft_states"])) if contract else 72
+    storage = graph.get("metadata", {}).get("draft_weight_storage")
+    if storage is not None:
+        from .weight_prepack import PREPACK_POLICY
+        from .weight_quant_layout import GE_OP, validate_weight_quant_layout
+        count = sum(r.get("ge_node_occurrences", 0) for r in graph.get("custom_op_audit", [])
+                    if r.get("ge_op_type") == GE_OP)
+        if (storage != PREPACK_POLICY or variant != "w8a16" or not contract
+                or contract.get("draft_weight_storage") != storage or count * 2 != expected_count
+                or contract.get("draft_constants") or graph["metadata"].get("constant_tensors")
+                or graph.get("name") != "draft"):
+            raise ValueError("invalid offline W8 constant storage contract")
+        validate_weight_quant_layout(graph)
+        expected_count = 0
     if variant != "fp16" and len(records) != expected_count:
         raise ValueError("quantized Draft OM must expose all compressed Linear pairs")
     if not records:

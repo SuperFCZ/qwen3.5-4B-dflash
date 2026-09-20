@@ -1019,4 +1019,6 @@ def incremental_graph_specs(
     # Constants belong only to Draft, but the complete bundle contract names
     # them so the host can validate the exact ordered inputs before loading.
     contract["draft_constants"] = specs[-1].metadata.get("constant_tensors", [])
+    if specs[-1].metadata.get("draft_weight_storage"):
+        contract["draft_weight_storage"] = specs[-1].metadata["draft_weight_storage"]
     return tuple(specs)

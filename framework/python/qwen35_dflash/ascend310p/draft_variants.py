@@ -53,7 +53,7 @@ def compose_draft_variant(*, target_manifest, draft_manifest, bundle_dir):
     for key in ("identity", "framework", "extra_args", "precision_policy"):
         if target["compiler"].get(key) != draft["compiler"].get(key):
             raise ValueError(f"composition compiler {key} differs")
-    ignored = {"draft_dir", "draft_quantization", "draft_quant_matmul", "input_manifest", "verify_gdr"}
+    ignored = {"draft_dir", "draft_quantization", "draft_quant_matmul", "draft_weight_prepack_manifest", "input_manifest", "verify_gdr"}
     if ({k: v for k, v in ta["factory_config"].items() if k not in ignored} !=
             {k: v for k, v in da["factory_config"].items() if k not in ignored}):
         raise ValueError("composition Target factory configuration differs")

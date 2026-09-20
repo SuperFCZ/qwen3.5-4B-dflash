@@ -359,6 +359,18 @@ def validate_weight_quant_layout(graph):
     expected_policy = PROBE_POLICY if probe is not None else POLICY
     expected_transpose = probe is None or probe["weight_layout"] == "nk"
     expected_format = "FRACTAL_NZ" if probe is None or probe["weight_format"] == "nz" else "ND"
+    from .weight_prepack import PREPACK_POLICY, valid_prepacked_record
+    storage = graph.get("metadata", {}).get("draft_weight_storage")
+    prepack = audit.get("prepack")
+    if storage is not None or prepack is not None:
+        if (storage != PREPACK_POLICY or probe is not None
+                or graph.get("metadata", {}).get("draft_quantization") != "w8a16"
+                or not isinstance(prepack, dict) or prepack.get("policy") != PREPACK_POLICY
+                or prepack.get("status") != "PASS" or prepack.get("node_count") != count
+                or prepack.get("constants") != [n.get("prepacked_constant") for n in audit.get("nodes", [])]
+                or prepack.get("removed_weight_transdata") != [n.get("name", "") + "_weight_nz" for n in audit.get("nodes", [])]
+                or audit.get("inserted_transdata") != []):
+            raise ValueError("WeightQuant offline W8 NZ constant audit differs; re-export AIR")
 
     def valid_storage(node):
         shape = node.get("weight_shape", [])
@@ -368,6 +380,8 @@ def validate_weight_quant_layout(graph):
             return False
         if expected_format == "ND":
             return node.get("weight_storage_shape") == shape and node.get("format_conversion") is None
+        if storage == PREPACK_POLICY:
+            return node.get("weight_storage_shape") == _nz_shape(*shape) and valid_prepacked_record(node)
         return (node.get("weight_storage_shape") == _nz_shape(*shape)
                 and node.get("format_conversion") == node.get("name", "") + "_weight_nz"
                 and node.get("weight") == node["format_conversion"] + ":0")

@@ -173,6 +173,51 @@ OM 峰值显存与完整模型接受率仍需统一测试和 profiling 验证。
 对照路径可在导出时设 `--draft-quant-matmul dequant`，或在 factory JSON 中设
 `"draft_quant_matmul": "dequant"`；该设置仅影响 W4/W8，FP16 Draft 与 Target 计算不变。
 
+### W8 固定权重离线 NZ 转换
+
+W8 的 msprof 显示每次 Draft 调用仍执行固定权重的 `TransData`。
+可先在 CPU 离线转换一次，之后导出直接读取 NZ 文件，并把 INT8 NZ 常量写入 AIR/OM。
+OM 加载和推理不执行本项目的权重预打包；group-128 scale、FP16 激活与融合 MatMul 计算保持不变。
+此选项只作用于原生 W8，W4 保留压缩输入及原来的展开路径。
+
+**1. 从已有 W8 bundle 生成可复用的 NZ 权重。** 输入是包含逐图记录的成员清单，
+不是矩阵索引 `air-manifest.json`；转换不需要 NPU 或 CANN。
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/pack_draft_weights_nz.py" \
+  --manifest "$OM_BUNDLE_DIR/air-manifest-w8a16-chunk.json" \
+  --output-dir "$AI_RUN_DIR/w8-nz-weights"
+```
+
+脚本先校验原权重/scale 文件，逐个转换权重并验证逐字节还原及零填充，
+输出 `manifest.json` 和 `weight-*.nz.bin`。后续导出按逻辑 shape 与权重哈希匹配，
+拒绝损坏、错误布局或来自不同权重的文件；不会自动重新量化或回退。
+
+**2. 先验证新常量表示的 ATC 小图。** 这与已通过的运行时 `TransData` 小图不同。
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
+  --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --device-id "$DEVICE_ID" \
+  --bits 8 --projection tiny gate_up --prepack-weights \
+  --output-dir "$AI_RUN_DIR/matmul-atc-prepacked"
+```
+
+**3. 在新目录导出并编译。** 在正常 `export-air` 命令中增加
+`--draft-weight-prepack-manifest "$AI_RUN_DIR/w8-nz-weights/manifest.json"`，
+并将 `--bundle-dir` 换成新目录，如 `$AI_RUN_DIR/om-bundle-nz`。
+然后对该新目录的 `air-manifest.json` 执行正常 `compile-om`。
+factory JSON 也可设置同名下划线字段 `draft_weight_prepack_manifest`。
+不传此选项即可保留原路径；复测时 benchmark/msprof 的 bundle 也需指向新目录。
+
+五层 W8 导出应打印 `W8 offline NZ constants=26 weight_transdata=0 roundtrip=BIT_EXACT`。
+`weight-quant-layout.json` 的 `prepack` 保存原始/NZ 哈希与移除节点；
+新 W8 权重由 OM 管理，无外部 `constant-inputs.tsv`，动态档位输入总维数从 99 降为 47。
+通用 C++ runner 可读取新清单，无需修改或重建。
+
+当前验证覆盖 CPU 字节还原、AIR 图连接和模拟 bundle 编译；310P ATC、OM 数值和时延仍待验证。
+复测应检查固定权重 `*_weight_nz*` 的 `TransData` 是否消失，并比较 Draft ms/call、
+整次生成时间与接受率。其他激活格式转换仍可能存在；不把全部 `TransData` 时间当作已实现收益。
+
 ## 统一测试
 
 同一入口测试短输入、约 1K 长输入、离线开源数据集、三种 Draft 和两条 Verify。
@@ -284,6 +329,7 @@ Draft 默认 `deterministic=0`，投机始终开启。
 
 公开 W4/W8 Draft 为五层，当前 FP16 为六层，特征层也不同，因此是不同 checkpoint 的对比。
 量化路径以压缩权重常驻，MatMul 选择见[量化 Draft MatMul](#量化-draft-matmul)。
-压缩权重以一维输入传输，图内恢复形状；五层 Draft 的动态档位共 99 维，低于 ACL 的 128 维上限。
+默认压缩权重以一维输入传输，图内恢复形状；五层 Draft 的动态档位共 99 维。
+启用 W8 离线 NZ 常量时为 47 维，两者均低于 ACL 的 128 维上限。
 若加载时报 `aclmdlGetInputDynamicDims failed: 500001`，请更新 runner，并在空目录重新导出、编译量化 Draft。
 真实 TorchAir/ATC 编译、峰值显存、接受率和加速效果须在 310P 上验证。

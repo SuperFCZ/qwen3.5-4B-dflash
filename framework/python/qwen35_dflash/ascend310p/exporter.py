@@ -232,6 +232,8 @@ def export_air_bundle(
                     op.ge_op_type == "WeightQuantBatchMatmulV2" for op in spec.custom_ops
                 ),
                 weight_quant_probe=spec.metadata.get("weight_quant_probe"),
+                weight_prepack_manifest=(spec.metadata.get("draft_weight_prepack_manifest")
+                                         if spec.metadata.get("draft_weight_storage") else None),
                 public_output_names=spec.output_names,
                 verify_discard_output_names=(
                     [s["name"] for s in spec.metadata["incremental_contract"]["verify_discard_states"]]

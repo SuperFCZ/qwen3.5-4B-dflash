@@ -230,6 +230,7 @@ def canonical_runtime_input_abi(
     verify_discard_output_names: Sequence[str] = (),
     capture_weight_quant_shapes: bool = False,
     weight_quant_probe: Mapping[str, Any] | None = None,
+    weight_prepack_manifest: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     audit: dict[str, Any] = {
         "policy": "public-tensor-storage-identity-v1",
@@ -257,6 +258,8 @@ def canonical_runtime_input_abi(
     from .weight_quant_layout import (
         capture_weight_quant_metadata, normalize_weight_quant_layout, weight_quant_layout_failure,
     )
+    from .weight_prepack import load_prepacked_weights, prepack_weight_quant_constants
+    prepacked = load_prepacked_weights(weight_prepack_manifest) if weight_prepack_manifest else None
 
     with _PATCH_LOCK, capture_weight_quant_metadata(capture_weight_quant_shapes) as tensor_metadata:
         original = export_utils._convert_data_to_const
@@ -279,11 +282,16 @@ def canonical_runtime_input_abi(
                 "input_count": len(inputs),
                 "weight_count": sum(id(value) in weight_name for value in inputs),
             }
+            immutable_weights = {export_graph.op[i].name + ":0": value
+                                 for i, value in enumerate(inputs) if id(value) in weight_name}
             result = original(inputs, export_graph, file_path, weight_name)
             _normalize_public_nodes(export_graph, bindings)
             try:
                 weight_quant = normalize_weight_quant_layout(export_graph, tensor_metadata,
                                                               probe_config=weight_quant_probe)
+                if prepacked is not None:
+                    weight_quant = prepack_weight_quant_constants(
+                        export_graph, weight_quant, immutable_weights, prepacked)
             except ValueError as error:
                 failure = weight_quant_layout_failure(export_graph, tensor_metadata, error)
                 audit["weight_quant_layout"] = failure
@@ -298,6 +306,9 @@ def canonical_runtime_input_abi(
                       f"scale_layout={node['scale_layout']} scale_shape={node['scale_shape']} "
                       f"transpose_weight={str(node['transpose_weight']).lower()} "
                       f"group_size={node['group_size']} nodes={weight_quant['node_count']}", flush=True)
+                if "prepack" in weight_quant:
+                    print(f"[export-air] W8 offline NZ constants={weight_quant['node_count']} "
+                          "weight_transdata=0 roundtrip=BIT_EXACT", flush=True)
             gdr_dtypes = _gdr_output_dtype_audit(export_graph)
             if gdr_dtypes["node_count"]:
                 audit["gdr_output_dtypes"] = gdr_dtypes

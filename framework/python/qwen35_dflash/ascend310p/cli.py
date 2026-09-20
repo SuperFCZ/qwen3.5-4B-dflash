@@ -51,6 +51,8 @@ def _factory_config(args):
         config["draft_quantization"] = args.draft_quantization
     if getattr(args, "draft_quant_matmul", None) is not None:
         config["draft_quant_matmul"] = args.draft_quant_matmul
+    if getattr(args, "draft_weight_prepack_manifest", None) is not None:
+        config["draft_weight_prepack_manifest"] = str(args.draft_weight_prepack_manifest)
     return config
 
 
@@ -374,6 +376,8 @@ def _add_atc_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_draft_matrix_arguments(parser):
+    parser.add_argument("--draft-weight-prepack-manifest", type=Path,
+                        help="offline INT8 NZ manifest from pack_draft_weights_nz.py; applies only to native W8 Draft")
     parser.add_argument("--draft-quant-matmul", choices=("weight_quant", "dequant"),
                         help="quantized Draft MatMul: CANN grouped A16W8 (default) or explicit decomposed baseline")
     parser.add_argument("--draft-quantizations", nargs="+", choices=("fp16", "w4a16", "w8a16"),

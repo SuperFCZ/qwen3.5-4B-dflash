@@ -8,6 +8,7 @@ Group 0 is a synthetic per-channel control, never a checkpoint conversion.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import gc
 import itertools
 from pathlib import Path
@@ -60,7 +61,18 @@ class ProbeLinear(torch.nn.Module):
         )
 
 
-def make_spec(bits, projection, device, group_size=128, weight_layout="nk", weight_format="nz"):
+class ConstantProbeLinear(torch.nn.Module):
+    def __init__(self, weight, scales):
+        super().__init__()
+        self.register_buffer("qweight", weight)
+        self.register_buffer("scales", scales)
+
+    def forward(self, x):
+        from models.dflash_v1.weight_quant_matmul import weight_quant_linear
+        return weight_quant_linear(x, self.qweight, self.scales)
+
+
+def make_spec(bits, projection, device, group_size=128, weight_layout="nk", weight_format="nz", *, prepack_dir=None):
     if (group_size not in (0, 128) or weight_layout not in ("nk", "kn")
             or weight_format not in ("nd", "nz") or (weight_format == "nz" and weight_layout != "nk")):
         raise ValueError("probe controls require group_size=0/128, weight_format=nd/nz, "
@@ -78,7 +90,7 @@ def make_spec(bits, projection, device, group_size=128, weight_layout="nk", weig
     names = ("x", "qweight", "scales")
     signature = [{"name": name, "shape": list(t.shape), "dtype": str(t.dtype).removeprefix("torch.")}
                  for name, t in zip(names, args)]
-    return AirGraphSpec(name="weight_quant_probe", role="diagnostic", model=model, example_args=args,
+    spec = AirGraphSpec(name="weight_quant_probe", role="diagnostic", model=model, example_args=args,
                         input_names=names, output_names=("y",), dynamic=True,
                         custom_ops=(CustomOpExportSpec(TORCH_OP, GE_OP),),
                         metadata={"tensor_abi": {"inputs": signature}, "dynamic_input_axes": {"x": [0]},
@@ -86,6 +98,31 @@ def make_spec(bits, projection, device, group_size=128, weight_layout="nk", weig
                                   "synthetic_control": group_size == 0,
                                   "weight_quant_probe": {"group_size": group_size, "weight_layout": weight_layout,
                                                          "weight_format": weight_format}})
+    if prepack_dir is not None:
+        if (bits, group_size, weight_layout, weight_format) != (8, 128, "nk", "nz"):
+            raise ValueError("offline constant probe requires W8/group128/NK/NZ")
+        import hashlib
+        from qwen35_dflash.ascend310p.weight_prepack import PREPACK_POLICY, pack_int8_nz
+        from qwen35_dflash.ascend310p.utils import file_record
+        directory = require_run_output(prepack_dir)
+        directory.mkdir(parents=True, exist_ok=False)
+        carrier = pack_int8_nz(q)
+        path = directory / "weight.nz.bin"
+        carrier.numpy().tofile(path)
+        record = {**file_record(path, relative_to=directory), "dtype": "int8", "format": "FRACTAL_NZ",
+                  "logical_shape": list(q.shape), "storage_shape": list(carrier.shape),
+                  "logical_sha256": hashlib.sha256(q.numpy().tobytes()).hexdigest()}
+        cache = atomic_write_json(directory / "manifest.json", {"schema_version": 1, "policy": PREPACK_POLICY,
+            "status": "PASS", "weight_count": 1, "weights": [record], "scope": "synthetic offline probe"})
+        # Use the production fixed group/layout policy. Only x is public; the
+        # weight uses the same immutable binding and AIR save hook as Draft.
+        metadata = {k: v for k, v in spec.metadata.items() if k != "weight_quant_probe"}
+        metadata.update(draft_weight_storage=PREPACK_POLICY, draft_quantization="w8a16",
+                        draft_weight_prepack_manifest=str(cache),
+                        tensor_abi={"inputs": signature[:1]}, synthetic_prepack=True)
+        spec = replace(spec, model=ConstantProbeLinear(packed, scales), example_args=(x,),
+                       input_names=("x",), metadata=metadata)
+    return spec
 
 
 def parser():
@@ -102,6 +139,8 @@ def parser():
                      help="physical weight axes: NK with transpose_weight=true, or KN with false")
     cli.add_argument("--weight-format", choices=("nz", "nd"), default="nz",
                      help="nz: 310P TransData + WeightNz path; nd: explicit negative/control path")
+    cli.add_argument("--prepack-weights", action="store_true",
+                     help="test offline W8 NZ constants; requires --bits 8 --group-size 128 --weight-layout nk --weight-format nz")
     return cli
 
 
@@ -109,6 +148,9 @@ def main(argv=None):
     cli = parser(); args = cli.parse_args(argv)
     if args.weight_format == "nz" and "kn" in args.weight_layout:
         cli.error("310P NZ requires --weight-layout nk; use --weight-format nd for KN controls")
+    if args.prepack_weights and (args.bits != [8] or args.group_size != [128]
+                                or args.weight_layout != ["nk"] or args.weight_format != "nz"):
+        cli.error("--prepack-weights requires --bits 8 --group-size 128 --weight-layout nk --weight-format nz")
     root = require_run_output(args.output_dir)
     if root.exists():
         cli.error("use a new output directory; existing probe evidence is retained")
@@ -131,13 +173,15 @@ def main(argv=None):
         for projection, bits, group_size, layout in combinations:
             case = {"bits": bits, "projection": projection, "group_size": group_size,
                     "weight_layout": layout, "weight_format": args.weight_format,
+                    "offline_weight_prepack": args.prepack_weights,
                     "synthetic_control": group_size == 0, "execution_status": "NOT_RUN",
                     "status": "RUNNING", "phase": "prepare"}
             report["cases"].append(case)
             name = f"w{bits}a16-{projection}-g{group_size}-{layout}-{args.weight_format}"
             print(f"[matmul-atc] {name} START", flush=True)
             try:
-                spec = make_spec(bits, projection, device, group_size, layout, args.weight_format)
+                options = {"prepack_dir": root / (name + "-offline")} if args.prepack_weights else {}
+                spec = make_spec(bits, projection, device, group_size, layout, args.weight_format, **options)
                 directory = root / name
                 case["phase"] = "export"
                 air = export_air_bundle(lambda _: (spec,), {}, directory)

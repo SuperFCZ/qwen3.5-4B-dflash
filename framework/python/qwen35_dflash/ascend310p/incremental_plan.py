@@ -216,7 +216,12 @@ def validate_incremental_bundle(graphs):
     variant = c.get("draft_quantization", "fp16")
     if variant not in ("fp16", "w4a16", "w8a16"):
         raise ValueError("unknown Draft quantization")
-    if variant == "fp16" and constants or variant != "fp16" and len(constants) != 2 + 5 * len(c["draft_states"]):
+    from .weight_prepack import PREPACK_POLICY
+    storage = c.get("draft_weight_storage")
+    if storage is not None and (storage != PREPACK_POLICY or variant != "w8a16"):
+        raise ValueError("invalid offline NZ Draft storage policy")
+    count = 0 if variant == "fp16" or storage else 2 + 5 * len(c["draft_states"])
+    if len(constants) != count:
         raise ValueError("Draft constant count differs from packed projection contract")
     for i, tensor in enumerate(constants):
         _validate_tensor(tensor)
@@ -226,6 +231,8 @@ def validate_incremental_bundle(graphs):
     for graph in graphs:
         if graph["metadata"]["incremental_contract"] != c:
             raise ValueError("incremental graph contracts differ")
+        if graph["name"] == "draft" and graph["metadata"].get("draft_weight_storage") != storage:
+            raise ValueError("Draft weight storage differs from bundle contract")
         signature = graph["metadata"].get("tensor_abi")
         if signature != expected[graph["name"]]:
             raise ValueError(f"incremental tensor ABI differs: {graph['name']}")

@@ -52,7 +52,10 @@ def variant_builder(tmp_path, monkeypatch):
         specs = incremental_graph_specs(TinyTarget(), draft, capacity=128,
             metadata={"quant_source_lock": {"sha256": "fixture-source"}, "quant_input_manifest_sha256": variant,
                       "target_input_identity": {"target": cfg.get("target_identity", "fixed-target")},
-                      "draft_dir": variant}, gdr=gdr, attention=attention_op, rotary=rotary,
+                      "draft_dir": variant,
+                      **({"draft_weight_prepack_manifest": cfg["draft_weight_prepack_manifest"]}
+                         if cfg.get("draft_weight_prepack_manifest") and variant == "w8a16" else {})},
+            gdr=gdr, attention=attention_op, rotary=rotary,
             verify_gdr=cfg["verify_gdr"], gdr_mtp=mtp_gdr, target_feature_layers=(0, 1))
         active.update({s.name: s for s in specs})
         return specs

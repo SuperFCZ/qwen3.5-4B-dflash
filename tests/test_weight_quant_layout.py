@@ -194,6 +194,10 @@ def evaluate_weight_quant_graph(graph, inputs):
         node = nodes[edge.rpartition(":")[0]]
         if node.type == "Data":
             return inputs[node.name]
+        if node.type == "Const":
+            tensor = node.attr["value"].t
+            dtype = torch.int8 if tensor.desc.dtype == 2 else torch.float16
+            return torch.frombuffer(bytearray(tensor.data), dtype=dtype).reshape(list(tensor.desc.shape.dim))
         if node.type in {"Transpose", "TransposeD"}:
             # Test fixtures use the exact two-axis swap.
             return value(node.input[0]).t()
