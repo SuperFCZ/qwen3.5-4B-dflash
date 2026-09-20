@@ -1,0 +1,790 @@
+"""TorchAir graph factory for the repository's ``quant`` branch.
+
+This module deliberately reuses the quant branch instead of constructing a
+second target implementation:
+
+* ``models.internal_dflash_bridge.load_qwen35_target`` owns Target loading;
+* ``models.dflash_v1.original_quant.quant_model`` installs the original W8A8
+  ``QLinear`` modules;
+* the YAML-declared INT8 embedding and FP32 scales feed the Target;
+* ``models.dflash_v1.modeling_dflash.DFlashDraftModel`` remains FP16.
+
+The first OM route is a fixed-gear, full-prefix recompute graph.  It is the
+smallest state-safe ABI that a C/C++ AscendCL host can call directly.  The
+existing quant rollback implementation remains the semantic/performance
+reference for a later explicit-state incremental OM suite.
+"""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+import hashlib
+import importlib
+import json
+import os
+from pathlib import Path
+from typing import Any, Iterator, Mapping
+
+import torch
+from torch import Tensor, nn
+import torch.nn.functional as F
+
+from .contracts import AirGraphSpec, CustomOpExportSpec
+from .custom_op_export import (
+    ADN_RMS_NORM_DEFAULT_GE_OP_TYPE,
+    ADN_RMS_NORM_TORCH_OP,
+    ADN_FUSED_INFER_ATTENTION_TORCH_OP,
+    ADN_FUSED_INFER_ATTENTION_DEFAULT_GE_OP_TYPE,
+    FUNCTIONAL_NPU_QUANT_MATMUL_TORCH_OP,
+    FUNCTIONAL_NPU_CACHE_UPDATE_TORCH_OP,
+    NPU_CACHE_UPDATE_DEFAULT_GE_OP_TYPE,
+    NPU_DYNAMIC_QUANT_TORCH_OP,
+    NPU_DYNAMIC_QUANT_DEFAULT_GE_OP_TYPE,
+    NPU_QUANT_MATMUL_DEFAULT_GE_OP_TYPE,
+    NPU_CHUNK_GATED_DELTA_RULE_TORCH_OP,
+    NPU_CHUNK_GATED_DELTA_RULE_DEFAULT_GE_OP_TYPE,
+    NPU_GATED_DELTA_RULE_MTP_TORCH_OP,
+    NPU_GATED_DELTA_RULE_MTP_DEFAULT_GE_OP_TYPE,
+    NPU_SCATTER_ND_UPDATE_TORCH_OP,
+    NPU_FUNCTIONAL_SCATTER_ND_UPDATE_TORCH_OP,
+    NPU_SCATTER_ND_UPDATE_DEFAULT_GE_OP_TYPE,
+    prepare_custom_op_export,
+    validate_gdr_ge_prototype_environment,
+    validate_gdr_mtp_ge_prototype_environment,
+    validate_adn_attention_ge_prototype_environment,
+)
+from .integrated import (
+    enable_padded_draft_context,
+    integrated_recompute_graph_spec,
+)
+
+
+QUANT_BASE_REVISION = "28f93e784a2beed87020a80bd93c8788754eab1c"
+QUANT_GRAPH_FACTORY_ID = "qwen3.5-4b-quant-w8a8-dflash-recompute-v3"
+_TARGET_GDN_CHUNK = 64
+_GDR_EFFECTIVE_LENGTH_MAX = torch.iinfo(torch.int16).max
+_DTYPES = {"float16": torch.float16}
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_quant_source_lock() -> dict[str, Any]:
+    """Verify every declared source-file/hash pair before loading weights."""
+
+    repository_root = Path(__file__).resolve().parents[4]
+    lock_path = repository_root / "SOURCE_LOCK.json"
+    if lock_path.is_symlink() or not lock_path.is_file():
+        raise FileNotFoundError(f"quant SOURCE_LOCK.json is missing: {lock_path}")
+    payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise TypeError("quant SOURCE_LOCK.json must contain an object")
+    verified: list[dict[str, Any]] = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                if isinstance(key, str) and key.endswith("_file"):
+                    hash_key = key[:-5] + "_sha256"
+                    expected = value.get(hash_key)
+                    if isinstance(item, str) and isinstance(expected, str):
+                        candidate = repository_root / item
+                        if candidate.is_symlink():
+                            raise ValueError(
+                                f"SOURCE_LOCK payload must not be a symlink: {item}"
+                            )
+                        path = candidate.resolve()
+                        if (
+                            path == repository_root
+                            or repository_root not in path.parents
+                            or not path.is_file()
+                        ):
+                            raise FileNotFoundError(
+                                f"SOURCE_LOCK payload is invalid: {item}"
+                            )
+                        actual = _sha256(path)
+                        if actual != expected:
+                            raise ValueError(
+                                f"quant source differs from SOURCE_LOCK: {item}"
+                            )
+                        verified.append(
+                            {"path": item, "sha256": actual}
+                        )
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    visit(payload)
+    if len(verified) < 10:
+        raise ValueError("quant SOURCE_LOCK contains too few verified source pairs")
+    return {
+        "path": str(lock_path),
+        "sha256": _sha256(lock_path),
+        "verified_file_count": len(verified),
+    }
+
+
+def _required_directory(config: Mapping[str, Any], name: str) -> Path:
+    if name not in config:
+        raise ValueError(f"quant AIR factory requires {name}")
+    raw = Path(str(config[name])).expanduser()
+    if raw.is_symlink():
+        raise ValueError(f"{name} must not be a symlink: {raw}")
+    path = raw.resolve()
+    if not path.is_dir():
+        raise FileNotFoundError(f"{name} is not a regular directory: {path}")
+    return path
+
+
+def _required_file(config: Mapping[str, Any], name: str) -> Path:
+    if name not in config:
+        raise ValueError(f"quant AIR factory requires {name}")
+    raw = Path(str(config[name])).expanduser()
+    if raw.is_symlink():
+        raise ValueError(f"{name} must not be a symlink: {raw}")
+    path = raw.resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"{name} is not a regular file: {path}")
+    return path
+
+
+def _append_receiver_models(receiver_models_dir: Path | None) -> None:
+    """Extend the already selected ``models`` package with receiver files."""
+
+    if receiver_models_dir is None:
+        return
+    wrapper = receiver_models_dir / "export_model_wrapper_qwen3_5.py"
+    if wrapper.is_symlink() or not wrapper.is_file():
+        raise FileNotFoundError(
+            "receiver_models_dir must contain export_model_wrapper_qwen3_5.py"
+        )
+    package = importlib.import_module("models")
+    search_path = getattr(package, "__path__", None)
+    if search_path is None:
+        raise TypeError("the selected models module is not a package")
+    value = str(receiver_models_dir)
+    if value not in search_path:
+        search_path.append(value)
+
+
+@contextmanager
+def _quant_environment(
+    *,
+    quant_config: Path,
+    kv_cache_max_len: int,
+) -> Iterator[Mapping[str, Any]]:
+    """Install the exact environment consumed by the quant branch loader."""
+
+    from models.dflash_v1.target_quant import (
+        QUANT_MODE_W8A8_DYNAMIC,
+        TARGET_EMBEDDING_SCALE_PATH_ENV,
+        TARGET_EMBEDDING_WEIGHT_PATH_ENV,
+        TARGET_QUANT_CONFIG_ENV,
+        TARGET_QUANT_MODE_ENV,
+        TARGET_QUANT_WEIGHT_PATH_ENV,
+        load_original_quant_config,
+    )
+
+    resolved = load_original_quant_config(quant_config)
+    values = {
+        TARGET_QUANT_MODE_ENV: QUANT_MODE_W8A8_DYNAMIC,
+        TARGET_QUANT_CONFIG_ENV: str(resolved.config_path),
+        TARGET_QUANT_WEIGHT_PATH_ENV: str(resolved.quant_weight_path),
+        TARGET_EMBEDDING_WEIGHT_PATH_ENV: str(resolved.embedding_weight_path),
+        TARGET_EMBEDDING_SCALE_PATH_ENV: str(resolved.embedding_scale_path),
+        "DFLASH_HIAI_KV_CACHE_MAX_LEN": str(kv_cache_max_len),
+    }
+    previous = {name: os.environ.get(name) for name in values}
+    os.environ.update(values)
+    try:
+        yield {
+            "config_path": str(resolved.config_path),
+            "config_sha256": _sha256(resolved.config_path),
+            "quant_weight_path": str(resolved.quant_weight_path),
+            "embedding_weight_path": str(resolved.embedding_weight_path),
+            "embedding_scale_path": str(resolved.embedding_scale_path),
+        }
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def _repeat_kv(states: Tensor, repetitions: int) -> Tensor:
+    if repetitions == 1:
+        return states
+    batch, heads, sequence, head_dim = states.shape
+    # Repeat the inserted group axis, preserving [h0,h0,...,h1,h1,...].
+    # Tile follows the quant AIR branch's receiver-compatible GQA lowering;
+    # BroadcastTo can fail ATC auto-tiling for the full physical KV carrier.
+    expanded = states.unsqueeze(2).repeat(1, 1, repetitions, 1, 1)
+    return expanded.reshape(batch, heads * repetitions, sequence, head_dim)
+
+
+def _rotate_half(value: Tensor) -> Tensor:
+    first, second = value.chunk(2, dim=-1)
+    return torch.cat((-second, first), dim=-1)
+
+
+class AirDFlashOps:
+    """Exportable Draft operations with selectable attention matmul inputs.
+
+    Runtime-only finite checks intentionally stay outside the exported graph;
+    they would introduce host synchronization and graph breaks. FP16 matmul
+    inputs avoid the FP32 x FP32 Vector path on 310P. Score scaling, masking,
+    softmax and RMSNorm reductions remain FP32. Use float32 for the reference
+    attention formula when comparing proposal tokens and acceptance rates.
+    """
+
+    def __init__(self, *, attention_matmul_dtype: str = "float16",
+                 quant_matmul_backend: str | None = None) -> None:
+        if attention_matmul_dtype not in ("float16", "float32"):
+            raise ValueError("draft_attention_matmul_dtype must be float16 or float32")
+        self.attention_matmul_dtype = getattr(torch, attention_matmul_dtype)
+        if quant_matmul_backend not in (None, "weight_quant", "dequant"):
+            raise ValueError("draft_quant_matmul must be weight_quant or dequant")
+        self.quant_matmul_backend = quant_matmul_backend
+
+    def _attention_matmul(self, left: Tensor, right: Tensor) -> Tensor:
+        # Cast operands, including FP32 softmax probabilities, before MatMul.
+        # The result Cast permits ATC MatmulCastFusionPass; FP32 accumulation
+        # and direct FP32 output still need compiled-kernel verification. An
+        # unfused FP16 result has already rounded before this FP32 Cast.
+        return torch.matmul(
+            left.to(self.attention_matmul_dtype),
+            right.to(self.attention_matmul_dtype),
+        ).float()
+
+    def rms_norm(self, value: Tensor, weight: Tensor, eps: float) -> Tensor:
+        from models.dflash_v1.dflash_ascend310p_ops import _adn_rms_norm
+
+        return _adn_rms_norm(value, weight, eps)
+
+    def linear(self, value: Tensor, weight: Tensor) -> Tensor:
+        return F.linear(value, weight)
+
+    def rotary(
+        self,
+        query: Tensor,
+        key: Tensor,
+        cosine: Tensor,
+        sine: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        cosine_heads = cosine.unsqueeze(1)
+        sine_heads = sine.unsqueeze(1)
+        query_length = query.shape[-2]
+        return (
+            query * cosine_heads[..., -query_length:, :]
+            + _rotate_half(query) * sine_heads[..., -query_length:, :],
+            key * cosine_heads + _rotate_half(key) * sine_heads,
+        )
+
+    def attention(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        attention_mask: Tensor | None,
+        scale: float,
+        key_value_groups: int,
+    ) -> Tensor:
+        # Fold query groups into rows instead of materializing G copies of KV.
+        # [B,Hkv,G,Q,D] -> [B,Hkv,G*Q,D] keeps the original head ordering.
+        batch, heads, rows, dim = query.shape
+        groups = int(key_value_groups)
+        kv_heads = key.shape[1]
+        query = query.reshape(batch, kv_heads, groups * rows, dim)
+        scores = self._attention_matmul(query, key.transpose(-2, -1))
+        scores = scores * float(scale)
+        if attention_mask is not None:
+            # Production masks share heads, but accept the full broadcastable
+            # [B,Hq,Q,L] contract as well. Only the small mask is expanded.
+            attention_mask = attention_mask.expand(batch, heads, rows, key.shape[-2])
+            attention_mask = attention_mask.reshape(batch, kv_heads, groups * rows, key.shape[-2])
+            scores = scores.masked_fill(~attention_mask, float("-inf"))
+        probabilities = torch.softmax(scores, dim=-1, dtype=torch.float32)
+        return self._attention_matmul(probabilities, value).to(query.dtype).reshape(
+            batch, heads, rows, dim
+        )
+
+    def swiglu(self, gate: Tensor, up: Tensor) -> Tensor:
+        return F.silu(gate) * up
+
+    def top1(self, hidden: Tensor, lm_head_weight: Tensor) -> Tensor:
+        return torch.argmax(F.linear(hidden, lm_head_weight), dim=-1)
+
+
+class QuantFullPrefixExportTarget(nn.Module):
+    """Adapt the quant Target to a single, capture-safe fixed AIR graph.
+
+    The public ``InternalDFlashTarget.forward`` deliberately owns Python-side
+    call guards, counters and a device synchronization used by the eager
+    full-prefix oracle.  Those operations must not enter a TorchAir graph.
+    This adapter therefore calls the hash-locked receiver model directly and
+    keeps its fresh state local to the exported graph.  The private bridge ABI
+    is safe here only because ``SOURCE_LOCK.json`` is verified before this
+    module is constructed.
+    """
+
+    def __init__(self, target: nn.Module) -> None:
+        super().__init__()
+        required = (
+            "_fresh_attention_mask",
+            "_fresh_hybrid_cache",
+            "dflash_execution_model",
+        )
+        missing = [name for name in required if not hasattr(target, name)]
+        if missing:
+            raise TypeError(
+                "quant Target lacks the locked AIR bridge ABI: "
+                + ", ".join(missing)
+            )
+        quantized_embedding = getattr(target, "_target_quantized_embedding", None)
+        if not isinstance(quantized_embedding, nn.Module):
+            raise TypeError("quant AIR export requires the W8A8 target embedding")
+        self.target = target
+
+    def get_input_embeddings(self) -> nn.Module:
+        return self.target.get_input_embeddings()
+
+    def get_output_embeddings(self) -> nn.Module:
+        return self.target.get_output_embeddings()
+
+    def forward(
+        self,
+        input_ids: Tensor,
+        attention_mask: Tensor,
+        **kwargs: Any,
+    ) -> tuple[Tensor, Tensor]:
+        # The physical gear is always fully executed. Right-padding comes
+        # after every valid token, so causal Target rows inside the valid
+        # prefix cannot depend on padding. The receiver's original GDR ABI
+        # nevertheless needs the call-local logical row count as INT16[B].
+        # Derive it inside the graph to keep the external two-input OM ABI.
+        del kwargs
+        sequence_length = int(input_ids.shape[1])
+        gdr_effective_length = (
+            attention_mask.to(dtype=torch.bool)
+            .to(dtype=torch.long)
+            .sum(dim=1)
+            .to(dtype=torch.int16)
+        )
+        inputs_embeds = self.target._target_quantized_embedding(input_ids)
+        positions = torch.arange(
+            sequence_length,
+            dtype=torch.long,
+            device=input_ids.device,
+        )
+        state = self.target._fresh_hybrid_cache(batch_size=1)
+        outputs = self.target.dflash_execution_model(
+            input_ids=input_ids,
+            attention_mask=self.target._fresh_attention_mask(sequence_length),
+            position_ids=positions.unsqueeze(0),
+            past_key_values=state,
+            new_kv_cache_pos=positions,
+            use_cache=True,
+            output_attentions=False,
+            output_hidden_states=False,
+            inputs_embeds=inputs_embeds,
+            embed_scale=None,
+            output_pos=None,
+            allQLen=[sequence_length],
+            output_dflash_features=True,
+            gdr_effective_length=gdr_effective_length,
+        )
+        # The locked rollback/non-rollback receiver both expose the same
+        # feature-enabled tensor tuple.  Avoid the eager bridge's generic
+        # mapping inspection because TorchAir must see one tensor-only graph.
+        logits, features = outputs
+        return logits, features
+
+
+def _enable_target_quant_matmul_export_mode(target: nn.Module) -> int:
+    """Make every receiver QLinear select the private AIR-only frontend."""
+
+    execution_model = getattr(target, "dflash_execution_model", target)
+    if not isinstance(execution_model, nn.Module):
+        raise TypeError("quant Target execution model must be an nn.Module")
+    enabled = 0
+    for module in execution_model.modules():
+        setter = getattr(module, "set_quant_matmul_export_mode", None)
+        if not callable(setter):
+            continue
+        setter(True)
+        enabled += 1
+    audit = dict(getattr(target, "dflash_target_quantization_audit", {}))
+    expected = int(audit.get("qlinear_count", 0))
+    if expected and enabled != expected:
+        raise RuntimeError(
+            "AIR quant-matmul frontend coverage differs from the Target "
+            f"quantization audit: enabled={enabled}, expected={expected}"
+        )
+    return enabled
+
+def _target_custom_op_exports(
+    config: Mapping[str, Any], *, incremental: bool, qlinear_count: int = 1,
+) -> tuple[CustomOpExportSpec, ...]:
+    """Declare operators actually retained by each Target graph."""
+    route = config.get("verify_gdr", "chunk")
+    if route not in {"chunk", "mtp"} or (not incremental and route != "chunk"):
+        raise ValueError("verify_gdr must be chunk or mtp; mtp requires the incremental factory")
+    rms_type = str(config.get("adn_rms_norm_ge_op_type", ADN_RMS_NORM_DEFAULT_GE_OP_TYPE))
+    if rms_type not in {"RmsNorm", "AdnRmsNorm"}:
+        raise ValueError("adn_rms_norm_ge_op_type must be RmsNorm or AdnRmsNorm")
+    operators = [
+        CustomOpExportSpec(ADN_RMS_NORM_TORCH_OP, rms_type),
+        # Shared activation inputs may reuse one DynamicQuant result.
+        CustomOpExportSpec(NPU_DYNAMIC_QUANT_TORCH_OP, NPU_DYNAMIC_QUANT_DEFAULT_GE_OP_TYPE),
+        CustomOpExportSpec(FUNCTIONAL_NPU_QUANT_MATMUL_TORCH_OP, NPU_QUANT_MATMUL_DEFAULT_GE_OP_TYPE,
+                           minimum_occurrences=qlinear_count),
+        CustomOpExportSpec(NPU_CHUNK_GATED_DELTA_RULE_TORCH_OP, NPU_CHUNK_GATED_DELTA_RULE_DEFAULT_GE_OP_TYPE),
+        CustomOpExportSpec(ADN_FUSED_INFER_ATTENTION_TORCH_OP, ADN_FUSED_INFER_ATTENTION_DEFAULT_GE_OP_TYPE),
+        CustomOpExportSpec(FUNCTIONAL_NPU_CACHE_UPDATE_TORCH_OP, NPU_CACHE_UPDATE_DEFAULT_GE_OP_TYPE),
+    ]
+    if route == "mtp":
+        operators.append(CustomOpExportSpec(
+            NPU_GATED_DELTA_RULE_MTP_TORCH_OP, NPU_GATED_DELTA_RULE_MTP_DEFAULT_GE_OP_TYPE))
+    if not incremental:
+        operators.extend((
+            CustomOpExportSpec(NPU_SCATTER_ND_UPDATE_TORCH_OP, NPU_SCATTER_ND_UPDATE_DEFAULT_GE_OP_TYPE,
+                               minimum_occurrences=0),
+        ))
+    else:
+        operators.append(CustomOpExportSpec(
+            NPU_FUNCTIONAL_SCATTER_ND_UPDATE_TORCH_OP,
+            NPU_SCATTER_ND_UPDATE_DEFAULT_GE_OP_TYPE))
+    return tuple(operators)
+
+
+def _incremental_cache_update(cache, updates, target_block, offset):
+    """Capture the receiver CacheUpdate through its AOT-safe GE frontend."""
+    from models.modeling_qwen3_5_hiai_nd import _npu_cache_update
+
+    return _npu_cache_update(
+        cache, updates, target_block, offset, use_export_frontend=True,
+    )
+
+
+def _prepare_quant_export(config: Mapping[str, Any], torchair_module: Any,
+                          *, incremental: bool) -> dict[str, Any]:
+    """Fail on dispatcher/Meta/GE contract gaps before loading 4B weights."""
+    importlib.import_module("torch_npu")
+    sessions = [
+        prepare_custom_op_export(spec, torchair_module)
+        for spec in _target_custom_op_exports(config, incremental=incremental)
+    ]
+    quant_probe = None
+    if config.get("draft_quantization", "fp16") != "fp16" and config.get("draft_quant_matmul", "weight_quant") == "weight_quant":
+        from models.dflash_v1.weight_quant_matmul import TORCH_OP, GE_OP, preflight_weight_quant_matmul
+        sessions.append(prepare_custom_op_export(CustomOpExportSpec(TORCH_OP, GE_OP), torchair_module))
+        quant_probe = preflight_weight_quant_matmul(str(config.get("device", "npu:0")))
+    return {
+        "draft_weight_quant_probe": quant_probe,
+        "operators": [{"torch_target": s.spec.torch_target, "ge_op_type": s.spec.ge_op_type,
+                       "torch_schema": s.schema,
+                       "fake_kernel": s.fake_kernel, "converter_policy": s.converter_policy}
+                      for s in sessions],
+        "ge_prototypes": [
+            validate_gdr_ge_prototype_environment(),
+            validate_adn_attention_ge_prototype_environment(),
+        ] + ([validate_gdr_mtp_ge_prototype_environment()]
+             if incremental and config.get("verify_gdr", "chunk") == "mtp" else []),
+    }
+
+
+def create_quant_recompute_graph(
+    config: Mapping[str, Any],
+    *,
+    _incremental: bool = False,
+) -> tuple[AirGraphSpec, ...]:
+    """Load the locked quant Target/Draft pair and return one AIR graph spec."""
+
+    max_sequence_length = int(config.get("max_sequence_length", 0))
+    if max_sequence_length <= 0 or max_sequence_length % _TARGET_GDN_CHUNK:
+        raise ValueError(
+            "max_sequence_length must be positive and divisible by the "
+            "quant Target's 64-token GDN chunk"
+        )
+    if max_sequence_length > _GDR_EFFECTIVE_LENGTH_MAX:
+        raise ValueError(
+            "max_sequence_length exceeds the original GDR INT16 "
+            "effective_length ABI"
+        )
+    example_sequence_length = int(config.get("example_sequence_length", 2))
+    if not 1 <= example_sequence_length <= max_sequence_length:
+        raise ValueError("example_sequence_length is outside the fixed gear")
+    dtype_name = str(config.get("dtype", "float16"))
+    if dtype_name not in _DTYPES:
+        raise ValueError("quant AIR export supports Target/Draft float16 only")
+    dtype = _DTYPES[dtype_name]
+    draft_attention_matmul_dtype = config.get("draft_attention_matmul_dtype", "float16")
+    draft_quant_matmul = config.get("draft_quant_matmul", "weight_quant")
+    draft_ops = AirDFlashOps(attention_matmul_dtype=draft_attention_matmul_dtype,
+                            quant_matmul_backend=draft_quant_matmul)
+    include_ordinary_decode = config.get("include_ordinary_decode", True)
+    variant = config.get("draft_quantization", "fp16")
+    if variant not in ("fp16", "w4a16", "w8a16"):
+        raise ValueError("draft_quantization must be fp16, w4a16 or w8a16")
+    if variant != "fp16" and not _incremental:
+        raise ValueError("quantized Draft export requires create_quant_incremental_graphs")
+    if type(config.get("shared_draft_features", False)) is not bool:
+        raise TypeError("shared_draft_features must be a bool")
+    if type(include_ordinary_decode) is not bool:
+        raise TypeError("include_ordinary_decode must be a bool")
+    if "draft_context_rows" in config:
+        raise ValueError("draft_context_rows is no longer configurable; remove it from the factory config; incremental Draft selects 16/64 context gears automatically")
+    device = str(config.get("device", "npu:0"))
+    if not device.startswith("npu"):
+        raise ValueError("formal quant AIR export requires an explicit NPU device")
+    custom_op_exports = _target_custom_op_exports(config, incremental=_incremental)
+    target_dir = _required_directory(config, "target_dir")
+    draft_dir = _required_directory(config, "draft_dir")
+    quant_config = _required_file(config, "quant_config")
+    input_manifest = _required_file(config, "input_manifest")
+    receiver_models_dir = _required_directory(config, "receiver_models_dir")
+    if (
+        receiver_models_dir.is_symlink() or not receiver_models_dir.is_dir()
+    ):
+        raise FileNotFoundError(
+            f"receiver_models_dir is not a regular directory: {receiver_models_dir}"
+        )
+    source_lock_identity = _verify_quant_source_lock()
+    from .input_manifest import verify_quant_input_manifest
+
+    locked_inputs = verify_quant_input_manifest(input_manifest)
+    locked_roots = locked_inputs["roots"]
+    locked_files = locked_inputs["files"]
+    expected_paths = {
+        "target_dir": (
+            target_dir,
+            locked_roots["target_checkpoint"],
+        ),
+        "draft_dir": (
+            draft_dir,
+            locked_roots["draft_checkpoint"],
+        ),
+        "quant_config": (
+            quant_config,
+            locked_files["quant_config"][0],
+        ),
+        "receiver_wrapper": (
+            receiver_models_dir / "export_model_wrapper_qwen3_5.py",
+            locked_files["receiver_wrapper"][0],
+        ),
+    }
+    mismatches = {
+        name: {"configured": str(configured), "locked": str(locked)}
+        for name, (configured, locked) in expected_paths.items()
+        if configured.resolve() != locked.resolve()
+    }
+    if mismatches:
+        raise ValueError(f"factory paths differ from input_manifest: {mismatches}")
+    _append_receiver_models(receiver_models_dir)
+
+    # Fail before loading 4B weights if the NPU extension is unavailable.
+    try:
+        npu_module = importlib.import_module("torch_npu")
+    except ImportError as error:
+        raise RuntimeError("torch_npu is required for quant AIR export") from error
+    required_operations = ("adn_rms_norm",) + (
+        ("npu_chunk_gated_delta_rule", "adn_fused_infer_attention", "npu_cache_update_",
+         "npu_scatter_nd_update")
+        if _incremental else ()
+    )
+    missing = [name for name in required_operations
+               if not callable(getattr(npu_module, name, None))]
+    gdr_mtp = None
+    if _incremental and config.get("verify_gdr", "chunk") == "mtp":
+        gdr_mtp = getattr(npu_module, "npu_gated_delta_rule_mtp", None)
+        if not callable(gdr_mtp):
+            gdr_mtp = getattr(torch.ops.npu, "npu_gated_delta_rule_mtp", None)
+        if not callable(gdr_mtp):
+            missing.append("npu_gated_delta_rule_mtp")
+    if missing:
+        raise RuntimeError("quant AIR export needs receiver NPU operations: " + ", ".join(missing))
+
+    from models.dflash_v1.modeling_dflash import DFlashDraftModel
+    from models.internal_dflash_bridge import load_qwen35_target, load_qwen35_rollback_target
+
+    with _quant_environment(
+        quant_config=quant_config,
+        kv_cache_max_len=max_sequence_length + (64 if _incremental else 0),
+    ) as quant_identity:
+        quant_paths = {
+            Path(str(quant_identity["quant_weight_path"])).resolve(),
+            Path(str(quant_identity["embedding_weight_path"])).resolve(),
+            Path(str(quant_identity["embedding_scale_path"])).resolve(),
+        }
+        locked_quant_paths = {
+            locked_roots["quant_linear_weights"].resolve(),
+            *(item.resolve() for item in locked_files["quant_embedding"]),
+        }
+        if quant_paths != locked_quant_paths:
+            raise ValueError(
+                "quant YAML artifact paths differ from the input_manifest"
+            )
+        loader = load_qwen35_rollback_target if _incremental else load_qwen35_target
+        target = loader(
+            str(target_dir),
+            device=torch.device(device),
+            dtype=dtype,
+        )
+    enabled_qlinear = _enable_target_quant_matmul_export_mode(target)
+    if _incremental:
+        # Every Target gear executes every QLinear, including its W8A8 head.
+        # Enabling frontends alone does not prove that all of them reach AIR.
+        custom_op_exports = _target_custom_op_exports(
+            config, incremental=True, qlinear_count=enabled_qlinear)
+    if not _incremental:
+        execution_model = getattr(target, "dflash_execution_model", target)
+        for module in execution_model.modules():
+            setter = getattr(module, "set_cache_update_export_mode", None)
+            if callable(setter):
+                setter(True)
+    draft = DFlashDraftModel.from_pretrained(
+        draft_dir,
+        ops=draft_ops,
+        device=device,
+        dtype=dtype,
+        draft_quantization=config.get("draft_quantization", "fp16"),
+    ).eval()
+    pad_token_id = int(config.get("pad_token_id", 0))
+    metadata = {
+        "factory_id": QUANT_GRAPH_FACTORY_ID,
+        "quant_branch_base_revision": QUANT_BASE_REVISION,
+        "quant_source_lock": source_lock_identity,
+        "target_precision": "W8A8 dynamic QLinear with FP16 outputs",
+        "target_quant_mode": "w8a8_dynamic",
+        "target_embedding": "INT8 weight * FP32 row scale -> FP16",
+        "draft_precision": config.get("draft_quantization", "fp16").upper(),
+        "draft_quantization": config.get("draft_quantization", "fp16"),
+        "draft_checkpoint_audit": getattr(draft, "draft_quantization_audit", None),
+        **({"draft_weight_prepack_manifest": str(config["draft_weight_prepack_manifest"])}
+           if config.get("draft_weight_prepack_manifest") and config.get("draft_quantization") == "w8a16"
+           else {}),
+        "target_input_identity": {k: v for k, v in locked_inputs["group_sha256"].items() if k != "draft_checkpoint"},
+        "draft_dtype": dtype_name,
+        "draft_attention_matmul_dtype": draft_attention_matmul_dtype,
+        "draft_attention_softmax_dtype": "float32",
+        "draft_attention_matmul_result": "cast_to_float32_before_consumers",
+        "rms_norm_torch_op": ADN_RMS_NORM_TORCH_OP,
+        "adn_rms_norm_ge_op_type": custom_op_exports[0].ge_op_type,
+        "draft_rms_norm_policy": "adn_rms_norm_fp32_unit_gamma_then_input_dtype_then_effective_weight",
+        "dtype": dtype_name,
+        "target_checkpoint_manifest_sha256": locked_inputs["group_sha256"][
+            "target_checkpoint"
+        ],
+        "draft_checkpoint_manifest_sha256": locked_inputs["group_sha256"][
+            "draft_checkpoint"
+        ],
+        "quant_input_manifest_sha256": locked_inputs["manifest_sha256"],
+        "quant_linear_manifest_sha256": locked_inputs["group_sha256"][
+            "quant_linear_weights"
+        ],
+        "quant_embedding_manifest_sha256": locked_inputs["group_sha256"][
+            "quant_embedding"
+        ],
+        "target_dir": str(target_dir),
+        "draft_dir": str(draft_dir),
+        "receiver_models_dir": str(receiver_models_dir),
+        "quant_config": dict(quant_identity),
+        "target_quantization_audit": dict(
+            getattr(target, "dflash_target_quantization_audit", {})
+        ),
+        "physical_target_gear": max_sequence_length,
+        "valid_prefix_policy": "right-padded causal rows only",
+        "gdr_effective_length_contract": (
+            "INT16[B] call-local valid rows derived from attention_mask"
+        ),
+        "custom_op_export_contracts": [
+            {"torch_target": spec.torch_target, "ge_op_type": spec.ge_op_type,
+             "minimum_occurrences": spec.minimum_occurrences,
+             "preservation": "one registered GE operator; no Tensor decomposition"}
+            for spec in custom_op_exports
+        ],
+        "standard_op_export_contracts": [
+            {"torch_target": "aten.softplus.default", "ge_op_type": "SoftplusV2",
+             "minimum_occurrences": 1}
+        ],
+        "qlinear_export_frontend_count": enabled_qlinear,
+        "claim_boundary": (
+            "fixed-gear recompute ABI; persistent rollback OM state is a "
+            "separate later optimization"
+        ),
+    }
+    if _incremental:
+        import torch_npu
+        from models.modeling_qwen3_5_hiai_nd_dflash_rollback import apply_rotary_pos_emb
+        from .incremental import incremental_graph_specs
+
+        metadata.update({
+            "factory_id": ("qwen3.5-4b-quant-w8a8-dflash-mtp-v2"
+                           if config.get("verify_gdr", "chunk") == "mtp"
+                           else "qwen3.5-4b-quant-w8a8-dflash-chunk-v4"),
+            "verify_gdr": config.get("verify_gdr", "chunk"),
+            "gdr_effective_length_contract": "INT16[1] explicit call-local valid rows",
+            "claim_boundary": "Explicit-state candidate; real TorchAir/ATC and device parity gates required.",
+            "target_rollback_audit": dict(target.dflash_rollback_audit),
+            "target_rollback_audit_scope": "loader/eager bridge; functional OM route is incremental_contract.verify_gdr",
+            "target_lm_head_source": "dflash_execution_model.lm_head",
+        })
+        return incremental_graph_specs(target, draft, capacity=max_sequence_length,
+            metadata=metadata, gdr=torch_npu.npu_chunk_gated_delta_rule,
+            attention=torch_npu.adn_fused_infer_attention, rotary=apply_rotary_pos_emb,
+            cache_update=_incremental_cache_update,
+            draft_row_update=torch.ops.npu.npu_scatter_nd_update.default,
+            target_feature_layers=((1, 5, 8, 9, 13, 15, 17, 21, 22, 25, 29)
+                                   if config.get("shared_draft_features", False) else None),
+            verify_gdr=config.get("verify_gdr", "chunk"), gdr_mtp=gdr_mtp,
+            custom_ops=custom_op_exports, include_ordinary_decode=include_ordinary_decode)
+    enable_padded_draft_context(draft)
+    target_adapter = QuantFullPrefixExportTarget(target).eval()
+    return (
+        integrated_recompute_graph_spec(
+            target_adapter,
+            draft,
+            max_sequence_length=max_sequence_length,
+            example_sequence_length=example_sequence_length,
+            pad_token_id=pad_token_id,
+            device=device,
+            name=str(config.get("name", "quant_dflash_recompute")),
+            metadata=metadata,
+            custom_ops=custom_op_exports,
+        ),
+    )
+
+
+def create_quant_incremental_graphs(config: Mapping[str, Any]) -> tuple[AirGraphSpec, ...]:
+    """Load the same locked weights with the branch's rollback target class."""
+    return create_quant_recompute_graph(config, _incremental=True)
+
+
+# Optional exporter hook; plain factory calls still return graph specifications.
+def _prepare_incremental_export(config, torchair_module):
+    return _prepare_quant_export(config, torchair_module, incremental=True)
+
+
+def _prepare_recompute_export(config, torchair_module):
+    return _prepare_quant_export(config, torchair_module, incremental=False)
+
+
+create_quant_incremental_graphs.prepare_export = _prepare_incremental_export
+create_quant_recompute_graph.prepare_export = _prepare_recompute_export
+
+
+__all__ = [
+    "AirDFlashOps",
+    "QUANT_BASE_REVISION",
+    "QUANT_GRAPH_FACTORY_ID",
+    "QuantFullPrefixExportTarget",
+    "create_quant_recompute_graph",
+    "create_quant_incremental_graphs",
+]

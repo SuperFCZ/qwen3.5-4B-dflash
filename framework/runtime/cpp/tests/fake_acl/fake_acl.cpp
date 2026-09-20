@@ -1,0 +1,723 @@
+#include <acl/acl.h>
+
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <new>
+#include <fstream>
+#include <filesystem>
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
+
+struct aclDataBuffer {
+  void* data;
+  std::size_t size;
+};
+
+struct aclmdlDataset {
+  std::vector<aclDataBuffer*> buffers;
+  std::size_t identity = 0;
+  std::size_t context_rows = 0;
+  std::uint32_t gear_model = 0;
+};
+
+struct aclmdlDesc { std::uint32_t id = 0; };
+
+namespace {
+
+constexpr std::size_t kSequenceLength = 32;
+constexpr std::size_t kDraftWidth = 15;
+
+struct FixtureTensor {
+  std::string name;
+  aclDataType dtype = ACL_INT64;
+  std::vector<std::int64_t> shape;
+  std::size_t bytes = 0;
+};
+struct FixtureModel {
+  std::string role;
+  std::vector<FixtureTensor> inputs, outputs;
+  void* workspace = nullptr;
+  std::size_t workspace_size = 0;
+  bool dynamic_context = false;
+};
+std::map<std::uint32_t, FixtureModel> fixtures;
+std::uint32_t next_id = 1;
+std::map<void*, std::size_t> device_allocations;
+std::set<void*> host_allocations;
+std::set<void*> discard_allocations;
+std::size_t live_contexts = 0, live_streams = 0, live_descs = 0;
+std::size_t live_datasets = 0, live_data_buffers = 0, allocations_after_execute = 0;
+bool executed = false, initialized_once = false;
+std::size_t dataset_create_calls = 0, buffer_create_calls = 0;
+std::map<std::string, std::size_t> profile_fixture_calls;
+
+bool FailCleanup(const char* operation) {
+  const auto* failure = std::getenv("QWEN35_FAKE_CLEANUP_FAIL");
+  return failure && std::string(failure) == operation;
+}
+
+void LogIo(const char* operation, const aclmdlDataset* input = nullptr,
+           const aclmdlDataset* output = nullptr, const std::string& role = {}) {
+  if (const auto* path = std::getenv("QWEN35_FAKE_IO_LOG")) {
+    std::ofstream log(path, std::ios::app);
+    log << "[\"" << operation << "\",\"" << role << "\","
+        << (input ? input->identity : 0) << ',' << (output ? output->identity : 0) << "]\n";
+  }
+}
+
+bool TouchesDiscard(const void* pointer, std::size_t bytes) {
+  const auto begin = reinterpret_cast<std::uintptr_t>(pointer);
+  for (auto* discard : discard_allocations) {
+    const auto base = reinterpret_cast<std::uintptr_t>(discard);
+    if (begin < base + device_allocations.at(discard) && base < begin + bytes)
+      return true;
+  }
+  return false;
+}
+
+aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, aclmdlDataset* output) {
+  LogIo("execute", input, output, model.role);
+  if (input->buffers.size() != model.inputs.size() || output->buffers.size() != model.outputs.size()) return 21;
+  const char* failure = std::getenv("QWEN35_FAKE_FAIL_GRAPH");
+  if (failure && model.role == failure) return 22;
+  std::map<std::string, aclDataBuffer*> in, out;
+  for (std::size_t i = 0; i < model.inputs.size(); ++i) in[model.inputs[i].name] = input->buffers[i];
+  for (std::size_t i = 0; i < model.outputs.size(); ++i) out[model.outputs[i].name] = output->buffers[i];
+  for (const auto& item : in)
+    if (TouchesDiscard(item.second->data, item.second->size)) return 29;
+  for (const auto& item : out) {
+    if (item.first.rfind("verify_discard_", 0) != 0) continue;
+    auto* buffer = item.second;
+    if (model.role != "target_verify" || !buffer->data ||
+        !device_allocations.count(buffer->data) ||
+        device_allocations.at(buffer->data) != buffer->size) return 30;
+    for (const auto& other : in)
+      if (other.second->data == buffer->data) return 31;
+    for (const auto& other : out)
+      if (other.first != item.first && other.second->data == buffer->data) return 32;
+    discard_allocations.insert(buffer->data);
+    // A poison value distinct from every committed cursor detects accidental
+    // publication on the next verify, decode, or reset/prefill.
+    std::fill_n(static_cast<float*>(buffer->data), buffer->size / sizeof(float), -1024.5f);
+    if (const auto* path = std::getenv("QWEN35_FAKE_MEMORY_LOG")) {
+      std::ofstream log(path, std::ios::app);
+      log << "[\"discard\",\"" << item.first << "\"," << buffer->size << ','
+          << reinterpret_cast<std::uintptr_t>(buffer->data) << "]\n";
+    }
+  }
+  const auto start = *static_cast<std::int64_t*>(in.at("start_position")->data);
+  const auto valid = *static_cast<std::int16_t*>(in.at("valid_rows")->data);
+  const auto* active_file = std::getenv("TEST_ACTIVE");
+  const bool profiled = active_file && std::filesystem::exists(active_file);
+  const auto* variation_env = std::getenv("QWEN35_FAKE_PROFILE_VARIATION");
+  const std::string variation = variation_env ? variation_env : "";
+  // Inject drift on repeated observations of the same Draft boundary. Context
+  // preparation uses this same OM now, but must not consume replay iterations.
+  const auto fixture_key = model.role == "draft"
+      ? model.role + ":" + std::to_string(start + valid) : model.role;
+  const auto call_number = ++profile_fixture_calls[fixture_key];
+  if (const auto* path = std::getenv("QWEN35_FAKE_EVENT_LOG")) {
+    const auto* active = std::getenv("TEST_ACTIVE");
+    std::ofstream log(path, std::ios::app);
+    log << "[\"" << model.role << "\"," << (active && std::filesystem::exists(active) ? "true" : "false")
+        << ',' << start << ',' << valid << "]\n";
+  }
+  if (start < 0 || valid < 0 || (valid == 0 && model.role != "draft") || valid > 64) return 23;
+  std::size_t committed = static_cast<std::size_t>(valid);
+  if (model.role == "draft") {
+    if (const auto* expected = std::getenv("QWEN35_FAKE_CONSTANT_EXPECT")) {
+      std::size_t count = 0;
+      for (const auto& item : in) {
+        if (item.first.rfind("draft_weight_", 0) != 0) continue;
+        const auto index = std::stoul(item.first.substr(13));
+        if (index % 2 == 0) {
+          const auto byte = std::string(expected) == "w4a16" ? 0x99 : 1;
+          const auto* data = static_cast<unsigned char*>(item.second->data);
+          for (std::size_t i = 0; i < item.second->size; ++i) if (data[i] != byte) return 40;
+        } else {
+          const auto* data = static_cast<std::uint16_t*>(item.second->data);
+          for (std::size_t i = 0; i < item.second->size / 2; ++i) if (data[i] != 0x3800) return 41;
+        }
+        ++count;
+      }
+      if (count != 22) return 42;
+    }
+    if (!model.dynamic_context || (input->context_rows != 16 && input->context_rows != 64) ||
+        valid > static_cast<int>(input->context_rows)) return 23;
+    if (const auto* path = std::getenv("QWEN35_FAKE_GEAR_LOG")) {
+      std::ofstream log(path, std::ios::app);
+      log << start << ' ' << valid << ' ' << input->context_rows << '\n';
+    }
+    const auto feature_stride = in.at("features")->size / 64 / sizeof(std::uint16_t);
+    for (int row = 0; row < valid; ++row)
+      if (static_cast<std::uint16_t*>(in.at("features")->data)[row * feature_stride] != start + row)
+        return 24;
+    const auto anchor = *static_cast<std::int64_t*>(in.at("anchor")->data);
+    const auto proposal_count = *static_cast<std::int16_t*>(in.at("proposal_count")->data);
+    if (proposal_count < 1 || proposal_count > 15) return 28;
+    if (const auto* path = std::getenv("QWEN35_FAKE_PROPOSAL_LOG")) {
+      std::ofstream log(path, std::ios::app);
+      log << start << ' ' << valid << ' ' << proposal_count << '\n';
+    }
+    auto* proposals = static_cast<std::int64_t*>(out.at("draft_top1")->data);
+    const char* requested = std::getenv("QWEN35_FAKE_ACCEPT");
+    int accepted = requested ? std::atoi(requested) : 15;
+    // Repeatable zero-then-recovery schedule independent of warmup call count.
+    if (const char* rejected = std::getenv("QWEN35_FAKE_REJECT_ANCHORS")) {
+      const std::string anchors = "," + std::string(rejected) + ",";
+      if (anchors.find("," + std::to_string(anchor) + ",") != std::string::npos)
+        accepted = 0;
+    }
+    for (int i = 0; i < 15; ++i)
+      proposals[i] = i < proposal_count ? (anchor + i + 1 + (i == accepted ? 7 : 0)) % 64 : 0;
+    if ((variation == "draft_output" && profiled) ||
+        (variation == "draft_input" && call_number == 2))
+      proposals[0] = (proposals[0] + 7) % 64;
+    // A rejected candidate changes on the third unprofiled preparation call;
+    // accepted prefix/fallback can still match ordinary generation exactly.
+    if (variation == "draft_rejected_tail" && call_number == 3)
+      proposals[7] = (proposals[7] + 7) % 64;
+    if (variation == "draft_private_output" && !model.workspace)
+      proposals[7] = (proposals[7] + 7) % 64;
+  } else {
+    auto* ids = static_cast<std::int64_t*>(in.at("input_ids")->data);
+    auto* predictions = static_cast<std::int64_t*>(out.at("target_top1")->data);
+    if (model.role == "target_verify") {
+      if (valid > 16) return 25;
+      for (int i = 0; i < 16; ++i) predictions[i] = (ids[i] + 1) % 64;
+      // Stable numerical-path disagreement, as distinct from repeatability or
+      // profiler faults. Keep the fused acceptance/state contract consistent.
+      if (const char* drift = std::getenv("QWEN35_FAKE_VERIFY_DRIFT_ROW")) {
+        const int row = std::atoi(drift);
+        if (row >= 0 && row < valid) predictions[row] = (predictions[row] + 7) % 64;
+      }
+      // Only the output tail changes; all valid rows and acceptance stay exact.
+      if (variation == "padding" && profiled)
+        for (int i = valid; i < 16; ++i) predictions[i] = 43;
+      if ((variation == "verify_output" && profiled) ||
+          (variation == "warmup_middle" && call_number == 2))
+        predictions[valid - 1] = (predictions[valid - 1] + 7) % 64;
+      std::size_t accepted = 0;
+      while (accepted + 1 < static_cast<std::size_t>(valid) && ids[accepted + 1] == predictions[accepted]) ++accepted;
+      committed = accepted + 1;
+      *static_cast<std::int64_t*>(out.at("accepted_count")->data) = std::getenv("QWEN35_FAKE_BAD_ACCEPT") ? 0 : static_cast<std::int64_t>(accepted);
+    } else {
+      predictions[0] = (ids[valid - 1] + 1) % 64;
+      // Change one generation, keeping the state cursor/ABI valid.
+      const char* repeat_drift = std::getenv("QWEN35_FAKE_PREFILL_DRIFT_CALL");
+      if (model.role == "target_prefill" && repeat_drift &&
+          call_number == static_cast<std::size_t>(std::atoi(repeat_drift)))
+        predictions[0] = (predictions[0] + 7) % 64;
+      if (variation == model.role + "_output" && profiled)
+        predictions[0] = (predictions[0] + 7) % 64;
+    }
+    if (out.count("features")) {
+      std::memset(out.at("features")->data, 0, out.at("features")->size);
+      const auto feature_stride = out.at("features")->size / 64 / sizeof(std::uint16_t);
+      for (int row = 0; row < valid; ++row)
+        static_cast<std::uint16_t*>(out.at("features")->data)[row * feature_stride] =
+            static_cast<std::uint16_t>(start + row);
+      if (variation == "prefill_features" && model.role == "target_prefill" && call_number == 2)
+        static_cast<unsigned char*>(out.at("features")->data)[
+            ((valid - 1) / 16 * 16) * feature_stride * sizeof(std::uint16_t) + 2] = 1;
+    }
+  }
+  for (const auto& item : in) {
+    if (item.first.size() > 2 && (item.first[0] == 't' || item.first[0] == 'd') && item.first[1] >= '0' && item.first[1] <= '9') {
+      auto* result = out.at(item.first);
+      if (result->data == item.second->data || result->size != item.second->size) return 26;
+      if (*static_cast<std::uint16_t*>(item.second->data) != start) return 27;
+      std::memcpy(result->data, item.second->data, result->size);
+      *static_cast<std::uint16_t*>(result->data) = static_cast<std::uint16_t>(start + committed);
+    }
+  }
+  if (model.role == "draft" && call_number == 3) {
+    if (variation == "draft_input_mutation")
+      static_cast<unsigned char*>(in.at("d0_key")->data)[2] ^= 1;
+    if (variation == "draft_output_bytes")
+      static_cast<unsigned char*>(out.at("d0_key")->data)[2] ^= 1;
+    if (variation == "draft_output_padding" || variation == "draft_output_tail") {
+      const auto spec = std::find_if(model.outputs.begin(), model.outputs.end(),
+                                    [](const auto& t) { return t.name == "d0_key"; });
+      const auto row = start + (variation == "draft_output_padding" ? valid :
+                               static_cast<std::int64_t>(input->context_rows));
+      if (spec == model.outputs.end() || spec->shape.size() != 4 || row >= spec->shape[2]) return 33;
+      // Change a sequence row, not a flat prefix of a B,H,S,D cache.
+      const auto offset = static_cast<std::size_t>(row * spec->shape[3]) * 2;
+      static_cast<unsigned char*>(out.at("d0_key")->data)[offset] ^= 1;
+    }
+  }
+  if (model.role == "draft" && variation == "draft_private_kv" && !model.workspace)
+    static_cast<unsigned char*>(out.at("d0_key")->data)[2] ^= 1;
+  return ACL_SUCCESS;
+}
+
+aclError FixtureDims(const FixtureTensor& tensor, aclmdlIODims* dimensions) {
+  if (!dimensions) return 1;
+  std::memset(dimensions, 0, sizeof(*dimensions));
+  std::strncpy(dimensions->name, tensor.name.c_str(), sizeof(dimensions->name) - 1);
+  dimensions->dimCount = tensor.shape.size();
+  std::copy(tensor.shape.begin(), tensor.shape.end(), dimensions->dims);
+  return ACL_SUCCESS;
+}
+
+aclError SetDims(aclmdlIODims* dimensions, std::int64_t width) {
+  if (dimensions == nullptr) {
+    return 1;
+  }
+  std::memset(dimensions, 0, sizeof(*dimensions));
+  dimensions->dimCount = 2;
+  dimensions->dims[0] = 1;
+  dimensions->dims[1] = width;
+  return ACL_SUCCESS;
+}
+
+}  // namespace
+
+extern "C" {
+
+aclError aclInit(const char*) {
+  // Model-set changes must retain the same runtime/context.
+  if (initialized_once) return 43;
+  initialized_once = true;
+  return ACL_SUCCESS;
+}
+aclError aclFinalize() {
+  if (const auto* path = std::getenv("QWEN35_FAKE_CLEANUP_LOG")) {
+    std::ofstream log(path);
+    log << "{\"live_models\":" << fixtures.size()
+        << ",\"live_device_buffers\":" << device_allocations.size()
+        << ",\"live_host_buffers\":" << host_allocations.size()
+        << ",\"live_contexts\":" << live_contexts
+        << ",\"live_streams\":" << live_streams
+        << ",\"live_descs\":" << live_descs
+        << ",\"live_datasets\":" << live_datasets
+        << ",\"live_data_buffers\":" << live_data_buffers
+        << ",\"allocations_after_execute\":" << allocations_after_execute << "}\n";
+  }
+  return ACL_SUCCESS;
+}
+aclError aclrtSetDevice(int) { return ACL_SUCCESS; }
+aclError aclrtResetDevice(int) { return FailCleanup("aclrtResetDevice") ? 38 : ACL_SUCCESS; }
+
+aclError aclrtCreateContext(aclrtContext* context, int) {
+  if (context == nullptr) {
+    return 1;
+  }
+  *context = new (std::nothrow) int(1);
+  if (*context) ++live_contexts;
+  return *context == nullptr ? 1 : ACL_SUCCESS;
+}
+
+aclError aclrtDestroyContext(aclrtContext context) {
+  if (context) --live_contexts;
+  delete static_cast<int*>(context);
+  return ACL_SUCCESS;
+}
+
+aclError aclrtSetCurrentContext(aclrtContext) { return ACL_SUCCESS; }
+
+aclError aclrtCreateStream(aclrtStream* stream) {
+  if (stream == nullptr) {
+    return 1;
+  }
+  *stream = new (std::nothrow) int(2);
+  if (*stream) ++live_streams;
+  return *stream == nullptr ? 1 : ACL_SUCCESS;
+}
+
+aclError aclrtDestroyStream(aclrtStream stream) {
+  if (stream) --live_streams;
+  delete static_cast<int*>(stream);
+  return ACL_SUCCESS;
+}
+
+aclError aclrtSynchronizeStream(aclrtStream) { return ACL_SUCCESS; }
+aclError aclrtMemsetAsync(void* ptr, std::size_t maximum, std::int32_t value, std::size_t count, aclrtStream) {
+  if (!ptr || count > maximum) return 1;
+  if (TouchesDiscard(ptr, count)) return 33;
+  std::memset(ptr, value, count); return ACL_SUCCESS;
+}
+aclError aclUpdateDataBuffer(aclDataBuffer* buffer, void* ptr, std::size_t size) {
+  LogIo("update_buffer");
+  if (!buffer || !ptr || !size) return 1;
+  buffer->data = ptr; buffer->size = size; return ACL_SUCCESS;
+}
+
+aclError aclrtMallocHost(void** host_ptr, std::size_t size) {
+  if (host_ptr == nullptr || size == 0) {
+    return 1;
+  }
+  *host_ptr = std::malloc(size);
+  if (*host_ptr) host_allocations.insert(*host_ptr);
+  if (const auto* path = std::getenv("QWEN35_FAKE_MEMORY_LOG")) {
+    std::ofstream log(path, std::ios::app);
+    log << "[\"host_alloc\"," << size << "]\n";
+  }
+  return *host_ptr == nullptr ? 1 : ACL_SUCCESS;
+}
+
+aclError aclrtFreeHost(void* host_ptr) {
+  host_allocations.erase(host_ptr);
+  std::free(host_ptr);
+  return ACL_SUCCESS;
+}
+
+aclError aclrtMalloc(void** device_ptr, std::size_t size, aclrtMemMallocPolicy) {
+  if (device_ptr == nullptr || size == 0) {
+    return 1;
+  }
+  *device_ptr = std::malloc(size);
+  if (*device_ptr) {
+    device_allocations[*device_ptr] = size;
+    if (executed) ++allocations_after_execute;
+  }
+  return *device_ptr == nullptr ? 1 : ACL_SUCCESS;
+}
+
+aclError aclrtFree(void* device_ptr) {
+  if (FailCleanup("aclrtFree")) return 38;
+  for (const auto& item : fixtures)
+    if (item.second.workspace == device_ptr) return 39;
+  discard_allocations.erase(device_ptr);
+  device_allocations.erase(device_ptr);
+  std::free(device_ptr);
+  return ACL_SUCCESS;
+}
+
+aclError aclrtMemcpyAsync(
+    void* destination,
+    std::size_t destination_max,
+    const void* source,
+    std::size_t count,
+    aclrtMemcpyKind kind,
+    aclrtStream) {
+  if (destination == nullptr || source == nullptr || count > destination_max) {
+    return 1;
+  }
+  if (TouchesDiscard(source, count) || TouchesDiscard(destination, count)) return 34;
+  if (const auto* path = std::getenv("QWEN35_FAKE_COPY_LOG")) {
+    const auto* active = std::getenv("TEST_ACTIVE");
+    std::ofstream log(path, std::ios::app);
+    log << '[' << count << ',' << int(kind) << ','
+        << (active && std::filesystem::exists(active) ? "true" : "false") << "]\n";
+  }
+  std::memcpy(destination, source, count);
+  return ACL_SUCCESS;
+}
+
+aclError aclrtGetMemInfo(aclrtMemAttr attr, std::size_t* free, std::size_t* total) {
+  if (!free || !total) return 1;
+  if (std::getenv("QWEN35_FAKE_MEM_INFO_FAIL")) return 35;
+  if (attr == ACL_DDR_MEM) {
+    *free = *total = 0;  // Unsupported pool must not look like available memory.
+  } else {
+    *total = 24ULL * 1024 * 1024 * 1024;
+    *free = *total - fixtures.size() * 1024 * 1024;
+    for (const auto& allocation : device_allocations) *free -= allocation.second;
+  }
+  return ACL_SUCCESS;
+}
+
+aclError aclrtMemcpy(void* destination, std::size_t destination_max,
+                     const void* source, std::size_t count, aclrtMemcpyKind kind) {
+  if (const auto* path = std::getenv("QWEN35_FAKE_CONSTANT_UPLOAD_LOG")) {
+    std::ofstream log(path, std::ios::app);
+    log << count << '\n';
+  }
+  return aclrtMemcpyAsync(destination, destination_max, source, count, kind, nullptr);
+}
+
+aclError aclmdlQuerySize(const char* path, std::size_t* work, std::size_t* weight) {
+  if (!work || !weight) return 1;
+  if (std::getenv("QWEN35_FAKE_QUERY_SIZE_FAIL")) return 36;
+  std::ifstream file(path);
+  std::string header, role;
+  if (!(file >> header >> role) || header != "FAKE_CHUNK") return 37;
+  *work = role == "target_prefill" ? 3145728 : 1048576;
+  *weight = role == "target_verify" ? 5001682944ULL : 2097152;
+  return ACL_SUCCESS;
+}
+
+aclError aclmdlLoadFromFile(const char* path, std::uint32_t* model_id) {
+  if (model_id == nullptr) {
+    return 1;
+  }
+  *model_id = next_id++;
+  FixtureModel model;
+  std::ifstream file(path);
+  std::string word;
+  if (file >> word && word == "FAKE_CHUNK") {
+    file >> model.role;
+    const auto* failure = std::getenv("QWEN35_FAKE_FAIL_LOAD_GRAPH");
+    if (failure && model.role == failure) return 245000;
+    while (file >> word && (word == "I" || word == "O")) {
+      FixtureTensor tensor;
+      std::string dtype;
+      std::size_t rank;
+      file >> tensor.name >> dtype >> rank;
+      if (rank > 8) return 2;
+      tensor.dtype = dtype == "float16" ? ACL_FLOAT16 : dtype == "int16" ? ACL_INT16 : dtype == "float32" ? ACL_FLOAT : dtype == "int8" ? ACL_INT8 : dtype == "uint8" ? ACL_UINT8 : ACL_INT64;
+      tensor.bytes = tensor.dtype == ACL_INT64 ? 8 : tensor.dtype == ACL_FLOAT ? 4 : (tensor.dtype == ACL_INT8 || tensor.dtype == ACL_UINT8) ? 1 : 2;
+      tensor.shape.resize(rank);
+      for (auto& dim : tensor.shape) { file >> dim; tensor.bytes *= static_cast<std::size_t>(dim); }
+      (word == "I" ? model.inputs : model.outputs).push_back(tensor);
+    }
+    if (word == "GEARS") {
+      int a = 0, b = 0;
+      file >> a >> b;
+      model.dynamic_context = model.role == "draft" && a == 16 && b == 64;
+    }
+  }
+  if (model.role == "draft") {
+    const char* fault = std::getenv("QWEN35_FAKE_CHUNK_IO_FAULT");
+    const std::string kind = fault ? fault : "";
+    auto& tensors = kind.find("output-") == 0 ? model.outputs : model.inputs;
+    if (kind == "input-order") {
+      std::swap(tensors.at(1), tensors.at(2));
+    } else if (!kind.empty()) {
+      auto& tensor = tensors.at(0);
+      if (kind.find("-dtype") != std::string::npos) tensor.dtype = ACL_INT32;
+      if (kind.find("-bytes") != std::string::npos) tensor.bytes += 32;
+      if (kind.find("-rank") != std::string::npos) tensor.shape.insert(tensor.shape.begin(), 1);
+      if (kind.find("-shape") != std::string::npos) tensor.shape.back() += 1;
+      if (kind.find("-count") != std::string::npos) tensors.pop_back();
+    }
+  }
+  if (model.dynamic_context) {
+    const char* failure = std::getenv("QWEN35_FAKE_GEAR_FAULT");
+    if (failure && std::string(failure) == "missing") model.dynamic_context = false;
+    else {
+      FixtureTensor control{ACL_DYNAMIC_TENSOR_NAME, ACL_INT64, {8}, 64};
+      const auto middle = failure && std::string(failure) == "middle-control";
+      model.inputs.insert(middle ? model.inputs.begin() + 2 : model.inputs.end(), control);
+    }
+  }
+  fixtures[*model_id] = std::move(model);
+  return ACL_SUCCESS;
+}
+
+aclError aclmdlLoadFromFileWithMem(const char* path, std::uint32_t* model_id,
+                                 void* work, std::size_t work_size,
+                                 void* weight, std::size_t weight_size) {
+  if (!work || !device_allocations.count(work) ||
+      device_allocations.at(work) < work_size || weight || weight_size) return 40;
+  std::size_t required_work = 0, required_weight = 0;
+  if (aclmdlQuerySize(path, &required_work, &required_weight) != ACL_SUCCESS ||
+      work_size < required_work) return 41;
+  const auto status = aclmdlLoadFromFile(path, model_id);
+  if (status != ACL_SUCCESS) return status;
+  auto& model = fixtures.at(*model_id);
+  model.workspace = work;
+  model.workspace_size = work_size;
+  if (const auto* log_path = std::getenv("QWEN35_FAKE_WORKSPACE_LOG")) {
+    std::ofstream log(log_path, std::ios::app);
+    log << "[\"" << model.role << "\"," << reinterpret_cast<std::uintptr_t>(work)
+        << ',' << work_size << ',' << fixtures.size() << "]\n";
+  }
+  return ACL_SUCCESS;
+}
+
+aclError aclmdlUnload(std::uint32_t id) {
+  if (FailCleanup("aclmdlUnload")) return 38;
+  fixtures.erase(id);
+  if (fixtures.empty()) executed = false;  // Loading another mode is outside its model loop.
+  return ACL_SUCCESS;
+}
+
+aclmdlDesc* aclmdlCreateDesc() {
+  auto* desc = new (std::nothrow) aclmdlDesc();
+  if (desc) ++live_descs;
+  return desc;
+}
+
+aclError aclmdlDestroyDesc(aclmdlDesc* description) {
+  if (description) --live_descs;
+  delete description;
+  return ACL_SUCCESS;
+}
+
+aclError aclmdlGetDesc(aclmdlDesc* desc, std::uint32_t id) { desc->id = id; return ACL_SUCCESS; }
+aclError aclmdlGetInputIndexByName(const aclmdlDesc* desc, const char* name, std::size_t* index) {
+  const auto& inputs = fixtures.at(desc->id).inputs;
+  for (std::size_t i = 0; i < inputs.size(); ++i)
+    if (inputs[i].name == name) { *index = i; return ACL_SUCCESS; }
+  return 50;
+}
+aclError aclmdlGetInputDynamicGearCount(const aclmdlDesc* desc, std::size_t index, std::size_t* count) {
+  if (!fixtures.at(desc->id).dynamic_context || index != static_cast<std::size_t>(-1)) return 51;
+  const auto* fault = std::getenv("QWEN35_FAKE_GEAR_FAULT");
+  *count = fault && std::string(fault) == "count" ? 3 : 2;
+  return ACL_SUCCESS;
+}
+aclError aclmdlGetInputDynamicDims(const aclmdlDesc* desc, std::size_t index,
+                                 aclmdlIODims* dims, std::size_t count) {
+  const auto& model = fixtures.at(desc->id);
+  if (!model.dynamic_context || count != 2 || index != static_cast<std::size_t>(-1)) return 52;
+  for (std::size_t gear = 0; gear < 2; ++gear) {
+    dims[gear] = {};
+    for (const auto& input : model.inputs) {
+      if (input.name == ACL_DYNAMIC_TENSOR_NAME) continue;
+      for (std::size_t axis = 0; axis < input.shape.size(); ++axis) {
+        if (dims[gear].dimCount >= 128) return 53;
+        dims[gear].dims[dims[gear].dimCount++] =
+            input.name == "features" && axis == 1 ? (gear ? 64 : 16) : input.shape[axis];
+      }
+    }
+  }
+  const auto* fault = std::getenv("QWEN35_FAKE_GEAR_FAULT");
+  if (fault && std::string(fault) == "shape") dims[0].dims[1] = 32;
+  if (fault && std::string(fault) == "reverse") std::swap(dims[0], dims[1]);
+  return ACL_SUCCESS;
+}
+aclError aclmdlSetInputDynamicDims(std::uint32_t id, aclmdlDataset* input,
+                                 std::size_t index, const aclmdlIODims* dims) {
+  aclmdlDesc desc{id};
+  std::size_t expected_index = 0;
+  if (aclmdlGetInputIndexByName(&desc, ACL_DYNAMIC_TENSOR_NAME, &expected_index) ||
+      index != expected_index || input->buffers.size() != fixtures.at(id).inputs.size()) return 54;
+  const auto* fault = std::getenv("QWEN35_FAKE_GEAR_FAULT");
+  if (fault && std::string(fault) == "set") return 55;
+  aclmdlIODims gears[2];
+  if (aclmdlGetInputDynamicDims(&desc, static_cast<std::size_t>(-1), gears, 2)) return 56;
+  bool matched = false;
+  for (const auto& gear : gears)
+    if (dims->dimCount == gear.dimCount &&
+        std::equal(dims->dims, dims->dims + dims->dimCount, gear.dims)) matched = true;
+  if (!matched || !input->buffers[index]->data || input->buffers[index]->size != 64) return 57;
+  input->context_rows = dims->dims[1];
+  input->gear_model = id;
+  std::memcpy(input->buffers[index]->data, &input->context_rows, sizeof(input->context_rows));
+  return ACL_SUCCESS;
+}
+std::size_t aclmdlGetNumInputs(const aclmdlDesc* desc) { return fixtures.at(desc->id).role.empty() ? 2 : fixtures.at(desc->id).inputs.size(); }
+std::size_t aclmdlGetNumOutputs(const aclmdlDesc* desc) { return fixtures.at(desc->id).role.empty() ? 2 : fixtures.at(desc->id).outputs.size(); }
+
+aclError aclmdlGetInputDims(const aclmdlDesc* desc, std::size_t index, aclmdlIODims* dims) {
+  if (!fixtures.at(desc->id).role.empty()) {
+    const auto& model = fixtures.at(desc->id);
+    auto status = FixtureDims(model.inputs.at(index), dims);
+    if (model.dynamic_context && model.inputs[index].name == "features" &&
+        dims->dimCount == 3) dims->dims[1] = -1;
+    return status;
+  }
+  return index < 2 ? SetDims(dims, kSequenceLength) : 1;
+}
+
+aclError aclmdlGetOutputDims(
+    const aclmdlDesc* desc, std::size_t index, aclmdlIODims* dims) {
+  if (!fixtures.at(desc->id).role.empty()) return FixtureDims(fixtures.at(desc->id).outputs.at(index), dims);
+  if (index == 0) {
+    return SetDims(dims, kSequenceLength);
+  }
+  return index == 1 ? SetDims(dims, kDraftWidth) : 1;
+}
+
+aclDataType aclmdlGetInputDataType(const aclmdlDesc* desc, std::size_t index) {
+  if (!fixtures.at(desc->id).role.empty()) return fixtures.at(desc->id).inputs.at(index).dtype;
+  return index < 2 ? ACL_INT64 : ACL_DT_UNDEFINED;
+}
+
+aclDataType aclmdlGetOutputDataType(const aclmdlDesc* desc, std::size_t index) {
+  if (!fixtures.at(desc->id).role.empty()) return fixtures.at(desc->id).outputs.at(index).dtype;
+  return index < 2 ? ACL_INT64 : ACL_DT_UNDEFINED;
+}
+
+std::size_t aclmdlGetInputSizeByIndex(aclmdlDesc* desc, std::size_t index) {
+  if (!fixtures.at(desc->id).role.empty()) return fixtures.at(desc->id).inputs.at(index).bytes;
+  return index < 2 ? kSequenceLength * sizeof(std::int64_t) : 0;
+}
+
+std::size_t aclmdlGetOutputSizeByIndex(aclmdlDesc* desc, std::size_t index) {
+  if (!fixtures.at(desc->id).role.empty()) return fixtures.at(desc->id).outputs.at(index).bytes;
+  if (index == 0) {
+    return kSequenceLength * sizeof(std::int64_t);
+  }
+  return index == 1 ? kDraftWidth * sizeof(std::int64_t) : 0;
+}
+
+aclmdlDataset* aclmdlCreateDataset() {
+  ++dataset_create_calls;
+  const auto* fail = std::getenv("QWEN35_FAKE_FAIL_DATASET_CREATE_CALL");
+  if (fail && dataset_create_calls == std::stoul(fail)) return nullptr;
+  auto* dataset = new (std::nothrow) aclmdlDataset();
+  if (dataset) {
+    ++live_datasets;
+    dataset->identity = dataset_create_calls;
+    LogIo("create_dataset", dataset);
+  }
+  return dataset;
+}
+
+aclError aclmdlDestroyDataset(aclmdlDataset* dataset) {
+  LogIo("destroy_dataset", dataset);
+  if (dataset) --live_datasets;
+  delete dataset;
+  return ACL_SUCCESS;
+}
+
+aclDataBuffer* aclCreateDataBuffer(void* data, std::size_t size) {
+  ++buffer_create_calls;
+  const auto* fail = std::getenv("QWEN35_FAKE_FAIL_BUFFER_CREATE_CALL");
+  if (fail && buffer_create_calls == std::stoul(fail)) return nullptr;
+  if (data == nullptr || size == 0) {
+    return nullptr;
+  }
+  auto* buffer = new (std::nothrow) aclDataBuffer{data, size};
+  if (buffer) ++live_data_buffers;
+  return buffer;
+}
+
+aclError aclDestroyDataBuffer(aclDataBuffer* buffer) {
+  if (buffer) --live_data_buffers;
+  delete buffer;
+  return ACL_SUCCESS;
+}
+
+aclError aclmdlAddDatasetBuffer(
+    aclmdlDataset* dataset, aclDataBuffer* data_buffer) {
+  if (dataset == nullptr || data_buffer == nullptr) {
+    return 1;
+  }
+  dataset->buffers.push_back(data_buffer);
+  return ACL_SUCCESS;
+}
+
+aclError aclmdlExecuteAsync(
+    std::uint32_t id,
+    const aclmdlDataset* input,
+    aclmdlDataset* output,
+    aclrtStream) {
+  executed = true;
+  const auto& model = fixtures.at(id);
+  if (model.dynamic_context && (!input || input->gear_model != id)) return 43;
+  if (model.workspace && (!device_allocations.count(model.workspace) ||
+      device_allocations.at(model.workspace) < model.workspace_size)) return 42;
+  if (!fixtures.at(id).role.empty()) return ExecuteChunk(fixtures.at(id), input, output);
+  if (input == nullptr || output == nullptr || input->buffers.size() != 2 ||
+      output->buffers.size() != 2) {
+    return 1;
+  }
+  const auto* ids = static_cast<const std::int64_t*>(input->buffers[0]->data);
+  const auto* mask = static_cast<const std::int64_t*>(input->buffers[1]->data);
+  auto* target = static_cast<std::int64_t*>(output->buffers[0]->data);
+  auto* draft = static_cast<std::int64_t*>(output->buffers[1]->data);
+  std::fill_n(target, kSequenceLength, 0);
+  std::size_t prefix = 0;
+  while (prefix < kSequenceLength && mask[prefix] == 1) {
+    target[prefix] = ids[prefix] + 1;
+    ++prefix;
+  }
+  if (prefix == 0) {
+    return 1;
+  }
+  for (std::size_t index = 0; index < kDraftWidth; ++index) {
+    draft[index] = ids[prefix - 1] + static_cast<std::int64_t>(index) + 1;
+  }
+  return ACL_SUCCESS;
+}
+
+}  // extern "C"

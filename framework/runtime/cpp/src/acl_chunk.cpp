@@ -1,0 +1,1305 @@
+#include <acl/acl.h>
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstring>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <unistd.h>
+
+#include "qwen35_dflash/chunk.hpp"
+#include "qwen35_dflash/sha256.hpp"
+
+namespace qwen35::dflash {
+namespace {
+void Check(aclError code, const char* op) {
+  if (code != ACL_SUCCESS)
+    throw std::runtime_error(std::string(op) +
+                             " failed: " + std::to_string(code));
+}
+void Require(bool ok, const char* message) {
+  if (!ok) throw std::runtime_error(message);
+}
+struct ModelMemory {
+  aclError status = ACL_SUCCESS;
+  std::size_t work = 0, weight = 0;
+
+  std::string Describe() const {
+    std::ostringstream out;
+    out << "query_status=" << status;
+    if (status == ACL_SUCCESS)
+      out << " weight_bytes=" << weight << " work_bytes=" << work;
+    else
+      out << " weight_bytes=unavailable work_bytes=unavailable";
+    return out.str();
+  }
+};
+
+void LogDeviceMemory(const char* phase, const std::string& graph = "all") {
+  // These attributes may describe the same physical pool on some devices.
+  // Report them separately; never add them or use an unsupported query as zero
+  // available memory. Diagnostics must not reject an otherwise runnable model.
+  for (auto attr : {ACL_HBM_MEM, ACL_DDR_MEM}) {
+    std::size_t free = 0, total = 0;
+    const auto status = aclrtGetMemInfo(attr, &free, &total);
+    std::cerr << "[chunk-runtime] device-memory phase=" << phase
+              << " graph=" << graph
+              << " pool=" << (attr == ACL_HBM_MEM ? "HBM" : "DDR")
+              << " query_status=" << status;
+    if (status == ACL_SUCCESS && total > 0)
+      std::cerr << " free_bytes=" << free << " total_bytes=" << total;
+    else
+      std::cerr << " free_bytes=unavailable total_bytes=unavailable";
+    std::cerr << '\n';
+  }
+}
+
+void LogProcessIdentity() {
+  std::cerr << "[chunk-runtime] process pid=" << getpid() << " ppid=" << getppid();
+  std::ifstream status("/proc/self/status");
+  std::string line;
+  while (std::getline(status, line)) {
+    if (line.rfind("NSpid:", 0) == 0) {
+      std::cerr << " nspid=" << std::quoted(line.substr(6));
+      break;
+    }
+  }
+  std::error_code error;
+  const auto ns = std::filesystem::read_symlink("/proc/self/ns/pid", error);
+  std::cerr << " pid_namespace=" << std::quoted(error ? "unavailable" : ns.string()) << '\n';
+}
+
+struct CleanupAudit {
+  std::size_t errors = 0, released_models = 0;
+  std::size_t allocated_device_bytes = 0, freed_device_bytes = 0;
+
+  void Check(aclError status, const char* operation) noexcept {
+    if (status != ACL_SUCCESS) {
+      ++errors;
+      std::cerr << "[chunk-runtime] cleanup-error operation=" << operation
+                << " status=" << status << '\n';
+    }
+  }
+};
+
+bool State(const std::string& name) {
+  return name.size() > 2 && (name[0] == 't' || name[0] == 'd') &&
+         name[1] >= '0' && name[1] <= '9';
+}
+aclDataType Dtype(const std::string& name) {
+  if (name == "int64") return ACL_INT64;
+  if (name == "int16") return ACL_INT16;
+  if (name == "float32") return ACL_FLOAT;
+  if (name == "float16") return ACL_FLOAT16;
+  if (name == "int8") return ACL_INT8;
+  if (name == "uint8") return ACL_UINT8;
+  throw std::runtime_error("unsupported chunk tensor dtype");
+}
+std::string DtypeName(aclDataType dtype) {
+  const char* name = "unknown";
+  switch (dtype) {
+    case ACL_FLOAT: name = "float32"; break;
+    case ACL_FLOAT16: name = "float16"; break;
+    case ACL_INT16: name = "int16"; break;
+    case ACL_INT32: name = "int32"; break;
+    case ACL_INT64: name = "int64"; break;
+    case ACL_INT8: name = "int8"; break;
+    case ACL_UINT8: name = "uint8"; break;
+    default: break;
+  }
+  return std::string(name) + "(" + std::to_string(static_cast<int>(dtype)) + ")";
+}
+struct OmTensor {
+  aclmdlIODims dims{};
+  aclError dims_status = ACL_SUCCESS;
+  aclDataType dtype = ACL_DT_UNDEFINED;
+  std::size_t bytes = 0;
+
+  bool Matches(const TensorSpec& spec) const {
+    const auto limit = sizeof(dims.dims) / sizeof(dims.dims[0]);
+    return dims_status == ACL_SUCCESS && dtype == Dtype(spec.dtype) &&
+           bytes == spec.bytes() && dims.dimCount == spec.shape.size() &&
+           dims.dimCount <= limit &&
+           std::equal(spec.shape.begin(), spec.shape.end(), dims.dims);
+  }
+  std::string Describe() const {
+    std::ostringstream out;
+    const std::string name(dims.name,
+        std::find(dims.name, dims.name + sizeof(dims.name), '\0'));
+    out << "name=" << std::quoted(name) << " dtype=" << DtypeName(dtype)
+        << " bytes=" << bytes << " rank=" << dims.dimCount << " shape=[";
+    const auto limit = sizeof(dims.dims) / sizeof(dims.dims[0]);
+    for (std::size_t i = 0; i < std::min(dims.dimCount, limit); ++i) {
+      if (i) out << ',';
+      out << dims.dims[i];
+    }
+    if (dims.dimCount > limit) out << ",...invalid-rank";
+    out << "] dims_status=" << dims_status;
+    return out.str();
+  }
+};
+OmTensor ReadOmTensor(aclmdlDesc* desc, bool output, std::size_t index) {
+  OmTensor tensor;
+  tensor.dims_status = output ? aclmdlGetOutputDims(desc, index, &tensor.dims)
+                             : aclmdlGetInputDims(desc, index, &tensor.dims);
+  tensor.dtype = output ? aclmdlGetOutputDataType(desc, index)
+                        : aclmdlGetInputDataType(desc, index);
+  tensor.bytes = output ? aclmdlGetOutputSizeByIndex(desc, index)
+                        : aclmdlGetInputSizeByIndex(desc, index);
+  return tensor;
+}
+std::string DescribePlanTensor(const TensorSpec& spec) {
+  std::ostringstream out;
+  out << "name=" << std::quoted(spec.name) << " dtype=" << DtypeName(Dtype(spec.dtype))
+      << " bytes=" << spec.bytes() << " rank=" << spec.shape.size() << " shape=[";
+  for (std::size_t i = 0; i < spec.shape.size(); ++i) {
+    if (i) out << ',';
+    out << spec.shape[i];
+  }
+  out << ']';
+  return out.str();
+}
+std::string DescribeModelIo(aclmdlDesc* desc, const ChunkGraph& graph) {
+  std::ostringstream out;
+  out << "\n[chunk-runtime] OM I/O descriptors graph=" << graph.name
+      << " model=" << std::quoted(graph.model.string());
+  for (bool output : {false, true}) {
+    const auto count = output ? aclmdlGetNumOutputs(desc) : aclmdlGetNumInputs(desc);
+    const auto& specs = output ? graph.outputs : graph.inputs;
+    out << '\n' << (output ? "outputs" : "inputs") << ": plan=" << specs.size()
+        << " om=" << count;
+    for (std::size_t i = 0; i < std::max(count, specs.size()); ++i) {
+      out << '\n' << (output ? "output[" : "input[") << i << "] expected={"
+          << (i < specs.size() ? DescribePlanTensor(specs[i]) : "absent") << "} actual={"
+          << (i < count ? ReadOmTensor(desc, output, i).Describe() : "absent") << '}';
+    }
+  }
+  return out.str();
+}
+void ValidateModelIo(aclmdlDesc* desc, const ChunkGraph& graph,
+                     std::size_t dynamic_index = static_cast<std::size_t>(-1)) {
+  const auto inputs = aclmdlGetNumInputs(desc), outputs = aclmdlGetNumOutputs(desc);
+  const bool dynamic = graph.name == "draft";
+  if (inputs != graph.inputs.size() + dynamic || outputs != graph.outputs.size()) {
+    throw std::runtime_error(
+        "OM tensor count differs from chunk plan: graph=" + graph.name +
+        " inputs(plan=" + std::to_string(graph.inputs.size()) + ",om=" + std::to_string(inputs) +
+        ") outputs(plan=" + std::to_string(graph.outputs.size()) + ",om=" + std::to_string(outputs) + ")" +
+        DescribeModelIo(desc, graph));
+  }
+  for (bool output : {false, true}) {
+    const auto& specs = output ? graph.outputs : graph.inputs;
+    for (std::size_t i = 0; i < specs.size(); ++i) {
+      const auto actual = ReadOmTensor(desc, output, i + (!output && i >= dynamic_index));
+      auto comparable = actual;
+      if (dynamic && !output && specs[i].name == "features" &&
+          comparable.dims.dimCount == 3 && comparable.dims.dims[1] == -1)
+        comparable.dims.dims[1] = 64;  // Buffers hold the largest finite gear.
+      if (!comparable.Matches(specs[i])) {
+        throw std::runtime_error(
+            "OM tensor ABI differs from chunk plan: graph=" + graph.name +
+            (output ? " output[" : " input[") + std::to_string(i) + "] expected={" +
+            DescribePlanTensor(specs[i]) + "} actual={" + actual.Describe() + "}" +
+            DescribeModelIo(desc, graph));
+      }
+    }
+  }
+}
+
+std::string DebugQuote(const std::string& value) {
+  std::ostringstream out;
+  out << '"';
+  for (unsigned char c : value) {
+    if (c == '"' || c == '\\') out << '\\' << c;
+    else if (c < 0x20) out << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+                           << static_cast<unsigned>(c) << std::dec;
+    else out << c;
+  }
+  out << '"';
+  return out.str();
+}
+std::string DebugMap(const std::map<std::string, std::string>& values) {
+  std::ostringstream out;
+  out << '{';
+  bool first = true;
+  for (const auto& item : values) {
+    if (!first) out << ',';
+    first = false;
+    out << DebugQuote(item.first) << ':' << DebugQuote(item.second);
+  }
+  out << '}';
+  return out.str();
+}
+std::string DebugTokens(const std::vector<std::int64_t>& tokens) {
+  std::ostringstream out;
+  out << '[';
+  for (std::size_t i = 0; i < tokens.size(); ++i) {
+    if (i) out << ',';
+    out << tokens[i];
+  }
+  out << ']';
+  return out.str();
+}
+struct Memory {
+  explicit Memory(CleanupAudit& audit) : audit(audit) {}
+  CleanupAudit& audit;
+  void* device = nullptr;
+  void* host = nullptr;
+  std::size_t bytes = 0;
+  TensorSpec spec;
+  ~Memory() {
+    if (device) {
+      const auto status = aclrtFree(device);
+      audit.Check(status, "aclrtFree");
+      if (status == ACL_SUCCESS) audit.freed_device_bytes += bytes;
+      else std::cerr << "[chunk-runtime] unreleased-buffer name=" << spec.name
+                     << " bytes=" << bytes << '\n';
+    }
+    if (host) audit.Check(aclrtFreeHost(host), "aclrtFreeHost");
+  }
+};
+struct BoundIo {
+  explicit BoundIo(CleanupAudit& audit) : audit(audit) {}
+  CleanupAudit& audit;
+  aclmdlDataset* inputs = nullptr;
+  aclmdlDataset* outputs = nullptr;
+  std::vector<aclDataBuffer*> input_buffers, output_buffers;
+  std::vector<Memory*> host_inputs, host_outputs;
+  ~BoundIo() {
+    for (auto* data : input_buffers)
+      audit.Check(aclDestroyDataBuffer(data), "aclDestroyDataBuffer(input)");
+    for (auto* data : output_buffers)
+      audit.Check(aclDestroyDataBuffer(data), "aclDestroyDataBuffer(output)");
+    if (inputs) audit.Check(aclmdlDestroyDataset(inputs), "aclmdlDestroyDataset(input)");
+    if (outputs) audit.Check(aclmdlDestroyDataset(outputs), "aclmdlDestroyDataset(output)");
+  }
+};
+struct Loaded {
+  explicit Loaded(CleanupAudit& audit) : audit(audit) {}
+  CleanupAudit& audit;
+  std::string name;
+  std::uint32_t id = 0;
+  bool loaded = false;
+  aclmdlDesc* desc = nullptr;
+  std::array<std::unique_ptr<BoundIo>, 2> io;
+  std::string state_name;
+  std::array<void*, 2> state_addresses{};
+  std::unique_ptr<Memory> dynamic_control;
+  std::size_t dynamic_index = static_cast<std::size_t>(-1);
+  std::array<aclmdlIODims, 2> gears{};
+  void ReadDraftGears(const ChunkGraph& graph) {
+    if (graph.name != "draft") return;
+    Check(aclmdlGetInputIndexByName(desc, ACL_DYNAMIC_TENSOR_NAME, &dynamic_index),
+          "aclmdlGetInputIndexByName(Draft dynamic control)");
+    Require(dynamic_index < aclmdlGetNumInputs(desc), "invalid Draft dynamic control index");
+    // Report damaged public descriptors before checking their flattened gears.
+    ValidateModelIo(desc, graph, dynamic_index);
+    std::size_t rank_sum = 0;
+    for (const auto& input : graph.inputs) rank_sum += input.shape.size();
+    const auto capacity = sizeof(gears[0].dims) / sizeof(gears[0].dims[0]);
+    if (rank_sum > capacity) throw std::runtime_error(
+            "Draft dynamic gear requires " + std::to_string(rank_sum) +
+            " dimensions, exceeding aclmdlIODims capacity " + std::to_string(capacity) +
+            "; re-export and recompile the quantized Draft with flat weight inputs");
+    std::size_t count = 0;
+    Check(aclmdlGetInputDynamicGearCount(desc, static_cast<std::size_t>(-1), &count),
+          "aclmdlGetInputDynamicGearCount");
+    Require(count == 2, "Draft OM must contain exactly the 16 and 64 context gears");
+    std::array<aclmdlIODims, 2> actual{};
+    Check(aclmdlGetInputDynamicDims(desc, static_cast<std::size_t>(-1), actual.data(), count),
+          "aclmdlGetInputDynamicDims");
+    for (std::size_t gear = 0; gear < 2; ++gear) {
+      auto& expected = gears[gear];
+      for (const auto& spec : graph.inputs) {
+        for (std::size_t axis = 0; axis < spec.shape.size(); ++axis) {
+          Require(expected.dimCount < sizeof(expected.dims) / sizeof(expected.dims[0]),
+                  "Draft gear exceeds aclmdlIODims capacity");
+          expected.dims[expected.dimCount++] =
+              spec.name == "features" && axis == 1 ? (gear ? 64 : 16) : spec.shape[axis];
+        }
+      }
+      const auto matches = [&](const auto& value) {
+        return value.dimCount == expected.dimCount &&
+               std::equal(expected.dims, expected.dims + expected.dimCount, value.dims);
+      };
+      Require(std::count_if(actual.begin(), actual.end(), matches) == 1,
+              "Draft OM gear dimensions differ from the 16/64 contract");
+    }
+  }
+  ~Loaded() {
+    // Dataset descriptors borrow device buffers; release them before unloading
+    // the model and before the executor frees the shared buffer pool.
+    for (auto& binding : io) binding.reset();
+    if (desc) audit.Check(aclmdlDestroyDesc(desc), "aclmdlDestroyDesc");
+    if (loaded) {
+      const auto status = aclmdlUnload(id);
+      audit.Check(status, "aclmdlUnload");
+      if (status == ACL_SUCCESS) ++audit.released_models;
+      std::cerr << "[chunk-runtime] unload graph=" << name
+                << " model_id=" << id << " status=" << status << '\n';
+    }
+  }
+};
+}  // namespace
+
+class AclChunkExecutor::Impl {
+ public:
+  Impl(const std::filesystem::path& path, int device, const std::string& mode,
+       bool share_workspace)
+      : plan(ReadChunkPlan(path, mode)), plan_path(path), plan_sha256(Sha256File(path)),
+        device_id(device), share_workspace(share_workspace) {
+    Require(device >= 0, "negative device ID");
+    std::cerr << "[chunk-runtime] verify_gdr="
+              << (plan.abi == "qwen35-dflash-mtp-v1" || plan.abi == "qwen35-dflash-mtp-v2" ? "mtp" : "chunk")
+              << " abi=" << plan.abi << '\n';
+    try {
+      LogProcessIdentity();
+      Check(aclInit(nullptr), "aclInit");
+      initialized = true;
+      Check(aclrtSetDevice(device), "aclrtSetDevice");
+      device_set = true;
+      Check(aclrtCreateContext(&context, device), "aclrtCreateContext");
+      Check(aclrtSetCurrentContext(context), "aclrtSetCurrentContext");
+      Check(aclrtCreateStream(&stream), "aclrtCreateStream");
+      LoadMode(mode);
+    } catch (...) {
+      Cleanup();
+      throw;
+    }
+  }
+  ~Impl() { Cleanup(); }
+
+  void LoadMode(const std::string& mode) {
+    Require(!cleaned && !cleanup.errors && models.empty() && memory.empty() && !workspace,
+            "unload models before changing mode");
+    std::vector<const ChunkGraph*> selected;
+    for (const auto& item : plan.graphs) {
+      if (mode == "dflash" && item.first == "target_decode") continue;
+      if (mode == "ordinary" &&
+          (item.first == "target_verify" || item.first == "draft"))
+        continue;
+      selected.push_back(&item.second);
+    }
+    std::cerr << "[chunk-runtime] model-memory mode=" << mode
+              << " selected_models=" << selected.size()
+              << " weights=independent_per_om\n";
+    LogDeviceMemory("before_models");
+    // Query every selected OM before any is loaded, so an OOM on an early
+    // model does not hide the requirements of the remaining graphs.
+    std::map<std::string, ModelMemory> requirements;
+    for (const auto* graph : selected) {
+      auto& requirement = requirements[graph->name];
+      requirement.status = aclmdlQuerySize(
+          graph->model.c_str(), &requirement.work, &requirement.weight);
+      std::cerr << "[chunk-runtime] om-memory graph=" << graph->name << ' '
+                << requirement.Describe() << '\n';
+    }
+    std::size_t total_work = 0, maximum_work = 0;
+    const bool queried_all = std::all_of(
+        requirements.begin(), requirements.end(), [](const auto& item) {
+          return item.second.status == ACL_SUCCESS;
+        });
+    if (queried_all && share_workspace) {
+      for (const auto& item : requirements) {
+        total_work += item.second.work;
+        maximum_work = std::max(maximum_work, item.second.work);
+      }
+      if (maximum_work > 0) {
+        workspace = std::make_unique<Memory>(cleanup);
+        workspace->spec.name = "shared_workspace";
+        workspace->bytes = maximum_work;
+        Check(aclrtMalloc(&workspace->device, maximum_work,
+                          ACL_MEM_MALLOC_NORMAL_ONLY), "aclrtMalloc(shared_workspace)");
+        cleanup.allocated_device_bytes += maximum_work;
+      }
+      std::cerr << "[chunk-runtime] workspace policy=shared_serial"
+                << " shared_bytes=" << maximum_work
+                << " separate_sum_bytes=" << total_work
+                << " saved_work_bytes=" << total_work - maximum_work << '\n';
+    } else {
+      std::cerr << "[chunk-runtime] workspace policy=per_model"
+                << " reason=" << (share_workspace ? "memory_query_unavailable" : "debug_private")
+                << '\n';
+    }
+    for (const auto* graph : selected) {
+      Load(*graph, requirements.at(graph->name));
+    }
+    // Cross-graph state/feature shapes are checked by the shared pool.
+    std::size_t bytes = 0, discard_bytes = 0;
+    for (const auto& item : memory) {
+      bytes += item.second->bytes;
+      if (IsVerifyDiscardState(item.second->spec.name))
+        discard_bytes += item.second->bytes;
+    }
+    std::cerr << "[chunk-runtime] loaded_models=" << models.size()
+              << " persistent_buffer_bytes=" << bytes
+              << " verify_discard_buffer_bytes=" << discard_bytes << '\n';
+  }
+
+  void UnloadModels() {
+    Require(!cleaned && !pending, "mode change requires a completed request");
+    Check(aclrtSetCurrentContext(context), "aclrtSetCurrentContext(mode change)");
+    Check(aclrtSynchronizeStream(stream), "aclrtSynchronizeStream(mode change)");
+    invalid = true;
+    models.clear();
+    workspace.reset();
+    memory.clear();
+    LogDeviceMemory("after_mode_unload");
+    if (cleanup.errors)
+      throw std::runtime_error("model unload failed; refusing to load the next mode");
+  }
+
+  void Cleanup() noexcept {
+    if (cleaned) return;
+    cleaned = true;
+    std::cerr << "[chunk-runtime] cleanup_begin loaded_models=" << models.size()
+              << " device_buffers=" << memory.size() << '\n';
+    if (context) cleanup.Check(aclrtSetCurrentContext(context), "aclrtSetCurrentContext");
+    if (stream) cleanup.Check(aclrtSynchronizeStream(stream), "aclrtSynchronizeStream");
+    models.clear();
+    // Every model must be unloaded before its borrowed work memory is freed.
+    workspace.reset();
+    memory.clear();
+    if (device_set) LogDeviceMemory("after_release");
+    if (stream) {
+      cleanup.Check(aclrtDestroyStream(stream), "aclrtDestroyStream");
+      stream = nullptr;
+    }
+    if (context) {
+      cleanup.Check(aclrtDestroyContext(context), "aclrtDestroyContext");
+      context = nullptr;
+    }
+    if (device_set) {
+      cleanup.Check(aclrtResetDevice(device_id), "aclrtResetDevice");
+      device_set = false;
+    }
+    if (initialized) {
+      cleanup.Check(aclFinalize(), "aclFinalize");
+      initialized = false;
+    }
+    std::cerr << "[chunk-runtime] cleanup_end released_models=" << cleanup.released_models
+              << " allocated_device_bytes=" << cleanup.allocated_device_bytes
+              << " freed_device_bytes=" << cleanup.freed_device_bytes
+              << " errors=" << cleanup.errors << '\n';
+  }
+
+  std::string Key(const TensorSpec& spec, const std::string& graph,
+                  bool output) const {
+    if (State(spec.name)) return spec.name + (output ? ".next" : ".current");
+    if (spec.name == "features" || spec.name == "start_position" ||
+        spec.name == "valid_rows" || spec.name == "anchor" ||
+        spec.name == "proposal_count")
+      return spec.name;
+    return graph + "." + spec.name;
+  }
+  Memory& Get(const TensorSpec& spec, const std::string& graph, bool output) {
+    const auto key = Key(spec, graph, output);
+    auto found = memory.find(key);
+    if (found != memory.end()) {
+      Require(found->second->spec.dtype == spec.dtype &&
+                  found->second->spec.shape == spec.shape,
+              "cross-graph tensor ABI mismatch");
+      return *found->second;
+    }
+    auto buffer = std::make_unique<Memory>(cleanup);
+    buffer->spec = spec;
+    buffer->bytes = spec.bytes();
+    Check(
+        aclrtMalloc(&buffer->device, buffer->bytes, ACL_MEM_MALLOC_NORMAL_ONLY),
+        "aclrtMalloc");
+    cleanup.allocated_device_bytes += buffer->bytes;
+    // Discard outputs have private graph-scoped device allocations. No host
+    // allocation means Call queues neither H2D nor D2H for them.
+    if (!State(spec.name) && spec.name != "features" &&
+        spec.name.rfind("draft_weight_", 0) != 0 &&
+        !IsVerifyDiscardState(spec.name))
+      Check(aclrtMallocHost(&buffer->host, buffer->bytes), "aclrtMallocHost");
+    auto* pointer = buffer.get();
+    memory.emplace(key, std::move(buffer));
+    return *pointer;
+  }
+
+  void Load(const ChunkGraph& graph, const ModelMemory& requirement) {
+    auto owner = std::make_unique<Loaded>(cleanup);
+    auto& model = *owner;
+    model.name = graph.name;
+    std::cerr << "[chunk-runtime] load graph=" << graph.name
+              << " model=" << std::quoted(graph.model.string()) << '\n';
+    LogDeviceMemory("before_load", graph.name);
+    // Call() uses one stream and synchronizes every execute. Temporary work
+    // memory can therefore be shared; weights keep independent GE ownership.
+    const auto* operation = workspace ? "aclmdlLoadFromFileWithMem" : "aclmdlLoadFromFile";
+    const auto status = workspace
+        ? aclmdlLoadFromFileWithMem(graph.model.c_str(), &model.id,
+                                   workspace->device, workspace->bytes, nullptr, 0)
+        : aclmdlLoadFromFile(graph.model.c_str(), &model.id);
+    if (status != ACL_SUCCESS) {
+      LogDeviceMemory("load_failed", graph.name);
+      throw std::runtime_error(
+          std::string(operation) + " failed: " + std::to_string(status) +
+          " graph=" + graph.name + " model=" + graph.model.string() +
+          " loaded_models=" + std::to_string(models.size()) + " " +
+          requirement.Describe() +
+          "; this model's I/O buffers have not been allocated and it has not executed");
+    }
+    model.loaded = true;
+    model.desc = aclmdlCreateDesc();
+    Require(model.desc != nullptr, "aclmdlCreateDesc returned null");
+    Check(aclmdlGetDesc(model.desc, model.id), "aclmdlGetDesc");
+    model.ReadDraftGears(graph);
+    ValidateModelIo(model.desc, graph, model.dynamic_index);
+    // Keep the original device-buffer allocation order. Additional datasets
+    // are host descriptors and must not allocate another copy of tensor data.
+    for (bool output : {false, true})
+      for (const auto& spec : output ? graph.outputs : graph.inputs)
+        static_cast<void>(Get(spec, graph.name, output));
+    // Quantized weights are graph inputs to prevent dense constant folding.
+    // Upload once per model load, never once per token/request or into next KV.
+    for (const auto& spec : graph.inputs) {
+      const auto found = graph.constants.find(spec.name);
+      if (found == graph.constants.end()) continue;
+      const auto& constant = found->second;
+      Require(Sha256File(constant.path) == constant.sha256,
+              "Draft constant changed before model load");
+      std::vector<char> data(constant.bytes);
+      std::ifstream file(constant.path, std::ios::binary);
+      Require(static_cast<bool>(file.read(data.data(), data.size())) && file.peek() == EOF,
+              "Draft constant payload size changed");
+      auto& memory = Get(spec, graph.name, false);
+      Require(memory.host == nullptr && memory.bytes == data.size(), "invalid constant buffer");
+      Check(aclrtMemcpy(memory.device, memory.bytes, data.data(), data.size(), ACL_MEMCPY_HOST_TO_DEVICE),
+            "aclrtMemcpy(Draft constant once)");
+    }
+    if (graph.name == "draft") {
+      // CANN's mandatory gear-control input is small, shared by both datasets,
+      // and written only by aclmdlSetInputDynamicDims (never by a host memcpy).
+      model.dynamic_control = std::make_unique<Memory>(cleanup);
+      auto& control = *model.dynamic_control;
+      control.spec.name = "draft.dynamic_control";
+      control.bytes = aclmdlGetInputSizeByIndex(model.desc, model.dynamic_index);
+      Require(control.bytes > 0 && control.bytes <= 1024 * 1024,
+              "unexpected Draft dynamic-control buffer size");
+      Check(aclrtMalloc(&control.device, control.bytes, ACL_MEM_MALLOC_NORMAL_ONLY),
+            "aclrtMalloc(Draft dynamic control)");
+      cleanup.allocated_device_bytes += control.bytes;
+      std::cerr << "[chunk-runtime] draft_context_gears=16,64 dynamic_control_bytes="
+                << control.bytes << '\n';
+    }
+    // Each graph uses either Target state or Draft state. Both banks have fixed
+    // allocations; commit only exchanges their current/next ownership.
+    for (bool output : {false, true}) {
+      const auto& specs = output ? graph.outputs : graph.inputs;
+      for (const auto& spec : specs) {
+        if (!State(spec.name)) continue;
+        if (model.state_name.empty()) {
+          model.state_name = spec.name;
+          model.state_addresses = {Get(spec, graph.name, false).device,
+                                   Get(spec, graph.name, true).device};
+        }
+        Require(spec.name[0] == model.state_name[0],
+                "one graph cannot bind independently swapped Target and Draft states");
+      }
+    }
+    const std::size_t variants = model.state_name.empty() ? 1 : 2;
+    for (std::size_t variant = 0; variant < variants; ++variant) {
+      model.io[variant] = std::make_unique<BoundIo>(cleanup);
+      auto& binding = *model.io[variant];
+      binding.inputs = aclmdlCreateDataset();
+      binding.outputs = aclmdlCreateDataset();
+      Require(binding.inputs && binding.outputs, "aclmdlCreateDataset returned null");
+      for (bool output : {false, true}) {
+        const auto& specs = output ? graph.outputs : graph.inputs;
+        auto& buffers = output ? binding.output_buffers : binding.input_buffers;
+        auto& host = output ? binding.host_outputs : binding.host_inputs;
+        for (std::size_t index = 0; index < specs.size() + (!output && model.dynamic_control); ++index) {
+          if (!output && index == model.dynamic_index) {
+            auto& mem = *model.dynamic_control;
+            auto* data = aclCreateDataBuffer(mem.device, mem.bytes);
+            Require(data != nullptr, "aclCreateDataBuffer returned null");
+            buffers.push_back(data);
+            Check(aclmdlAddDatasetBuffer(binding.inputs, data), "aclmdlAddDatasetBuffer(dynamic)");
+            continue;
+          }
+          const auto& spec = specs[index - (!output && index > model.dynamic_index)];
+          const bool side = State(spec.name) && variant ? !output : output;
+          auto& mem = Get(spec, graph.name, side);
+          auto* data = aclCreateDataBuffer(mem.device, mem.bytes);
+          Require(data != nullptr, "aclCreateDataBuffer returned null");
+          buffers.push_back(data);
+          Check(aclmdlAddDatasetBuffer(output ? binding.outputs : binding.inputs, data),
+                "aclmdlAddDatasetBuffer");
+          if (mem.host) host.push_back(&mem);
+        }
+      }
+    }
+    std::cerr << "[chunk-runtime] io_binding=prebound_ping_pong graph=" << graph.name
+              << " dataset_pairs=" << variants << '\n';
+    models.emplace(graph.name, std::move(owner));
+    LogDeviceMemory("after_load_and_io", graph.name);
+  }
+
+  void Reset(std::int64_t padding) {
+    Check(aclrtSetCurrentContext(context), "aclrtSetCurrentContext");
+    Check(aclrtSynchronizeStream(stream), "aclrtSynchronizeStream(reset)");
+    for (const auto& item : memory) {
+      if (State(item.second->spec.name))
+        Check(aclrtMemsetAsync(item.second->device, item.second->bytes, 0,
+                               item.second->bytes, stream),
+              "aclrtMemsetAsync");
+    }
+    Check(aclrtSynchronizeStream(stream), "aclrtSynchronizeStream(reset)");
+    pad = padding;
+    cursor = 0;
+    draft_cursor = 0;
+    pending = 0;
+    feature_rows = 0;
+    invalid = false;
+    calls = 0;
+    timings.clear();
+  }
+
+  void Healthy() const {
+    Require(!invalid, "request invalidated; reset before reuse");
+  }
+  void Swap(char kind) {
+    for (const auto& spec :
+         plan.graphs.at(kind == 't' ? "target_prefill" : "draft").inputs) {
+      if (State(spec.name) && spec.name[0] == kind)
+        memory.at(spec.name + ".current").swap(memory.at(spec.name + ".next"));
+    }
+  }
+  void Scalar(const std::string& name, std::int64_t value) {
+    auto& mem = *memory.at(name);
+    Require(mem.host != nullptr, "scalar is not host accessible");
+    if (mem.spec.dtype == "int16") {
+      Require(mem.bytes == 2 && value >= 0 && value <= 32767,
+              "invalid INT16 scalar");
+      *static_cast<std::int16_t*>(mem.host) = static_cast<std::int16_t>(value);
+    } else {
+      Require(mem.spec.dtype == "int64" && mem.bytes == 8,
+              "invalid INT64 scalar");
+      *static_cast<std::int64_t*>(mem.host) = value;
+    }
+  }
+  void Inputs(const std::string& graph, const std::vector<std::int64_t>& ids) {
+    Require(!ids.empty() && cursor + ids.size() <= plan.capacity,
+            "target rows exceed logical capacity");
+    auto& mem = *memory.at(graph + ".input_ids");
+    Require(mem.spec.dtype == "int64" && mem.bytes / 8 >= ids.size(),
+            "target input gear is too short");
+    auto* data = static_cast<std::int64_t*>(mem.host);
+    std::fill_n(data, mem.bytes / 8, pad);
+    std::copy(ids.begin(), ids.end(), data);
+    Scalar("start_position", static_cast<std::int64_t>(cursor));
+    Scalar("valid_rows", static_cast<std::int64_t>(ids.size()));
+  }
+  void Call(const std::string& name) {
+    Healthy();
+    const auto start = std::chrono::steady_clock::now();
+    auto& model = *models.at(name);
+    try {
+      std::size_t variant = 0;
+      if (!model.state_name.empty()) {
+        const auto address = memory.at(model.state_name + ".current")->device;
+        if (address == model.state_addresses[1]) variant = 1;
+        else Require(address == model.state_addresses[0], "state allocation changed after I/O binding");
+      }
+      auto& binding = *model.io[variant];
+      if (model.dynamic_control) {
+        const auto rows = *static_cast<const std::int16_t*>(memory.at("valid_rows")->host);
+        Require(rows >= 0 && rows <= 64, "Draft context length exceeds largest gear");
+        Check(aclmdlSetInputDynamicDims(model.id, binding.inputs, model.dynamic_index,
+                                       &model.gears[rows > 16 ? 1 : 0]),
+              "aclmdlSetInputDynamicDims(Draft 16/64)");
+      }
+      for (const auto* mem : binding.host_inputs)
+        Check(aclrtMemcpyAsync(mem->device, mem->bytes, mem->host, mem->bytes,
+                              ACL_MEMCPY_HOST_TO_DEVICE, stream),
+              "aclrtMemcpyAsync(H2D)");
+      Check(aclmdlExecuteAsync(model.id, binding.inputs, binding.outputs, stream),
+            "aclmdlExecuteAsync");
+      for (const auto* mem : binding.host_outputs)
+        Check(aclrtMemcpyAsync(mem->host, mem->bytes, mem->device, mem->bytes,
+                              ACL_MEMCPY_DEVICE_TO_HOST, stream),
+              "aclrtMemcpyAsync(D2H)");
+      Check(aclrtSynchronizeStream(stream), "aclrtSynchronizeStream");
+    } catch (...) {
+      invalid = true;
+      throw;
+    }
+    ++calls;
+    timings[name].push_back(std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - start)
+                                .count());
+  }
+  std::vector<std::int64_t> Tokens(const std::string& graph,
+                                   const std::string& name = "target_top1") {
+    auto& mem = *memory.at(graph + "." + name);
+    Require(mem.spec.dtype == "int64" && mem.host, "token output ABI mismatch");
+    auto* values = static_cast<std::int64_t*>(mem.host);
+    return {values, values + mem.bytes / 8};
+  }
+
+  std::int64_t Prefill(const std::vector<std::int64_t>& ids, bool draft) {
+    Healthy();
+    Require(cursor == 0 && pending == 0, "prefill needs a fresh request");
+    std::int64_t token = 0;
+    for (std::size_t offset = 0; offset < ids.size(); offset += 64) {
+      const auto rows = std::min<std::size_t>(64, ids.size() - offset);
+      Inputs("target_prefill",
+             {ids.begin() + offset, ids.begin() + offset + rows});
+      Call("target_prefill");
+      token = Tokens("target_prefill").at(0);
+      Swap('t');
+      feature_start = cursor;
+      feature_rows = rows;
+      cursor += rows;
+      if (draft && cursor < ids.size()) {
+        // One 64-row call per non-final Target block. The final block is
+        // consumed by the first useful proposal call, then Verify supplies
+        // <=16 committed rows and the same OM switches to its compact gear.
+        Require(draft_cursor == feature_start, "Draft prefill cursor is inconsistent");
+        Scalar("start_position", static_cast<std::int64_t>(feature_start));
+        Scalar("valid_rows", static_cast<std::int64_t>(feature_rows));
+        Scalar("anchor", token);
+        Scalar("proposal_count", 1);
+        Call("draft");
+        Swap('d');
+        draft_cursor = cursor;
+        feature_rows = 0;
+      }
+    }
+    return token;
+  }
+  void PrepareDraft(std::int64_t anchor, std::size_t proposal_count) {
+    Healthy();
+    Require(proposal_count > 0 && proposal_count <= 15, "Draft proposal_count must be 1..15");
+    Require(!pending && feature_rows <= 64 && draft_cursor == feature_start &&
+                feature_start + feature_rows == cursor,
+            "Draft context cursor is inconsistent");
+    Scalar("start_position", static_cast<std::int64_t>(feature_start));
+    Scalar("valid_rows", static_cast<std::int64_t>(feature_rows));
+    Scalar("anchor", anchor);
+    Scalar("proposal_count", static_cast<std::int64_t>(proposal_count));
+  }
+  std::map<std::string, std::string> DraftInputHashes(std::int64_t anchor,
+                                                    std::size_t proposal_count) {
+    PrepareDraft(anchor, proposal_count);
+    Check(aclrtSynchronizeStream(stream), "aclrtSynchronizeStream(input audit)");
+    const auto& inputs = plan.graphs.at("draft").inputs;
+    Memory scratch(cleanup);
+    for (const auto& spec : inputs) scratch.bytes = std::max(scratch.bytes, spec.bytes());
+    Check(aclrtMallocHost(&scratch.host, scratch.bytes), "aclrtMallocHost(input audit)");
+    std::map<std::string, std::string> hashes;
+    for (const auto& spec : inputs) {
+      auto& mem = Get(spec, "draft", false);
+      const void* data = mem.host;
+      if (!data) {
+        Check(aclrtMemcpyAsync(scratch.host, scratch.bytes, mem.device, mem.bytes,
+                               ACL_MEMCPY_DEVICE_TO_HOST, stream), "aclrtMemcpyAsync(input audit)");
+        Check(aclrtSynchronizeStream(stream), "aclrtSynchronizeStream(input audit)");
+        data = scratch.host;
+      }
+      // Control scalars are hashed from the exact host bytes Call() will upload;
+      // features/current KV are read from device. No output buffer is sampled.
+      hashes.emplace(spec.name, Sha256(std::string_view(static_cast<const char*>(data), mem.bytes)));
+    }
+    return hashes;
+  }
+
+  std::pair<bool, std::string> DebugDraftReplay(
+      const std::vector<std::int64_t>& prompt, std::int64_t padding,
+      std::size_t proposal_count, std::size_t repetitions,
+      const std::filesystem::path& output_directory,
+      const std::filesystem::path& input_directory) {
+    Require(!prompt.empty() && prompt.size() + 16 <= plan.capacity,
+            "debug replay prompt needs room for a full Draft block");
+    Require(padding >= 0 && padding < plan.vocabulary &&
+                std::all_of(prompt.begin(), prompt.end(), [&](auto id) {
+                  return id >= 0 && id < plan.vocabulary;
+                }), "debug replay token outside vocabulary");
+    Require(repetitions > 0 && repetitions <= 1000 && proposal_count > 0 &&
+                proposal_count <= 15, "debug replay requires 1..1000 repetitions and 1..15 proposals");
+    Require(std::filesystem::create_directory(output_directory),
+            "debug replay directory must be new");
+    const auto snapshot_dir = output_directory / "inputs";
+    std::filesystem::create_directory(snapshot_dir);
+    std::ofstream trace(output_directory / "iterations.jsonl");
+    trace.exceptions(std::ios::badbit | std::ios::failbit);
+
+    const auto& graph = plan.graphs.at("draft");
+    Memory scratch(cleanup);
+    for (const auto& spec : graph.inputs) scratch.bytes = std::max(scratch.bytes, spec.bytes());
+    for (const auto& spec : graph.outputs) scratch.bytes = std::max(scratch.bytes, spec.bytes());
+    Check(aclrtMallocHost(&scratch.host, scratch.bytes), "aclrtMallocHost(debug replay)");
+    auto read_device = [&](Memory& mem) {
+      Check(aclrtMemcpyAsync(scratch.host, scratch.bytes, mem.device, mem.bytes,
+                             ACL_MEMCPY_DEVICE_TO_HOST, stream), "aclrtMemcpyAsync(debug read)");
+      Check(aclrtSynchronizeStream(stream), "aclrtSynchronizeStream(debug read)");
+      return std::string(static_cast<const char*>(scratch.host), mem.bytes);
+    };
+    auto write_file = [](const std::filesystem::path& path, const std::string& bytes) {
+      std::ofstream out(path, std::ios::binary);
+      out.exceptions(std::ios::badbit | std::ios::failbit);
+      out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    };
+    auto read_file = [](const std::filesystem::path& path, std::size_t bytes) {
+      Require(std::filesystem::is_regular_file(path) && std::filesystem::file_size(path) == bytes,
+              "debug snapshot file size mismatch");
+      std::string result(bytes, '\0');
+      std::ifstream in(path, std::ios::binary);
+      in.exceptions(std::ios::badbit | std::ios::failbit);
+      in.read(result.data(), static_cast<std::streamsize>(bytes));
+      return result;
+    };
+
+    // Bind imported bytes to the exact Draft OM, shape ABI, prompt and controls.
+    // ATC precision changes need a new snapshot contract, not a silent A/B.
+    std::ostringstream contract;
+    contract << "qwen35-draft-replay-inputs-v1\n" << graph.sha256 << '\n'
+             << plan.capacity << ' ' << padding << ' ' << proposal_count << '\n';
+    for (auto id : prompt) contract << id << ' ';
+    contract << '\n';
+    for (const auto& spec : graph.inputs) {
+      Require(spec.name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+                  == std::string::npos && !spec.name.empty(), "unsafe snapshot tensor name");
+      contract << spec.name << ' ' << spec.dtype << ' ' << spec.bytes();
+      for (auto dim : spec.shape) contract << ' ' << dim;
+      contract << '\n';
+    }
+    if (!input_directory.empty())
+      Require(std::filesystem::is_regular_file(input_directory / "contract.txt") &&
+                  std::filesystem::file_size(input_directory / "contract.txt") == contract.str().size() &&
+                  read_file(input_directory / "contract.txt", contract.str().size()) == contract.str(),
+              "debug snapshot contract differs from Draft OM/prompt/ABI");
+    write_file(snapshot_dir / "contract.txt", contract.str());
+
+    Reset(padding);
+    const auto anchor = Prefill(prompt, true);
+    PrepareDraft(anchor, proposal_count);
+    std::ifstream imported_hashes;
+    if (!input_directory.empty()) {
+      imported_hashes.open(input_directory / "sha256.txt");
+      imported_hashes.exceptions(std::ios::badbit | std::ios::failbit);
+    }
+    std::map<std::string, std::string> frozen, frozen_hashes;
+    std::ostringstream snapshot_hashes;
+    for (const auto& spec : graph.inputs) {
+      auto& mem = Get(spec, "draft", false);
+      std::string bytes;
+      if (input_directory.empty()) {
+        bytes = mem.host ? std::string(static_cast<const char*>(mem.host), mem.bytes) : read_device(mem);
+      } else {
+        bytes = read_file(input_directory / (spec.name + ".bin"), mem.bytes);
+        std::string expected_name, expected_hash;
+        imported_hashes >> expected_name >> expected_hash;
+        Require(expected_name == spec.name && Sha256(bytes) == expected_hash,
+                "debug snapshot input hash mismatch");
+      }
+      frozen_hashes[spec.name] = Sha256(bytes);
+      snapshot_hashes << spec.name << ' ' << frozen_hashes.at(spec.name) << '\n';
+      write_file(snapshot_dir / (spec.name + ".bin"), bytes);
+      frozen.emplace(spec.name, std::move(bytes));
+    }
+    write_file(snapshot_dir / "sha256.txt", snapshot_hashes.str());
+    auto hashes = [&](bool output) {
+      std::map<std::string, std::string> result;
+      for (const auto& spec : output ? graph.outputs : graph.inputs)
+        result[spec.name] = Sha256(read_device(Get(spec, "draft", output)));
+      return result;
+    };
+    auto addresses = [&](bool output) {
+      std::map<std::string, std::string> result;
+      for (const auto& spec : output ? graph.outputs : graph.inputs) {
+        std::ostringstream address;
+        address << Get(spec, "draft", output).device;
+        result[spec.name] = address.str();
+      }
+      return result;
+    };
+
+
+    // Draft KV is B,H,S,D. Logical rows are strided across heads, so never
+    // treat valid_rows * H * D as one flat prefix in the physical buffer.
+    std::int64_t kv_start_signed = 0;
+    std::int16_t kv_valid_signed = 0;
+    Require(frozen.at("start_position").size() == sizeof(kv_start_signed) &&
+                frozen.at("valid_rows").size() == sizeof(kv_valid_signed),
+            "debug KV scalar ABI mismatch");
+    std::memcpy(&kv_start_signed, frozen.at("start_position").data(), sizeof(kv_start_signed));
+    std::memcpy(&kv_valid_signed, frozen.at("valid_rows").data(), sizeof(kv_valid_signed));
+    std::size_t kv_capacity = 0;
+    for (const auto& spec : graph.outputs) {
+      if (!State(spec.name) || spec.name[0] != 'd') continue;
+      Require(spec.dtype == "float16" && spec.shape.size() == 4 && spec.shape[2] > 0,
+              "debug KV expects FP16 B,H,S,D");
+      if (!kv_capacity) kv_capacity = static_cast<std::size_t>(spec.shape[2]);
+      Require(kv_capacity == static_cast<std::size_t>(spec.shape[2]),
+              "debug KV physical capacities differ");
+    }
+    // Physical Draft KV includes a guard block beyond the request capacity.
+    const std::int64_t context_rows = kv_valid_signed > 16 ? 64 : 16;
+    Require(kv_start_signed >= 0 && kv_valid_signed >= 0 &&
+                kv_valid_signed <= context_rows &&
+                static_cast<std::size_t>(kv_start_signed) + context_rows <= kv_capacity,
+            "invalid debug KV row bounds");
+    const auto kv_end = static_cast<std::size_t>(kv_start_signed + kv_valid_signed);
+    const auto physical_end = static_cast<std::size_t>(kv_start_signed) + context_rows;
+    const std::map<std::string, std::pair<std::size_t, std::size_t>> kv_regions{
+        {"valid_prefix", {0, kv_end}},
+        {"written_padding", {kv_end, physical_end}},
+        {"untouched_tail", {physical_end, kv_capacity}}};
+    auto region_hash = [&](const TensorSpec& spec, const std::string& bytes,
+                           std::size_t begin, std::size_t end) {
+      Require(spec.dtype == "float16" && spec.shape.size() == 4 &&
+                  spec.shape[2] == static_cast<std::int64_t>(kv_capacity) &&
+                  bytes.size() == spec.bytes(), "debug KV expects FP16 B,H,S,D");
+      std::string packed;
+      const auto row_bytes = static_cast<std::size_t>(spec.shape[3]) * 2;
+      const auto heads = static_cast<std::size_t>(spec.shape[0] * spec.shape[1]);
+      packed.reserve(heads * (end - begin) * row_bytes);
+      for (std::size_t head = 0; head < heads; ++head)
+        packed.append(bytes, (head * kv_capacity + begin) * row_bytes, (end - begin) * row_bytes);
+      return Sha256(packed);
+    };
+    std::map<std::string, std::map<std::string, std::string>> reference_kv_regions;
+    std::map<std::string, std::size_t> saved_region_differences;
+    std::map<std::string, bool> saved_output_files;
+    std::ostringstream saved_differences;
+    std::filesystem::create_directories(output_directory / "outputs/reference");
+    std::filesystem::create_directories(output_directory / "outputs/differences");
+    std::ostringstream kv_abi, kv_bounds;
+    for (const auto& spec : graph.outputs) {
+      if (!State(spec.name) || spec.name[0] != 'd') continue;
+      if (kv_abi.tellp() > 0) kv_abi << ',';
+      kv_abi << DebugQuote(spec.name) << ":{\"dtype\":" << DebugQuote(spec.dtype)
+             << ",\"shape\":" << DebugTokens(spec.shape) << '}';
+    }
+    for (const auto& region : kv_regions) {
+      if (kv_bounds.tellp() > 0) kv_bounds << ',';
+      kv_bounds << DebugQuote(region.first) << ":[" << region.second.first << ',' << region.second.second << ']';
+    }
+    bool stable = true;
+    std::vector<std::int64_t> reference;
+    std::map<std::string, std::string> reference_outputs;
+    std::ostringstream phases;
+    for (const std::string phase : {"isolated", "interleaved_prefill"}) {
+      std::size_t token_mismatches = 0, restore_mismatches = 0, input_mutations = 0, output_hash_mismatches = 0;
+      std::size_t valid_kv_mismatches = 0;
+      std::map<std::string, std::map<std::string, std::size_t>> phase_kv_changes;
+      if (phase != "isolated") phases << ',';
+      for (std::size_t iteration = 0; iteration < repetitions; ++iteration) {
+        if (phase == "interleaved_prefill") {
+          Reset(padding);
+          static_cast<void>(Prefill(prompt, true));
+        }
+        // Restore all 17 actual inputs, including every physical KV row and
+        // controls. Never publish the replay's Draft outputs with Swap('d').
+        for (const auto& spec : graph.inputs) {
+          auto& mem = Get(spec, "draft", false);
+          const auto& bytes = frozen.at(spec.name);
+          if (mem.host) std::memcpy(mem.host, bytes.data(), bytes.size());
+          std::memcpy(scratch.host, bytes.data(), bytes.size());
+          Check(aclrtMemcpyAsync(mem.device, mem.bytes, scratch.host, mem.bytes,
+                                 ACL_MEMCPY_HOST_TO_DEVICE, stream), "aclrtMemcpyAsync(debug restore)");
+          // The single pinned staging buffer must stay alive until H2D completes.
+          Check(aclrtSynchronizeStream(stream), "aclrtSynchronizeStream(debug restore)");
+        }
+        const auto before = hashes(false);
+        trace << "{\"event\":\"prepared\",\"phase\":" << DebugQuote(phase)
+              << ",\"iteration\":" << iteration << ",\"input_sha256\":" << DebugMap(before) << "}\n";
+        trace.flush();
+        Call("draft");
+        auto tokens = Tokens("draft", "draft_top1");
+        Require(tokens.size() >= proposal_count, "debug Draft token output too short");
+        tokens.resize(proposal_count);
+        const auto after = hashes(false);
+        std::map<std::string, std::string> output_bytes, outputs;
+        for (const auto& spec : graph.outputs) {
+          output_bytes[spec.name] = read_device(Get(spec, "draft", true));
+          outputs[spec.name] = Sha256(output_bytes.at(spec.name));
+        }
+        if (phase == "isolated" && iteration == 0) {
+          reference = tokens;
+          reference_outputs = outputs;
+          for (const auto& item : output_bytes)
+            write_file(output_directory / "outputs/reference" / (item.first + ".bin"), item.second);
+        }
+
+        std::map<std::string, std::map<std::string, std::string>> kv_hashes;
+        bool valid_kv_match = true;
+        for (const auto& spec : graph.outputs) {
+          if (!State(spec.name) || spec.name[0] != 'd') continue;
+          for (const auto& region : kv_regions) {
+            const auto digest = region_hash(spec, output_bytes.at(spec.name),
+                                            region.second.first, region.second.second);
+            kv_hashes[spec.name][region.first] = digest;
+            if (phase == "isolated" && iteration == 0)
+              reference_kv_regions[spec.name][region.first] = digest;
+            auto& mismatches = phase_kv_changes[spec.name][region.first];
+            if (digest == reference_kv_regions.at(spec.name).at(region.first)) continue;
+            ++mismatches;
+            if (region.first == "valid_prefix") valid_kv_match = false;
+            // Save only the first example per tensor/region, sharing the same
+            // file when several regions differ in this call. Bounded by 3 KV
+            // snapshots per tensor, plus one complete reference.
+            const auto key = spec.name + "." + region.first;
+            if (saved_region_differences.count(key)) continue;
+            saved_region_differences[key] = iteration;
+            const auto path = "outputs/differences/" + spec.name + "-" + phase + "-" +
+                              std::to_string(iteration) + ".bin";
+            if (!saved_output_files[path]) {
+              write_file(output_directory / path, output_bytes.at(spec.name));
+              saved_output_files[path] = true;
+            }
+            if (saved_differences.tellp() > 0) saved_differences << ',';
+            saved_differences << "{\"tensor\":" << DebugQuote(spec.name)
+                              << ",\"region\":" << DebugQuote(region.first)
+                              << ",\"phase\":" << DebugQuote(phase)
+                              << ",\"iteration\":" << iteration
+                              << ",\"path\":" << DebugQuote(path)
+                              << ",\"sha256\":" << DebugQuote(outputs.at(spec.name)) << '}';
+          }
+        }
+        if (!valid_kv_match) ++valid_kv_mismatches;
+        std::ostringstream kv_hash_json;
+        for (const auto& item : kv_hashes) {
+          if (kv_hash_json.tellp() > 0) kv_hash_json << ',';
+          kv_hash_json << DebugQuote(item.first) << ':' << DebugMap(item.second);
+        }
+        const bool input_match = before == frozen_hashes;
+        const bool readonly = before == after;
+        const bool token_match = reference == tokens;
+        const bool tokens_valid = std::all_of(tokens.begin(), tokens.end(), [&](auto id) {
+          return id >= 0 && id < plan.vocabulary;
+        });
+        if (!input_match) ++restore_mismatches;
+        if (!readonly) ++input_mutations;
+        if (!token_match || !tokens_valid) ++token_mismatches;
+        if (outputs != reference_outputs) ++output_hash_mismatches;
+        const bool ok = input_match && readonly && token_match && tokens_valid && valid_kv_match;
+        stable = stable && ok;
+        trace << "{\"event\":\"completed\",\"phase\":" << DebugQuote(phase)
+              << ",\"iteration\":" << iteration << ",\"profiled\":false"
+              << ",\"status\":" << DebugQuote(ok ? "PASS" : "FAIL")
+              << ",\"input_sha256\":" << DebugMap(before)
+              << ",\"input_after_sha256\":" << DebugMap(after)
+              << ",\"output_sha256\":" << DebugMap(outputs)
+              << ",\"kv_region_sha256\":{" << kv_hash_json.str() << '}'
+              << ",\"valid_kv_matches\":" << (valid_kv_match ? "true" : "false")
+              << ",\"input_device_addresses\":" << DebugMap(addresses(false))
+              << ",\"output_device_addresses\":" << DebugMap(addresses(true))
+              << ",\"input_matches_snapshot\":" << (input_match ? "true" : "false")
+              << ",\"inputs_unchanged\":" << (readonly ? "true" : "false")
+              << ",\"valid_tokens_match\":" << (token_match ? "true" : "false")
+              << ",\"valid_tokens_in_range\":" << (tokens_valid ? "true" : "false")
+              << ",\"all_output_bytes_match\":" << (outputs == reference_outputs ? "true" : "false")
+              << ",\"output_token_ids\":" << DebugTokens(tokens)
+              << ",\"first_token_difference\":";
+        if (token_match) trace << "null";
+        else {
+          const auto index = static_cast<std::size_t>(std::mismatch(reference.begin(), reference.end(), tokens.begin()).first - reference.begin());
+          trace << "{\"index\":" << index << ",\"reference\":" << reference[index]
+                << ",\"actual\":" << tokens[index] << '}';
+        }
+        trace << "}\n";
+        trace.flush();
+        std::cerr << "[draft-replay] phase=" << phase << " iteration=" << iteration
+                  << " input_match=" << input_match << " readonly=" << readonly
+                  << " tokens_match=" << token_match << " valid_kv_match=" << valid_kv_match << '\n';
+      }
+
+      std::ostringstream kv_counts;
+      for (const auto& tensor : phase_kv_changes) {
+        if (kv_counts.tellp() > 0) kv_counts << ',';
+        kv_counts << DebugQuote(tensor.first) << ":{";
+        bool first = true;
+        for (const auto& region : tensor.second) {
+          if (!first) kv_counts << ',';
+          first = false;
+          kv_counts << DebugQuote(region.first) << ':' << region.second;
+        }
+        kv_counts << '}';
+      }
+      phases << "{\"phase\":" << DebugQuote(phase) << ",\"iterations\":" << repetitions
+             << ",\"token_mismatch_iterations\":" << token_mismatches
+             << ",\"input_restore_mismatch_iterations\":" << restore_mismatches
+             << ",\"input_mutation_iterations\":" << input_mutations
+             << ",\"full_output_hash_mismatch_iterations\":" << output_hash_mismatches
+             << ",\"valid_kv_mismatch_iterations\":" << valid_kv_mismatches
+             << ",\"kv_region_mismatch_iterations\":{" << kv_counts.str() << "}}";
+    }
+    // This diagnostic leaves no cache branch eligible for continued generation.
+    invalid = true;
+
+    std::ostringstream reference_kv_json;
+    for (const auto& item : reference_kv_regions) {
+      if (reference_kv_json.tellp() > 0) reference_kv_json << ',';
+      reference_kv_json << DebugQuote(item.first) << ':' << DebugMap(item.second);
+    }
+    std::ostringstream report;
+    report << "{\"schema_version\":1,\"status\":" << DebugQuote(stable ? "PASS_REPLAY_CHECKS" : "FAIL_REPLAY_CHECKS")
+           << ",\"scope\":\"frozen Draft OM replay; valid tokens, logical KV and readonly inputs\""
+           << ",\"formal_latency_evidence\":false,\"ordinary_parity\":\"NOT_RUN\""
+           << ",\"profiled\":false,\"draft_outputs_committed\":false"
+           << ",\"requested_workspace\":" << DebugQuote(share_workspace ? "shared" : "private")
+           << ",\"actual_workspace_policy\":" << DebugQuote(workspace ? "shared_serial" : "per_model")
+           << ",\"draft_om_sha256\":" << DebugQuote(graph.sha256)
+           << ",\"input_directory\":" << DebugQuote(snapshot_dir.string())
+           << ",\"trace\":" << DebugQuote((output_directory / "iterations.jsonl").string())
+           << ",\"snapshot_sha256\":" << DebugMap(frozen_hashes)
+           << ",\"reference_token_ids\":" << DebugTokens(reference)
+           << ",\"reference_output_sha256\":" << DebugMap(reference_outputs)
+           << ",\"kv_output_audit\":{\"version\":1,\"context_rows\":" << context_rows
+           << ",\"layout\":\"B,H,S,D\",\"abi\":{" << kv_abi.str()
+           << "},\"row_regions\":{" << kv_bounds.str()
+           << "},\"reference_region_sha256\":{" << reference_kv_json.str()
+           << "},\"saved_differences\":[" << saved_differences.str() << "]}"
+           << ",\"phases\":[" << phases.str() << "]"
+           << ",\"note\":\"Logical KV is checked separately from physical padding. "
+              "Restores, readbacks and synchronization perturb execution. A passing replay does not close the original instability.\"}";
+    return {stable, report.str()};
+  }
+  std::vector<std::int64_t> Propose(std::int64_t anchor, std::size_t proposal_count) {
+    PrepareDraft(anchor, proposal_count);
+    Call("draft");
+    Swap('d');
+    draft_cursor = cursor;
+    feature_rows = 0;
+    return Tokens("draft", "draft_top1");
+  }
+  std::vector<std::int64_t> Verify(const std::vector<std::int64_t>& ids) {
+    Healthy();
+    Require(!pending && cursor > 0 && ids.size() <= 16,
+            "verify requires committed state and 1..16 rows");
+    Inputs("target_verify", ids);
+    Call("target_verify");
+    const auto accepted = Tokens("target_verify", "accepted_count").at(0);
+    Require(accepted >= 0 && static_cast<std::size_t>(accepted) < ids.size(),
+            "OM returned invalid accepted_count");
+    pending = ids.size();
+    pending_commit = static_cast<std::size_t>(accepted) + 1;
+    return Tokens("target_verify");
+  }
+  void Commit(std::size_t rows) {
+    Healthy();
+    Require(pending && rows == pending_commit && rows <= pending,
+            "host acceptance disagrees with fused OM");
+    // Publish only named Target cache outputs, containing second-pass GDR
+    // states. First-pass verify_discard_* buffers never enter Swap('t').
+    Swap('t');
+    feature_start = cursor;
+    feature_rows = rows;
+    cursor += rows;
+    pending = 0;
+  }
+  std::int64_t Decode(std::int64_t anchor) {
+    Healthy();
+    Require(!pending && cursor > 0, "decode requires committed state");
+    Inputs("target_decode", {anchor});
+    Call("target_decode");
+    Swap('t');
+    ++cursor;
+    feature_rows = 0;
+    return Tokens("target_decode").at(0);
+  }
+
+  ChunkPlan plan;
+  std::filesystem::path plan_path;
+  std::string plan_sha256;
+  int device_id;
+  bool share_workspace;
+  bool initialized = false, device_set = false, invalid = true, cleaned = false;
+  aclrtContext context = nullptr;
+  aclrtStream stream = nullptr;
+  CleanupAudit cleanup;
+  std::unique_ptr<Memory> workspace;
+  std::map<std::string, std::unique_ptr<Loaded>> models;
+  std::map<std::string, std::unique_ptr<Memory>> memory;
+  std::map<std::string, std::vector<double>> timings;
+  std::size_t cursor = 0, draft_cursor = 0, pending = 0, pending_commit = 0;
+  std::size_t feature_start = 0, feature_rows = 0, calls = 0;
+  std::int64_t pad = 0;
+};
+
+AclChunkExecutor::AclChunkExecutor(const std::filesystem::path& plan,
+                                   int device, const std::string& mode,
+                                   bool share_workspace)
+    : impl_(std::make_unique<Impl>(plan, device, mode, share_workspace)) {}
+AclChunkExecutor::~AclChunkExecutor() = default;
+void AclChunkExecutor::Close() {
+  impl_->Cleanup();
+  if (impl_->cleanup.errors)
+    throw std::runtime_error("chunk runner cleanup failed; see cleanup-error log");
+}
+void AclChunkExecutor::UnloadModels() { impl_->UnloadModels(); }
+void AclChunkExecutor::LoadMode(const std::string& mode) {
+  Require(!impl_->cleaned && impl_->models.empty() && impl_->memory.empty(),
+          "unload models before changing mode");
+  Require(Sha256File(impl_->plan_path) == impl_->plan_sha256,
+          "chunk plan changed between modes");
+  // Recheck hashes for the new mode's OMs before allocating device memory.
+  impl_->plan = ReadChunkPlan(impl_->plan_path, mode);
+  impl_->LoadMode(mode);
+}
+void AclChunkExecutor::Synchronize() {
+  Check(aclrtSetCurrentContext(impl_->context),
+        "aclrtSetCurrentContext(profile)");
+  Check(aclrtSynchronizeStream(impl_->stream),
+        "aclrtSynchronizeStream(profile)");
+}
+std::size_t AclChunkExecutor::sequence_length() const noexcept {
+  return impl_->plan.capacity;
+}
+std::int64_t AclChunkExecutor::vocabulary_size() const noexcept {
+  return impl_->plan.vocabulary;
+}
+
+std::string AclChunkExecutor::abi_id() const { return impl_->plan.abi; }
+void AclChunkExecutor::Reset(std::int64_t pad) { impl_->Reset(pad); }
+void AclChunkExecutor::Abort() noexcept {
+  impl_->invalid = true;
+  impl_->pending = 0;
+}
+std::int64_t AclChunkExecutor::Prefill(const std::vector<std::int64_t>& ids,
+                                       bool draft) {
+  return impl_->Prefill(ids, draft);
+}
+std::vector<std::int64_t> AclChunkExecutor::Propose(std::int64_t anchor, std::size_t count) {
+  return impl_->Propose(anchor, count);
+}
+std::map<std::string, std::string> AclChunkExecutor::DraftInputHashes(
+    std::int64_t anchor, std::size_t count) {
+  return impl_->DraftInputHashes(anchor, count);
+}
+std::vector<std::int64_t> AclChunkExecutor::Verify(
+    const std::vector<std::int64_t>& ids) {
+  return impl_->Verify(ids);
+}
+std::pair<bool, std::string> AclChunkExecutor::DebugDraftReplay(
+    const std::vector<std::int64_t>& prompt, std::int64_t pad,
+    std::size_t proposal_count, std::size_t repetitions,
+    const std::filesystem::path& output_directory,
+    const std::filesystem::path& input_directory) {
+  return impl_->DebugDraftReplay(prompt, pad, proposal_count, repetitions,
+                                output_directory, input_directory);
+}
+void AclChunkExecutor::Commit(std::size_t rows) { impl_->Commit(rows); }
+std::int64_t AclChunkExecutor::Decode(std::int64_t anchor) {
+  return impl_->Decode(anchor);
+}
+bool AclChunkExecutor::HasOrdinaryDecode() const noexcept {
+  return impl_->models.count("target_decode") != 0;
+}
+std::size_t AclChunkExecutor::graph_calls() const noexcept {
+  return impl_->calls;
+}
+const std::map<std::string, std::vector<double>>& AclChunkExecutor::stage_ms()
+    const {
+  return impl_->timings;
+}
+}  // namespace qwen35::dflash

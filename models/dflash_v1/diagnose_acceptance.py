@@ -61,9 +61,17 @@ from .internal_target_loader import (
     TARGET_FACTORY_ENV,
 )
 from .modeling_dflash import DFlashDraftModel
+from .run_npu import (
+    ORIGINAL_QUANT_DISABLE,
+    ORIGINAL_QUANT_ENABLE,
+    _configure_target_quantization,
+)
+from .target_quant import QUANT_MODE_DISABLED, load_original_quant_config
 
 
-DEFAULT_TARGET_FACTORY = "models.internal_dflash_bridge:load_qwen35_target"
+DEFAULT_TARGET_FACTORY = (
+    "models.internal_dflash_bridge:load_qwen35_rollback_target"
+)
 KV_CACHE_MAX_LEN_ENV = "DFLASH_HIAI_KV_CACHE_MAX_LEN"
 OFFICIAL_EOS_TOKEN_ID = 248_044
 SUPPORTED_DTYPES = {
@@ -349,7 +357,7 @@ def _controller_from_facade(target: nn.Module) -> nn.Module:
     required = (
         "_fresh_hybrid_cache",
         "_fresh_attention_mask",
-        "get_input_embeddings",
+        "_target_inputs",
         "dflash_execution_model",
     )
     if not isinstance(controller, nn.Module) or any(
@@ -372,11 +380,14 @@ def _direct_target_call(
     past_key_values: list[tuple[Tensor, Tensor]],
     all_q_len: int,
 ) -> tuple[Tensor, Tensor]:
-    embeddings = controller.get_input_embeddings()
-    weight = getattr(embeddings, "weight", None)
-    if not isinstance(weight, Tensor):
-        raise TypeError("target embedding module does not expose Tensor weight")
-    inputs_embeds = embeddings(input_ids.to(weight.device)).to(input_ids.device)
+    target_inputs = getattr(controller, "_target_inputs")
+    if not callable(target_inputs):
+        raise TypeError("DFlash controller lost its target embedding route")
+    # This is deliberately the same input path used by fresh full-prefix
+    # replay.  In W8A8 mode it indexes the original raw INT8 embedding and
+    # FP32 scale artifacts; using get_input_embeddings() here would compare
+    # two different targets.
+    inputs_embeds = target_inputs(input_ids)
     execution_model = getattr(controller, "dflash_execution_model")
     if not isinstance(execution_model, nn.Module):
         raise TypeError("DFlash controller lost its execution model")
@@ -797,13 +808,14 @@ def compare_target_paths(
 ) -> dict[str, object]:
     """Compare the NPU persistent state path with fresh full-prefix replay."""
 
+    quant_before = _npu_target_quantization_audit(target)
     snapshots = _incremental_snapshots(
         target,
         prompt_ids,
         decode_steps=decode_steps,
         eos_token_id=eos_token_id,
     )
-    return _compare_target_snapshots(
+    result = _compare_target_snapshots(
         target,
         snapshots,
         layer_ids=layer_ids,
@@ -811,6 +823,34 @@ def compare_target_paths(
         include_token_ids=include_token_ids,
         incremental_path="receiver_hiai_prefill_decode",
     )
+    quant_after = _npu_target_quantization_audit(target)
+    scheme = quant_after.get("scheme", QUANT_MODE_DISABLED)
+    before_calls = quant_before.get("embedding_lookup_calls")
+    after_calls = quant_after.get("embedding_lookup_calls")
+    if any(
+        isinstance(value, bool) or not isinstance(value, int)
+        for value in (before_calls, after_calls)
+    ):
+        raise TypeError("target quantized-embedding counters must be integers")
+    assert isinstance(before_calls, int) and isinstance(after_calls, int)
+    embedding_delta = after_calls - before_calls
+    expected_delta = 2 * len(snapshots) if scheme != QUANT_MODE_DISABLED else 0
+    quant_reconciled = embedding_delta == expected_delta
+    result["target_quantization"] = {
+        "scheme": scheme,
+        "embedding_lookup_call_delta": embedding_delta,
+        "expected_embedding_lookup_call_delta": expected_delta,
+        "embedding_lookup_calls_reconciled": quant_reconciled,
+        "input_path": (
+            "original_int8_embedding_mul_fp32_scale"
+            if scheme != QUANT_MODE_DISABLED
+            else "ordinary_fp16_embedding"
+        ),
+    }
+    if not quant_reconciled:
+        result["status"] = "FAIL_QUANT_EMBEDDING_CALL_RECONCILIATION"
+        result["all_top1_match"] = False
+    return result
 
 
 def compare_framework_target_paths(
@@ -1884,11 +1924,22 @@ def _weight_health(adapter: Qwen35DFlashFullPrefixAdapter) -> dict[str, object]:
         ),
         "target_qlinear_module_count": quantized_linear_count,
         "quantized_target_warning": (
-            "QLinear modules were detected; establish non-quantized target parity first"
+            "QLinear modules were detected; inspect same-activation formula and "
+            "incremental-vs-full-prefix parity before interpreting acceptance"
             if quantized_linear_count
             else None
         ),
     }
+
+
+def _npu_target_quantization_audit(target: nn.Module) -> dict[str, object]:
+    """Snapshot the embedded bridge's quantization counters and assembly facts."""
+
+    controller = _controller_from_facade(target)
+    raw = getattr(controller, "dflash_target_quantization_audit", None)
+    if not isinstance(raw, Mapping):
+        raise TypeError("NPU target bridge did not expose target quantization audit")
+    return dict(raw)
 
 
 def diagnose_next_actions(report: Mapping[str, object]) -> list[str]:
@@ -1963,8 +2014,9 @@ def diagnose_next_actions(report: Mapping[str, object]) -> list[str]:
     health = report.get("weight_health")
     if isinstance(health, Mapping) and int(health.get("target_qlinear_module_count", 0)):
         return [
-            "先用非量化 Target 重跑同一诊断；量化 Target 会把 feature 数值误差与 DFlash 本身混在一起。",
-            "非量化路径闭合后，再单独测量量化对每层 feature 和接受率的影响。",
+            "当前是量化 Target；先看 target_path_parity，确认普通增量量化路径与 fresh full-prefix 的 Top-1/feature 是否一致。",
+            "再用 preflight_target_quant --compare-first-qlinear 对同一次 NPU activation 做 CPU W8A8 公式对照。",
+            "上述两项闭合后，才把接受率变化解释为量化 feature 对 FP16 Draft proposal 质量的影响。",
         ]
 
     sweep = report.get("acceptance_sweep")
@@ -2203,6 +2255,28 @@ def _parser() -> argparse.ArgumentParser:
         help="NPU is locked to float16; CUDA BF16 is the recommended dtype A/B",
     )
     parser.add_argument(
+        "--target-w8a8-emulation-artifact",
+        help=(
+            "CPU/CUDA only: reuse exported NPU QLinear W_q/scale and replace "
+            "framework Target text linears with the exact diagnostic formula"
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        help=(
+            "NPU quant only: original inference YAML containing quanted_pth, "
+            "embedding_weight_path, and embedding_scale_path"
+        ),
+    )
+    parser.add_argument(
+        "--quant_mode",
+        "--quant-mode",
+        dest="quant_mode",
+        choices=(ORIGINAL_QUANT_ENABLE, ORIGINAL_QUANT_DISABLE),
+        default=ORIGINAL_QUANT_DISABLE,
+        help="same enable/disable switch as the original inference.py",
+    )
+    parser.add_argument(
         "--kv-cache-max-len",
         type=int,
         help="required for the NPU incremental/full-prefix target comparison",
@@ -2301,6 +2375,25 @@ def _validate_args(args: argparse.Namespace) -> tuple[int, ...]:
         raise ValueError("--kv-cache-max-len must be positive when supplied")
     if args.shadow_torch_ops and device_type != "npu":
         raise ValueError("--shadow-torch-ops is only meaningful for the NPU backend")
+    if args.target_w8a8_emulation_artifact is not None:
+        if device_type not in {"cpu", "cuda"}:
+            raise ValueError(
+                "--target-w8a8-emulation-artifact is supported only on CPU/CUDA"
+            )
+        if args.dtype != "float16":
+            raise ValueError("strict NPU QLinear emulation requires --dtype float16")
+        artifact = Path(args.target_w8a8_emulation_artifact).expanduser()
+        if artifact.is_symlink() or not artifact.is_dir():
+            raise ValueError(
+                "--target-w8a8-emulation-artifact must be a real artifact directory"
+            )
+    if device_type != "npu" and (
+        args.quant_mode != ORIGINAL_QUANT_DISABLE or args.config is not None
+    ):
+        raise ValueError(
+            "NPU target quantization options are not valid on CPU/CUDA; use "
+            "--target-w8a8-emulation-artifact for framework diagnosis"
+        )
     return parse_proposal_counts(args.proposal_counts)
 
 
@@ -2316,6 +2409,24 @@ def _print_summary(report: Mapping[str, object]) -> None:
         f"backend={report.get('draft_backend')}",
         f"verify={report.get('verification_mode')}",
     )
+    emulation = report.get("target_w8a8_emulation")
+    if isinstance(emulation, Mapping):
+        print(
+            "Target W8A8 仿真:",
+            emulation.get("status"),
+            f"qlinear={emulation.get('qlinear_count', 0)}",
+        )
+    quantization = report.get("target_quantization")
+    if isinstance(quantization, Mapping) and quantization.get("scheme") != (
+        QUANT_MODE_DISABLED
+    ):
+        print(
+            "NPU Target 量化:",
+            quantization.get("status"),
+            f"scheme={quantization.get('scheme')}",
+            f"qlinear={quantization.get('qlinear_count', 0)}",
+            f"embedding_failures={quantization.get('embedding_lookup_failures')}",
+        )
     print(
         "Target 增量 vs full-prefix:",
         parity["status"],
@@ -2514,17 +2625,50 @@ def main(argv: Sequence[str] | None = None) -> int:
     proposal_counts = _validate_args(args)
     device_type = str(args.device).split(":", 1)[0].lower()
     dtype = SUPPORTED_DTYPES[args.dtype]
-    source_path = package_dir.parent / "modeling_qwen3_5_hiai_nd.py"
+    _configure_target_quantization(args)
+    source_path = (
+        package_dir.parent / "modeling_qwen3_5_hiai_nd_dflash_rollback.py"
+    )
     if device_type == "npu" and (source_path.is_symlink() or not source_path.is_file()):
         raise FileNotFoundError(
-            "expected models/modeling_qwen3_5_hiai_nd.py beside dflash_v1"
+            "expected rollback HIAI modeling beside dflash_v1"
         )
     target_root = Path(args.target_dir).expanduser().resolve()
     draft_root = Path(args.draft_dir).expanduser().resolve()
     if not target_root.is_dir() or not draft_root.is_dir():
         raise FileNotFoundError("--target-dir and --draft-dir must be existing directories")
 
-    protected_roots = (package_dir.parent.parent, target_root, draft_root)
+    emulation_artifact = (
+        None
+        if args.target_w8a8_emulation_artifact is None
+        else Path(args.target_w8a8_emulation_artifact).expanduser().resolve()
+    )
+    quant_config = (
+        load_original_quant_config(args.config)
+        if device_type == "npu" and args.quant_mode == ORIGINAL_QUANT_ENABLE
+        else None
+    )
+    quantization_paths = (
+        ()
+        if quant_config is None
+        else (
+            quant_config.config_path,
+            quant_config.quant_weight_path,
+            quant_config.embedding_weight_path,
+            quant_config.embedding_scale_path,
+        )
+    )
+    protected_roots = tuple(
+        path
+        for path in (
+            package_dir.parent.parent,
+            target_root,
+            draft_root,
+            emulation_artifact,
+            *quantization_paths,
+        )
+        if path is not None
+    )
     report_path = (
         None
         if args.report is None
@@ -2594,6 +2738,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_download=False,
         trust_remote_code=False,
     )
+    if emulation_artifact is None:
+        target_w8a8_emulation: dict[str, object] = {
+            "status": "DISABLED",
+            "scheme": "disabled",
+            "scope": "framework_target",
+        }
+    else:
+        from .w8a8_emulation import apply_w8a8_emulation
+
+        target_w8a8_emulation = apply_w8a8_emulation(
+            target,
+            emulation_artifact,
+            device=args.device,
+            dtype=dtype,
+        )
     draft_memory_preflight = _draft_device_memory_preflight(
         args.device,
         dtype,
@@ -2732,6 +2891,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             "algorithm": "single_parallel_draft_forward",
         }
 
+    target_quantization = (
+        _npu_target_quantization_audit(target)
+        if device_type == "npu"
+        else {
+            "status": "NOT_APPLICABLE_FRAMEWORK_TARGET",
+            "scheme": QUANT_MODE_DISABLED,
+        }
+    )
+
     report: dict[str, object] = {
         "schema_version": 3,
         "diagnostic": "qwen3.5-4b-dflash-v1-acceptance",
@@ -2759,6 +2927,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "model_sha256_verified": bool(args.verify_draft_sha256),
         },
         "target_checkpoint": target_checkpoint,
+        "target_w8a8_emulation": target_w8a8_emulation,
+        "target_quantization": target_quantization,
         "weight_health": weight_health,
         "feature_health": feature_health,
         "feature_collector_semantics": feature_semantics,

@@ -4,7 +4,8 @@
 The existing HIAI attention, GDN, cache layout, cache updates, and default
 Tensor return ABI are preserved.  ``output_dflash_features=True`` adds only a
 second return value containing the eight post-decoder hidden states consumed
-by the DFlash draft, concatenated as ``[B, S, 20480]``.
+by the DFlash draft, concatenated as ``[B, S, 20480]``.  The original GDR call
+uses its current ABI with one call-local ``INT16[B]`` effective-length tensor.
 """
 
 from typing import Callable, Optional, Tuple
@@ -54,22 +55,161 @@ else:
 logger = logging.get_logger(__name__)
 
 
+def _normalize_gdr_effective_length(
+    effective_length: Optional[torch.Tensor],
+    *,
+    batch_size: int,
+    physical_sequence_length: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Return the current GDR valid-row count as one reusable INT16 tensor."""
+
+    if physical_sequence_length <= 0:
+        raise ValueError("GDR physical sequence length must be positive")
+    if effective_length is None:
+        return torch.full(
+            (batch_size,),
+            physical_sequence_length,
+            dtype=torch.int16,
+            device=device,
+        )
+    if not isinstance(effective_length, torch.Tensor):
+        raise TypeError("gdr_effective_length must be a Tensor")
+    if effective_length.dtype != torch.int16:
+        raise TypeError("gdr_effective_length must use torch.int16")
+    if tuple(effective_length.shape) != (batch_size,):
+        raise ValueError(
+            f"gdr_effective_length must have shape [{batch_size}], "
+            f"got {tuple(effective_length.shape)}"
+        )
+    if effective_length.device != device:
+        raise ValueError("gdr_effective_length and hidden states must share one device")
+    if effective_length.device.type == "cpu" and effective_length.numel():
+        minimum = int(effective_length.min().item())
+        maximum = int(effective_length.max().item())
+        if minimum < 1 or maximum > physical_sequence_length:
+            raise ValueError(
+                "gdr_effective_length values must be in "
+                f"[1,{physical_sequence_length}]"
+            )
+    return effective_length
+
+
+def _npu_quant_matmul_with_export_frontend(
+    x1: torch.Tensor,
+    x2: torch.Tensor,
+    scale: torch.Tensor,
+    *,
+    pertoken_scale: torch.Tensor,
+    output_dtype: torch.dtype,
+    use_v4444_frontend: bool,
+) -> torch.Tensor:
+    """Keep the quant eager ABI and AIR V4444 frontend separated.
+
+    The private export frontend must retain the checkpoint's FP32 scale so its
+    TorchAir converter can lower the V4444 contract.  Ordinary eager execution
+    must preserve the authoritative ``quant`` branch call ABI as well: INT8
+    activation, INT8 weight, FP32 weight scale, and FP32 per-token scale.  Do
+    not pre-encode the weight scale with ``npu_trans_quant_param`` here; that
+    produces an INT64 carrier which has no INT8-weight V4444 kernel row on the
+    receiver.
+    """
+
+    if use_v4444_frontend:
+        namespace = getattr(torch.ops, "qwen35_dflash", None)
+        packet = (
+            None
+            if namespace is None
+            else getattr(namespace, "npu_quant_matmul_v4444", None)
+        )
+        operation = None if packet is None else getattr(packet, "default", None)
+        if operation is None:
+            raise RuntimeError(
+                "AIR QLinear requires the registered "
+                "qwen35_dflash::npu_quant_matmul_v4444 frontend"
+            )
+        return operation(
+            x1,
+            x2,
+            scale,
+            pertoken_scale=pertoken_scale,
+            output_dtype=output_dtype,
+        )
+    return torch_npu.npu_quant_matmul(
+        x1,
+        x2,
+        scale,
+        pertoken_scale=pertoken_scale,
+        output_dtype=output_dtype,
+    )
+
+
+def _npu_cache_update(
+    input: torch.Tensor,
+    updates: torch.Tensor,
+    target_block: torch.Tensor,
+    offset_in_block: torch.Tensor,
+    *, use_export_frontend: bool = False,
+) -> torch.Tensor:
+    """Keep eager mutation while capturing one copy-free AIR dataflow."""
+
+    if use_export_frontend and torch.compiler.is_compiling():
+        namespace = getattr(torch.ops, "qwen35_dflash", None)
+        packet = (
+            None
+            if namespace is None
+            else getattr(namespace, "npu_cache_update", None)
+        )
+        operation = None if packet is None else getattr(packet, "default", None)
+        if operation is None:
+            raise RuntimeError(
+                "AIR CacheUpdate requires the registered "
+                "qwen35_dflash::npu_cache_update frontend"
+            )
+        return operation(input, updates, target_block, offset_in_block)
+    torch_npu.npu_cache_update_(
+        input,
+        updates,
+        target_block,
+        offset_in_block,
+    )
+    return input
+
+
 class QLinear(nn.Module):
     def __init__(self, W_q, scale, idx):
         super().__init__()
         self.register_buffer("W_q", W_q)
         self.register_buffer("scale", scale)
+        self._quant_matmul_export_mode = False
         self.idx = idx
+
+    def set_quant_matmul_export_mode(self, enabled: bool = True):
+        """Select the private float-scale frontend only for AIR capture."""
+
+        if not isinstance(enabled, bool):
+            raise TypeError("quant matmul export mode must be a bool")
+        self._quant_matmul_export_mode = enabled
+        return self
+
+    def _use_quant_matmul_export_frontend(self) -> bool:
+        """Limit the mutable factory flag to an active Dynamo capture."""
+
+        return bool(
+            self._quant_matmul_export_mode and torch.compiler.is_compiling()
+        )
 
     def forward(self, x):
         x_quant, pertoken_scale = torch_npu.npu_dynamic_quant(x)
         pertoken_scale = pertoken_scale.reshape(-1).to(torch.float32)
-        npu_out = torch_npu.npu_quant_matmul(
+        export_frontend = self._use_quant_matmul_export_frontend()
+        npu_out = _npu_quant_matmul_with_export_frontend(
             x_quant,
             self.W_q.to(x.device),
             self.scale.to(x.device),
             pertoken_scale=pertoken_scale,
             output_dtype=torch.float16,
+            use_v4444_frontend=export_frontend,
         )
         return npu_out.to(torch.float16)
 
@@ -422,18 +562,27 @@ class Qwen3_5Attention(nn.Module):
         )
         return output_matrix.reshape(b, n, s, d)
 
+    def set_cache_update_export_mode(self, enabled: bool = True):
+        if not isinstance(enabled, bool):
+            raise TypeError("cache update export mode must be a bool")
+        self._cache_update_export_mode = enabled
+        return self
+
     def update(self, new_k, cache_position, past_key_value):
         b, s, n, d = new_k.shape
         block_idx = cache_position[0] // self.block_size
         offset_in_block = (cache_position[0] % self.block_size).to(torch.int32)
         target_blocks = block_idx.reshape(1).to(torch.int32)
         k_flattened = new_k.reshape(b, s, -1, 16)
-        torch_npu.npu_cache_update_(
+        updated = _npu_cache_update(
             past_key_value.to(new_k.device),
             k_flattened[0, :, :, :].to(torch.float16),
             target_blocks,
             offset_in_block,
+            use_export_frontend=getattr(self, "_cache_update_export_mode", False),
         )
+        if getattr(self, "_cache_update_export_mode", False) and torch.compiler.is_compiling():
+            return updated
         return past_key_value
 
     @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
@@ -505,10 +654,9 @@ class Qwen3_5Attention(nn.Module):
             "inner_precise": 2,
             "atten_mask": attention_mask,
         }
-        if export_flag:
-            attn_params["pse_shift"] = allQLen
-        else:
-            attn_params["all_seq_lengths_q"] = allQLen
+        # Sequence lengths use the SymInt[] frontend in eager and AIR.
+        # pse_shift is reserved for optional FP16 attention bias.
+        attn_params["all_seq_lengths_q"] = allQLen
         attn_output = torch_npu.adn_fused_infer_attention(**attn_params)
         attn_output = attn_output.reshape(q_origin_shape)
         attn_output = (
@@ -653,10 +801,9 @@ class Qwen3_5Attention(nn.Module):
                 "inner_precise": 2,
                 "atten_mask": attention_mask,
             }
-            if export_flag:
-                attn_params["pse_shift"] = allQLen
-            else:
-                attn_params["all_seq_lengths_q"] = allQLen
+            # Sequence lengths use the SymInt[] frontend in eager and AIR.
+            # pse_shift is reserved for optional FP16 attention bias.
+            attn_params["all_seq_lengths_q"] = allQLen
             attn_output = torch_npu.adn_fused_infer_attention(**attn_params)
             attn_output = attn_output.reshape(q_origin_shape)
             attn_output = (
@@ -788,11 +935,14 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         cache_params: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         cache_position: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        gdr_effective_length: Optional[torch.Tensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ):
         batch_size, seq_len, _ = hidden_states.shape
         conv_state = cache_params[0]
         recurrent_state = cache_params[1]
+        if recurrent_state.dtype != torch.float32:
+            raise TypeError("GDN recurrent cache must be FP32")
         mixed_qkv = self.in_proj_qkv(hidden_states).transpose(1, 2)
         z = self.in_proj_z(hidden_states).reshape(
             batch_size, seq_len, -1, self.head_v_dim
@@ -826,6 +976,8 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             repeat = self.num_v_heads // self.num_k_heads
             query = query.repeat_interleave(repeat, dim=2)
             key = key.repeat_interleave(repeat, dim=2)
+        if gdr_effective_length is None:
+            raise ValueError("GDN requires gdr_effective_length")
         core_attn_out, last_recurrent_state = (
             torch_npu.npu_chunk_gated_delta_rule(
                 query,
@@ -833,13 +985,16 @@ class Qwen3_5GatedDeltaNet(nn.Module):
                 value.contiguous(),
                 g=g,
                 beta=beta,
+                effective_length=gdr_effective_length,
                 chunk_size=1 if seq_len == 1 else 64,
-                initial_state=recurrent_state.to(torch.float32),
+                initial_state=recurrent_state,
                 output_final_state=True,
                 use_qk_l2norm_in_kernel=True,
             )
         )
-        recurrent_state.copy_(last_recurrent_state.to(torch.float16))
+        if last_recurrent_state.dtype != torch.float32:
+            raise TypeError("GDR recurrent output must be FP32")
+        recurrent_state.copy_(last_recurrent_state)
         core_attn_out = core_attn_out.reshape(-1, self.head_v_dim)
         z = z.reshape(-1, self.head_v_dim)
         core_attn_out = self.norm(core_attn_out, z)
@@ -883,6 +1038,7 @@ class Qwen3_5DecoderLayer(GradientCheckpointingLayer):
         allQLen=0,
         token_count=0,
         export_flag=False,
+        gdr_effective_length: Optional[torch.Tensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.Tensor, Tuple]:
         residual = hidden_states
@@ -893,6 +1049,7 @@ class Qwen3_5DecoderLayer(GradientCheckpointingLayer):
                 cache_params=past_key_values,
                 cache_position=new_kv_cache_pos,
                 attention_mask=attention_mask,
+                gdr_effective_length=gdr_effective_length,
             )
         elif self.block_type == "full_attention":
             hidden_states, _, present_key_value = self.self_attn(
@@ -989,12 +1146,19 @@ class Qwen3_5TextModel(Qwen3_5PreTrainedModel):
         token_count=0,
         export_flag=False,
         output_dflash_features: bool = False,
+        gdr_effective_length: Optional[torch.Tensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
         hidden_states = inputs_embeds.to(torch.float16)
+        gdr_effective_length = _normalize_gdr_effective_length(
+            gdr_effective_length,
+            batch_size=int(hidden_states.shape[0]),
+            physical_sequence_length=int(hidden_states.shape[1]),
+            device=hidden_states.device,
+        )
         dflash_collector = None
         if output_dflash_features:
             dflash_collector = DFlashFeatureCollector(
@@ -1021,6 +1185,7 @@ class Qwen3_5TextModel(Qwen3_5PreTrainedModel):
                 allQLen=allQLen,
                 token_count=token_count,
                 export_flag=export_flag,
+                gdr_effective_length=gdr_effective_length,
                 **kwargs,
             )
             hidden_states = layer_outputs[0]
@@ -1072,6 +1237,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
         token_count=0,
         export_flag=False,
         output_dflash_features: bool = False,
+        gdr_effective_length: Optional[torch.Tensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         text_output = self.language_model(
@@ -1086,6 +1252,7 @@ class Qwen3_5ForCausalLM(Qwen3_5PreTrainedModel, GenerationMixin):
             token_count=token_count,
             export_flag=export_flag,
             output_dflash_features=output_dflash_features,
+            gdr_effective_length=gdr_effective_length,
             **kwargs,
         )
         if output_dflash_features:

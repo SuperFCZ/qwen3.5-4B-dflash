@@ -91,6 +91,12 @@ _FORMAL_ISOLATION_MODES = frozenset(
     {"receiver_reset_hook", "fresh_instance"}
 )
 _HIAI_FEATURE_SOURCE = "package_local:modeling_qwen3_5_hiai_nd.py"
+_HIAI_ROLLBACK_FEATURE_SOURCE = (
+    "package_local:modeling_qwen3_5_hiai_nd_dflash_rollback.py"
+)
+_HIAI_FEATURE_SOURCES = frozenset(
+    {_HIAI_FEATURE_SOURCE, _HIAI_ROLLBACK_FEATURE_SOURCE}
+)
 _HIAI_CAPTURE_POINT = "decoder_post_layer_pre_final_norm"
 _HIAI_FEATURE_CONTRACT_ID = "qwen3.5-4b-dflash-hiai-feature-source-v1"
 _FACADE_CONTRACT_ID = "qwen3.5-4b-dflash-v1-full-prefix-isolation-r6"
@@ -119,6 +125,7 @@ _EMBEDDED_RUNTIME_FILES = frozenset(
         "modeling_dflash.py",
         "modeling_qwen3_5_dflash.py",
         "run_npu.py",
+        "target_quant.py",
     }
 )
 _TARGET_STATE_OUTPUT_FIELDS = (
@@ -1340,15 +1347,30 @@ def _bind_formal_hiai_source(
     if not isinstance(loader_file, str):
         raise RuntimeError("formal NPU target loader module lacks __file__")
     package_dir = Path(loader_file).resolve().parent
+    feature_source = getattr(target, "dflash_feature_source", None)
+    source_names = {
+        "package_local:modeling_qwen3_5_hiai_nd.py": (
+            "modeling_qwen3_5_hiai_nd.py"
+        ),
+        "package_local:modeling_qwen3_5_hiai_nd_dflash_rollback.py": (
+            "modeling_qwen3_5_hiai_nd_dflash_rollback.py"
+        ),
+    }
+    source_name = source_names.get(feature_source)
+    if source_name is None:
+        raise RuntimeError(
+            "formal facade declared an unsupported HIAI feature source: "
+            f"{feature_source!r}"
+        )
     raw_source = Path(hiai_source).expanduser()
     if raw_source.is_symlink():
         raise RuntimeError("formal HIAI source must not be a symlink")
     source = raw_source.resolve()
-    expected = (package_dir.parent / "modeling_qwen3_5_hiai_nd.py").resolve()
+    expected = (package_dir.parent / source_name).resolve()
     if source != expected or not source.is_file():
         raise RuntimeError(
             "formal HIAI source must match the selected NPU layout's "
-            "modeling_qwen3_5_hiai_nd.py"
+            f"{source_name}"
         )
     verification = verify_direct_source_file(source)
     actual_sha256 = _sha256_file(source)
@@ -1363,7 +1385,7 @@ def _bind_formal_hiai_source(
             "formal HIAI source hash/contract does not match target provenance"
         )
     hiai_package = loader_module_name.rsplit(".", 2)[0]
-    hiai_module_name = hiai_package + ".modeling_qwen3_5_hiai_nd"
+    hiai_module_name = hiai_package + "." + Path(source_name).stem
     hiai_module = importlib.import_module(hiai_module_name)
     expected_target_class = getattr(hiai_module, "Qwen3_5ForCausalLM", None)
     target_controller = getattr(target, "target", None)
@@ -1375,7 +1397,7 @@ def _bind_formal_hiai_source(
     if not isinstance(expected_target_class, type) or type(raw_target) is not expected_target_class:
         raise RuntimeError(
             "formal facade must execute the exact package-local "
-            "Qwen3_5ForCausalLM class exported by modeling_qwen3_5_hiai_nd, "
+            f"Qwen3_5ForCausalLM class exported by {Path(source_name).stem}, "
             "directly or through internal_dflash_bridge"
         )
     isolation_audit = getattr(target, "dflash_full_prefix_isolation_audit", None)
@@ -1598,6 +1620,83 @@ def _target_integration_audit(
                     raise TypeError(
                         f"target bridge_runtime {field} must be a non-negative int"
                     )
+            raw_quantization = bridge_runtime.get("target_quantization")
+            if raw_quantization is not None:
+                if not isinstance(raw_quantization, Mapping):
+                    raise TypeError(
+                        "target bridge_runtime target_quantization must be a mapping"
+                    )
+                quantization = dict(raw_quantization)
+                scheme = quantization.get("scheme")
+                if scheme not in {"disabled", "w8a8_dynamic"}:
+                    raise ValueError(
+                        "target quantization scheme must be disabled or w8a8_dynamic"
+                    )
+                for field in (
+                    "embedding_lookup_calls",
+                    "embedding_lookup_successes",
+                    "embedding_lookup_failures",
+                ):
+                    value = quantization.get(field)
+                    if (
+                        isinstance(value, bool)
+                        or not isinstance(value, int)
+                        or value < 0
+                    ):
+                        raise TypeError(
+                            f"target quantization {field} must be a non-negative int"
+                        )
+                if scheme == "disabled":
+                    if quantization.get("status") != "DISABLED":
+                        raise RuntimeError(
+                            "disabled target quantization has an inconsistent status"
+                        )
+                    if any(
+                        quantization[field] != 0
+                        for field in (
+                            "embedding_lookup_calls",
+                            "embedding_lookup_successes",
+                            "embedding_lookup_failures",
+                        )
+                    ):
+                        raise RuntimeError(
+                            "disabled target quantization executed a quantized "
+                            "embedding lookup"
+                        )
+                else:
+                    if (
+                        quantization.get("status")
+                        != "PASS_ASSEMBLY_CONTRACT_NO_NUMERICAL_CLAIM"
+                    ):
+                        raise RuntimeError(
+                            "W8A8 target did not pass its assembly contract"
+                        )
+                    qlinear_count = quantization.get("qlinear_count")
+                    if (
+                        isinstance(qlinear_count, bool)
+                        or not isinstance(qlinear_count, int)
+                        or qlinear_count <= 0
+                    ):
+                        raise RuntimeError(
+                            "W8A8 target must report a positive QLinear count"
+                        )
+                    if (
+                        quantization.get("embedding_output_contract")
+                        != "original_int8_mul_fp32_scale_then_fp16"
+                    ):
+                        raise RuntimeError(
+                            "W8A8 target embedding route has the wrong output contract"
+                        )
+                    if (
+                        quantization.get("linear_topology_validation")
+                        != "PASS_EXACT_PATH_SHAPE_BIAS"
+                        or quantization.get("quantized_weight_layout") != "K_by_N"
+                    ):
+                        raise RuntimeError(
+                            "W8A8 target did not pass exact Linear topology/layout "
+                            "validation"
+                        )
+                bridge_runtime["target_quantization"] = quantization
             isolation["bridge_runtime"] = bridge_runtime
         isolation["status"] = "PASS_DECLARED_AND_INSTRUMENTED"
 
@@ -1643,7 +1742,7 @@ def _target_integration_audit(
         ),
         "status": (
             "PASS_DECLARED_DIRECT_SOURCE"
-            if feature_source == _HIAI_FEATURE_SOURCE
+            if feature_source in _HIAI_FEATURE_SOURCES
             and capture_point == _HIAI_CAPTURE_POINT
             and feature_contract_id == _HIAI_FEATURE_CONTRACT_ID
             and source_sha256 is not None
@@ -1701,7 +1800,7 @@ def _target_integration_audit(
         if feature["status"] != "PASS_DECLARED_DIRECT_SOURCE":
             raise RuntimeError(
                 "formal NPU target must declare the directly integrated "
-                "modeling_qwen3_5_hiai_nd.py feature contract and source hash"
+                "ordinary or rollback HIAI feature contract and source hash"
             )
         if not isinstance(actual_source_identity, Mapping) or (
             actual_source_identity.get("status") != "PASS_ACTUAL_PACKAGE_SOURCE"
@@ -1752,6 +1851,30 @@ def _target_integration_audit(
                     raise RuntimeError(
                         "packaged NPU bridge did not synchronize every completed call"
                     )
+                quantization = bridge_runtime.get("target_quantization")
+                if isinstance(quantization, Mapping):
+                    scheme = quantization.get("scheme")
+                    if scheme == "w8a8_dynamic":
+                        if (
+                            quantization.get("embedding_lookup_calls")
+                            != forward_calls
+                        ):
+                            raise RuntimeError(
+                                "quantized target embedding and forward "
+                                "call counts differ"
+                            )
+                        if (
+                            quantization.get("embedding_lookup_successes")
+                            != forward_calls
+                        ):
+                            raise RuntimeError(
+                                "one or more quantized target embedding "
+                                "calls did not complete"
+                            )
+                        if quantization.get("embedding_lookup_failures") != 0:
+                            raise RuntimeError(
+                                "quantized target embedding lookup reported failures"
+                            )
 
     return {
         "loader": target_loader or "package_default",
@@ -2202,6 +2325,13 @@ def _request_payload(
         "trust_remote_code": bool(args.trust_remote_code),
         "progress_enabled": bool(args.progress),
         "draft_checkpoint_sha256_verified": True,
+        "target_w8a8_emulation_artifact": (
+            None
+            if getattr(args, "target_w8a8_emulation_artifact", None) is None
+            else str(
+                Path(args.target_w8a8_emulation_artifact).expanduser().resolve()
+            )
+        ),
     }
 
 
@@ -2343,6 +2473,14 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--target-w8a8-emulation-artifact",
+        help=(
+            "CPU/CUDA only: portable W_q/scale directory exported by "
+            "preflight_target_quant; replaces framework Target text linears "
+            "with the correctness-first NPU W8A8 formula emulator"
+        ),
+    )
+    parser.add_argument(
         "--npu-layout",
         choices=(_NPU_LAYOUT_EMBEDDED,),
         default=_NPU_LAYOUT_EMBEDDED,
@@ -2448,11 +2586,49 @@ def _validate_report_destination(
         Path(args.target_dir).expanduser().resolve(),
         Path(args.draft_dir).expanduser().resolve(),
     }
+    emulation_artifact = getattr(args, "target_w8a8_emulation_artifact", None)
+    if emulation_artifact is not None:
+        protected_roots.add(Path(emulation_artifact).expanduser().resolve())
     if any(_is_within(resolved, root) for root in protected_roots):
         raise ValueError(
             "--report must be in a separate run directory, outside "
             "the runtime package and target/draft model directories"
         )
+
+
+def _validate_framework_w8a8_request(args: argparse.Namespace) -> Path | None:
+    raw = getattr(args, "target_w8a8_emulation_artifact", None)
+    if raw is None:
+        return None
+    device_type = str(args.device).split(":", 1)[0].lower()
+    if device_type not in {"cpu", "cuda"}:
+        raise ValueError(
+            "--target-w8a8-emulation-artifact is a CPU/CUDA diagnostic route; "
+            "NPU must execute its real QLinear"
+        )
+    if args.target_loader is not None:
+        raise ValueError(
+            "W8A8 formula emulation requires the package-default framework "
+            "Target and cannot be combined with --target-loader"
+        )
+    if args.dtype != "float16":
+        raise ValueError(
+            "strict NPU QLinear emulation requires --dtype float16"
+        )
+    artifact = Path(raw).expanduser()
+    if artifact.is_symlink() or not artifact.is_dir():
+        raise ValueError(
+            "--target-w8a8-emulation-artifact must be a real artifact directory"
+        )
+    return artifact.resolve()
+
+
+def _embedded_hiai_source_name(target_factory: str | None) -> str:
+    if target_factory == (
+        "models.internal_dflash_bridge:load_qwen35_rollback_target"
+    ):
+        return "modeling_qwen3_5_hiai_nd_dflash_rollback.py"
+    return "modeling_qwen3_5_hiai_nd.py"
 
 
 def _configure_embedded_npu_inputs(args: argparse.Namespace) -> None:
@@ -2462,7 +2638,9 @@ def _configure_embedded_npu_inputs(args: argparse.Namespace) -> None:
         return
     package_dir = Path(__file__).resolve().parent
     expected_loader = f"{__package__}.internal_target_loader:load_target"
-    expected_source = package_dir.parent / "modeling_qwen3_5_hiai_nd.py"
+    expected_source = package_dir.parent / _embedded_hiai_source_name(
+        args.target_factory
+    )
     if args.target_loader is None:
         args.target_loader = expected_loader
     if args.hiai_source is None:
@@ -2546,7 +2724,8 @@ def _validate_formal_cli_inputs(args: argparse.Namespace) -> dict[str, object] |
         raise ValueError("formal NPU V1 requires --hiai-source")
     package_dir = Path(__file__).resolve().parent
     raw_hiai_source = Path(args.hiai_source).expanduser()
-    expected_hiai_source = package_dir.parent / "modeling_qwen3_5_hiai_nd.py"
+    expected_source_name = _embedded_hiai_source_name(args.target_factory)
+    expected_hiai_source = package_dir.parent / expected_source_name
     if (
         raw_hiai_source.is_symlink()
         or raw_hiai_source.resolve() != expected_hiai_source.resolve()
@@ -2554,7 +2733,7 @@ def _validate_formal_cli_inputs(args: argparse.Namespace) -> dict[str, object] |
     ):
         raise ValueError(
             "--hiai-source does not match the selected NPU layout's "
-            "modeling_qwen3_5_hiai_nd.py"
+            f"{expected_source_name}"
         )
     _validate_report_destination(args, package_dir=package_dir, formal_npu=True)
     if os.environ.get("PYTHONPYCACHEPREFIX") or sys.pycache_prefix is not None:
@@ -2576,6 +2755,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     device_type = str(args.device).split(":", 1)[0].lower()
     formal_npu = device_type == "npu"
+    emulation_artifact = _validate_framework_w8a8_request(args)
     _configure_embedded_npu_inputs(args)
     _validate_ops_backend_request(args.device, args.ops_backend)
     if not formal_npu:
@@ -2632,6 +2812,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_download=args.allow_download,
         trust_remote_code=args.trust_remote_code,
     )
+    if emulation_artifact is None:
+        target_w8a8_emulation: dict[str, object] = {
+            "status": "DISABLED",
+            "scheme": "disabled",
+            "scope": "framework_target",
+        }
+    else:
+        from .w8a8_emulation import apply_w8a8_emulation
+
+        target_w8a8_emulation = apply_w8a8_emulation(
+            target,
+            emulation_artifact,
+            device=args.device,
+            dtype=dtype,
+        )
     initial_target_integration = _target_integration_audit(
         target,
         device=args.device,
@@ -2645,6 +2840,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "integration_route": initial_target_integration["route"],
             "isolation_mode": initial_target_integration["isolation"]["mode"],
             "feature_source": initial_target_integration["feature_capture"]["source"],
+            "target_w8a8_emulation": target_w8a8_emulation["status"],
         },
     )
     _emit_progress(args.progress, "draft_memory_preflight_begin", {})
@@ -2750,21 +2946,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             "the bounded P-Q-P output gate passed; no receiver HIAI state claim "
             "or speculative state commit/rollback is made"
         )
-        target_operator_policy = (
-            "framework target and draft execution only; receiver HIAI custom "
-            "operator interfaces are not part of this CPU/CUDA route"
-        )
+        if emulation_artifact is None:
+            target_operator_policy = (
+                "framework target and draft execution only; receiver HIAI custom "
+                "operator interfaces are not part of this CPU/CUDA route"
+            )
+        else:
+            target_operator_policy = (
+                "framework attention/GDN/norm execution with Target text Linear "
+                "modules replaced by the correctness-first NPU W8A8 formula; "
+                "the same exported W_q/scale are reused, Draft stays FP16, and "
+                "real NPU same-activation parity remains pending"
+            )
         known_internal_interface_use = {
             "route": "NOT_APPLICABLE_FRAMEWORK_TARGET",
         }
+    classification = {
+        "cpu": "CPU/framework simulation",
+        "cuda": "CUDA/framework full-prefix validation",
+        "npu": "NPU/framework execution; complete 310P gate remains external",
+    }.get(adapter.device.type, "framework device execution")
+    if emulation_artifact is not None:
+        classification = (
+            f"{adapter.device.type.upper()} correctness-first NPU W8A8 formula "
+            "emulation; no performance or real-NPU parity claim"
+        )
     report = {
         "schema_version": 2,
         "route": "qwen3.5-dflash-v1-full-prefix-replay",
-        "classification": {
-            "cpu": "CPU/framework simulation",
-            "cuda": "CUDA/framework full-prefix validation",
-            "npu": "NPU/framework execution; complete 310P gate remains external",
-        }.get(adapter.device.type, "framework device execution"),
+        "classification": classification,
         "strict_greedy_exact_match": True,
         "verification_mode": result.verification_mode,
         "feature_capture_zero_impact": result.feature_capture_zero_impact,
@@ -2782,6 +2992,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "ops_backend": backend,
         "npu_layout": args.npu_layout if formal_npu else None,
         "target_operator_policy": target_operator_policy,
+        "target_w8a8_emulation": target_w8a8_emulation,
         "target_integration": final_target_integration,
         "runtime_preflight": final_runtime_preflight,
         "dflash_execution_gate": dflash_execution,

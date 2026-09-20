@@ -1,0 +1,381 @@
+# Ascend310P OM 使用
+
+流程：[架构](DFLASH_ARCHITECTURE.md)。测量结果：[结果汇总](DFLASH_CURRENT_USAGE_AND_RESULTS.md)。
+
+## 环境配置
+
+复制 [环境模板](../config/dflash_env.sh.example) 到源码外，填写实际路径，然后每个新终端执行：
+
+```bash
+source /absolute/path/dflash-env.sh
+```
+
+主要配置：
+
+| 变量 | 内容 |
+|---|---|
+| `TARGET_DIR` | Qwen3.5-4B 权重 |
+| `DRAFT_FP16_DIR` | FP16 Draft 权重 |
+| `DRAFT_W4A16_DIR` | [W4A16 GPTQ 权重](https://huggingface.co/nota-ai/Qwen3.5-4B-DFlash-GPTQ-W4A16) |
+| `DRAFT_W8A16_DIR` | [W8A16 权重](https://huggingface.co/naveenrajk/Qwen3.5-4B-DFlash-W8A16) |
+| `OM_BUNDLE_DIR` | 统一 AIR/OM 目录；导出时使用空目录 |
+| `DRAFT_QUANTIZATION` | 默认 Draft：`fp16` / `w4a16` / `w8a16` |
+| `KV_CAPACITY` | 上下文容量，含输入和输出，默认 2048 |
+| `MODEL_PYTHON`、`CANN_ROOT`、`ATC_BIN`、`SOC_VERSION` | 本机工具链 |
+
+权重目录应包含 `config.json`、`model.safetensors`，加载时检查固定版本哈希。所有生成文件放在 `AI_RUN_DIR` 下。
+原生 Torch-NPU 命令见 [原生推理](DFLASH_RUN_AND_VALIDATE.md)；本页选择参数控制 OM。
+
+## 导出与编译
+
+先完成 [首次环境准备](DFLASH_RUN_AND_VALIDATE.md#首次准备)和 Target W8A8 配置。
+没有 `factory.json` 时创建：
+
+```bash
+"$MODEL_PYTHON" -B - <<'PY'
+import json, os
+from pathlib import Path
+config = {
+    "target_dir": os.environ["TARGET_DIR"],
+    "draft_dir": os.environ["DRAFT_FP16_DIR"],
+    "quant_config": os.environ["QUANT_CONFIG"],
+    "receiver_models_dir": os.environ["RECEIVER_MODELS_DIR"],
+    "max_sequence_length": int(os.environ["KV_CAPACITY"]),
+    "include_ordinary_decode": True,
+    "draft_attention_matmul_dtype": "float16",
+    "dtype": "float16", "device": "npu:" + os.environ["DEVICE_ID"],
+    "adn_rms_norm_ge_op_type": "AdnRmsNorm",
+}
+with (Path(os.environ["AI_RUN_DIR"]) / "factory.json").open("x") as f:
+    json.dump(config, f, indent=2)
+PY
+```
+
+**1. 导出 AIR。** 自动锁定所选权重、共享 Target 特征，公共图只导出一次。
+
+```bash
+"$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p export-air \
+  --factory qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs \
+  --factory-config "$AI_RUN_DIR/factory.json" --bundle-dir "$OM_BUNDLE_DIR" \
+  --verify-gdr both --draft-quantizations fp16 w4a16 w8a16 \
+  --draft-quant-matmul weight_quant
+```
+
+只需要 FP16 时，导出命令使用 `--draft-quantizations fp16`；不加载量化权重。
+只需要一条验证路线时，导出命令使用 `--verify-gdr chunk` 或 `mtp`。
+
+**2. 编译 OM。** 等上一步返回终端提示符后执行；优先完成 FP16，逐图打印 START/DONE。
+
+```bash
+"$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p compile-om \
+  --air-manifest "$OM_BUNDLE_DIR/air-manifest.json" \
+  --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --resume
+```
+
+`--resume` 校验 AIR、OM 哈希、SoC、编译器和参数后复用已完成的组合，继续编译缺失的图。
+每个成功组合立即写入 `draft-variants.json`，可直接测试。量化 Draft 编译失败会记录错误并继续其余组合，
+保留 FP16 及其他成功结果；同一失败图在两条 Verify 路线间不重复编译。
+
+**只编译或复用 FP16**，包括已导出三种 Draft、量化编译失败的目录：
+
+```bash
+"$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p compile-om \
+  --air-manifest "$OM_BUNDLE_DIR/air-manifest.json" \
+  --draft-quantizations fp16 \
+  --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --resume
+```
+
+已有 FP16 部署清单但缺少索引时，此命令会校验并补齐索引，无需重编。
+所选组合全部成功时退出码为 0；有编译失败时为 1。整体索引可为 `PARTIAL`，
+测试只要求选中的 Draft/Verify 条目为 `PASS`，不会加载失败或未编译的量化 Draft。
+没有成功部署清单记录的残留 OM 不会被复用；若属于本次所选组合会报出路径，保留并移到别处后再重试。
+未选中的残留 OM 保持原样。
+
+全部选择时，`$OM_BUNDLE_DIR/om/` 下只有 **7 个 OM**：
+
+```text
+prefill.om       decode.om
+verify_chunk.om verify_mtp.om
+draft.om        draft_w4a16.om draft_w8a16.om
+```
+
+`draft-variants.json` 索引各组合；部署清单与它同目录。运行时只加载选定的一个 Draft 和一个 Verify。
+AIR 导出成功不代表 OM 编译成功；以 `draft-variants.json` 中对应条目的 `PASS` 为准。
+编译日志位于 `$AI_RUN_DIR/log/dflash-atc/`。未修改图时，重试编译无需重新导出 AIR。
+
+**3. 构建 runner。**
+
+```bash
+"$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p build-cpp \
+  --build-dir "$AI_RUN_DIR/build/cpp" --ascendcl-root "$CANN_ROOT" \
+  --output "$AI_RUN_DIR/reports/cpp-build.json"
+```
+
+在 `RUNNER_CONFIG` 指向的 JSON 中填写实际 `device_model`、`cann`、`driver`、`firmware`，
+另设 `"runtime": "AscendCL C++"`、`"pad_token_id": 0`。
+
+## 量化 Draft MatMul
+
+W4/W8 原生路径采用 CANN [WeightQuantBatchMatmulV2](https://github.com/Ascend/op-plugin/blob/cdca1dbc8949cc32bab4a5b2291bf9d9cddcf052/docs/zh/custom_APIs/torch_npu/torch_npu-npu_weight_quant_batchmatmul.md)，保留 FP16 激活、group-128 scale 和
+`inner_precise=0`。W8 直接传 INT8 权重；W4 压缩存储，临时无损展开为 INT8 后调用。
+这是 A16 权重量化接口，不能按 W8A8 的纯整数矩阵乘理解；Embedding/LM Head 保持 FP16。
+
+310P 的 CANN 9.0.0 图模式使用 `WeightNz` 模板，要求 **FRACTAL_NZ 权重 +
+`transpose_weight=true`**。导出会折叠权重转置，并插入内置 `TransData`，
+将逻辑 `[N,K]` INT8 权重实际转换为 `[ceil(K/32),ceil(N/16),16,32]` NZ 存储。
+分组 scale 保持 `[K/128,N]`；仅 K=128 单组和合成 per-channel 对照使用 `[N]`。
+这与 [CANN 9.0.0 的模板选择](https://gitcode.com/cann/ops-nn/blob/fcebf031d193d641d2d1472a539bcc387b1e5f09/matmul/weight_quant_batch_matmul_v2/op_host/op_tiling/weight_quant_batch_matmul_v2_tiling_registry.cpp)
+和 [WeightNz 约束](https://gitcode.com/cann/ops-nn/blob/fcebf031d193d641d2d1472a539bcc387b1e5f09/matmul/weight_quant_batch_matmul_v2/op_host/op_tiling/weight_quant_batch_matmul_v2_weight_nz_tiling.cpp)一致。
+只折叠 transpose、仍保留 ND 权重时，310P 会报 `no valid template is found`。
+
+正常 W4/W8 导出默认使用此转换，不需新增参数。外部压缩权重、scale 和 C++ ABI 不变，
+不新增常驻 FP16 权重；临时 NZ 缓冲及 CANN 工作区的峰值需设备测量。
+`weight-quant-layout.json` 记录转换节点、逻辑/存储 shape 和 scale 布局。
+编译入口拒绝缺少此审计的旧量化 AIR；**必须重新导出 AIR，不能只重编旧 AIR**。
+
+先编译不加载模型权重的小图：
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
+  --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --device-id "$DEVICE_ID" \
+  --bits 4 8 --projection tiny --group-size 128 \
+  --weight-format nz --weight-layout nk \
+  --output-dir "$AI_RUN_DIR/matmul-atc-nz"
+```
+
+小图通过后，将 `--projection tiny` 改为 `--projection gate_up q kv down fc`，
+使用新输出目录验证实际投影尺寸，再按正常流程导出、编译三种 Draft。
+每组包含 M=16/64 两档；默认即 `--weight-format nz --weight-layout nk --group-size 128`。
+诊断用 `--group-size 0` 是合成 per-channel 对照，不会转换模型分组；
+`--weight-format nd --weight-layout nk kn` 仅用于复现 ND 对照，不能用于正式 Draft。
+
+结果和 AIR/OM 位于指定目录，ATC 日志在 `$AI_RUN_DIR/log/dflash-atc/`。
+失败项保留阶段、堆栈和 tiling 约束，其他组继续测试。重试使用新目录。
+**验证范围：**CPU 布局、数值与 AIR 序列化检查不代表设备通过；
+接收端 ATC 编译、OM 执行、完整模型接受率和时延仍需实测。
+探测的 `PASS` 仅指编译通过，报告单独标记 `execution_status=NOT_RUN`。
+
+导出前还有原生 NPU 数值检查，导出后检查五层 Draft 的 26 个融合节点。
+原生调用通过不代表 ATC 编译通过；单独测原生 MatMul 时延使用：
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_draft_matmul.py" \
+  --device-id "$DEVICE_ID" --bits 4 8 --projection gate_up q kv down fc \
+  --warmup 1 --repetitions 3 --output "$AI_RUN_DIR/draft-matmul.json"
+```
+
+输出相同输入下的时延、数值差异和 PyTorch 分配器峰值；这是合成输入的原生调用测试，
+OM 峰值显存与完整模型接受率仍需统一测试和 profiling 验证。
+压缩常驻权重字节数不增加，不缓存完整 FP16 权重；CANN 内部工作区不能据此推断。
+
+修改 MatMul 或其 AIR 布局后，**需要重新导出 AIR，再编译 OM**，使用上面的正常命令和新目录。
+仅重编已有 AIR 不会改变图内算子；本次不需要更新 C++ runner。
+对照路径可在导出时设 `--draft-quant-matmul dequant`，或在 factory JSON 中设
+`"draft_quant_matmul": "dequant"`；该设置仅影响 W4/W8，FP16 Draft 与 Target 计算不变。
+
+### W8 固定权重离线 NZ 转换
+
+W8 的 msprof 显示每次 Draft 调用仍执行固定权重的 `TransData`。
+可先在 CPU 离线转换一次，之后导出直接读取 NZ 文件，并把 INT8 NZ 常量写入 AIR/OM。
+OM 加载和推理不执行本项目的权重预打包；group-128 scale、FP16 激活与融合 MatMul 计算保持不变。
+此选项只作用于原生 W8，W4 保留压缩输入及原来的展开路径。
+
+**1. 从已有 W8 bundle 生成可复用的 NZ 权重。** 输入是包含逐图记录的成员清单，
+不是矩阵索引 `air-manifest.json`；转换不需要 NPU 或 CANN。
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/pack_draft_weights_nz.py" \
+  --manifest "$OM_BUNDLE_DIR/air-manifest-w8a16-chunk.json" \
+  --output-dir "$AI_RUN_DIR/w8-nz-weights"
+```
+
+脚本先校验原权重/scale 文件，逐个转换权重并验证逐字节还原及零填充，
+输出 `manifest.json` 和 `weight-*.nz.bin`。后续导出按逻辑 shape 与权重哈希匹配，
+拒绝损坏、错误布局或来自不同权重的文件；不会自动重新量化或回退。
+
+**2. 先验证新常量表示的 ATC 小图。** 这与已通过的运行时 `TransData` 小图不同。
+
+r36 接收端三项对照均失败，已经捕获真实原因：`Ka[256] != Kb[32]`。
+权重逻辑形状 `[64,256]` 被替换为 NZ 存储形状 `[8,4,16,32]`，常量或其 Data 代理
+的输出进一步变成 `[8,4,1,1,16,32]`。静态 M16 也失败，因此不是仅由动态档位引起。
+ND 常量 + TransData 对照先按二维形状推导成功，折叠后也出现同样的形状损坏。
+这些结果不否定此前已经运行的外部动态权重 + TransData 路径。
+
+r37 只对校验过字节、填充、形状和消费端描述的离线 NZ 常量设置 GE
+`_out_shape_locked=true`（属性名有前导下划线），保留它的物理形状和二维 origin。
+WeightQuant 与公开输入不设置该属性，K/N、scale 和 tiling 检查继续执行。
+该机制来自 [GE InferShapePass](https://gitcode.com/cann/ge/blob/fe07bcd9d7e0ad8f487dd59b7ad73ff7f0736809/compiler/graph/passes/shape_optimize/infershape_pass.cc)
+及其 [属性定义](https://gitcode.com/cann/ge/blob/fe07bcd9d7e0ad8f487dd59b7ad73ff7f0736809/graph_metadef/graph/attr/ge_attr_define.cc)；
+[动态 Const→Data 处理](https://gitcode.com/cann/ge/blob/fe07bcd9d7e0ad8f487dd59b7ad73ff7f0736809/compiler/graph/passes/multi_batch/multi_batch_clone_pass.cc)
+保留算子属性。引用的 GE 源码版本尚未与接收端二进制一一对应，修复仍需实际编译验证。
+离线权重文件格式不变，可以复用；旧 AIR 缺少形状锁，需要重新导出。
+
+先运行 **tiny 三项对照**：修复后的预打包动态 16/64、预打包静态 M16、
+原本可用的动态权重 + TransData。三项的权重、scale、group-128 和精度一致；
+前两项只有 x 输入，最后一项另外保留权重与 scale 输入。r36 已失败的 ND 常量对照
+不再作为通过基准；所有项失败后仍会继续收集后续结果。
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
+  --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --device-id "$DEVICE_ID" \
+  --bits 8 --projection tiny --prepack-weights --diagnose-prepack \
+  --output-dir "$AI_RUN_DIR/matmul-atc-prepacked-r37"
+```
+
+终端输出及 `diagnostics.txt` 汇总编译状态、实际 `Ka/Kb` 错误（若日志提供）和
+`InferShapeBlackBox` 中的输入/权重/scale、常量输出、value 描述及形状锁状态。每项的
+`*-diagnostics/` 保存 `atc-debug.log`、`command.json`、原始图和 `shape-diagnostics.json`。
+导出前另存 `weight-quant-descriptors.json`，便于对比哪个阶段改变了维度。
+解析失败或没有 dump 时明确记录缺失，原文件保留；不从导出前描述猜测失败维度。
+
+诊断仅对 ATC 子进程启用 `--log=debug`、`DUMP_GE_GRAPH=2` 和全阶段图采集，
+不改变父 shell 环境。图采集不含权重数据，日志与 dump 限于本次输出目录；
+不设置 `IGNORE_INFER_ERROR`，已有非空值（包括 `0`）时拒绝运行。
+调试日志仅提到某融合 pass 的名字不再误报为该 pass 失败。
+参考 [CANN 图 dump 说明](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/800alpha003/devaids/devtools/atc/atlasatc_16_0115.html)
+和 [CANN 9.0.0 形状检查源码](https://gitcode.com/cann/ops-nn/blob/fcebf031d193d641d2d1472a539bcc387b1e5f09/matmul/weight_quant_batch_matmul_v2/op_host/weight_quant_batch_matmul_v2_infershape.cpp)。
+
+三项通过后，再检查实际慢投影尺寸：
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
+  --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --device-id "$DEVICE_ID" \
+  --bits 8 --projection gate_up down fc --prepack-weights \
+  --output-dir "$AI_RUN_DIR/matmul-atc-prepacked-r37-projections"
+```
+
+**3. 待预打包方案通过 ATC 和数值验证后，再验证完整 Draft。** 在正常 `export-air` 命令中增加
+`--draft-weight-prepack-manifest "$AI_RUN_DIR/w8-nz-weights/manifest.json"`，
+并将 `--bundle-dir` 换成新目录，如 `$AI_RUN_DIR/om-bundle-nz`。
+然后对该新目录的 `air-manifest.json` 执行正常 `compile-om`。
+factory JSON 也可设置同名下划线字段 `draft_weight_prepack_manifest`。
+不传此选项即可保留原路径；复测时 benchmark/msprof 的 bundle 也需指向新目录。
+
+五层 W8 导出应打印 `W8 offline NZ constants=26 weight_transdata=0 roundtrip=BIT_EXACT`。
+该行还应包含 `const_value_format=ND storage_format=FRACTAL_NZ`
+及 `descriptor=locked-logical-value-physical-nz-output-v3`
+和 `const_output_shape_locked=true weightquant_inference=enabled`；实际权重仍是 NZ 字节。
+`weight-quant-layout.json` 的 `prepack` 保存原始/NZ 哈希与移除节点；
+新 W8 权重由 OM 管理，无外部 `constant-inputs.tsv`，动态档位输入总维数从 99 降为 47。
+通用 C++ runner 可读取新清单，无需修改或重建。
+
+接收端 r34–r36 离线预打包的 ATC 状态是 **FAIL**；r37 为待接收端验证的常量形状锁修复。
+CPU 字节还原、AIR 图连接和模拟 bundle 检查不能替代实际编译；OM 数值和时延仍未验证。
+复测应检查固定权重 `*_weight_nz*` 的 `TransData` 是否消失，并比较 Draft ms/call、
+整次生成时间与接受率。其他激活格式转换仍可能存在；不把全部 `TransData` 时间当作已实现收益。
+
+## 统一测试
+
+同一入口测试短输入、约 1K 长输入、离线开源数据集、三种 Draft 和两条 Verify。
+测试默认关闭 thinking；普通模型与所有 Draft 使用相同的非 thinking 输入模板。
+
+**只跑 FP16 Draft 的离线数据集**，读取目录内全部题目；量化编译失败不影响此命令：
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
+  --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
+  --runner-config "$RUNNER_CONFIG" --model-dir "$TARGET_DIR" \
+  --bundle-dir "$OM_BUNDLE_DIR" \
+  --draft-quantization fp16 --verify-gdr chunk --lengths 128 \
+  --dataset-dir /absolute/path/datasets --no-enable-thinking \
+  --warmup 0 --repetitions 1 \
+  --max-draft-tokens "$MAX_DRAFT_TOKENS" --device-id "$DEVICE_ID" \
+  --low-memory --allow-output-differences
+```
+
+上面为单次测量；重复测量可设 `--warmup 1 --repetitions 3`。
+需要 thinking 时改为 `--enable-thinking`。每个文件的接受率、吞吐与加速比保存在 `datasets.csv` 和分文件报告。
+
+下面命令合并 **8 条短 prompt + 12 条长 prompt + 每个离线文件前 10 题**：
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
+  --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
+  --runner-config "$RUNNER_CONFIG" --model-dir "$TARGET_DIR" \
+  --bundle-dir "$OM_BUNDLE_DIR" \
+  --draft-quantization fp16 w4a16 w8a16 --verify-gdr both --lengths 128 \
+  --no-enable-thinking \
+  --dataset-dir /absolute/path/datasets --num-questions 10 --include-builtin-prompts \
+  --warmup 1 --repetitions 3 \
+  --max-draft-tokens "$MAX_DRAFT_TOKENS" --device-id "$DEVICE_ID" \
+  --low-memory --allow-output-differences
+```
+
+| 需求 | 参数 |
+|---|---|
+| 只测短 / 长输入 | 去掉三个数据集参数；设 `--prompt-group short` / `long` |
+| 只测内置 20 条 | 去掉 `--dataset-dir`、`--num-questions`、`--include-builtin-prompts` |
+| 只测离线数据集 | 去掉 `--include-builtin-prompts` |
+| 长输入与离线数据一起测 | 保留数据集参数，增加 `--prompt-group long` |
+| 只测一种 Draft | `--draft-quantization w4a16`；也可写 `"$DRAFT_QUANTIZATION"` |
+| 只测一条 Verify | `--verify-gdr chunk` 或 `mtp` |
+| 多个输出上限 | `--lengths 128 512 1024` |
+| 指定离线文件 | 用 `--dataset-files /path/gsm8k.jsonl /path/humaneval.jsonl` 替换 `--dataset-dir` |
+| 文件全部题目 | 去掉 `--num-questions` |
+| 只检查配置与容量 | 增加 `--plan-only` |
+
+离线格式：JSONL 每行 `{"question":"完整问题"}`，或相同记录的 JSON 数组；字段为 `prompt` 时加 `--dataset-field prompt`。
+不会下载数据、拼接答案或截短问题。自定义短/长输入用 `--prompts /path/prompts.json`；筛选 ID 用 `--prompt-id zh_explain`。
+`--include-builtin-prompts` 合并所选本地 prompt 与离线文件，`--num-questions` 只限制离线文件。
+
+**每个问题、每个输出上限的普通模型只测一次**，所有 Draft/Verify 组合共用其输出和时延。
+
+## 复用已有普通模型数据
+
+在同一测试命令后增加：
+
+```bash
+--ordinary-baseline /absolute/path/previous-run/summary.json
+```
+
+支持测试目录、矩阵/单套测试的 `summary.json`，或 `runner-batch.json`；多长度测试按输出上限匹配。
+脚本核对普通 OM、接口、runner/设备、thinking 设置、输入 token 和题目顺序、输出上限、EOS、预热及测量次数。
+开启 thinking 或未记录该设置的结果，不能用于当前非 thinking 测试。
+匹配后只执行 DFlash；缺失或不匹配会报明原因，**不会自动重跑普通模型**。原始报告保持不变。
+
+## 查看结果
+
+- `gdr-lengths-*/summary.md`：Draft × Verify × 输出长度的总表及短/长分组，含接受率、吞吐、加速比和阶段时延。
+- `datasets.csv`、`datasets/<ID>/summary.md`：每个离线文件在各 Draft/Verify 下的结果。
+- `cases.csv`：逐题数据，含 Draft 类型；各精度子目录的 `generations.txt` 保存文字输出。
+
+接受率为总接受数/总提议数；加速比为普通模型总耗时/DFlash 总耗时。
+计时排除预热、加载和重置；图时延为同步 OM 调用时间。
+DFlash Prefill 包含长输入建 Draft 缓存的调用，不能与图累计耗时重复相加。
+允许输出差异仍保留差异记录；多轮漂移报告为 `DRIFT_OBSERVED`。这些指标不代表任务正确率。
+
+## 单 OM profiling
+
+将环境文件中的 `SAVED_BATCH` 设为已有测试的 `runner-batch.json` 路径。
+下面使用 `zh_explain` 的输入，依次采集全部 7 个 OM，无需完整生成：
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/profile_om.py" \
+  --run-dir "$AI_RUN_DIR" --runner "$CPP_RUNNER" \
+  --bundle-dir "$OM_BUNDLE_DIR" --profile-om all \
+  --prompt-report "${SAVED_BATCH}.cases/zh_explain.json" \
+  --device-id "$DEVICE_ID" \
+  --max-new-tokens 16 --max-draft-tokens 15 --profile-warmup 0
+```
+
+`--profile-om` 可选一个或多个：`prefill decode draft draft_w4a16 draft_w8a16 verify_chunk verify_mtp`；
+`draft` 表示 FP16。例如只测量化 Draft：`--profile-om draft_w4a16 draft_w8a16`。
+部分编译目录也可使用；只选择已有 `PASS` 部署的 OM，例如 `--profile-om draft`。
+
+共享 Prefill/Decode 各采集一次，两个 Verify 优先使用 FP16 Draft 准备输入。
+各项依次加载、采集、卸载，不同时加载 7 个 OM；准备工作在窗口外，单项失败后继续其余项。
+Prefill 窗口覆盖全部输入块，其余窗口各测一次调用。输入 token 直接沿用 `--prompt-report`，包括其 thinking 设置。
+结果在 `msprof/oms-*/summary.csv`；各 OM 子目录保存独立的算子明细、热点和原始采集文件。
+这些是带 profiling 开销的独立窗口时延，不能相加作为整段生成时延。
+
+## 精度与执行口径
+
+Recurrent state 存储/传输为 FP32，conv/KV 为 FP16。Draft 采用 16/64 双档，最多输出 15 个候选；
+Draft 默认 `deterministic=0`，投机始终开启。
+
+公开 W4/W8 Draft 为五层，当前 FP16 为六层，特征层也不同，因此是不同 checkpoint 的对比。
+量化路径以压缩权重常驻，MatMul 选择见[量化 Draft MatMul](#量化-draft-matmul)。
+默认压缩权重以一维输入传输，图内恢复形状；五层 Draft 的动态档位共 99 维。
+启用 W8 离线 NZ 常量时为 47 维，两者均低于 ACL 的 128 维上限。
+若加载时报 `aclmdlGetInputDynamicDims failed: 500001`，请更新 runner，并在空目录重新导出、编译量化 Draft。
+真实 TorchAir/ATC 编译、峰值显存、接受率和加速效果须在 310P 上验证。
