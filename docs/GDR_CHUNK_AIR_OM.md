@@ -207,7 +207,8 @@ WeightQuant 与公开输入不设置该属性，K/N、scale 和 tiling 检查继
 该机制来自 [GE InferShapePass](https://gitcode.com/cann/ge/blob/fe07bcd9d7e0ad8f487dd59b7ad73ff7f0736809/compiler/graph/passes/shape_optimize/infershape_pass.cc)
 及其 [属性定义](https://gitcode.com/cann/ge/blob/fe07bcd9d7e0ad8f487dd59b7ad73ff7f0736809/graph_metadef/graph/attr/ge_attr_define.cc)；
 [动态 Const→Data 处理](https://gitcode.com/cann/ge/blob/fe07bcd9d7e0ad8f487dd59b7ad73ff7f0736809/compiler/graph/passes/multi_batch/multi_batch_clone_pass.cc)
-保留算子属性。引用的 GE 源码版本尚未与接收端二进制一一对应，修复仍需实际编译验证。
+保留算子属性。引用的 GE 源码版本尚未与接收端二进制一一对应。
+接收端 r37 已证明静态小图可以编译；动态预打包仍失败，具体状态见下表。
 离线权重文件格式不变，可以复用；旧 AIR 缺少形状锁，需要重新导出。
 
 先运行 **tiny 三项对照**：修复后的预打包动态 16/64、预打包静态 M16、
@@ -235,7 +236,22 @@ WeightQuant 与公开输入不设置该属性，K/N、scale 和 tiling 检查继
 参考 [CANN 图 dump 说明](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/800alpha003/devaids/devtools/atc/atlasatc_16_0115.html)
 和 [CANN 9.0.0 形状检查源码](https://gitcode.com/cann/ops-nn/blob/fcebf031d193d641d2d1472a539bcc387b1e5f09/matmul/weight_quant_batch_matmul_v2/op_host/weight_quant_batch_matmul_v2_infershape.cpp)。
 
-三项通过后，再检查实际慢投影尺寸：
+**接收端 r37 结果（2026-09-20）：**
+
+| tiny 对照 | ATC 状态 | 实际观察 |
+|---|---|---|
+| 预打包静态 M16 | PASS | 常量 shape/origin 正确，编译完成 |
+| 原动态权重 + TransData | PASS | 16/64 档位编译完成 |
+| 预打包动态 16/64 | FAIL | `trans_TransData_1` 的 NZ→ND 源/目标均为 `[64,256]`；源应比目标多两维 |
+
+WeightQuant 已分别收到正确的逻辑 X `[16,256]` / `[64,256]` 与 W `[64,256]`，
+旧 `Ka[256] != Kb[32]` 不再出现。当前失败转到动态路径新增的格式转换；
+通用 E10052/AIPP 标题不说明模型使用了图像预处理。
+下一步应追踪 GE dump 中该转换的父图常量/子图 Data、origin 与 storage 描述，
+修复动态图边界；当前摘要不足以定位具体插入 pass。无需重复修改 group-128 或 NK/KN。
+三项均只代表编译，OM 执行、数值与时延仍未验证。
+
+动态预打包修复、三项通过后，再检查实际慢投影尺寸（当前暂不做完整预打包构建）：
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
@@ -259,8 +275,9 @@ factory JSON 也可设置同名下划线字段 `draft_weight_prepack_manifest`�
 新 W8 权重由 OM 管理，无外部 `constant-inputs.tsv`，动态档位输入总维数从 99 降为 47。
 通用 C++ runner 可读取新清单，无需修改或重建。
 
-接收端 r34–r36 离线预打包的 ATC 状态是 **FAIL**；r37 为待接收端验证的常量形状锁修复。
+接收端 r34–r36 离线预打包的 ATC 状态是 **FAIL**；r37 为静态通过、动态失败。
 CPU 字节还原、AIR 图连接和模拟 bundle 检查不能替代实际编译；OM 数值和时延仍未验证。
+当前完整 Draft 保留默认运行时 TransData 路径，预打包是显式实验选项。
 复测应检查固定权重 `*_weight_nz*` 的 `TransData` 是否消失，并比较 Draft ms/call、
 整次生成时间与接受率。其他激活格式转换仍可能存在；不把全部 `TransData` 时间当作已实现收益。
 

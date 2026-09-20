@@ -178,6 +178,62 @@ DFlash Prefill 阶段包含 Target Prefill 和构建上下文的调用；Draft �
 
 </details>
 
+## 自定义测试：FP16 / W4A16 / W8A16，输出上限 128 token
+
+### 早期解量化实现
+
+来自 `gdr-lengths-isajibrf/summary.json`：Chunk、thinking 开启，0 次预热、1 次测量，
+20 条自定义问题。旧日志说明为 group 解量化标准算子 + FP16 MatMul，量化权重常驻。
+这轮与后面的 CANN 原生 WeightQuant 结果分开保留，不覆盖历史数据。
+
+| Draft | 完成 / 选择 | 接受率 | token/投机轮 | 普通 tok/s | DFlash tok/s | 加速比 vs 普通 | Draft ms/call | Verify ms/call |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| FP16 | 20 / 20 | 20.83% | 3.92 | 24.72 | 39.37 | 1.59× | 20.13 | 51.21 |
+| W4A16 | 20 / 20 | 18.61% | 3.60 | 24.72 | 7.85 | 0.32× | 310.08 | 51.25 |
+| W8A16 | 20 / 20 | 21.03% | 3.93 | 24.72 | 9.06 | 0.37× | 283.63 | 51.28 |
+
+相对同轮 FP16，W4/W8 的接受率分别变化 **-2.22 / +0.20 个百分点**，
+吞吐比和模型生成时间加速比均为 **0.20× / 0.23×**。输出状态为 `PASS_WITH_DIFFERENCES`。
+
+### 原生 WeightQuantBatchMatmulV2 实现
+
+来自 `gdr-lengths-waw8h36d/summary.json`，Chunk 路线，短输入 8 条、约 1K 输入 12 条。
+本表保留用户新一轮的原始汇总值，与上面的 `isajibrf` 旧运行分别记录。
+
+| Draft | 分组 | 完成 / 选择 | 接受率 | token/投机轮 | 普通 tok/s | DFlash tok/s | 加速比 | Draft ms/call | Verify ms/call |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| FP16 | all | 20 / 20 | 20.83% | 3.92 | 24.74 | 39.35 | 1.59× | 20.22 | 51.14 |
+| FP16 | short | 8 / 8 | 20.94% | 3.98 | 28.47 | 54.61 | 1.92× | 20.00 | 51.11 |
+| FP16 | long | 12 / 12 | 20.76% | 3.88 | 22.75 | 33.17 | 1.46× | 20.32 | 51.15 |
+| W4A16 | all | 20 / 20 | 18.96% | 3.65 | 24.74 | 19.13 | 0.77× | 94.68 | 51.38 |
+| W4A16 | short | 8 / 8 | 18.70% | 3.64 | 28.47 | 24.79 | 0.87× | 94.48 | 51.34 |
+| W4A16 | long | 12 / 12 | 19.14% | 3.65 | 22.75 | 16.60 | 0.73× | 94.77 | 51.40 |
+| W8A16 | all | 20 / 20 | 21.03% | 3.93 | 24.74 | 25.41 | 1.03× | 63.52 | 51.25 |
+| W8A16 | short | 8 / 8 | 21.20% | 3.98 | 28.47 | 34.34 | 1.21× | 63.28 | 51.23 |
+| W8A16 | long | 12 / 12 | 20.91% | 3.90 | 22.75 | 21.66 | 0.95× | 63.63 | 51.26 |
+
+相对 FP16 Draft 的模型生成时间加速比：W4 **0.49×**、W8 **0.65×**；
+两者均匹配 20 条，接受率分别变化 -1.87 / +0.20 个百分点。
+这两个比值不能与表中“相对普通生成”的加速比混用。
+W8 的接受率 **21.03%** 与 FP16 **20.83%** 接近，W4 为 **18.96%**；
+从当前接受统计看，量化版仍有优化执行速度的价值。W8 整体相对普通为 1.03×、长输入为
+0.95×，尚无稳定提速结论；相对 FP16 Draft，两种量化实现都更慢。
+接受率只反映当前 Verify 接受候选的比例，不代表答案正确率，也未经过多次测量的稳定性验证。
+
+整体阶段时间，单位 ms/次生成：
+
+| Draft | 普通 Prefill | 普通 Decode | DFlash Prefill | DFlash Decode |
+|---|---:|---:|---:|---:|
+| FP16 | 749.57 | 4425.19 | 948.30 | 2304.80 |
+| W4A16 | 749.57 | 4425.19 | 1610.21 | 5081.96 |
+| W8A16 | 749.57 | 4425.19 | 1333.36 | 3703.48 |
+
+量化 checkpoint 为五层，FP16 为六层，不是纯 bitwidth 消融。两种模式各自生成输出，
+这些速度不证明 ordinary parity 或任务质量。最新 W8 profile 的 26 次 WeightQuant 合计
+40.22 ms、TransData 10.45 ms、FP16 head MatMul 6.73 ms；详细映射与精度需求见
+[量化 Draft 优化分析](../framework/custom_ops/draft_quant/README.md)。
+该 profile 的算子合计 62.65 ms 不是完整请求时延，也不与本节阶段表相加。
+
 ## deterministic 与 FC 漂移
 
 已定位到 **`draft.fc(features)`，FP16 Linear 20480 → 2560**。
@@ -209,6 +265,8 @@ Python 开关不影响已有 OM。FC 探针稳定不保证完整 Decode/Verify �
 |---|---|---|
 | FP16 开源数据集，512 输出上限 | `gdr-lengths-x2l5aydx/fp16` | thinking 开启；0 次预热 + 1 次测量 |
 | FP16 自定义短/1K prompt，128 输出上限 | `gdr-lengths-isajibrf/fp16` | thinking 开启；0 次预热 + 1 次测量 |
+| 早期 FP16/W4/W8 解量化对比，128 输出上限 | `gdr-lengths-isajibrf` | thinking 开启；0 次预热 + 1 次测量 |
+| FP16/W4/W8 原生 MatMul 对比，128 输出上限 | `gdr-lengths-waw8h36d` | 用户提供最终汇总；单算子 profile 另行采集 |
 
 ```text
 $AI_RUN_DIR/gdr-lengths-x2l5aydx/summary.json
@@ -217,9 +275,11 @@ $AI_RUN_DIR/gdr-lengths-x2l5aydx/fp16/cases.csv
 $AI_RUN_DIR/gdr-lengths-x2l5aydx/fp16/chunk-512/prompt-suite-isyol8hb/summary.json
 $AI_RUN_DIR/gdr-lengths-x2l5aydx/fp16/chunk-512/prompt-suite-isyol8hb/generations.txt
 $AI_RUN_DIR/gdr-lengths-isajibrf/fp16/summary.json
+$AI_RUN_DIR/gdr-lengths-isajibrf/summary.json
 $AI_RUN_DIR/gdr-lengths-isajibrf/fp16/cases.csv
 $AI_RUN_DIR/gdr-lengths-isajibrf/fp16/chunk-128/prompt-suite-_swok3lt/summary.json
 $AI_RUN_DIR/gdr-lengths-isajibrf/fp16/chunk-128/prompt-suite-_swok3lt/generations.txt
+$AI_RUN_DIR/gdr-lengths-waw8h36d/summary.json
 ```
 
 分文件报告保留于对应汇总目录的 `datasets/<dataset-id>/summary.json` 和 `summary.md`，文件汇总见 `datasets.csv`。

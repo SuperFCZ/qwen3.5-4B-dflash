@@ -137,4 +137,7 @@ FP16 为 24 MiB，与序列长度无关。C++ 的 current/next 两份采用 FP32
 零接受后仍持续投机，可能让低接受率 prompt 变慢。
 
 [现有结果](DFLASH_CURRENT_USAGE_AND_RESULTS.md)保留速度、接受率和已知问题。
+量化 Draft 的五层投影形状、W4 解包路径、实测热点与优化顺序见
+[Draft 优化分析](../framework/custom_ops/draft_quant/README.md)，
+开发交接使用其中的[输入输出与精度要求](../framework/custom_ops/draft_quant/OPERATORS.md)。
 算子及张量 ABI 细节见 [算子清单](DFLASH_OPERATORS.md)与 [接口参考](QUANT_AIR_OM_FRAMEWORK.md)。

@@ -164,7 +164,7 @@
     "files": [
       {
         "source_file": "README.md",
-        "source_sha256": "126c5674f1674adbfc10abe913933b057551aa8cc08b60ae3b44931e2a4746ba"
+        "source_sha256": "437dbf914e46bf5eedd4237423c111e06758ecfb8402f1ceddc84834be27c817"
       },
       {
         "source_file": "config/gdr_chunk_air_om_factory.example.json",
@@ -172,7 +172,7 @@
       },
       {
         "source_file": "docs/DFLASH_ARCHITECTURE.md",
-        "source_sha256": "90069a320861a64ad836c16293797d96f591de0463f97ce79a34551da9ab6a93"
+        "source_sha256": "26f67567668cc5e478730453808d5bb58ced3c396c9e75669b46bb20b94ee247"
       },
       {
         "source_file": "docs/assets/dflash-draft-flow.svg",
@@ -180,7 +180,7 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "24feb8942e60abfa13cab030a26f92ddde511ef9279987dcd32b1d4f531abb6d"
+        "source_sha256": "e4d30a3253000bb426ad0515920827d4af5449e40df2edc349d9aba41bdd80f2"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -520,7 +520,7 @@
       },
       {
         "source_file": "docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md",
-        "source_sha256": "e58daa727d081e457d1058fd1f87ab15e96336473356983cb2594b883df5d9d7"
+        "source_sha256": "788404de735982c69d8e0680579cde143e98b3dd9c3419a904c8371129ac86c6"
       },
       {
         "source_file": "framework/abi/dflash-mtp-v1.json",
@@ -572,7 +572,7 @@
       },
       {
         "source_file": "docs/DFLASH_OPERATORS.md",
-        "source_sha256": "061d592999752e6de696c78b5849c902d71a329e54697074fc74fc11f0dd3c02"
+        "source_sha256": "9a6d5b7aed4a9047d9f99fe67126eb4ee2065d2a13aaff072e8897fb54c91b93"
       },
       {
         "source_file": "tests/test_internal_dflash_bridge_rollback.py",
@@ -748,7 +748,7 @@
       25,
       29
     ],
-    "validation": "CPU arithmetic, full cached Draft and dynamic export with explicit native-op oracle; receiver CANN 9.0.0 / torch_npu 2.8.0.post1+gitc7b6b32 AIR/ATC, full-output parity, speed and peak memory pending",
+    "validation": "Host arithmetic/export tests pass. User receiver reports show runtime-weight NZ native W4/W8 compilation and full Draft measurements. Ordinary token parity remains FAIL under allow-output-differences; task quality, locked ten-run stability and peak memory are not established. Optional offline NZ constants have separate r37 results below.",
     "sources": [
       {
         "source_file": "models/dflash_v1/draft_quantization.py",
@@ -865,7 +865,7 @@
       "graph_lowering": "weight-quant-nk-nz-weight-gn-scale-v3; fold weight transpose, insert real INT8 ND-to-NZ TransData; retain scale[K/128,N]",
       "scope": "Original group-128 A16W8 values, precision and flat compressed input ABI; no new NPU kernel",
       "evidence": "Receiver CANN 9.0.0 / Ascend310P: ND group-128 and per-channel vector-scale probes fail in NK and KN. Official matching-version registry chooses only WeightNz on 310P; IsCapable requires transpose_weight=true and FRACTAL_NZ.",
-      "validation": "Host captured shapes, physical NZ byte-layout/numerical checks, protobuf rewrites and probe isolation; corrected AIR/ATC compilation, OM accuracy, speed and peak memory pending on 310P",
+      "validation": "User receiver: native runtime INT8 ND-to-NZ route compiled and executed W4/W8 Draft. W8 profile contains 26 WeightQuant calls. This does not validate optional offline constants, ordinary token parity, or a locked ten-run performance gate.",
       "probe": "tools/probe_draft_matmul_atc.py --bits 4 8 --projection tiny --group-size 128 --weight-layout nk --weight-format nz; synthetic live packed weights and M16/64 gears; PASS is compilation only",
       "recovery": "New layout requires AIR re-export; compile-om --resume only reuses identity-matching completed matrix deployments",
       "shape_validation": "Typed TorchAir Tensor.set_meta snapshots resolve empty intermediate GE descriptors; known shape/dtype conflicts fail before rewiring",
@@ -880,7 +880,7 @@
         "activation": "export-air --draft-weight-prepack-manifest <offline manifest>; native W8 only, default paths preserved",
         "representation": "Offline v1 NZ files remain compatible. Const.value is logical ND[N,K] with NZ storage attributes; output and consumer are physical NZ with origin[N,K]. Only audited immutable NZ Const nodes carry _out_shape_locked=true. Byte/hash/zero-padding and edge consistency are checked before save. Public inputs and WeightQuant consumers must remain unlocked.",
         "runtime": "W8 weights reside in OM constants; 26 weight TransData removed from five-layer AIR; public dynamic input rank sum 47. Existing generic runner consumes the new manifest.",
-        "validation": "r34-r36 receiver compilation remains FAIL. r37 adds a node-local fixed-output shape lock using GE source, rather than disabling WeightQuant inference. Host checks do not prove the installed compiler honors this attribute through every pass. r37 receiver compile, OM numerical parity and device latency are NOT_RUN; no new performance or model parity claim.",
+        "validation": "r34-r36 prepacked receiver compilation FAIL. r37 receiver tiny static16 PASS and runtime-weight dynamic16/64 PASS; prepacked dynamic16/64 FAIL in inserted TransData NZ_2_ND with rank-2 source. WeightQuant logical K is now correct (256). Prepacked OM execution, numerical parity and latency remain NOT_RUN. Full dynamic prepacked Draft is not admitted.",
         "probe": "probe_draft_matmul_atc.py --bits 8 --projection tiny gate_up --prepack-weights",
         "descriptor_policy": "locked-logical-value-physical-nz-output-v3",
         "receiver_r34": "Prepacked tiny and gate_up both FAIL during InferShapeForWeightQuantBatchMatmulV2 on CANN 9.0.0 / Ascend310P; byte-exact host roundtrip did not establish valid Const inference metadata.",
@@ -900,8 +900,59 @@
             "compiler/graph/passes/multi_batch/subgraph_multi_dims_clone_pass.cc"
           ],
           "mechanism": "ATTR_NAME_OUT_SHAPE_LOCKED is _out_shape_locked; InferShapePass skips only that node output re-inference; multi-batch Const-to-Data preserves other node attrs."
+        },
+        "receiver_r37": {
+          "evidence": "User-provided matmul-atc-prepacked-r37/summary.json terminal summary and shape-diagnostics excerpts, 2026-09-20; original remote files not retrieved",
+          "descriptor_policy": "locked-logical-value-physical-nz-output-v3",
+          "prepacked_static16": "PASS",
+          "runtime_dynamic": "PASS",
+          "prepacked_dynamic": "FAIL",
+          "weightquant_inference": "x=[16,256] or [64,256], logical weight=[64,256]; consumer physical NZ=[8,4,16,32], origin=[64,256]",
+          "failure": "trans_TransData_1: NZ_2_ND src=(64,256), dst=(64,256); source rank must be destination rank+2. E10052 also reports invalid negative dims [-254,4,16,-1].",
+          "next_action": "Trace inserted TransData producer/consumer and parent Const to child Data shape/origin/storage metadata in retained GE dumps. Revalidate both dynamic gears; do not ignore inference errors.",
+          "om_execution": "NOT_RUN",
+          "numerical_parity": "NOT_RUN",
+          "latency": "NOT_RUN"
         }
       }
     }
+  },
+  "draft_optimization_handoff": {
+    "schema_version": 1,
+    "status": "REQUIREMENTS_ONLY",
+    "development_branch": "feature/gdr-chunk-verify",
+    "reviewed_source_revision": "2533557785df7538cdbc92da0df40f97e1da1239",
+    "scope": "Measured quantized Draft architecture review and custom-operator I/O, layout, precision and validation requirements; no new kernel implementation",
+    "hardware_reference_policy": "use",
+    "matched_capability_profile": null,
+    "proposals": [
+      "DFlashGroupQuantLinear",
+      "DFlashW4UnpackNZ",
+      "DFlashDraftLmHeadTop1"
+    ],
+    "strict_policy": "No new approximate arithmetic or relaxed numerical thresholds; operator-local correctness and ordinary model parity are separate gates",
+    "promotion": "Keep on development branch; target validation before merge to main",
+    "sources": [
+      {
+        "source_file": "framework/custom_ops/README.md",
+        "source_sha256": "c79f5239e473d3202435ece67c874d590fb32afbeec3be70979167818009b4f8"
+      },
+      {
+        "source_file": "framework/custom_ops/draft_quant/OPERATORS.md",
+        "source_sha256": "b18b3b701fc475915ba93470b1e36296c1b974dbc8ecb2591d58f209744514e7"
+      },
+      {
+        "source_file": "framework/custom_ops/draft_quant/README.md",
+        "source_sha256": "66c18df211f8d8fcd817ad977dd3ca285dafe44f644d01e1c8d025d92fb3c6fd"
+      },
+      {
+        "source_file": "framework/custom_ops/draft_quant/VALIDATION.md",
+        "source_sha256": "fe9024aab3f4aa16ec5a1457d6a79a934d414a0a975a624366c2c5d8f28c20c8"
+      },
+      {
+        "source_file": "framework/custom_ops/draft_quant/workloads.json",
+        "source_sha256": "853cd6079ffafe6740f4f95577d4f547b1991e94204abc96714ee9a3e514d8ea"
+      }
+    ]
   }
 }

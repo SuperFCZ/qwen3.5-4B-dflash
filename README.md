@@ -34,9 +34,11 @@ source /absolute/path/dflash-env.sh
 | 复用已有普通模型数据，只运行 DFlash | [基线复用](docs/GDR_CHUNK_AIR_OM.md#复用已有普通模型数据) |
 | 了解 Draft → Verify → Commit | [流程与架构](docs/DFLASH_ARCHITECTURE.md) |
 | 查看已有速度、接受率、deterministic 漂移问题 | [结果与已知问题](docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md) |
+| 优化量化 Draft、给自定义算子开发方提需求 | [架构、热点与算子需求](framework/custom_ops/draft_quant/README.md) |
 
-开源数据集 Chunk 测试（输出上限 **512 token**）：5 个文件、2563 条问题，加权接受率 **26.77%**；
-按用户日志汇总估算整体加速 **1.91×**，数学类 **2.05–2.11×**、代码类 **1.60–1.64×**。
+开源数据集 Chunk 测试（输出上限 **512 token**）：5 个文件、2563 条问题，加权接受率 **26.79%**；
+用户汇总报告的模型生成加速比为 **2.42×**，数学类 **2.59–2.67×**、代码类 **2.04–2.07×**。
+此口径包含 Prefill + Decode 循环，不含加载、分词等完整请求开销。
 这些结果对应已测 FP16 Draft 配置，W4/W8 的性能需分别测量。
 允许输出差异，任务质量未评估；[详细结果与 128 token 对比](docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md#开源数据集输出上限-512-token)。
 
@@ -44,6 +46,7 @@ source /absolute/path/dflash-env.sh
 <summary>开发参考</summary>
 
 - [算子清单](docs/DFLASH_OPERATORS.md)
+- [自定义算子开发目录与精度要求](framework/custom_ops/README.md)
 - [AIR/OM 接口与 ABI](docs/QUANT_AIR_OM_FRAMEWORK.md)
 - [DFlash 源码索引](models/dflash_v1/README.md)
 - [框架源码索引](framework/README.md)

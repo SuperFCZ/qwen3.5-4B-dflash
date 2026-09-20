@@ -2,6 +2,9 @@
 
 本文描述 Python NPU strict-greedy rollback 的算子依赖、Tensor 实现和性能候选。AIR/OM/C++
 的融合 verify/commit 与显式 I/O 见 [框架接口](QUANT_AIR_OM_FRAMEWORK.md)。
+针对已测 W4/W8 OM Draft，另有[专门的自定义算子目录](../framework/custom_ops/README.md)，
+包含架构热点、group-128 Linear/W4 解包/完整词表 Top-1 的张量布局、精度和验收要求。
+这是基于当前量化 profile 的开发需求，尚未实现新 kernel。
 Torch-NPU 直接推理和增量 OM 均可选择 GDR MTP 路径；FP32 bank 与状态提交见
 [流程与架构](DFLASH_ARCHITECTURE.md#chunk-两遍与-mtp)。以下 Python eager
 rollback 的依赖结论仍按 Chunk 路径描述。

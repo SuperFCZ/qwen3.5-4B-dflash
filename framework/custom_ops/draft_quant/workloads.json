@@ -1,0 +1,365 @@
+{
+  "schema_version": 1,
+  "status": "REQUIREMENTS_ONLY",
+  "target": "Ascend310P",
+  "review_source_commit": "2533557785df7538cdbc92da0df40f97e1da1239",
+  "development_branch": "feature/gdr-chunk-verify",
+  "provenance": {
+    "kind": "user-provided-terminal-tables-and-source-review",
+    "receiver": {
+      "cann": "9.0.0",
+      "torch_npu": "2.8.0.post1+gitc7b6b32",
+      "soc_version": null,
+      "driver": null,
+      "firmware": null
+    },
+    "benchmark_run": "gdr-lengths-waw8h36d",
+    "msprof_raw_csv_sha256": null,
+    "om_sha256": null,
+    "profile_context_rows": 64,
+    "profile_block_rows": 16,
+    "claim": "Observed timings, not an independently reproduced ten-run baseline"
+  },
+  "precision": {
+    "activation": "float16",
+    "scale": "float16",
+    "scale_logical_layout": "GN",
+    "output": "float16",
+    "group_size": 128,
+    "w8": "int8-signed",
+    "w4": "uint8-offset-binary-even-k-low-nibble",
+    "current_native_ge_op": "WeightQuantBatchMatmulV2",
+    "inner_precise": 0,
+    "rounding_and_accumulation": "receiver kernel characterization required; dtype alone is insufficient",
+    "strict_atol": 0,
+    "strict_rtol": 0,
+    "strict_bit_mismatches": 0,
+    "strict_token_mismatches": 0
+  },
+  "hardware_reference": {
+    "policy": "use",
+    "status": "MATCHED_PROFILE_UNAVAILABLE",
+    "capacity_profile_sha256": null,
+    "physical_workload_sha256": null,
+    "planning_result_sha256": null,
+    "dependency_aware_planning_latency_us": null,
+    "latency_range_us": null,
+    "note": "Do not infer physical traffic/tiling or hardware bounds from this logical shape inventory"
+  },
+  "projections": [
+    {
+      "name": "fc",
+      "calls_per_draft": 1,
+      "m_cases": [
+        16,
+        64
+      ],
+      "n": 2560,
+      "k": 12800,
+      "scale_shape": [
+        100,
+        2560
+      ],
+      "w8_nz_shape": [
+        400,
+        160,
+        16,
+        32
+      ],
+      "w8_logical_bytes": 32768000,
+      "w4_logical_bytes": 16384000,
+      "scale_bytes": 512000,
+      "logical_fma_by_m": [
+        {
+          "m": 16,
+          "fma": 524288000,
+          "x_bytes": 409600,
+          "y_bytes": 81920
+        },
+        {
+          "m": 64,
+          "fma": 2097152000,
+          "x_bytes": 1638400,
+          "y_bytes": 327680
+        }
+      ],
+      "observed_w8_c64_tasks_us": [
+        2329.088
+      ]
+    },
+    {
+      "name": "kv",
+      "calls_per_draft": 5,
+      "m_cases": [
+        32,
+        80
+      ],
+      "n": 2048,
+      "k": 2560,
+      "scale_shape": [
+        20,
+        2048
+      ],
+      "w8_nz_shape": [
+        80,
+        128,
+        16,
+        32
+      ],
+      "w8_logical_bytes": 5242880,
+      "w4_logical_bytes": 2621440,
+      "scale_bytes": 81920,
+      "logical_fma_by_m": [
+        {
+          "m": 32,
+          "fma": 167772160,
+          "x_bytes": 163840,
+          "y_bytes": 131072
+        },
+        {
+          "m": 80,
+          "fma": 419430400,
+          "x_bytes": 409600,
+          "y_bytes": 327680
+        }
+      ],
+      "observed_w8_c64_tasks_us": [
+        428.073,
+        425.573,
+        423.671,
+        422.579,
+        417.135
+      ]
+    },
+    {
+      "name": "q",
+      "calls_per_draft": 5,
+      "m_cases": [
+        16
+      ],
+      "n": 4096,
+      "k": 2560,
+      "scale_shape": [
+        20,
+        4096
+      ],
+      "w8_nz_shape": [
+        80,
+        256,
+        16,
+        32
+      ],
+      "w8_logical_bytes": 10485760,
+      "w4_logical_bytes": 5242880,
+      "scale_bytes": 163840,
+      "logical_fma_by_m": [
+        {
+          "m": 16,
+          "fma": 167772160,
+          "x_bytes": 81920,
+          "y_bytes": 131072
+        }
+      ],
+      "observed_w8_c64_tasks_us": [
+        620.625,
+        617.474,
+        609.922,
+        606.094,
+        568.02
+      ]
+    },
+    {
+      "name": "o",
+      "calls_per_draft": 5,
+      "m_cases": [
+        16
+      ],
+      "n": 2560,
+      "k": 4096,
+      "scale_shape": [
+        32,
+        2560
+      ],
+      "w8_nz_shape": [
+        128,
+        160,
+        16,
+        32
+      ],
+      "w8_logical_bytes": 10485760,
+      "w4_logical_bytes": 5242880,
+      "scale_bytes": 163840,
+      "logical_fma_by_m": [
+        {
+          "m": 16,
+          "fma": 167772160,
+          "x_bytes": 131072,
+          "y_bytes": 81920
+        }
+      ],
+      "observed_w8_c64_tasks_us": [
+        715.729,
+        714.505,
+        709.167,
+        709.088,
+        701.537
+      ]
+    },
+    {
+      "name": "gate_up",
+      "calls_per_draft": 5,
+      "m_cases": [
+        16
+      ],
+      "n": 19456,
+      "k": 2560,
+      "scale_shape": [
+        20,
+        19456
+      ],
+      "w8_nz_shape": [
+        80,
+        1216,
+        16,
+        32
+      ],
+      "w8_logical_bytes": 49807360,
+      "w4_logical_bytes": 24903680,
+      "scale_bytes": 778240,
+      "logical_fma_by_m": [
+        {
+          "m": 16,
+          "fma": 796917760,
+          "x_bytes": 81920,
+          "y_bytes": 622592
+        }
+      ],
+      "observed_w8_c64_tasks_us": [
+        4179.244,
+        4174.401,
+        4169.062,
+        4168.75,
+        4162.968
+      ]
+    },
+    {
+      "name": "down",
+      "calls_per_draft": 5,
+      "m_cases": [
+        16
+      ],
+      "n": 2560,
+      "k": 9728,
+      "scale_shape": [
+        76,
+        2560
+      ],
+      "w8_nz_shape": [
+        304,
+        160,
+        16,
+        32
+      ],
+      "w8_logical_bytes": 24903680,
+      "w4_logical_bytes": 12451840,
+      "scale_bytes": 389120,
+      "logical_fma_by_m": [
+        {
+          "m": 16,
+          "fma": 398458880,
+          "x_bytes": 311296,
+          "y_bytes": 81920
+        }
+      ],
+      "observed_w8_c64_tasks_us": [
+        1684.792,
+        1674.011,
+        1669.271,
+        1664.089,
+        1658.958
+      ]
+    }
+  ],
+  "probe": {
+    "name": "tiny",
+    "m_cases": [
+      16,
+      64
+    ],
+    "n": 64,
+    "k": 256,
+    "group_size": 128,
+    "nz_shape": [
+      8,
+      4,
+      16,
+      32
+    ]
+  },
+  "head": {
+    "m_cases": [
+      1,
+      15
+    ],
+    "required_m_range": [
+      1,
+      15
+    ],
+    "k": 2560,
+    "n": 248320,
+    "weight_dtype": "float16",
+    "output_dtype": "int64",
+    "weight_bytes": 1271398400,
+    "m15_logits_bytes": 7449600,
+    "observed_matmul_us": 6729.375,
+    "observed_argmax_us": 185.417
+  },
+  "operator_totals_us": {
+    "weight_quant": 40223.83,
+    "transdata": 10445.81,
+    "lm_head_matmul": 6729.375,
+    "other": 5255.445,
+    "total": 62654.46
+  },
+  "benchmark_all": {
+    "fp16": {
+      "draft_ms": 20.22,
+      "verify_ms": 51.14,
+      "acceptance_percent": 20.83,
+      "tokens_per_round": 3.92,
+      "ordinary_tps": 24.74,
+      "dflash_tps": 39.35,
+      "model_time_speedup": 1.59
+    },
+    "w4a16": {
+      "draft_ms": 94.68,
+      "verify_ms": 51.38,
+      "acceptance_percent": 18.96,
+      "tokens_per_round": 3.65,
+      "ordinary_tps": 24.74,
+      "dflash_tps": 19.13,
+      "model_time_speedup": 0.77
+    },
+    "w8a16": {
+      "draft_ms": 63.52,
+      "verify_ms": 51.25,
+      "acceptance_percent": 21.03,
+      "tokens_per_round": 3.93,
+      "ordinary_tps": 24.74,
+      "dflash_tps": 25.41,
+      "model_time_speedup": 1.03
+    }
+  },
+  "r37_receiver": {
+    "evidence": "user-provided matmul-atc-prepacked-r37 summary and GE descriptors",
+    "descriptor": "locked-logical-value-physical-nz-output-v3",
+    "prepacked_dynamic": "FAIL",
+    "prepacked_static16": "PASS",
+    "runtime_dynamic": "PASS",
+    "failure": "TransData NZ_2_ND src=(64,256), dst=(64,256); expected source rank = destination rank + 2",
+    "weightquant_logical_k": 256,
+    "om_execution": "NOT_RUN",
+    "numerical_parity": "NOT_RUN",
+    "latency": "NOT_RUN"
+  }
+}
