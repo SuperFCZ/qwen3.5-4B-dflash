@@ -1,68 +1,70 @@
-# DFlash 源码索引
+# DFlash V1 源码索引
 
-本目录实现 Qwen3.5-4B 的 persistent incremental DFlash、ordinary 对照、量化和阶段采集。
-运行命令见 [Torch-NPU 使用](../../docs/DFLASH_RUN_AND_VALIDATE.md)与
-[OM/C++ 使用](../../docs/GDR_CHUNK_AIR_OM.md)。
+本目录整体放在目标工程的 `models/dflash_v1/`。仓库根目录直接提供
+`models/modeling_qwen3_5_hiai_nd.py`；部署时将它放到父目录同名位置。不要用 CPU/CUDA
+target 覆盖它。
 
-## 1. 运行、调度和采集
+第一次阅读项目建议先看
+[DFlash V1 项目架构与完整实现流程](../../docs/DFLASH_V1_ARCHITECTURE.md)。
+然后按需查看
+[Target 与 Feature](../../docs/DFLASH_V1_TARGET_AND_FEATURE.md)、
+[Draft 模型](../../docs/DFLASH_V1_DRAFT.md)、
+[Scheduler 与 token 验证](../../docs/DFLASH_V1_SCHEDULER.md)以及
+[验证流程与报告解读](../../docs/DFLASH_V1_VALIDATION.md)。
+需要将 correctness-first V1 升级成单次整块验证与增量状态路线时，阅读
+[完整 DFlash 与提速路线](../../docs/DFLASH_FULL_AND_PERFORMANCE_ROADMAP.md)。
 
-| 文件 | 职责 |
-|---|---|
-| `run_npu.py` | NPU 命令，FP16/Target W8A8，validate/dflash 和阶段采集 |
-| `run_rollback.py` | CPU/CUDA/NPU 共用执行与报告 |
-| `benchmark_npu.py` | ordinary/DFlash 独立进程、同步整段生成测量 |
-| `stage_profile.py` | 单个阶段和 all 的状态准备、预热、采集与报告 |
-| `msprof_cli.py` | msprof 动态 PID CLI 的 start/stop/quit 控制 |
-| `dflash_rollback_decode.py` | ordinary incremental、Draft/verify、连续前缀接受和 EOS |
-| `dflash_rollback_adapter.py` | Target 事务、feature 生命周期和 Draft KV |
-| `diagnose_acceptance.py` | proposal、Target Top1 和接受率诊断 |
-| `dflash_reference_decode_v1.py` | 完整前缀重算诊断 oracle |
+## 运行与调度
 
-## 2. Draft
+- `run_npu.py`：内嵌目录的一键 NPU 入口，自动派生 HIAI source、loader、FP16 和 EOS。
+- `diagnose_acceptance.py`：CPU/CUDA/NPU 都对比 cached-incremental 与 fresh-full-prefix
+  Target，并可在相同 greedy 前缀上扫描 K=1/3/5/7/15；支持直接传 UTF-8 prompt/txt、
+  FP16/BF16 A/B、早中后段接受率、逐轮层级指纹、跨报告首个分叉和单轮 oracle tensor
+  bundle，默认不输出 token ID。
+- `dflash_qwen_adapter_v1.py`：CPU/CUDA/NPU 完整入口和严格 greedy 验证流程。
+- `dflash_reference_decode_v1.py`：无 cache 的完整前缀 DFlash 调度 golden；默认逐 proposal
+  独立验证，vectorized 整块验证仅保留为诊断模式。
 
-| 文件 | 职责 |
-|---|---|
-| `modeling_dflash.py` | 官方 6 层 Draft 与 request-local committed/transient KV |
-| `dflash_config.py` | block、6 层/69 tensor 和 checkpoint shape 合同 |
-| `dflash_weights.py` | revision、hash、tensor 审计和流式加载 |
-| `dflash_ops.py` | CPU/CUDA Torch primitives |
-| `dflash_ascend310p_ops.py` | NPU Tensor backend，禁用 CPU fallback |
+## 草稿模型
 
-`block_size` 包含 anchor；B=16 对应最多 15 个 proposal、16 个 Target verify 行。
-Draft attention 读取已提交 KV、本轮追加 KV 和 transient block；成功后只保存 committed KV。
+- `modeling_dflash.py`：六层 DFlash 草稿模型。
+- `dflash_config.py`：草稿结构与 shape 合同。
+- `dflash_weights.py`：官方草稿 checkpoint 校验和加载。
 
-## 3. Target 与状态提交
+本包统一使用官方 DFlash 口径：`block_size` 是包含 clean anchor 的 Draft query/Target verify
+总行数。官方配置 `block_size=16` 因此对应 1 个 anchor 加最多 15 个 proposal，即
+`K=block_size-1=15`。接受率诊断仍显式记录 proposal count K，避免把 K 与 block_size 混用。
 
-| 文件 | 职责 |
-|---|---|
-| `modeling_qwen3_5_dflash.py` | CPU/CUDA feature-enabled Target |
-| `../modeling_qwen3_5_hiai_nd.py` | NPU ordinary Target |
-| `../modeling_qwen3_5_hiai_nd_dflash_rollback.py` | NPU rollback Target |
-| `../internal_dflash_bridge.py` | GDN state、Chunk 重算或 MTP bank 选择、paged-KV cursor |
-| `../export_model_wrapper_qwen3_5_dflash_rollback.py` | receiver wrapper 的 chunk transaction adapter |
-| `dflash_target_features.py` | 八层 Target feature 合同 |
+## Target 主模型与 feature
 
-默认 Chunk 使用 `INT16[B] effective_length`，第二遍从初始 state 按 `accepted+1` 提交。
-`--verify-gdr mtp` 改为一次原生 MTP 加 FP32 bank 选择；普通 prefill/decode 仍使用 Chunk。
-causal-conv 使用 NPU Tensor 公式实现，接口与优化候选见[算子清单](../../docs/DFLASH_OPERATORS.md)。
+- `modeling_qwen3_5_dflash.py`：CPU/CUDA 使用的 Transformers 5.14.1 target。
+- `configuration_qwen3_5.py`：CPU/CUDA target 配置。
+- `dflash_target_features.py`：八层 feature collector 和输出类型。
+- `dflash_hiai_feature_check.py`：只读检查父目录 HIAI target 已直接集成 feature route。
+- `dflash_hiai_feature_runtime.py`：旧 ModelOutput sidecar 兼容代码；本次 HIAI Tensor/tuple
+  主路线不导入它。
+- `../internal_dflash_bridge.py`：复用现有 wrapper，并为每次调用新建 hybrid state。
+- `internal_target_loader.py`：把已实现的 bridge 包装成 DFlash target facade。
+- `internal_target_loader_template.py`：facade 合同及自定义 loader 参考。
+- `dflash_target_hook_bridge.py`：仅供 eager/CPU 调试的 hook 方案。
 
-## 4. Target W8A8
+## 设备算子 backend
 
-| 文件 | 职责 |
-|---|---|
-| `original_quant.py` | 量化 key 映射、blocked-ZN 与 QLinear 替换 |
-| `target_quant.py` | YAML、INT8 embedding/scale 和 QLinear topology 审计 |
-| `preflight_target_quant.py` | Target 量化装配、公式和事务预检 |
-| `w8a8_emulation.py` / `validate_w8a8_cpu.py` | CPU/CUDA 量化公式诊断 |
+- `dflash_ops.py`：六个草稿原语的统一 Python ABI。
+- `dflash_ascend310p_ops.py`：Ascend/NPU 的分解 PyTorch backend。
+- `dflash_custom_ops_template.py`：接入 fused/custom op 的模板。
 
-量化默认关闭。启用时传 `--config <量化 YAML> --quant_mode enable`，仅替换 Target Linear
-和 Target 输入 embedding；Draft-facing embedding、LM head 和 Draft 主体保持 FP16。
-YAML 的生成及完整调用步骤见[运行手册](../../docs/DFLASH_RUN_AND_VALIDATE.md)。
+## 入口
 
-## 5. 进一步查阅
+```bash
+python -m models.dflash_v1.run_npu --help
+python -m models.dflash_v1.diagnose_acceptance --help
+python -m models.dflash_v1.dflash_qwen_adapter_v1 --help
+```
 
-| 文档 | 内容 |
-|---|---|
-| [DFlash 架构](../../docs/DFLASH_ARCHITECTURE.md) | token、feature、cache、state 与功能范围 |
-| [算子清单](../../docs/DFLASH_OPERATORS.md) | 算子职责、dtype、shape 与性能候选 |
-| [框架接口](../../docs/QUANT_AIR_OM_FRAMEWORK.md) | AIR/OM/C++ 配置、ABI 和产物 |
+三个入口都接受 `--prompt "文本"` 或 `--prompt-file /path/to/prompt.txt`。默认
+`--prompt-mode chat` 使用本地主模型 tokenizer 的 chat template，默认启用 thinking，并输出
+解码后的 ordinary Target 与 DFlash 文本；`--no-enable-thinking` 可复现非 thinking workload，
+`raw` 模式只做普通 tokenizer 编码。
+
+完整 NPU 部署流程见 [NPU_DEPLOYMENT.md](../../docs/NPU_DEPLOYMENT.md)。
