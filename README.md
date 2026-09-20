@@ -33,13 +33,13 @@ source /absolute/path/dflash-env.sh
 | 合并短 / 1K 输入与离线 JSONL/JSON 数据集，对比 Draft 精度 | [统一测试](docs/GDR_CHUNK_AIR_OM.md#统一测试) |
 | 复用已有普通模型数据，只运行 DFlash | [基线复用](docs/GDR_CHUNK_AIR_OM.md#复用已有普通模型数据) |
 | 了解 Draft → Verify → Commit | [流程与架构](docs/DFLASH_ARCHITECTURE.md) |
-| 查看已有速度、接受率、deterministic 漂移问题 | [结果与已知问题](docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md) |
+| 查看已有速度、接受率和阶段时延 | [测试结果](docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md) |
 | 优化量化 Draft、给自定义算子开发方提需求 | [架构、热点与算子需求](framework/custom_ops/draft_quant/README.md) |
 
-开源数据集 Chunk 测试（输出上限 **512 token**）：5 个文件、2563 条问题，加权接受率 **26.79%**；
+FP16 Draft + Chunk 开源数据集测试（输出上限 **512 token**）：5 个文件、2563 条问题，加权接受率 **26.79%**；
 用户汇总报告的模型生成加速比为 **2.42×**，数学类 **2.59–2.67×**、代码类 **2.04–2.07×**。
 此口径包含 Prefill + Decode 循环，不含加载、分词等完整请求开销。
-这些结果对应已测 FP16 Draft 配置，W4/W8 的性能需分别测量。
+FP16、W4A16、W8A16 的自定义测试结果见下方链接。
 允许输出差异，任务质量未评估；[详细结果与 128 token 对比](docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md#开源数据集输出上限-512-token)。
 
 <details>

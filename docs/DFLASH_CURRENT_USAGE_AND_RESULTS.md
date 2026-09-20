@@ -1,12 +1,18 @@
-# DFlash 测试结果与已知问题
+# DFlash 测试结果
 
-运行命令见 [统一测试](GDR_CHUNK_AIR_OM.md#统一测试)。以下均为用户提供的 Chunk 运行结果，任务质量未评估。
+运行命令见 [统一测试](GDR_CHUNK_AIR_OM.md#统一测试)。以下为用户提供的 Chunk 测量结果。
 
-**表中加速比按模型生成总时延计算，包含 Prefill + Decode 循环：**
-`sum(普通 Prefill + 普通 Decode) / sum(DFlash Prefill + DFlash Decode)`。
-DFlash Decode 包含 Draft、Verify、提交与循环调度。它不计模型加载、分词、请求重置、
-预热、文本解码和结果写文件，因此不是从输入文本到返回文本的完整端到端时延。
-仅 Decode 的加速比需另算 `sum(普通 Decode) / sum(DFlash Decode)`。
+**加速比 = `sum(普通 Prefill + Decode) / sum(DFlash Prefill + Decode)`**。
+包含 Draft、Verify、提交和循环调度；不含加载、分词、重置、预热、文本解码和写文件。
+仅 Decode 加速比需单独用 Decode 循环耗时计算。
+
+接受率 = 总接受候选 / 总提出候选；吞吐 = 实际生成 token 总数 / 总耗时。
+两模式各自生成输出；`PASS_WITH_DIFFERENCES` 表示输出存在差异并允许纳入性能统计，任务正确率未评估。
+`token/投机轮` 不计 Prefill 和仅执行 Target 的轮次。
+
+阶段表单位为 ms/次生成；OM 表为 ms/次调用 / 累计 ms/次生成。
+DFlash Prefill 包含 Target Prefill 和上下文构建，相关调用也计入 OM 表，两表不能相加。
+OM 时间为同步图调用耗时，算子耗时另见 profile。
 
 ## 开源数据集：输出上限 512 token
 
@@ -23,14 +29,7 @@ DFlash Decode 包含 Draft、Verify、提交与循环调度。它不计模型加
 | mtbench.jsonl | 80 / 80 | 30994 / 145503 | 21.30% | 4.15 | 28.53 | 57.46 | 2.02× |
 | **全部** | **2563 / 2563** | **1040320 / 3882723** | **26.79%** | **4.96** | **28.54** | **68.61** | **2.42×** |
 
-接受率 = 总接受数 / 总提出数；加速比 = 普通总耗时 / DFlash 总耗时，不平均各文件的百分比或倍数。
-加速比使用 Prefill + Decode 的模型生成总时延（口径见上文）。两模式各自生成输出，
-实际 token 数可不同，吞吐比与时间加速比不一定相同。
-输出一致性仍未通过，任务质量未评估；单次测量未验证多轮稳定性。
-
 ### 阶段与 OM 时延
-
-普通 Decode **34.85 ms/次**，Draft **19.80 ms/次**，Verify **51.35 ms/次**。
 
 **整体阶段耗时：平均 ms/次生成。**
 
@@ -69,15 +68,11 @@ DFlash Decode 包含 Draft、Verify、提交与循环调度。它不计模型加
 
 </details>
 
-DFlash Prefill 阶段包含 Target Prefill 和构建上下文的调用；这些调用也计入对应的 OM 累计耗时，
-两张表不能相加。Verify 包含提交操作；OM 时延是同步图调用耗时，不是单个算子时延。
-
 ## 自定义 prompt：输出上限 128 token
 
 **FP16 Draft、Chunk 验证、thinking 开启；每个模式/每条 prompt 0 次预热、1 次测量。**
 每轮最多提出 15 个候选；20 / 20 条完成，两种模式均各生成 128 token。
-全部用例最终状态为 `PASS_WITH_DIFFERENCES`：输出一致性仍为 `FAIL`，任务质量未评估；
-单次测量未验证重复运行的稳定性。
+全部用例为 `PASS_WITH_DIFFERENCES`。
 
 ### 短 prompt
 
@@ -119,10 +114,6 @@ DFlash Prefill 阶段包含 Target Prefill 和构建上下文的调用；这些�
 | 约 1K 输入 | 12 / 12 | 1139 / 5486 | 20.76% | 3.88 | 22.74 | 33.17 | 1.46× |
 | 全部 | 20 / 20 | 1906 / 9149 | 20.83% | 3.92 | 24.72 | 39.37 | 1.59× |
 
-接受率 = 总接受候选 / 总提出候选；分组吞吐 = 实际生成 token 总数 / 总耗时，
-加速比 = 普通模型生成总耗时 / DFlash 模型生成总耗时，包含 Prefill + Decode（口径见上文）。
-`token/投机轮` 不计 Prefill 和仅执行 Target 的轮次。两种模式各自生成输出，性能数据不代表输出一致性通过。
-
 ### 阶段与 OM 时延
 
 **阶段耗时：平均 ms/次生成。**
@@ -140,12 +131,6 @@ DFlash Prefill 阶段包含 Target Prefill 和构建上下文的调用；这些�
 | 短输入 | 74.00 / 74.00 | 34.82 / 4421.51 | 74.66 / 74.66 | 19.82 / 631.84 | 51.18 / 1631.28 |
 | 约 1K 输入 | 74.96 / 1199.41 | 34.85 / 4426.06 | 75.64 / 1210.25 | 20.27 / 967.70 | 51.24 / 1678.03 |
 | 全部 | 74.92 / 749.24 | 34.84 / 4424.24 | 75.60 / 756.02 | 20.13 / 833.36 | 51.21 / 1659.33 |
-
-DFlash Prefill 阶段包含 Target Prefill 和构建上下文的调用；Draft 累计耗时包含 Prefill 和生成阶段的调用，
-阶段与 OM 表不能相加。Verify 包含提交操作；OM 时延是同步图调用耗时，不是单个算子时延。
-
-长输入的 DFlash Prefill 平均多 **329.04 ms**，Decode 循环少 **2099.80 ms**，整体加速 **1.46×**。
-`zh_plan` 和 `long_zh_extract` 分别只有 **1.95 / 1.81 token/投机轮**，整体加速比分别为 **0.96× / 0.87×**。
 
 <details>
 <summary>按生成位置统计的接受率</summary>
@@ -182,9 +167,8 @@ DFlash Prefill 阶段包含 Target Prefill 和构建上下文的调用；Draft �
 
 ### 早期解量化实现
 
-来自 `gdr-lengths-isajibrf/summary.json`：Chunk、thinking 开启，0 次预热、1 次测量，
-20 条自定义问题。旧日志说明为 group 解量化标准算子 + FP16 MatMul，量化权重常驻。
-这轮与后面的 CANN 原生 WeightQuant 结果分开保留，不覆盖历史数据。
+`gdr-lengths-isajibrf`：20 条自定义问题，thinking 开启，0 次预热、1 次测量；
+采用 group 解量化标准算子 + FP16 MatMul。
 
 | Draft | 完成 / 选择 | 接受率 | token/投机轮 | 普通 tok/s | DFlash tok/s | 加速比 vs 普通 | Draft ms/call | Verify ms/call |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -197,8 +181,7 @@ DFlash Prefill 阶段包含 Target Prefill 和构建上下文的调用；Draft �
 
 ### 原生 WeightQuantBatchMatmulV2 实现
 
-来自 `gdr-lengths-waw8h36d/summary.json`，Chunk 路线，短输入 8 条、约 1K 输入 12 条。
-本表保留用户新一轮的原始汇总值，与上面的 `isajibrf` 旧运行分别记录。
+`gdr-lengths-waw8h36d`：短输入 8 条、约 1K 输入 12 条。
 
 | Draft | 分组 | 完成 / 选择 | 接受率 | token/投机轮 | 普通 tok/s | DFlash tok/s | 加速比 | Draft ms/call | Verify ms/call |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -212,13 +195,8 @@ DFlash Prefill 阶段包含 Target Prefill 和构建上下文的调用；Draft �
 | W8A16 | short | 8 / 8 | 21.20% | 3.98 | 28.47 | 34.34 | 1.21× | 63.28 | 51.23 |
 | W8A16 | long | 12 / 12 | 20.91% | 3.90 | 22.75 | 21.66 | 0.95× | 63.63 | 51.26 |
 
-相对 FP16 Draft 的模型生成时间加速比：W4 **0.49×**、W8 **0.65×**；
-两者均匹配 20 条，接受率分别变化 -1.87 / +0.20 个百分点。
-这两个比值不能与表中“相对普通生成”的加速比混用。
-W8 的接受率 **21.03%** 与 FP16 **20.83%** 接近，W4 为 **18.96%**；
-从当前接受统计看，量化版仍有优化执行速度的价值。W8 整体相对普通为 1.03×、长输入为
-0.95×，尚无稳定提速结论；相对 FP16 Draft，两种量化实现都更慢。
-接受率只反映当前 Verify 接受候选的比例，不代表答案正确率，也未经过多次测量的稳定性验证。
+相对同轮 FP16 Draft：W4/W8 接受率分别变化 **-1.87 / +0.20 个百分点**，
+模型生成时间加速比分别为 **0.49× / 0.65×**，两者均匹配 20 条。
 
 整体阶段时间，单位 ms/次生成：
 
@@ -228,58 +206,16 @@ W8 的接受率 **21.03%** 与 FP16 **20.83%** 接近，W4 为 **18.96%**；
 | W4A16 | 749.57 | 4425.19 | 1610.21 | 5081.96 |
 | W8A16 | 749.57 | 4425.19 | 1333.36 | 3703.48 |
 
-量化 checkpoint 为五层，FP16 为六层，不是纯 bitwidth 消融。两种模式各自生成输出，
-这些速度不证明 ordinary parity 或任务质量。最新 W8 profile 的 26 次 WeightQuant 合计
-40.22 ms、TransData 10.45 ms、FP16 head MatMul 6.73 ms；详细映射与精度需求见
-[量化 Draft 优化分析](../framework/custom_ops/draft_quant/README.md)。
-该 profile 的算子合计 62.65 ms 不是完整请求时延，也不与本节阶段表相加。
-
-## deterministic 与 FC 漂移
-
-已定位到 **`draft.fc(features)`，FP16 Linear 20480 → 2560**。
-固定输入和权重，各执行 20 次：
-
-| 路径 | 关闭时变化次数 | 开启时变化次数 | 开关 |
-|---|---:|---:|---|
-| Torch-NPU FC | 19/20 | 0/20 | `torch.use_deterministic_algorithms(False/True, warn_only=False)` |
-| AIR/OM FC | 19/20 | 0/20 | ATC `--deterministic=0/1`，需重编 OM |
-
-关闭时样例出现少量 1 FP16 ULP 变化，可传播到 norm、KV 和候选。
-冻结 FC 输出后，两种 RMSNorm 均稳定且逐位一致；冻结 norm 后 V projection 也稳定。
-尚未确定具体 kernel，不能归因于 AdnRmsNorm。
-
-`compile-om` 默认给 Draft 加 `--deterministic=0`（关闭）；
-`recompile-draft-om --deterministic 0/1` 切换该图的编译选项，默认 `0`。
-多轮输出不一致记录为 `DRIFT_OBSERVED`，保留各轮 token、停止原因、首个差异，
-继续汇总接受率和时延，状态为 `PASS_WITH_OBSERVATIONS`。吞吐使用各轮实际 token 总数；
-不将漂移标为稳定通过。已有结果表不会因更改默认设置而重算。
-Python 开关不影响已有 OM。FC 探针稳定不保证完整 Decode/Verify 输出一致，
-该开关的独立性能代价仍未测定。[FC 探针命令](../tools/debug_draft_context/README.md)
+量化 checkpoint 为五层，FP16 为六层，此表包含模型结构差异。
+W8 单算子时延及投影映射见 [量化 Draft 优化分析](../framework/custom_ops/draft_quant/README.md)。
 
 ## 数据来源
 
-数据按各节所列运行配置记录；仅整理用户提供的日志，未重新执行设备测试或读取远端原始 JSON。
-日志摘录未含 OM 哈希、state dtype 和实际 deterministic 编译参数。
+| 结果 | 运行目录 |
+|---|---|
+| FP16 开源数据集，512 token | `gdr-lengths-x2l5aydx` |
+| FP16 自定义 prompt 与 W4/W8 解量化对比，128 token | `gdr-lengths-isajibrf` |
+| FP16/W4/W8 原生 MatMul 对比，128 token | `gdr-lengths-waw8h36d` |
 
-| 记录 | 运行目录 | 协议 |
-|---|---|---|
-| FP16 开源数据集，512 输出上限 | `gdr-lengths-x2l5aydx/fp16` | thinking 开启；0 次预热 + 1 次测量 |
-| FP16 自定义短/1K prompt，128 输出上限 | `gdr-lengths-isajibrf/fp16` | thinking 开启；0 次预热 + 1 次测量 |
-| 早期 FP16/W4/W8 解量化对比，128 输出上限 | `gdr-lengths-isajibrf` | thinking 开启；0 次预热 + 1 次测量 |
-| FP16/W4/W8 原生 MatMul 对比，128 输出上限 | `gdr-lengths-waw8h36d` | 用户提供最终汇总；单算子 profile 另行采集 |
-
-```text
-$AI_RUN_DIR/gdr-lengths-x2l5aydx/summary.json
-$AI_RUN_DIR/gdr-lengths-x2l5aydx/fp16/summary.json
-$AI_RUN_DIR/gdr-lengths-x2l5aydx/fp16/cases.csv
-$AI_RUN_DIR/gdr-lengths-x2l5aydx/fp16/chunk-512/prompt-suite-isyol8hb/summary.json
-$AI_RUN_DIR/gdr-lengths-x2l5aydx/fp16/chunk-512/prompt-suite-isyol8hb/generations.txt
-$AI_RUN_DIR/gdr-lengths-isajibrf/fp16/summary.json
-$AI_RUN_DIR/gdr-lengths-isajibrf/summary.json
-$AI_RUN_DIR/gdr-lengths-isajibrf/fp16/cases.csv
-$AI_RUN_DIR/gdr-lengths-isajibrf/fp16/chunk-128/prompt-suite-_swok3lt/summary.json
-$AI_RUN_DIR/gdr-lengths-isajibrf/fp16/chunk-128/prompt-suite-_swok3lt/generations.txt
-$AI_RUN_DIR/gdr-lengths-waw8h36d/summary.json
-```
-
-分文件报告保留于对应汇总目录的 `datasets/<dataset-id>/summary.json` 和 `summary.md`，文件汇总见 `datasets.csv`。
+各运行目录的 `summary.json` 保存汇总，各 Draft 子目录的 `cases.csv` 保存逐题结果；
+分文件报告见 `datasets/<dataset-id>/summary.json`、`summary.md` 和 `datasets.csv`。

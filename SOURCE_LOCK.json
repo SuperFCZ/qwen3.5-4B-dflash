@@ -164,7 +164,7 @@
     "files": [
       {
         "source_file": "README.md",
-        "source_sha256": "437dbf914e46bf5eedd4237423c111e06758ecfb8402f1ceddc84834be27c817"
+        "source_sha256": "9c91ad0d289c6e4a2474cd373acd329f97999b7023163bb157b72071a4c73c20"
       },
       {
         "source_file": "config/gdr_chunk_air_om_factory.example.json",
@@ -172,7 +172,7 @@
       },
       {
         "source_file": "docs/DFLASH_ARCHITECTURE.md",
-        "source_sha256": "26f67567668cc5e478730453808d5bb58ced3c396c9e75669b46bb20b94ee247"
+        "source_sha256": "4e681fc9318210a1a891949589104daa5d4de050dd00a430ffa5f0c3346dee88"
       },
       {
         "source_file": "docs/assets/dflash-draft-flow.svg",
@@ -180,7 +180,7 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "e4d30a3253000bb426ad0515920827d4af5449e40df2edc349d9aba41bdd80f2"
+        "source_sha256": "06b8fa74389a51710cd0c81179c830ae9231caffdf8e53e14a9d8cfb81d5f07d"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -520,7 +520,7 @@
       },
       {
         "source_file": "docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md",
-        "source_sha256": "b026b43e2b1c1f948ae92ae6418e4127dcd5be183fb4b45e9a7c1f182720cac1"
+        "source_sha256": "6413ac988cabd229e4327280c93a47659f70a66793b0c73a842d989c1aa23168"
       },
       {
         "source_file": "framework/abi/dflash-mtp-v1.json",
@@ -572,7 +572,7 @@
       },
       {
         "source_file": "docs/DFLASH_OPERATORS.md",
-        "source_sha256": "9a6d5b7aed4a9047d9f99fe67126eb4ee2065d2a13aaff072e8897fb54c91b93"
+        "source_sha256": "23e2e0a2b3a63791992443c3d39996978daace4cefdcf3554faeb79f6b6c28de"
       },
       {
         "source_file": "tests/test_internal_dflash_bridge_rollback.py",
@@ -935,23 +935,23 @@
     "sources": [
       {
         "source_file": "framework/custom_ops/README.md",
-        "source_sha256": "c79f5239e473d3202435ece67c874d590fb32afbeec3be70979167818009b4f8"
+        "source_sha256": "53dd0fe535b77c04c8b5067f293ebe6cbe3ba1477cc3e924967b7280e9628d8d"
       },
       {
         "source_file": "framework/custom_ops/draft_quant/OPERATORS.md",
-        "source_sha256": "b18b3b701fc475915ba93470b1e36296c1b974dbc8ecb2591d58f209744514e7"
+        "source_sha256": "1343dc27cc757fc52d6ee521414bda0345f168577e90651211b66f17ad45f4c2"
       },
       {
         "source_file": "framework/custom_ops/draft_quant/README.md",
-        "source_sha256": "66c18df211f8d8fcd817ad977dd3ca285dafe44f644d01e1c8d025d92fb3c6fd"
+        "source_sha256": "bb69cfc4c882660ea6a9da4efa1fc9737dd8e686a410104b259a551b2386d721"
       },
       {
         "source_file": "framework/custom_ops/draft_quant/VALIDATION.md",
-        "source_sha256": "fe9024aab3f4aa16ec5a1457d6a79a934d414a0a975a624366c2c5d8f28c20c8"
+        "source_sha256": "cda045914af8a7ca3fd92cd44b0fb4ae5d13b3bae9311a4e9e65a28c3237e08a"
       },
       {
         "source_file": "framework/custom_ops/draft_quant/workloads.json",
-        "source_sha256": "853cd6079ffafe6740f4f95577d4f547b1991e94204abc96714ee9a3e514d8ea"
+        "source_sha256": "12f53b1576bdccdd89303796513e083029aaa130c93edb20b14c205a05a6f0c1"
       }
     ]
   }

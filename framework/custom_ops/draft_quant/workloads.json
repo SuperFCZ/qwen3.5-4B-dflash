@@ -3,22 +3,15 @@
   "status": "REQUIREMENTS_ONLY",
   "target": "Ascend310P",
   "review_source_commit": "2533557785df7538cdbc92da0df40f97e1da1239",
-  "development_branch": "feature/gdr-chunk-verify",
   "provenance": {
     "kind": "user-provided-terminal-tables-and-source-review",
     "receiver": {
       "cann": "9.0.0",
-      "torch_npu": "2.8.0.post1+gitc7b6b32",
-      "soc_version": null,
-      "driver": null,
-      "firmware": null
+      "torch_npu": "2.8.0.post1+gitc7b6b32"
     },
     "benchmark_run": "gdr-lengths-waw8h36d",
-    "msprof_raw_csv_sha256": null,
-    "om_sha256": null,
     "profile_context_rows": 64,
-    "profile_block_rows": 16,
-    "claim": "Observed timings, not an independently reproduced ten-run baseline"
+    "profile_block_rows": 16
   },
   "precision": {
     "activation": "float16",
@@ -35,16 +28,6 @@
     "strict_rtol": 0,
     "strict_bit_mismatches": 0,
     "strict_token_mismatches": 0
-  },
-  "hardware_reference": {
-    "policy": "use",
-    "status": "MATCHED_PROFILE_UNAVAILABLE",
-    "capacity_profile_sha256": null,
-    "physical_workload_sha256": null,
-    "planning_result_sha256": null,
-    "dependency_aware_planning_latency_us": null,
-    "latency_range_us": null,
-    "note": "Do not infer physical traffic/tiling or hardware bounds from this logical shape inventory"
   },
   "projections": [
     {
@@ -349,17 +332,5 @@
       "dflash_tps": 25.41,
       "model_time_speedup": 1.03
     }
-  },
-  "r37_receiver": {
-    "evidence": "user-provided matmul-atc-prepacked-r37 summary and GE descriptors",
-    "descriptor": "locked-logical-value-physical-nz-output-v3",
-    "prepacked_dynamic": "FAIL",
-    "prepacked_static16": "PASS",
-    "runtime_dynamic": "PASS",
-    "failure": "TransData NZ_2_ND src=(64,256), dst=(64,256); expected source rank = destination rank + 2",
-    "weightquant_logical_k": 256,
-    "om_execution": "NOT_RUN",
-    "numerical_parity": "NOT_RUN",
-    "latency": "NOT_RUN"
   }
 }

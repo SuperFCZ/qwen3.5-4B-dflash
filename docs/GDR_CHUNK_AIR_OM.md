@@ -76,7 +76,7 @@ PY
 每个成功组合立即写入 `draft-variants.json`，可直接测试。量化 Draft 编译失败会记录错误并继续其余组合，
 保留 FP16 及其他成功结果；同一失败图在两条 Verify 路线间不重复编译。
 
-**只编译或复用 FP16**，包括已导出三种 Draft、量化编译失败的目录：
+**只编译或复用 FP16：**
 
 ```bash
 "$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p compile-om \
@@ -116,24 +116,15 @@ AIR 导出成功不代表 OM 编译成功；以 `draft-variants.json` 中对应�
 
 ## 量化 Draft MatMul
 
-W4/W8 原生路径采用 CANN [WeightQuantBatchMatmulV2](https://github.com/Ascend/op-plugin/blob/cdca1dbc8949cc32bab4a5b2291bf9d9cddcf052/docs/zh/custom_APIs/torch_npu/torch_npu-npu_weight_quant_batchmatmul.md)，保留 FP16 激活、group-128 scale 和
-`inner_precise=0`。W8 直接传 INT8 权重；W4 压缩存储，临时无损展开为 INT8 后调用。
-这是 A16 权重量化接口，不能按 W8A8 的纯整数矩阵乘理解；Embedding/LM Head 保持 FP16。
+W4/W8 使用 CANN [WeightQuantBatchMatmulV2](https://github.com/Ascend/op-plugin/blob/cdca1dbc8949cc32bab4a5b2291bf9d9cddcf052/docs/zh/custom_APIs/torch_npu/torch_npu-npu_weight_quant_batchmatmul.md)：
+FP16 激活、group-128 scale、`inner_precise=0`。W8 使用 INT8 权重；W4 压缩存储，
+图内无损展开为 INT8。Embedding 和 LM head 保持 FP16。
 
-310P 的 CANN 9.0.0 图模式使用 `WeightNz` 模板，要求 **FRACTAL_NZ 权重 +
-`transpose_weight=true`**。导出会折叠权重转置，并插入内置 `TransData`，
-将逻辑 `[N,K]` INT8 权重实际转换为 `[ceil(K/32),ceil(N/16),16,32]` NZ 存储。
-分组 scale 保持 `[K/128,N]`；仅 K=128 单组和合成 per-channel 对照使用 `[N]`。
-这与 [CANN 9.0.0 的模板选择](https://gitcode.com/cann/ops-nn/blob/fcebf031d193d641d2d1472a539bcc387b1e5f09/matmul/weight_quant_batch_matmul_v2/op_host/op_tiling/weight_quant_batch_matmul_v2_tiling_registry.cpp)
-和 [WeightNz 约束](https://gitcode.com/cann/ops-nn/blob/fcebf031d193d641d2d1472a539bcc387b1e5f09/matmul/weight_quant_batch_matmul_v2/op_host/op_tiling/weight_quant_batch_matmul_v2_weight_nz_tiling.cpp)一致。
-只折叠 transpose、仍保留 ND 权重时，310P 会报 `no valid template is found`。
+导出默认把逻辑 `[N,K]` 权重经 `TransData` 转为 INT8 FRACTAL_NZ
+`[ceil(K/32),ceil(N/16),16,32]`，设置 `transpose_weight=true`，scale 为 `[K/128,N]`。
+布局记录在 `weight-quant-layout.json`。修改算子或布局后，使用新目录重新导出 AIR、编译 OM。
 
-正常 W4/W8 导出默认使用此转换，不需新增参数。外部压缩权重、scale 和 C++ ABI 不变，
-不新增常驻 FP16 权重；临时 NZ 缓冲及 CANN 工作区的峰值需设备测量。
-`weight-quant-layout.json` 记录转换节点、逻辑/存储 shape 和 scale 布局。
-编译入口拒绝缺少此审计的旧量化 AIR；**必须重新导出 AIR，不能只重编旧 AIR**。
-
-先编译不加载模型权重的小图：
+**ATC 小图编译：**
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
@@ -143,20 +134,10 @@ W4/W8 原生路径采用 CANN [WeightQuantBatchMatmulV2](https://github.com/Asce
   --output-dir "$AI_RUN_DIR/matmul-atc-nz"
 ```
 
-小图通过后，将 `--projection tiny` 改为 `--projection gate_up q kv down fc`，
-使用新输出目录验证实际投影尺寸，再按正常流程导出、编译三种 Draft。
-每组包含 M=16/64 两档；默认即 `--weight-format nz --weight-layout nk --group-size 128`。
-诊断用 `--group-size 0` 是合成 per-channel 对照，不会转换模型分组；
-`--weight-format nd --weight-layout nk kn` 仅用于复现 ND 对照，不能用于正式 Draft。
+实际投影尺寸使用 `--projection gate_up q kv down fc`，包含 M=16/64 两档。
+此探针只检查编译；OM 数值和时延用运行测试验证。ATC 日志在 `$AI_RUN_DIR/log/dflash-atc/`。
 
-结果和 AIR/OM 位于指定目录，ATC 日志在 `$AI_RUN_DIR/log/dflash-atc/`。
-失败项保留阶段、堆栈和 tiling 约束，其他组继续测试。重试使用新目录。
-**验证范围：**CPU 布局、数值与 AIR 序列化检查不代表设备通过；
-接收端 ATC 编译、OM 执行、完整模型接受率和时延仍需实测。
-探测的 `PASS` 仅指编译通过，报告单独标记 `execution_status=NOT_RUN`。
-
-导出前还有原生 NPU 数值检查，导出后检查五层 Draft 的 26 个融合节点。
-原生调用通过不代表 ATC 编译通过；单独测原生 MatMul 时延使用：
+**原生 NPU MatMul 数值与时延：**
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_draft_matmul.py" \
@@ -164,24 +145,12 @@ W4/W8 原生路径采用 CANN [WeightQuantBatchMatmulV2](https://github.com/Asce
   --warmup 1 --repetitions 3 --output "$AI_RUN_DIR/draft-matmul.json"
 ```
 
-输出相同输入下的时延、数值差异和 PyTorch 分配器峰值；这是合成输入的原生调用测试，
-OM 峰值显存与完整模型接受率仍需统一测试和 profiling 验证。
-压缩常驻权重字节数不增加，不缓存完整 FP16 权重；CANN 内部工作区不能据此推断。
-
-修改 MatMul 或其 AIR 布局后，**需要重新导出 AIR，再编译 OM**，使用上面的正常命令和新目录。
-仅重编已有 AIR 不会改变图内算子；本次不需要更新 C++ runner。
-对照路径可在导出时设 `--draft-quant-matmul dequant`，或在 factory JSON 中设
-`"draft_quant_matmul": "dequant"`；该设置仅影响 W4/W8，FP16 Draft 与 Target 计算不变。
+输出同输入下的时延、数值差异和 PyTorch 分配器峰值。
+显式解量化对照使用导出参数 `--draft-quant-matmul dequant`，仅影响 W4/W8。
 
 ### W8 固定权重离线 NZ 转换
 
-W8 的 msprof 显示每次 Draft 调用仍执行固定权重的 `TransData`。
-可先在 CPU 离线转换一次，之后导出直接读取 NZ 文件，并把 INT8 NZ 常量写入 AIR/OM。
-OM 加载和推理不执行本项目的权重预打包；group-128 scale、FP16 激活与融合 MatMul 计算保持不变。
-此选项只作用于原生 W8，W4 保留压缩输入及原来的展开路径。
-
-**1. 从已有 W8 bundle 生成可复用的 NZ 权重。** 输入是包含逐图记录的成员清单，
-不是矩阵索引 `air-manifest.json`；转换不需要 NPU 或 CANN。
+预打包为实验选项。先从 W8 成员清单生成可复用的 NZ 文件，转换在 CPU 执行：
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/pack_draft_weights_nz.py" \
@@ -189,104 +158,23 @@ OM 加载和推理不执行本项目的权重预打包；group-128 scale、FP16 
   --output-dir "$AI_RUN_DIR/w8-nz-weights"
 ```
 
-脚本先校验原权重/scale 文件，逐个转换权重并验证逐字节还原及零填充，
-输出 `manifest.json` 和 `weight-*.nz.bin`。后续导出按逻辑 shape 与权重哈希匹配，
-拒绝损坏、错误布局或来自不同权重的文件；不会自动重新量化或回退。
-
-**2. 先验证新常量表示的 ATC 小图。** 这与已通过的运行时 `TransData` 小图不同。
-
-r36 接收端三项对照均失败，已经捕获真实原因：`Ka[256] != Kb[32]`。
-权重逻辑形状 `[64,256]` 被替换为 NZ 存储形状 `[8,4,16,32]`，常量或其 Data 代理
-的输出进一步变成 `[8,4,1,1,16,32]`。静态 M16 也失败，因此不是仅由动态档位引起。
-ND 常量 + TransData 对照先按二维形状推导成功，折叠后也出现同样的形状损坏。
-这些结果不否定此前已经运行的外部动态权重 + TransData 路径。
-
-r37 只对校验过字节、填充、形状和消费端描述的离线 NZ 常量设置 GE
-`_out_shape_locked=true`（属性名有前导下划线），保留它的物理形状和二维 origin。
-WeightQuant 与公开输入不设置该属性，K/N、scale 和 tiling 检查继续执行。
-该机制来自 [GE InferShapePass](https://gitcode.com/cann/ge/blob/fe07bcd9d7e0ad8f487dd59b7ad73ff7f0736809/compiler/graph/passes/shape_optimize/infershape_pass.cc)
-及其 [属性定义](https://gitcode.com/cann/ge/blob/fe07bcd9d7e0ad8f487dd59b7ad73ff7f0736809/graph_metadef/graph/attr/ge_attr_define.cc)；
-[动态 Const→Data 处理](https://gitcode.com/cann/ge/blob/fe07bcd9d7e0ad8f487dd59b7ad73ff7f0736809/compiler/graph/passes/multi_batch/multi_batch_clone_pass.cc)
-保留算子属性。引用的 GE 源码版本尚未与接收端二进制一一对应。
-接收端 r37 已证明静态小图可以编译；动态预打包仍失败，具体状态见下表。
-离线权重文件格式不变，可以复用；旧 AIR 缺少形状锁，需要重新导出。
-
-先运行 **tiny 三项对照**：修复后的预打包动态 16/64、预打包静态 M16、
-原本可用的动态权重 + TransData。三项的权重、scale、group-128 和精度一致；
-前两项只有 x 输入，最后一项另外保留权重与 scale 输入。r36 已失败的 ND 常量对照
-不再作为通过基准；所有项失败后仍会继续收集后续结果。
+输出 `manifest.json` 和 `weight-*.nz.bin`；脚本检查哈希、零填充和逐字节还原。
+在目标环境用 `probe_draft_matmul_atc.py --prepack-weights` 检查编译，并完成 OM 数值验证后，
+可在正常 `export-air` 命令中增加：
 
 ```bash
-"$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
-  --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --device-id "$DEVICE_ID" \
-  --bits 8 --projection tiny --prepack-weights --diagnose-prepack \
-  --output-dir "$AI_RUN_DIR/matmul-atc-prepacked-r37"
+--draft-weight-prepack-manifest "$AI_RUN_DIR/w8-nz-weights/manifest.json"
 ```
 
-终端输出及 `diagnostics.txt` 汇总编译状态、实际 `Ka/Kb` 错误（若日志提供）和
-`InferShapeBlackBox` 中的输入/权重/scale、常量输出、value 描述及形状锁状态。每项的
-`*-diagnostics/` 保存 `atc-debug.log`、`command.json`、原始图和 `shape-diagnostics.json`。
-导出前另存 `weight-quant-descriptors.json`，便于对比哪个阶段改变了维度。
-解析失败或没有 dump 时明确记录缺失，原文件保留；不从导出前描述猜测失败维度。
-
-诊断仅对 ATC 子进程启用 `--log=debug`、`DUMP_GE_GRAPH=2` 和全阶段图采集，
-不改变父 shell 环境。图采集不含权重数据，日志与 dump 限于本次输出目录；
-不设置 `IGNORE_INFER_ERROR`，已有非空值（包括 `0`）时拒绝运行。
-调试日志仅提到某融合 pass 的名字不再误报为该 pass 失败。
-参考 [CANN 图 dump 说明](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/800alpha003/devaids/devtools/atc/atlasatc_16_0115.html)
-和 [CANN 9.0.0 形状检查源码](https://gitcode.com/cann/ops-nn/blob/fcebf031d193d641d2d1472a539bcc387b1e5f09/matmul/weight_quant_batch_matmul_v2/op_host/weight_quant_batch_matmul_v2_infershape.cpp)。
-
-**接收端 r37 结果（2026-09-20）：**
-
-| tiny 对照 | ATC 状态 | 实际观察 |
-|---|---|---|
-| 预打包静态 M16 | PASS | 常量 shape/origin 正确，编译完成 |
-| 原动态权重 + TransData | PASS | 16/64 档位编译完成 |
-| 预打包动态 16/64 | FAIL | `trans_TransData_1` 的 NZ→ND 源/目标均为 `[64,256]`；源应比目标多两维 |
-
-WeightQuant 已分别收到正确的逻辑 X `[16,256]` / `[64,256]` 与 W `[64,256]`，
-旧 `Ka[256] != Kb[32]` 不再出现。当前失败转到动态路径新增的格式转换；
-通用 E10052/AIPP 标题不说明模型使用了图像预处理。
-下一步应追踪 GE dump 中该转换的父图常量/子图 Data、origin 与 storage 描述，
-修复动态图边界；当前摘要不足以定位具体插入 pass。无需重复修改 group-128 或 NK/KN。
-三项均只代表编译，OM 执行、数值与时延仍未验证。
-
-动态预打包修复、三项通过后，再检查实际慢投影尺寸（当前暂不做完整预打包构建）：
-
-```bash
-"$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
-  --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --device-id "$DEVICE_ID" \
-  --bits 8 --projection gate_up down fc --prepack-weights \
-  --output-dir "$AI_RUN_DIR/matmul-atc-prepacked-r37-projections"
-```
-
-**3. 待预打包方案通过 ATC 和数值验证后，再验证完整 Draft。** 在正常 `export-air` 命令中增加
-`--draft-weight-prepack-manifest "$AI_RUN_DIR/w8-nz-weights/manifest.json"`，
-并将 `--bundle-dir` 换成新目录，如 `$AI_RUN_DIR/om-bundle-nz`。
-然后对该新目录的 `air-manifest.json` 执行正常 `compile-om`。
-factory JSON 也可设置同名下划线字段 `draft_weight_prepack_manifest`。
-不传此选项即可保留原路径；复测时 benchmark/msprof 的 bundle 也需指向新目录。
-
-五层 W8 导出应打印 `W8 offline NZ constants=26 weight_transdata=0 roundtrip=BIT_EXACT`。
-该行还应包含 `const_value_format=ND storage_format=FRACTAL_NZ`
-及 `descriptor=locked-logical-value-physical-nz-output-v3`
-和 `const_output_shape_locked=true weightquant_inference=enabled`；实际权重仍是 NZ 字节。
-`weight-quant-layout.json` 的 `prepack` 保存原始/NZ 哈希与移除节点；
-新 W8 权重由 OM 管理，无外部 `constant-inputs.tsv`，动态档位输入总维数从 99 降为 47。
-通用 C++ runner 可读取新清单，无需修改或重建。
-
-接收端 r34–r36 离线预打包的 ATC 状态是 **FAIL**；r37 为静态通过、动态失败。
-CPU 字节还原、AIR 图连接和模拟 bundle 检查不能替代实际编译；OM 数值和时延仍未验证。
-当前完整 Draft 保留默认运行时 TransData 路径，预打包是显式实验选项。
-复测应检查固定权重 `*_weight_nz*` 的 `TransData` 是否消失，并比较 Draft ms/call、
-整次生成时间与接受率。其他激活格式转换仍可能存在；不把全部 `TransData` 时间当作已实现收益。
+使用新的 bundle 目录导出、编译；不传该选项时使用默认运行时转换。
+复测对比固定权重 `TransData` 数量、Draft ms/call、生成时延和接受率。
 
 ## 统一测试
 
 同一入口测试短输入、约 1K 长输入、离线开源数据集、三种 Draft 和两条 Verify。
 测试默认关闭 thinking；普通模型与所有 Draft 使用相同的非 thinking 输入模板。
 
-**只跑 FP16 Draft 的离线数据集**，读取目录内全部题目；量化编译失败不影响此命令：
+**只跑 FP16 Draft 的离线数据集**，读取目录内全部题目：
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
@@ -356,10 +244,7 @@ CPU 字节还原、AIR 图连接和模拟 bundle 检查不能替代实际编译�
 - `datasets.csv`、`datasets/<ID>/summary.md`：每个离线文件在各 Draft/Verify 下的结果。
 - `cases.csv`：逐题数据，含 Draft 类型；各精度子目录的 `generations.txt` 保存文字输出。
 
-接受率为总接受数/总提议数；加速比为普通模型总耗时/DFlash 总耗时。
-计时排除预热、加载和重置；图时延为同步 OM 调用时间。
-DFlash Prefill 包含长输入建 Draft 缓存的调用，不能与图累计耗时重复相加。
-允许输出差异仍保留差异记录；多轮漂移报告为 `DRIFT_OBSERVED`。这些指标不代表任务正确率。
+加速比包含 Prefill + Decode；指标定义及已有结果见 [测试结果](DFLASH_CURRENT_USAGE_AND_RESULTS.md)。
 
 ## 单 OM profiling
 
@@ -392,7 +277,3 @@ Draft 默认 `deterministic=0`，投机始终开启。
 
 公开 W4/W8 Draft 为五层，当前 FP16 为六层，特征层也不同，因此是不同 checkpoint 的对比。
 量化路径以压缩权重常驻，MatMul 选择见[量化 Draft MatMul](#量化-draft-matmul)。
-默认压缩权重以一维输入传输，图内恢复形状；五层 Draft 的动态档位共 99 维。
-启用 W8 离线 NZ 常量时为 47 维，两者均低于 ACL 的 128 维上限。
-若加载时报 `aclmdlGetInputDynamicDims failed: 500001`，请更新 runner，并在空目录重新导出、编译量化 Draft。
-真实 TorchAir/ATC 编译、峰值显存、接受率和加速效果须在 310P 上验证。
