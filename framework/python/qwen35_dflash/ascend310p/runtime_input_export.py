@@ -308,7 +308,10 @@ def canonical_runtime_input_abi(
                       f"group_size={node['group_size']} nodes={weight_quant['node_count']}", flush=True)
                 if "prepack" in weight_quant:
                     print(f"[export-air] W8 offline NZ constants={weight_quant['node_count']} "
-                          "weight_transdata=0 roundtrip=BIT_EXACT", flush=True)
+                          "weight_transdata=0 roundtrip=BIT_EXACT "
+                          f"const_value_shape={node['prepacked_constant']['value_shape']} "
+                          f"const_value_format=ND storage_format=FRACTAL_NZ "
+                          f"descriptor={weight_quant['prepack']['descriptor_policy']}", flush=True)
             gdr_dtypes = _gdr_output_dtype_audit(export_graph)
             if gdr_dtypes["node_count"]:
                 audit["gdr_output_dtypes"] = gdr_dtypes

@@ -13,11 +13,39 @@ from pathlib import Path
 
 import torch
 
-from .weight_quant_layout import GE_OP, POLICY, _dtype, _nz_shape, _source
+from .weight_quant_layout import GE_OP, POLICY, _dtype, _nz_shape, _source, _storage_desc
 from .utils import contained_path, load_json_object, sha256_file
 
 
 PREPACK_POLICY = "w8-int8-nz-const-v1"
+# The offline bytes are still v1. Only their AIR representation changes: r34
+# copied the physical output descriptor into Const.value, so Const inference
+# could propagate K0=32 as the logical reduction dimension.
+CONST_DESC_POLICY = "logical-value-physical-nz-output-v2"
+
+
+def _const_value_desc(physical_desc):
+    """GE-normalized value metadata, separate from the NZ output descriptor.
+
+    Match TensorAdapter::NormalizeGeTensorDesc: shape/format describe the
+    logical tensor, storage_shape/storage_format describe the actual bytes.
+    Const shape inference consumes value.shape. Its output and the WeightQuant
+    input retain the physical NZ descriptor with origin_shape=[N,K]. Do not
+    copy the physical descriptor back onto value after normalizing it.
+    """
+    logical = list(physical_desc.attr["origin_shape"].list.i)
+    storage = list(physical_desc.shape.dim)
+    if (physical_desc.layout != "FRACTAL_NZ" or _dtype(physical_desc) != "DT_INT8"
+            or len(logical) != 2 or min(logical) <= 0 or storage != _nz_shape(*logical)):
+        raise ValueError("W8 Const value requires a valid logical/physical NZ descriptor")
+    value = _storage_desc(physical_desc, layout="ND", shape=logical, origin_shape=logical)
+    value.attr["storage_format"].i = 29
+    value.attr["storage_shape"].list.val_type = 2
+    value.attr["storage_shape"].list.i[:] = storage
+    # This is already normalized; normalizing it a second time would replace
+    # the NZ storage attributes with the logical ND shape/format.
+    value.attr["origin_format_is_set"].b = False
+    return value
 
 
 def pack_int8_nz(weight):
@@ -120,15 +148,19 @@ def prepack_weight_quant_constants(graph, layout_audit, immutable_weights, cache
         data, logical_hash, cached = _cached_weight(matrix, cache)
         desc = copy.deepcopy(conversion.output_desc[0])
         name = conversion.name
-        # Const's TensorDef is the storage authority. Keep physical NZ shape
-        # AND logical [N,K] origin on its value and outgoing edge descriptors.
+        # Const.value supplies a logical shape to GE inference. Its payload is
+        # prepacked, identified by storage attributes; the outgoing edge still
+        # supplies the physical NZ shape/format to the WeightNz tiler.
         conversion.Clear()
         conversion.name, conversion.type = name, "Const"
         conversion.output_desc.add().CopyFrom(desc)
-        conversion.attr["value"].t.desc.CopyFrom(desc)
+        conversion.attr["value"].t.desc.CopyFrom(_const_value_desc(desc))
         conversion.attr["value"].t.data = data
         item = {"name": name, "source": edge, "dtype": "int8", "format": "FRACTAL_NZ",
                 "logical_shape": list(matrix.shape), "storage_shape": cached["storage_shape"],
+                "descriptor_policy": CONST_DESC_POLICY,
+                "value_shape": list(matrix.shape), "value_format": "ND",
+                "value_storage_shape": cached["storage_shape"], "value_storage_format": "FRACTAL_NZ",
                 "logical_bytes": matrix.numel(), "storage_bytes": len(data),
                 "logical_sha256": logical_hash,
                 "storage_sha256": hashlib.sha256(data).hexdigest(),
@@ -147,6 +179,7 @@ def prepack_weight_quant_constants(graph, layout_audit, immutable_weights, cache
     if graph.ByteSize() > (2048 - 200) * 1024 * 1024:
         raise ValueError("NZ constants exceed TorchAir protobuf budget; retain runtime weight conversion")
     layout_audit["prepack"] = {"policy": PREPACK_POLICY, "status": "PASS",
+        "descriptor_policy": CONST_DESC_POLICY,
         "offline_manifest_sha256": cache["sha256"],
         "node_count": len(records), "removed_weight_transdata": [r["name"] for r in records],
         "removed_nd_constants": sorted(removed), "constants": records}
@@ -165,6 +198,9 @@ def valid_prepacked_record(node):
             and record.get("name") == node.get("name", "") + "_weight_nz"
             and node.get("weight") == record["name"] + ":0"
             and record.get("dtype") == "int8" and record.get("format") == "FRACTAL_NZ"
+            and record.get("descriptor_policy") == CONST_DESC_POLICY
+            and record.get("value_shape") == shape and record.get("value_format") == "ND"
+            and record.get("value_storage_shape") == storage and record.get("value_storage_format") == "FRACTAL_NZ"
             and record.get("logical_shape") == shape and record.get("storage_shape") == storage
             and record.get("logical_bytes") == prod(shape) and record.get("storage_bytes") == prod(storage)
             and record.get("roundtrip") == "BIT_EXACT" and record.get("padding") == "ZERO"

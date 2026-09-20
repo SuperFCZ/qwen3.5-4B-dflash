@@ -359,13 +359,14 @@ def validate_weight_quant_layout(graph):
     expected_policy = PROBE_POLICY if probe is not None else POLICY
     expected_transpose = probe is None or probe["weight_layout"] == "nk"
     expected_format = "FRACTAL_NZ" if probe is None or probe["weight_format"] == "nz" else "ND"
-    from .weight_prepack import PREPACK_POLICY, valid_prepacked_record
+    from .weight_prepack import CONST_DESC_POLICY, PREPACK_POLICY, valid_prepacked_record
     storage = graph.get("metadata", {}).get("draft_weight_storage")
     prepack = audit.get("prepack")
     if storage is not None or prepack is not None:
         if (storage != PREPACK_POLICY or probe is not None
                 or graph.get("metadata", {}).get("draft_quantization") != "w8a16"
                 or not isinstance(prepack, dict) or prepack.get("policy") != PREPACK_POLICY
+                or prepack.get("descriptor_policy") != CONST_DESC_POLICY
                 or prepack.get("status") != "PASS" or prepack.get("node_count") != count
                 or prepack.get("constants") != [n.get("prepacked_constant") for n in audit.get("nodes", [])]
                 or prepack.get("removed_weight_transdata") != [n.get("name", "") + "_weight_nz" for n in audit.get("nodes", [])]

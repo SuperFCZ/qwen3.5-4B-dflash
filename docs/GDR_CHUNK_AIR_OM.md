@@ -195,11 +195,22 @@ OM 加载和推理不执行本项目的权重预打包；group-128 scale、FP16 
 
 **2. 先验证新常量表示的 ATC 小图。** 这与已通过的运行时 `TransData` 小图不同。
 
+r34 的接收端测试在 `InferShapeForWeightQuantBatchMatmulV2` 失败。
+该版把四维 NZ 存储描述同时写入 `Const.value`；常量推导后可能把末维 32
+当成矩阵的逻辑 K。r35 将 `Const.value` 改为二维逻辑 `[N,K]` / `ND`，
+使用 `storage_shape`、`storage_format=FRACTAL_NZ` 明确标记其实际 NZ 字节，
+输出端口及 WeightQuant 输入仍保留四维 NZ shape 与二维 `origin_shape`。
+这对应 GE 的 `TensorAdapter::NormalizeGeTensorDesc` 表示；
+算子的逻辑 K 检查见 [CANN 9.0.0 ShapeCheckAndInfer](https://gitcode.com/cann/ops-nn/blob/fcebf031d193d641d2d1472a539bcc387b1e5f09/matmul/weight_quant_batch_matmul_v2/op_host/weight_quant_batch_matmul_v2_infershape.cpp)，
+描述转换见 [GE TensorAdapter](https://gitcode.com/cann/ge/blob/56305bf5718657c1bcfd2fe9473d9ecd68ce2b97/graph_metadef/graph/normal_graph/tensor.cc)。
+**旧 NZ 权重文件可复用，旧 AIR 必须重新导出**；编译前审计会拒绝 r34 的常量描述。
+不设置 `IGNORE_INFER_ERROR`，保留正常形状检查。
+
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
   --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --device-id "$DEVICE_ID" \
   --bits 8 --projection tiny gate_up --prepack-weights \
-  --output-dir "$AI_RUN_DIR/matmul-atc-prepacked"
+  --output-dir "$AI_RUN_DIR/matmul-atc-prepacked-r35"
 ```
 
 **3. 在新目录导出并编译。** 在正常 `export-air` 命令中增加
@@ -210,6 +221,8 @@ factory JSON 也可设置同名下划线字段 `draft_weight_prepack_manifest`�
 不传此选项即可保留原路径；复测时 benchmark/msprof 的 bundle 也需指向新目录。
 
 五层 W8 导出应打印 `W8 offline NZ constants=26 weight_transdata=0 roundtrip=BIT_EXACT`。
+该行还应包含 `const_value_format=ND storage_format=FRACTAL_NZ`
+及 `descriptor=logical-value-physical-nz-output-v2`；前者是逻辑描述，实际权重仍是 NZ 字节。
 `weight-quant-layout.json` 的 `prepack` 保存原始/NZ 哈希与移除节点；
 新 W8 权重由 OM 管理，无外部 `constant-inputs.tsv`，动态档位输入总维数从 99 降为 47。
 通用 C++ runner 可读取新清单，无需修改或重建。

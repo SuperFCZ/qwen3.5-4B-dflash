@@ -197,7 +197,14 @@ def evaluate_weight_quant_graph(graph, inputs):
         if node.type == "Const":
             tensor = node.attr["value"].t
             dtype = torch.int8 if tensor.desc.dtype == 2 else torch.float16
-            return torch.frombuffer(bytearray(tensor.data), dtype=dtype).reshape(list(tensor.desc.shape.dim))
+            # GE-normalized constants separate the logical tensor shape from
+            # their storage. Interpret bytes using the declared storage shape.
+            if "storage_shape" in tensor.desc.attr:
+                shape = list(tensor.desc.attr["storage_shape"].list.i)
+                assert tensor.desc.attr["storage_format"].i == 29
+            else:
+                shape = list(tensor.desc.shape.dim)
+            return torch.frombuffer(bytearray(tensor.data), dtype=dtype).reshape(shape)
         if node.type in {"Transpose", "TransposeD"}:
             # Test fixtures use the exact two-axis swap.
             return value(node.input[0]).t()

@@ -12,7 +12,8 @@ import torch
 
 from qwen35_dflash.ascend310p.runtime_input_export import canonical_runtime_input_abi
 from qwen35_dflash.ascend310p.weight_prepack import (
-    PREPACK_POLICY, pack_int8_nz, load_prepacked_weights, prepack_weight_quant_constants,
+    CONST_DESC_POLICY, PREPACK_POLICY, _const_value_desc,
+    pack_int8_nz, load_prepacked_weights, prepack_weight_quant_constants,
 )
 from qwen35_dflash.ascend310p.weight_quant_layout import normalize_weight_quant_layout, validate_weight_quant_layout
 from test_weight_quant_layout import fixture_graph, evaluate_weight_quant_graph
@@ -46,6 +47,47 @@ def const(node, value):
     node.output_desc.add().CopyFrom(desc)
     node.attr["value"].t.desc.CopyFrom(desc)
     node.attr["value"].t.data = value.numpy().tobytes()
+
+
+def infer_const_consumer_shape(constant, x_shape):
+    """Host shape check for Const -> transposed WeightQuant (not an ATC run).
+
+    Check the freshly inferred Const shape, not its old origin_shape attribute.
+    CANN 9.0 ShapeCheckAndInfer compares x[-1] with weight[-1] for INT8/NK.
+    Feeding the r34 physical TensorDef through this step reproduces Kb=32.
+    """
+    shape = list(constant.attr["value"].t.desc.shape.dim)
+    if x_shape[-1] != shape[-1]:
+        raise ValueError(f"Ka[{x_shape[-1]}] != Kb[{shape[-1]}]")
+    assert len(shape) == 2
+    return [x_shape[0], shape[0]]
+
+
+@pytest.mark.parametrize("n,k", [(64, 256), (19456, 2560), (2560, 9728), (2560, 12800)])
+@pytest.mark.parametrize("m", [16, 64])
+def test_const_value_inference_uses_logical_k_not_nz_lane_width(n, k, m):
+    # Shape-only counterpart of the tiny/full projection probes. No large
+    # weight allocation or target kernel simulation is needed for this gate.
+    graph = fixture_graph()
+    node = next(op for op in graph.op if op.name == "w")
+    desc = node.output_desc[0]
+    desc.layout = "FRACTAL_NZ"
+    desc.shape.dim[:] = [(k + 31) // 32, (n + 15) // 16, 16, 32]
+    desc.attr["format_for_int"].i = 29
+    desc.attr["origin_shape"].list.i[:] = [n, k]
+    desc.attr["origin_shape_initialized"].b = True
+    desc.attr["origin_format_is_set"].b = True
+    node.attr["value"].t.desc.CopyFrom(desc)
+    # This regression must fail for r34 even though its origin_shape is right.
+    with pytest.raises(ValueError, match=r"!= Kb\[32\]"):
+        infer_const_consumer_shape(node, [m, k])
+    node.attr["value"].t.desc.CopyFrom(_const_value_desc(desc))
+    saved = type(graph).FromString(graph.SerializeToString())
+    saved_weight = next(op for op in saved.op if op.name == "w")
+    assert infer_const_consumer_shape(saved_weight, [m, k]) == [m, n]
+    # Inference metadata must not turn the outgoing carrier into ND.
+    assert saved_weight.output_desc[0] == desc
+    assert list(saved_weight.attr["value"].t.desc.attr["storage_shape"].list.i) == list(desc.shape.dim)
 
 
 @pytest.mark.parametrize("n,k", [(1, 1), (17, 130), (67, 256), (19456, 2560), (2560, 9728)])
@@ -85,9 +127,20 @@ def test_air_nz_constants_equal_original_graph_for_both_gears(tmp_path, shared, 
     assert ("w" in {n.name for n in g.op}) is shared
     nz = next(n for n in g.op if n.name == "quant_weight_nz")
     assert nz.type == "Const" and not nz.input
-    assert nz.output_desc[0] == nz.attr["value"].t.desc
+    tensor_desc = nz.attr["value"].t.desc
+    assert list(tensor_desc.shape.dim) == [64, 256]
+    assert tensor_desc.layout == "ND" and tensor_desc.attr["format_for_int"].i == 2
+    assert not tensor_desc.attr["origin_format_is_set"].b
+    assert tensor_desc.attr["storage_format"].i == 29
+    assert list(tensor_desc.attr["storage_shape"].list.i) == [8, 4, 16, 32]
+    assert list(nz.output_desc[0].shape.dim) == [8, 4, 16, 32]
+    assert nz.output_desc[0].layout == "FRACTAL_NZ"
     assert list(nz.output_desc[0].attr["origin_shape"].list.i) == [64, 256]
+    # Exercise the serialized representation, including value's storage attrs.
+    g = type(g).FromString(g.SerializeToString())
+    nz = next(node for node in g.op if node.name == "quant_weight_nz")
     for rows in (16, 64):
+        assert infer_const_consumer_shape(nz, [rows, 256]) == [rows, 64]
         x = (torch.arange(rows * 256).reshape(rows, 256) % 7 - 3).half() / 16
         args = dict(x=x, w=q, s=s)
         assert torch.equal(evaluate_weight_quant_graph(g, args), evaluate_weight_quant_graph(original, args))
@@ -100,6 +153,20 @@ def test_air_nz_constants_equal_original_graph_for_both_gears(tmp_path, shared, 
     with pytest.raises(ValueError): validate_weight_quant_layout(broken)
     broken = copy.deepcopy(entry); broken["metadata"]["draft_quantization"] = "w4a16"
     with pytest.raises(ValueError): validate_weight_quant_layout(broken)
+    for field, bad in (("descriptor_policy", None), ("value_shape", [8, 4, 16, 32]),
+                       ("value_format", "FRACTAL_NZ"), ("value_storage_shape", [64, 256]),
+                       ("value_storage_format", "ND")):
+        broken = copy.deepcopy(entry)
+        bad_audit = broken["runtime_input_abi"]["weight_quant_layout"]
+        # Keep duplicate audit records internally consistent; validate the
+        # actual descriptor contract rather than just their equality.
+        bad_audit["nodes"][0]["prepacked_constant"][field] = bad
+        bad_audit["prepack"]["constants"][0][field] = bad
+        with pytest.raises(ValueError): validate_weight_quant_layout(broken)
+    legacy = copy.deepcopy(entry)
+    del legacy["runtime_input_abi"]["weight_quant_layout"]["prepack"]["descriptor_policy"]
+    with pytest.raises(ValueError, match="re-export AIR"):
+        validate_weight_quant_layout(legacy)
 
 
 @pytest.mark.parametrize("damage", ["runtime_input", "weight_changed", "payload_changed", "rehashed_wrong_layout"])
@@ -141,6 +208,9 @@ def test_actual_air_save_hook_binds_immutable_values_before_conversion(monkeypat
     assert audit["bindings"][0]["logical_name"] == "x"
     assert [n.name for n in g.op if n.type == "Data"] == ["x"]
     assert audit["weight_quant_layout"]["prepack"]["node_count"] == 1
+    assert audit["weight_quant_layout"]["prepack"]["descriptor_policy"] == CONST_DESC_POLICY
+    nz = next(op for op in g.op if op.name == "quant_weight_nz")
+    assert infer_const_consumer_shape(nz, [16, 256]) == [16, 64]
     assert not any(n.type == "TransData" for n in g.op)
     assert module._convert_data_to_const is original
 
