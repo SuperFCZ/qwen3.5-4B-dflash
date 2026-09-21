@@ -186,6 +186,31 @@ def test_prepack_diagnostics_restricts_to_tiny_before_creating_files(monkeypatch
     assert not (tmp_path / "unused").exists()
 
 
+def test_static_om_probe_uses_offline_symbolic_air_and_positive_atc_shapes(monkeypatch, tmp_path):
+    from qwen35_dflash.ascend310p.compiler import _dynamic_atc_args
+    from qwen35_dflash.ascend310p.draft_gears import STATIC_POLICY
+    import probe_draft_matmul_atc as probe
+    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
+    for extra in ([], ["--prepack-weights", "--diagnose-prepack"]):
+        with pytest.raises(SystemExit):
+            probe.main(["--output-dir", str(tmp_path / "unused"), "--atc", "/bin/true",
+                        "--soc-version", "Ascend310P3", "--bits", "8", "--static-om-gears", *extra])
+    assert not (tmp_path / "unused").exists()
+    spec = make_spec(8, "tiny", "cpu", prepack_dir=tmp_path / "offline", static_om_gears=True)
+    assert spec.dynamic and spec.input_names == ("x",)
+    assert spec.metadata["draft_compile_policy"] == STATIC_POLICY
+    graph = {"metadata": spec.metadata, "runtime_input_abi": {
+        "status": "NOT_APPLICABLE_EXPLICIT_TEST_DOUBLE"}}
+    exported = torch.export.export(spec.model, spec.example_args, dynamic_shapes=(
+        {0: torch.export.Dim("rows", min=16, max=64)},)).module()
+    for rows in (16, 64):
+        args = _dynamic_atc_args(graph, ["--precision_mode=must_keep_origin_dtype"], static_rows=rows)
+        assert f"--input_shape=x:{rows},256" in args
+        assert not any(arg.startswith("--dynamic_") for arg in args)
+        value = torch.ones(rows, 256).half() / 16
+        torch.testing.assert_close(exported(value), spec.model(value), atol=0, rtol=0)
+
+
 def test_three_diagnostics_run_to_completion_even_after_atc_failure(monkeypatch, tmp_path):
     import probe_draft_matmul_atc as probe
     from qwen35_dflash.ascend310p.atc_diagnostics import AtcShapeDiagnostics

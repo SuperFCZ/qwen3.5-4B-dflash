@@ -375,17 +375,17 @@ def validate_cpp_runner_report(
                       or draft_context_rows is not None and reported_rows != draft_context_rows):
         raise RuntimeError("C++ runner Draft execution gear differs")
     reported_policy = abi.get("draft_prefill_policy")
-    if chunk_abi and (reported_policy not in (None, "single_draft16_subchunks", "single_draft16_64_gears")
+    if chunk_abi and (reported_policy not in (None, "single_draft16_subchunks", "single_draft16_64_gears", "static_draft16_64_oms")
                       or draft_prefill_policy is not None and reported_policy != draft_prefill_policy):
         raise RuntimeError("C++ runner Draft prefill policy differs")
-    if chunk_abi and reported_policy == "single_draft16_64_gears" and abi.get("draft_context_gears") != [16, 64]:
+    if chunk_abi and reported_policy in ("single_draft16_64_gears", "static_draft16_64_oms") and abi.get("draft_context_gears") != [16, 64]:
         raise RuntimeError("C++ runner Draft dynamic gears differ")
     extra_context_graph = chunk_abi and reported_rows == 16 and reported_policy is None
     if low_memory and (
         not chunk_abi
         or protocol.get("order") not in (
             "ordinary then DFlash with model unload between modes", "saved ordinary baseline then DFlash")
-        or protocol.get("max_resident_models") != 3 + extra_context_graph
+        or protocol.get("max_resident_models") != 3 + extra_context_graph + (reported_policy == "static_draft16_64_oms")
     ):
         raise RuntimeError("C++ runner low-memory protocol differs")
     abi = report.get("abi", {})

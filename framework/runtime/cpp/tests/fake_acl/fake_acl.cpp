@@ -145,13 +145,15 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
       }
       if (count != 22) return 42;
     }
-    if (!model.dynamic_context || (input->context_rows != 16 && input->context_rows != 64) ||
+    if ((input->context_rows != 16 && input->context_rows != 64) ||
         valid > static_cast<int>(input->context_rows)) return 23;
     if (const auto* path = std::getenv("QWEN35_FAKE_GEAR_LOG")) {
       std::ofstream log(path, std::ios::app);
       log << start << ' ' << valid << ' ' << input->context_rows << '\n';
     }
-    const auto feature_stride = in.at("features")->size / 64 / sizeof(std::uint16_t);
+    const auto feature = std::find_if(model.inputs.begin(), model.inputs.end(),
+                                     [](const auto& spec) { return spec.name == "features"; });
+    const auto feature_stride = static_cast<std::size_t>(feature->shape.back());
     for (int row = 0; row < valid; ++row)
       if (static_cast<std::uint16_t*>(in.at("features")->data)[row * feature_stride] != start + row)
         return 24;
@@ -694,6 +696,17 @@ aclError aclmdlExecuteAsync(
   executed = true;
   const auto& model = fixtures.at(id);
   if (model.dynamic_context && (!input || input->gear_model != id)) return 43;
+  aclmdlDataset static_binding;
+  if (model.role == "draft" && !model.dynamic_context) {
+    const auto feature = std::find_if(model.inputs.begin(), model.inputs.end(),
+                                     [](const auto& spec) { return spec.name == "features"; });
+    if (!input || feature == model.inputs.end() || feature->shape.size() != 3) return 43;
+    const auto index = static_cast<std::size_t>(feature - model.inputs.begin());
+    if (input->buffers.size() <= index || input->buffers[index]->size != feature->bytes) return 43;
+    static_binding = *input;
+    static_binding.context_rows = feature->shape[1];
+    input = &static_binding;
+  }
   if (model.workspace && (!device_allocations.count(model.workspace) ||
       device_allocations.at(model.workspace) < model.workspace_size)) return 42;
   if (!fixtures.at(id).role.empty()) return ExecuteChunk(fixtures.at(id), input, output);

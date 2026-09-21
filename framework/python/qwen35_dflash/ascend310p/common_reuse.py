@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .incremental_plan import ABI, MTP_ABI, validate_incremental_bundle, verify_gdr_route
 from .utils import contained_path, file_record, load_json_object, sha256_file
+from .draft_gears import om_records, verify_om_files, uses_static_oms
 
 FACTORY = "qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs"
 COMMON = ("target_prefill", "target_decode", "draft")
@@ -132,7 +133,8 @@ def load_common_source(path, *, factory, config, destination, expected_sha256=No
                 raise ValueError("Common reuse payload escapes its graph directory")
             paths.append(_verified_file(path.parent, item))
         om = _verified_file(path.parent, compiled["om"])
-        paths.append(om)
+        verify_om_files(compiled, path.parent)
+        paths.extend(contained_path(path.parent, record["path"]) for record in om_records(compiled))
         graphs[name] = {"air": graph, "compiled": compiled, "om": om}
     if set(graphs) != set(selected):
         raise ValueError("Common reuse requires prefill, decode and draft; set include_ordinary_decode=true")
@@ -232,9 +234,17 @@ def link_common_om(source, graph, root, om_root):
     if path != item["om"]:
         os.link(item["om"], path)
     # Retain the command/log of the actual compilation; never invent an ATC run.
-    return {
+    result = {
         **copy.deepcopy(item["compiled"]),
         "metadata": copy.deepcopy(graph["metadata"]),
         "om": file_record(path, relative_to=root),
         "reused_from": reuse_record(source),
     }
+    if uses_static_oms(graph):
+        result["static_gear_oms"][0]["om"] = copy.deepcopy(result["om"])
+        original = contained_path(source["path"].parent, item["compiled"]["static_gear_oms"][1]["om"]["path"])
+        alternate = original if root == source["path"].parent else om_root / (artifact_stem(graph) + "_static64.om")
+        if alternate != original:
+            os.link(original, alternate)
+        result["static_gear_oms"][1]["om"] = file_record(alternate, relative_to=root)
+    return result

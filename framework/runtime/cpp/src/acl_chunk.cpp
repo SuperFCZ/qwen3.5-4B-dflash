@@ -183,7 +183,7 @@ std::string DescribeModelIo(aclmdlDesc* desc, const ChunkGraph& graph) {
 void ValidateModelIo(aclmdlDesc* desc, const ChunkGraph& graph,
                      std::size_t dynamic_index = static_cast<std::size_t>(-1)) {
   const auto inputs = aclmdlGetNumInputs(desc), outputs = aclmdlGetNumOutputs(desc);
-  const bool dynamic = graph.name == "draft";
+  const bool dynamic = graph.name == "draft" && graph.static_rows == 0;
   if (inputs != graph.inputs.size() + dynamic || outputs != graph.outputs.size()) {
     throw std::runtime_error(
         "OM tensor count differs from chunk plan: graph=" + graph.name +
@@ -196,14 +196,17 @@ void ValidateModelIo(aclmdlDesc* desc, const ChunkGraph& graph,
     for (std::size_t i = 0; i < specs.size(); ++i) {
       const auto actual = ReadOmTensor(desc, output, i + (!output && i >= dynamic_index));
       auto comparable = actual;
+      auto expected = specs[i];
+      if (graph.static_rows && !output && expected.name == "features")
+        expected.shape[1] = graph.static_rows;
       if (dynamic && !output && specs[i].name == "features" &&
           comparable.dims.dimCount == 3 && comparable.dims.dims[1] == -1)
         comparable.dims.dims[1] = 64;  // Buffers hold the largest finite gear.
-      if (!comparable.Matches(specs[i])) {
+      if (!comparable.Matches(expected)) {
         throw std::runtime_error(
             "OM tensor ABI differs from chunk plan: graph=" + graph.name +
             (output ? " output[" : " input[") + std::to_string(i) + "] expected={" +
-            DescribePlanTensor(specs[i]) + "} actual={" + actual.Describe() + "}" +
+            DescribePlanTensor(expected) + "} actual={" + actual.Describe() + "}" +
             DescribeModelIo(desc, graph));
       }
     }
@@ -292,7 +295,7 @@ struct Loaded {
   std::size_t dynamic_index = static_cast<std::size_t>(-1);
   std::array<aclmdlIODims, 2> gears{};
   void ReadDraftGears(const ChunkGraph& graph) {
-    if (graph.name != "draft") return;
+    if (graph.name != "draft" || graph.static_rows != 0) return;
     Check(aclmdlGetInputIndexByName(desc, ACL_DYNAMIC_TENSOR_NAME, &dynamic_index),
           "aclmdlGetInputIndexByName(Draft dynamic control)");
     Require(dynamic_index < aclmdlGetNumInputs(desc), "invalid Draft dynamic control index");
@@ -376,14 +379,24 @@ class AclChunkExecutor::Impl {
   void LoadMode(const std::string& mode) {
     Require(!cleaned && !cleanup.errors && models.empty() && memory.empty() && !workspace,
             "unload models before changing mode");
-    std::vector<const ChunkGraph*> selected;
+    std::vector<ChunkGraph> expanded;
     for (const auto& item : plan.graphs) {
       if (mode == "dflash" && item.first == "target_decode") continue;
       if (mode == "ordinary" &&
           (item.first == "target_verify" || item.first == "draft"))
         continue;
-      selected.push_back(&item.second);
+      expanded.push_back(item.second);
+      if (!item.second.static_model64.empty()) {
+        auto alternate = item.second;
+        alternate.name = "draft_static64";
+        alternate.model = alternate.static_model64;
+        alternate.sha256 = alternate.static_sha25664;
+        alternate.static_rows = 64;
+        expanded.push_back(std::move(alternate));
+      }
     }
+    std::vector<const ChunkGraph*> selected;
+    for (const auto& graph : expanded) selected.push_back(&graph);
     std::cerr << "[chunk-runtime] model-memory mode=" << mode
               << " selected_models=" << selected.size()
               << " weights=independent_per_om\n";
@@ -494,7 +507,7 @@ class AclChunkExecutor::Impl {
         spec.name == "valid_rows" || spec.name == "anchor" ||
         spec.name == "proposal_count")
       return spec.name;
-    return graph + "." + spec.name;
+    return (graph == "draft_static64" ? "draft" : graph) + "." + spec.name;
   }
   Memory& Get(const TensorSpec& spec, const std::string& graph, bool output) {
     const auto key = Key(spec, graph, output);
@@ -574,7 +587,7 @@ class AclChunkExecutor::Impl {
       Check(aclrtMemcpy(memory.device, memory.bytes, data.data(), data.size(), ACL_MEMCPY_HOST_TO_DEVICE),
             "aclrtMemcpy(Draft constant once)");
     }
-    if (graph.name == "draft") {
+    if (graph.name == "draft" && !graph.static_rows) {
       // CANN's mandatory gear-control input is small, shared by both datasets,
       // and written only by aclmdlSetInputDynamicDims (never by a host memcpy).
       model.dynamic_control = std::make_unique<Memory>(cleanup);
@@ -627,7 +640,12 @@ class AclChunkExecutor::Impl {
           const auto& spec = specs[index - (!output && index > model.dynamic_index)];
           const bool side = State(spec.name) && variant ? !output : output;
           auto& mem = Get(spec, graph.name, side);
-          auto* data = aclCreateDataBuffer(mem.device, mem.bytes);
+          // Both static models share the maximum feature allocation, but
+          // each dataset exposes only its model's validated input byte count.
+          auto bytes = mem.bytes;
+          if (graph.static_rows && !output && spec.name == "features")
+            bytes = spec.bytes() / 64 * graph.static_rows;
+          auto* data = aclCreateDataBuffer(mem.device, bytes);
           Require(data != nullptr, "aclCreateDataBuffer returned null");
           buffers.push_back(data);
           Check(aclmdlAddDatasetBuffer(output ? binding.outputs : binding.inputs, data),
@@ -700,7 +718,14 @@ class AclChunkExecutor::Impl {
   void Call(const std::string& name) {
     Healthy();
     const auto start = std::chrono::steady_clock::now();
-    auto& model = *models.at(name);
+    auto selected = name;
+    if (name == "draft") {
+      const auto rows = *static_cast<const std::int16_t*>(memory.at("valid_rows")->host);
+      Require(rows >= 0 && rows <= 64, "Draft context length exceeds largest gear");
+      if (plan.draft_policy == "static_draft16_64_oms" && rows > 16)
+        selected = "draft_static64";
+    }
+    auto& model = *models.at(selected);
     try {
       std::size_t variant = 0;
       if (!model.state_name.empty()) {
@@ -862,6 +887,8 @@ class AclChunkExecutor::Impl {
     std::ostringstream contract;
     contract << "qwen35-draft-replay-inputs-v1\n" << graph.sha256 << '\n'
              << plan.capacity << ' ' << padding << ' ' << proposal_count << '\n';
+    if (!graph.static_sha25664.empty())
+      contract << "static64 " << graph.static_sha25664 << '\n';
     for (auto id : prompt) contract << id << ' ';
     contract << '\n';
     for (const auto& spec : graph.inputs) {
@@ -1149,6 +1176,9 @@ class AclChunkExecutor::Impl {
            << ",\"requested_workspace\":" << DebugQuote(share_workspace ? "shared" : "private")
            << ",\"actual_workspace_policy\":" << DebugQuote(workspace ? "shared_serial" : "per_model")
            << ",\"draft_om_sha256\":" << DebugQuote(graph.sha256)
+           << ",\"draft_static64_om_sha256\":" << (graph.static_sha25664.empty()
+                  ? "null" : DebugQuote(graph.static_sha25664))
+           << ",\"draft_prefill_policy\":" << DebugQuote(plan.draft_policy)
            << ",\"input_directory\":" << DebugQuote(snapshot_dir.string())
            << ",\"trace\":" << DebugQuote((output_directory / "iterations.jsonl").string())
            << ",\"snapshot_sha256\":" << DebugMap(frozen_hashes)
@@ -1260,6 +1290,10 @@ std::int64_t AclChunkExecutor::vocabulary_size() const noexcept {
 }
 
 std::string AclChunkExecutor::abi_id() const { return impl_->plan.abi; }
+std::string AclChunkExecutor::draft_prefill_policy() const { return impl_->plan.draft_policy; }
+std::size_t AclChunkExecutor::om_count() const {
+  return impl_->plan.graphs.size() + (impl_->plan.draft_policy == "static_draft16_64_oms");
+}
 void AclChunkExecutor::Reset(std::int64_t pad) { impl_->Reset(pad); }
 void AclChunkExecutor::Abort() noexcept {
   impl_->invalid = true;

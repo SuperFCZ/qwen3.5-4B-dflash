@@ -329,7 +329,11 @@ def test_script_export_and_compile_contracts_preserve_w4_and_target(tmp_path, va
 
 
 @pytest.mark.usefixtures("weight_quant_cpu", "adn_rms_norm_cpu")
-def test_embedded_w8_weight_abi_loads_in_unmodified_cpp_runner(tmp_path, monkeypatch, variant_builder):
+@pytest.mark.parametrize("prefix", [1, 16, 17, 64, 65, 80, 81])
+@pytest.mark.parametrize("accepted", [0, 3, 15])
+@pytest.mark.parametrize("low_memory", [True, False])
+@pytest.mark.parametrize("route", ["chunk", "mtp"])
+def test_embedded_w8_static_oms_share_state_across_gears(tmp_path, monkeypatch, variant_builder, prefix, accepted, low_memory, route):
     runner = os.environ.get("QWEN35_CPP_TEST_RUNNER")
     if not runner:
         pytest.skip("requires fake ACL test runner; not device evidence")
@@ -337,14 +341,24 @@ def test_embedded_w8_weight_abi_loads_in_unmodified_cpp_runner(tmp_path, monkeyp
     build, _ = variant_builder
     # The explicit fake exporter simulates an OM with embedded weights; this
     # test exercises the real C++ loading/gear/loop code through fake ACL.
-    manifest = build("w8a16", "chunk", extra={"draft_layers": 5, "draft_quant_matmul": "weight_quant",
+    manifest = build("w8a16", route, extra={"draft_layers": 5, "draft_quant_matmul": "weight_quant",
                                             "draft_weight_prepack_manifest": "explicit-fake-cache"})
     uploads = tmp_path / "uploads.txt"
+    gears = tmp_path / "gears.txt"
+    monkeypatch.setenv("QWEN35_FAKE_GEAR_LOG", str(gears))
+    monkeypatch.setenv("QWEN35_FAKE_ACCEPT", str(accepted))
     monkeypatch.setenv("QWEN35_FAKE_CONSTANT_UPLOAD_LOG", str(uploads))
     report = run_cpp_pair(deployment_manifest=manifest, runner=runner,
         runner_options={"device_model": "host-fixture", "cann": "fake", "driver": "fake",
                         "firmware": "fake", "runtime": "fake-acl"},
-        prompt_token_ids=[4] * 65, eos_token_ids=[], device_id=0, max_new_tokens=40, max_draft_tokens=15,
-        raw_output=tmp_path / "result.json", log_output=tmp_path / "result.log", low_memory=True)
+        prompt_token_ids=[4] * prefix, eos_token_ids=[], device_id=0, max_new_tokens=40, max_draft_tokens=15,
+        raw_output=tmp_path / "result.json", log_output=tmp_path / "result.log", low_memory=low_memory)
     assert report["ordinary_parity"]["token_id_mismatches"] == 0
+    assert report["abi"]["draft_prefill_policy"] == "static_draft16_64_oms"
+    assert report["abi"]["om_count"] == 5
+    assert report["protocol"]["max_resident_models"] == (4 if low_memory else 5)
+    selected = [tuple(map(int, line.split())) for line in gears.read_text().splitlines()]
+    assert all(rows == (64 if valid > 16 else 16) for _, valid, rows in selected)
+    assert any(rows == 16 for _, _, rows in selected)
+    assert any(rows == 64 for _, _, rows in selected) == (prefix > 16)
     assert not uploads.exists() or not uploads.read_text()

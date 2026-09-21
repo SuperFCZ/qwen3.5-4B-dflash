@@ -76,10 +76,15 @@ def variant_builder(tmp_path, monkeypatch):
         lines = ["FAKE_CHUNK " + name]
         air_path = Path(next(c.split("=", 1)[1] for c in command if c.startswith("--model=")))
         signature = json.loads(air_path.read_text())
+        shape_arg = next((c.split("=", 1)[1] for c in command if c.startswith("--input_shape=")), "")
+        shapes = {field.split(":")[0]: [int(d) for d in field.split(":")[1].split(",")]
+                  for field in shape_arg.split(";") if field}
         for direction, tag in (("inputs", "I"), ("outputs", "O")):
             for t in signature[direction]:
+                if tag == "I" and t["name"] in shapes and -1 not in shapes[t["name"]]:
+                    t = dict(t, shape=shapes[t["name"]])
                 lines.append(" ".join(map(str, (tag, t["name"], t["dtype"], len(t["shape"]), *t["shape"])) ))
-        if name == "draft":
+        if name == "draft" and "--dynamic_dims=16;64" in command:
             lines.append("GEARS 16 64")
         path.write_text("\n".join(lines))
         return subprocess.CompletedProcess(command, 0, "fake ATC")

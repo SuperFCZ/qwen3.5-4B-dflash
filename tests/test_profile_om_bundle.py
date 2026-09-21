@@ -167,6 +167,47 @@ def test_matrix_failure_reaches_cli_exit_status(inputs, monkeypatch):
         "--runner", str(args.runner), "--prompt-token-ids", "4", "--profile-om", "draft"]) == 1
 
 
+@pytest.fixture
+def static_inputs(inputs):
+    args, root, index = inputs
+    args.profile_om = ["draft_w8a16"]
+    entry = index["bundles"]["w8a16"]["chunk"]
+    path = root / entry["manifest"]
+    manifest = json.loads(path.read_text())
+    graph = manifest["graphs"][-1]
+    graph["metadata"]["draft_compile_policy"] = "static_draft16_64_oms"
+    gears = []
+    for rows in (16, 64):
+        model = root / f"draft_w8a16_static{rows}.om"
+        model.write_text(f"HOST_TEST_STATIC_OM_{rows}")
+        gears.append(dict(rows=rows, om=dict(path=model.name,
+                     sha256=hashlib.sha256(model.read_bytes()).hexdigest())))
+    graph.update(om=gears[0]["om"], static_gear_oms=gears)
+    entry["manifest_sha256"] = write_json(path, manifest)
+    write_json(root / "draft-variants.json", index)
+    return args, root, gears
+
+
+@pytest.mark.parametrize("prefix,rows", [(1,16), (16,16), (17,64), (64,64), (65,16), (80,16), (81,64)])
+def test_static_profile_identifies_the_om_for_the_captured_call(static_inputs, prefix, rows):
+    args, root, gears = static_inputs
+    args.prompt_token_ids = ",".join(["4"] * prefix)
+    output = bundle.run_bundle_profile(args, run_single=synthetic_capture)
+    job = json.loads((output / "summary.json").read_text())["oms"][0]
+    expected = next(g["om"] for g in gears if g["rows"] == rows)
+    assert job["context_rows"] == rows
+    assert job["model"] == str(root / expected["path"])
+    assert job["model_sha256"] == expected["sha256"]
+
+
+def test_static_profile_checks_even_the_uncaptured_gear_before_profiling(static_inputs):
+    args, root, gears = static_inputs
+    (root / gears[1]["om"]["path"]).write_text("tampered second static gear")
+    with pytest.raises(ValueError, match="artifact changed"):
+        bundle.run_bundle_profile(args, run_single=lambda *a, **kw: pytest.fail("invalid OM"))
+    assert not (args.run_dir / "msprof").exists()
+
+
 # Real C++ runner and msprof controller, with fake ACL and fake collector only.
 from test_unified_draft_bundle import unified_export, variant_builder, small_threads, adn_rms_norm_cpu
 from test_msprof_stage_script import sandbox

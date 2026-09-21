@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from .utils import contained_path, load_json_object, require_run_output, sha256_file
+from .draft_gears import DYNAMIC_POLICY, STATIC_POLICY, verify_om_files
 
 LEGACY_CHUNK_ABI = "qwen35-dflash-chunk-v3"
 ABI = "qwen35-dflash-chunk-v4"
@@ -14,7 +15,7 @@ MTP_ABI = "qwen35-dflash-mtp-v2"
 VERIFY_GDR_ROUTES = ("chunk", "mtp")
 ATTENTION_EXPORT_POLICY = "receiver_adn_all_seq_lengths_q_static_capacity_causal_mask"
 DRAFT_LENGTH_POLICY = "anchor_plus_runtime_K_masked_in_every_attention_layer"
-DRAFT_PREFILL_POLICY = "single_draft16_64_gears"
+DRAFT_PREFILL_POLICY = DYNAMIC_POLICY
 VERIFY_STATE_OUTPUT_POLICY = "raw_fp32_device_only_discard_first_pass_commit_second_pass"
 MTP_STATE_OUTPUT_POLICY = "internal_fp32_bank_gather_accepted_slot"
 ROLES = ("target_prefill", "target_decode", "target_verify", "draft")
@@ -133,7 +134,7 @@ def validate_incremental_bundle(graphs):
     c = candidates[0]["metadata"]["incremental_contract"]
     if type(c.get("draft_context_rows")) is not int or c["draft_context_rows"] != 16:
         raise ValueError("incremental Draft requires draft_context_rows=16; regenerate AIR/OM in a new bundle directory")
-    if (c.get("draft_prefill_policy") != DRAFT_PREFILL_POLICY
+    if (c.get("draft_prefill_policy") not in (DYNAMIC_POLICY, STATIC_POLICY)
             or c.get("draft_context_gears") != [16, 64]):
         raise ValueError("Draft needs single_draft16_64_gears with [16, 64]; regenerate AIR/OM in a new bundle directory")
     roles = set(ROLES)
@@ -220,6 +221,9 @@ def validate_incremental_bundle(graphs):
     storage = c.get("draft_weight_storage")
     if storage is not None and (storage != PREPACK_POLICY or variant != "w8a16"):
         raise ValueError("invalid offline NZ Draft storage policy")
+    static = c["draft_prefill_policy"] == STATIC_POLICY
+    if static and storage != PREPACK_POLICY:
+        raise ValueError("static Draft OMs require offline W8 NZ weights")
     count = 0 if variant == "fp16" or storage else 2 + 5 * len(c["draft_states"])
     if len(constants) != count:
         raise ValueError("Draft constant count differs from packed projection contract")
@@ -233,6 +237,9 @@ def validate_incremental_bundle(graphs):
             raise ValueError("incremental graph contracts differ")
         if graph["name"] == "draft" and graph["metadata"].get("draft_weight_storage") != storage:
             raise ValueError("Draft weight storage differs from bundle contract")
+        if graph["metadata"].get("draft_compile_policy") != (
+                STATIC_POLICY if static and graph["name"] == "draft" else None):
+            raise ValueError("Draft compile policy differs from bundle contract")
         signature = graph["metadata"].get("tensor_abi")
         if signature != expected[graph["name"]]:
             raise ValueError(f"incremental tensor ABI differs: {graph['name']}")
@@ -285,16 +292,18 @@ def write_incremental_plan(deployment_manifest, output, *, mode="paired", verify
             continue
         graph = next(g for g in graphs if g["name"] == name)
         om = contained_path(path.parent, graph["om"]["path"])
-        if (
-            om.stat().st_size != graph["om"]["bytes"]
-            or sha256_file(om) != graph["om"]["sha256"]
-        ):
-            raise ValueError(f"OM integrity check failed: {name}")
+        verify_om_files(graph, path.parent)
         if any(ch in str(om) for ch in "\r\n\t"):
             raise ValueError("OM path contains a control character")
         lines.append(
             f"graph {name} {json.dumps(str(om), ensure_ascii=False)} {graph['om']['sha256']}"
         )
+        if name == "draft" and c["draft_prefill_policy"] == STATIC_POLICY:
+            record = graph["static_gear_oms"][1]["om"]
+            alternate = contained_path(path.parent, record["path"])
+            if any(ch in str(alternate) for ch in "\r\n\t"):
+                raise ValueError("OM path contains a control character")
+            lines.append(f"static_gear64 {json.dumps(str(alternate), ensure_ascii=False)} {record['sha256']}")
         for direction, marker in (("inputs", "I"), ("outputs", "O")):
             for tensor in graph["metadata"]["tensor_abi"][direction]:
                 lines.append(

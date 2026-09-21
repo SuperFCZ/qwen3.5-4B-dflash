@@ -20,6 +20,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(REPO / "framework/python"), str(REPO)]
 
 from tools import offline_datasets
+from qwen35_dflash.ascend310p.draft_gears import om_hashes
 
 DEFAULT_PROMPTS = [
     {"id": "zh_explain", "category": "中文解释", "prompt": "请用通俗的中文解释什么是机器学习，并用一个生活中的例子说明训练和推理的区别。"},
@@ -971,7 +972,8 @@ def run(args):
         "script_sha256": sha256_file(Path(__file__)),
         "runner": {"path": str(executable), "sha256": sha256_file(executable)},
         "deployment_manifest": {"path": str(manifest), "sha256": sha256_file(manifest)},
-        "om_sha256": {g["name"]: g["om"]["sha256"] for g in deployment["graphs"]},
+        "om_sha256": om_hashes(deployment["graphs"]),
+        "static_gear_oms": {g["name"]: g["static_gear_oms"] for g in deployment["graphs"] if "static_gear_oms" in g},
         "draft_atc_command": next(g["atc_command"] for g in deployment["graphs"] if g["name"] == "draft"),
         "command": command, "model_load_policy": "reuse models across all prompts"}
     if baseline:

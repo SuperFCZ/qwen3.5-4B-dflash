@@ -11,6 +11,7 @@ import tempfile
 from typing import Any, Callable, Mapping, Sequence
 
 from .runtime_input_export import validated_runtime_input_abi
+from .draft_gears import uses_static_oms, verify_om_files, input_shape_arg
 from .atc_fusion import (WEIGHT_QUANT_TRANSPOSE_PASS, fusion_switch_record,
                          normalized_atc_options)
 
@@ -354,30 +355,25 @@ def _validated_standard_op_overrides(graph: Mapping[str, Any]) -> list[dict[str,
     return [dict(item)]
 
 
-def _dynamic_atc_args(graph, arguments):
+def _dynamic_atc_args(graph, arguments, *, static_rows=None):
     axes = graph.get("metadata", {}).get("dynamic_input_axes", {})
+    if uses_static_oms(graph):
+        static_rows = static_rows or 16
+        if static_rows not in (16, 64) or not axes:
+            raise ValueError("static Draft compilation needs the symbolic 16/64 feature axis")
+    elif static_rows is not None:
+        raise ValueError("static specialization requires the offline NZ compile policy")
     if not axes:
         return list(arguments)
-    abi = graph["runtime_input_abi"]
-    tensors = graph["metadata"]["tensor_abi"]["inputs"]
-    bindings = abi.get("bindings", [])
-    names = ([t["name"] for t in tensors]
-             if abi["status"] == "NOT_APPLICABLE_EXPLICIT_TEST_DOUBLE"
-             else [b["data_node_name"] for b in bindings])
-    shapes = []
-    for tensor, name in zip(tensors, names):
-        if any(char in name for char in ";:\n\r"):
-            raise ValueError("AIR Data node name is not safe for ATC input_shape")
-        shape = list(tensor["shape"])
-        for axis in axes.get(tensor["name"], ()):
-            shape[axis] = -1
-        shapes.append(name + ":" + ",".join(map(str, shape)))
-    required = {"--input_format": "ND", "--input_shape": ";".join(shapes),
-                "--dynamic_dims": "16;64"}
+    required = {"--input_format": "ND", "--input_shape": input_shape_arg(
+        graph, static_rows if static_rows is not None else -1)}
+    if static_rows is None:
+        required["--dynamic_dims"] = "16;64"
     output = []
     for arg in arguments:
         key, _, value = arg.partition("=")
-        if key in ("--dynamic_batch_size", "--dynamic_image_size", "--input_shape_range"):
+        if key in ("--dynamic_batch_size", "--dynamic_image_size", "--input_shape_range") or (
+                static_rows is not None and key == "--dynamic_dims"):
             raise ValueError("Draft 16/64 gears cannot be overridden with another shape policy")
         if key in required:
             if value != required[key]:
@@ -385,6 +381,13 @@ def _dynamic_atc_args(graph, arguments):
             continue
         output.append(arg)
     return output + [key + "=" + value for key, value in required.items()]
+
+
+def _static64_atc_args(graph, arguments):
+    # The first gear has already validated caller options. Rebuild only the
+    # declared shapes for M64, preserving precision, SoC and fusion settings.
+    return _dynamic_atc_args(graph, [arg for arg in arguments
+        if arg.split("=", 1)[0] not in ("--input_format", "--input_shape")], static_rows=64)
 
 
 def _bundle_atc_args(graphs, extra_args, *, incremental, soc_version):
@@ -401,8 +404,24 @@ def _compile_air_graph(
     graph: Mapping[str, Any], *, root: Path, om_root: Path, log_root: Path,
     atc_path: Path, exact_soc_version: str, arguments: Sequence[str],
     execute: Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]],
+    _static_rows: int | None = None,
 ) -> dict[str, Any]:
     """Shared audited graph compile for complete builds and Draft-only rebuilds."""
+    if uses_static_oms(graph) and _static_rows is None:
+        gears = []
+        for rows in (16, 64):
+            print(f"[compile-om] {graph['name']} static_rows={rows} START", flush=True)
+            compiled = _compile_air_graph(
+                graph, root=root, om_root=om_root, log_root=log_root,
+                atc_path=atc_path, exact_soc_version=exact_soc_version,
+                arguments=arguments if rows == 16 else _static64_atc_args(graph, arguments),
+                execute=execute, _static_rows=rows)
+            if rows == 16:
+                primary = compiled
+            gears.append({"rows": rows, **{key: compiled[key]
+                for key in ("om", "atc_command", "atc_log")}})
+        primary["static_gear_oms"] = gears
+        return primary
     run_dir = Path(os.environ["AI_RUN_DIR"]).expanduser().resolve()
     if not isinstance(graph, Mapping):
         raise TypeError("AIR graph manifest entry must be an object")
@@ -428,7 +447,8 @@ def _compile_air_graph(
         raise ValueError(f"AIR graph hash mismatch before ATC: {name}")
 
     from .common_reuse import artifact_stem
-    output_prefix = om_root / artifact_stem(graph)
+    suffix = "_static64" if _static_rows == 64 else ""
+    output_prefix = om_root / (artifact_stem(graph) + suffix)
     command = [
         str(atc_path),
         "--mode=0",
@@ -440,7 +460,7 @@ def _compile_air_graph(
     ]
     fusion = fusion_switch_record(arguments)
     result = execute(command, air_path.parent)
-    log_path = log_root / f"{name}.log"
+    log_path = log_root / f"{name}{suffix}.log"
     log_path.write_text(result.stdout or "", encoding="utf-8")
     om_path = Path(str(output_prefix) + ".om")
     if result.returncode != 0:
@@ -476,7 +496,7 @@ def _compile_air_graph(
 def _validated_completed_bundle(path, *, air_path, graphs, atc_path, soc_version,
                                 graph_arguments, identity):
     """Admit a completed matrix member only with matching inputs and build identity."""
-    from .common_reuse import _verified_file, artifact_stem
+    from .common_reuse import artifact_stem
 
     root = path.parent
     saved = load_json_object(path)
@@ -501,7 +521,7 @@ def _validated_completed_bundle(path, *, air_path, graphs, atc_path, soc_version
                 raise ValueError(f"resume graph differs: {artifact_stem(graph)}.{key}")
         if original["om"]["path"] != f"om/{artifact_stem(graph)}.om":
             raise ValueError("resume requires the matrix's shared om/ paths")
-        _verified_file(root, original["om"])
+        verify_om_files(original, root)
         command = original.get("atc_command")
         if not isinstance(command, list) or not command or not all(isinstance(s, str) for s in command):
             raise ValueError("resume requires the original ATC command")
@@ -512,6 +532,16 @@ def _validated_completed_bundle(path, *, air_path, graphs, atc_path, soc_version
                     *graph_arguments[graph["name"]]]
         if normalized_atc_options(actual) != normalized_atc_options(expected):
             raise ValueError(f"resume ATC options differ: {artifact_stem(graph)}")
+        if uses_static_oms(graph):
+            second = original["static_gear_oms"][1]
+            if second["om"]["path"] != f"om/{artifact_stem(graph)}_static64.om":
+                raise ValueError("resume requires the static M64 artifact")
+            actual = [s for s in second["atc_command"]
+                      if not s.startswith(("--model=", "--output="))]
+            expected = [str(atc_path), "--mode=0", "--framework=1", f"--soc_version={soc_version}",
+                        *_static64_atc_args(graph, graph_arguments[graph["name"]])]
+            if normalized_atc_options(actual) != normalized_atc_options(expected):
+                raise ValueError("resume static M64 ATC options differ")
     return saved
 
 
@@ -605,9 +635,10 @@ def compile_air_bundle(
                 raise ValueError(f"shared graph ATC options differ: {key}")
             continue
         if reused is None or graph["name"] not in reused["graphs"]:
-            output_path = om_root / (artifact_stem(graph) + ".om")
-            if output_path.exists():
-                raise FileExistsError(output_path)
+            for ending in (".om", "_static64.om") if uses_static_oms(graph) else (".om",):
+                output_path = om_root / (artifact_stem(graph) + ending)
+                if output_path.exists():
+                    raise FileExistsError(output_path)
     om_root.mkdir(parents=True, exist_ok=True)
     run_dir = Path(os.environ["AI_RUN_DIR"]).expanduser().resolve()
     log_root = run_dir / "log" / "dflash-atc"
@@ -720,9 +751,7 @@ def recompile_draft_om(
         if graph.get("standard_op_overrides", []) != _validated_standard_op_overrides(exported):
             raise ValueError("AIR/deployment standard-operator audit differs")
         validated_runtime_input_abi(exported, required=True, allow_test_double=runner is not None)
-        old_om = contained_path(root, graph["om"]["path"])
-        if file_record(old_om, relative_to=root) != graph["om"]:
-            raise ValueError(f"OM integrity check failed: {graph['name']}")
+        verify_om_files(graph, root)
 
     selected = [g for g in graphs if g["name"] == "draft"]
     graph_arguments = {}
@@ -758,8 +787,7 @@ def recompile_draft_om(
     if file_record(source, relative_to=root) != parent_record or sha256_file(air_path) != air_record["sha256"]:
         raise ValueError("source manifests changed during Draft compilation")
     for graph in graphs:
-        if file_record(contained_path(root, graph["om"]["path"]), relative_to=root) != graph["om"]:
-            raise ValueError(f"original OM changed during Draft compilation: {graph['name']}")
+        verify_om_files(graph, root)
     deployment["graphs"] = [compiled.get(graph["name"], graph) for graph in graphs]
     deployment["recompilation"] = {
         "parent_manifest": parent_record,

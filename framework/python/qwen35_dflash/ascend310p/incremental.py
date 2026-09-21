@@ -1021,4 +1021,10 @@ def incremental_graph_specs(
     contract["draft_constants"] = specs[-1].metadata.get("constant_tensors", [])
     if specs[-1].metadata.get("draft_weight_storage"):
         contract["draft_weight_storage"] = specs[-1].metadata["draft_weight_storage"]
+        from .draft_gears import STATIC_POLICY
+        # Keep the AIR's symbolic feature axis, but specialize ATC twice.
+        # The offline NZ Const must not cross MultiBatchClone's Case/Data ABI.
+        contract["draft_prefill_policy"] = STATIC_POLICY
+        specs[-1] = replace(specs[-1], metadata=dict(
+            specs[-1].metadata, draft_compile_policy=STATIC_POLICY))
     return tuple(specs)

@@ -19,12 +19,16 @@ struct ChunkGraph {
   std::string name;
   std::filesystem::path model;
   std::string sha256;
+  std::filesystem::path static_model64;
+  std::string static_sha25664;
+  std::size_t static_rows = 0;
   std::vector<TensorSpec> inputs, outputs;
   struct Constant { std::filesystem::path path; std::string sha256; std::size_t bytes; };
   std::map<std::string, Constant> constants;
 };
 struct ChunkPlan {
   std::string abi = "qwen35-dflash-chunk-v4";
+  std::string draft_policy = "single_draft16_64_gears";
   std::size_t capacity = 0;
   std::int64_t vocabulary = 0;
   std::map<std::string, ChunkGraph> graphs;
@@ -37,6 +41,8 @@ bool IsVerifyDiscardState(const std::string& name);
 class ChunkExecutor : public GraphExecutor {
  public:
   virtual std::string abi_id() const { return "qwen35-dflash-chunk-v4"; }
+  virtual std::string draft_prefill_policy() const { return "single_draft16_64_gears"; }
+  virtual std::size_t om_count() const { return 4; }
   std::size_t draft_width() const noexcept override { return 15; }
   const GraphOutputs& Execute(const std::vector<std::int64_t>&,
                               std::int64_t) override;
@@ -83,6 +89,8 @@ class AclChunkExecutor final : public ChunkExecutor {
       const std::filesystem::path& input_directory = {});
   std::size_t sequence_length() const noexcept override;
   std::string abi_id() const override;
+  std::string draft_prefill_policy() const override;
+  std::size_t om_count() const override;
   std::int64_t vocabulary_size() const noexcept override;
   void Reset(std::int64_t) override;
   void Abort() noexcept override;

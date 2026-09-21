@@ -73,7 +73,9 @@ class ConstantProbeLinear(torch.nn.Module):
 
 
 def make_spec(bits, projection, device, group_size=128, weight_layout="nk", weight_format="nz", *,
-              prepack_dir=None, static_rows=None, immutable_nd=False):
+              prepack_dir=None, static_rows=None, immutable_nd=False, static_om_gears=False):
+    if static_om_gears and (prepack_dir is None or static_rows is not None):
+        raise ValueError("static OM gears require offline weights and symbolic AIR")
     if (group_size not in (0, 128) or weight_layout not in ("nk", "kn")
             or weight_format not in ("nd", "nz") or (weight_format == "nz" and weight_layout != "nk")):
         raise ValueError("probe controls require group_size=0/128, weight_format=nd/nz, "
@@ -138,6 +140,9 @@ def make_spec(bits, projection, device, group_size=128, weight_layout="nk", weig
         metadata.update(draft_weight_storage=PREPACK_POLICY, draft_quantization="w8a16",
                         draft_weight_prepack_manifest=str(cache),
                         tensor_abi={"inputs": signature[:1]}, synthetic_prepack=True)
+        if static_om_gears:
+            from qwen35_dflash.ascend310p.draft_gears import STATIC_POLICY
+            metadata["draft_compile_policy"] = STATIC_POLICY
         spec = replace(spec, model=ConstantProbeLinear(packed, scales), example_args=(x,),
                        input_names=("x",), metadata=metadata)
     return spec
@@ -162,6 +167,8 @@ def parser():
     cli.add_argument("--diagnose-prepack", action="store_true",
                      help="tiny-only: capture ATC shapes for prepacked dynamic, prepacked static M16, "
                           "and live-weight + TransData dynamic controls; requires --prepack-weights")
+    cli.add_argument("--static-om-gears", action="store_true",
+                     help="compile offline NZ AIR into separate static M16/M64 OMs using the production path")
     return cli
 
 
@@ -174,6 +181,8 @@ def main(argv=None):
         cli.error("--prepack-weights requires --bits 8 --group-size 128 --weight-layout nk --weight-format nz")
     if args.diagnose_prepack and (not args.prepack_weights or args.projection != ["tiny"]):
         cli.error("--diagnose-prepack requires --prepack-weights --bits 8 --projection tiny")
+    if args.static_om_gears and (not args.prepack_weights or args.diagnose_prepack):
+        cli.error("--static-om-gears requires --prepack-weights and cannot be mixed with --diagnose-prepack")
     root = require_run_output(args.output_dir)
     if root.exists():
         cli.error("use a new output directory; existing probe evidence is retained")
@@ -191,7 +200,8 @@ def main(argv=None):
         require_weight_quant_matmul()
         report["environment"] = {"torch": str(torch.__version__), "torch_npu": str(torch_npu.__version__),
                                  "device": device, "device_name": torch.npu.get_device_name(args.device_id)}
-        controls = ("prepacked-dynamic", "prepacked-static16", "runtime-dynamic") if args.diagnose_prepack else ("default",)
+        controls = (("prepacked-dynamic", "prepacked-static16", "runtime-dynamic") if args.diagnose_prepack
+                    else ("prepacked-static-gears",) if args.static_om_gears else ("default",))
         combinations = itertools.product(dict.fromkeys(args.projection), dict.fromkeys(args.bits),
                                          dict.fromkeys(args.group_size), dict.fromkeys(args.weight_layout), controls)
         for projection, bits, group_size, layout, control in combinations:
@@ -210,6 +220,8 @@ def main(argv=None):
             diagnostics = None
             try:
                 options = {"prepack_dir": root / (name + "-offline")} if prepacked else {}
+                if args.static_om_gears:
+                    options["static_om_gears"] = True
                 if control == "prepacked-static16":
                     options["static_rows"] = 16
                 spec = make_spec(bits, projection, device, group_size, layout, args.weight_format, **options)
@@ -228,6 +240,8 @@ def main(argv=None):
                                            extra_args=["--precision_mode=must_keep_origin_dtype", "--deterministic=0"],
                                            **compile_options)
                 case.update(status="PASS", phase="complete", deployment_manifest=result["manifest_path"])
+                if args.static_om_gears:
+                    case["static_gear_oms"] = result["graphs"][0]["static_gear_oms"]
             except Exception as error:
                 trace = root / f"{name}-error.txt"
                 trace.write_text(traceback.format_exc(), encoding="utf-8")

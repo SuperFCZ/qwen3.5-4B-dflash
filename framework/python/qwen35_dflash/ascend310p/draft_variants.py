@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .common_reuse import FACTORY, TARGETS, _metadata, _verified_file, artifact_stem
 from .incremental_plan import validate_incremental_bundle, write_incremental_plan
+from .draft_gears import verify_om_files, uses_static_oms
 from .utils import atomic_write_json, contained_path, file_record, load_json_object, require_run_output, sha256_file
 
 
@@ -30,7 +31,7 @@ def _load(path):
         for key in ("metadata", "input_names", "output_names", "air", "runtime_input_abi", "constant_inputs", "constant_inputs_table"):
             if graph.get(key) != original.get(key):
                 raise ValueError(f"composition AIR/deployment differ: {graph['name']}.{key}")
-        _verified_file(path.parent, graph["om"])
+        verify_om_files(graph, path.parent)
         for payload in original["payload_files"]:
             _verified_file(path.parent, payload)
     return path, deployment, air, contract
@@ -77,6 +78,8 @@ def compose_draft_variant(*, target_manifest, draft_manifest, bundle_dir):
         meta["incremental_contract"] = copy.deepcopy(contract)
         meta["verify_gdr"] = tc["verify_gdr"]
         for key, value in draft_meta.items():
+            if key == "draft_compile_policy" and name != "draft":
+                continue
             if key.startswith("draft_") or key == "quant_input_manifest_sha256":
                 meta[key] = copy.deepcopy(value)
         compiled["metadata"] = copy.deepcopy(meta)
@@ -85,6 +88,12 @@ def compose_draft_variant(*, target_manifest, draft_manifest, bundle_dir):
         om = root / "om" / (artifact_stem(compiled) + ".om")
         links.append((contained_path(path.parent, compiled["om"]["path"]), om))
         compiled["om"]["path"] = om.relative_to(root).as_posix()
+        if uses_static_oms(compiled):
+            compiled["static_gear_oms"][0]["om"] = copy.deepcopy(compiled["om"])
+            alternate = compiled["static_gear_oms"][1]["om"]
+            destination = root / "om" / (artifact_stem(compiled) + "_static64.om")
+            links.append((contained_path(path.parent, alternate["path"]), destination))
+            alternate["path"] = destination.relative_to(root).as_posix()
         compiled["reused_from"] = {"deployment_manifest": str(path), "sha256": sha256_file(path), "method": "hardlink"}
         air_graphs.append(exported)
         graphs.append(compiled)

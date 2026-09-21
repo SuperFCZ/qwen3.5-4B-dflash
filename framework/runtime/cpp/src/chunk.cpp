@@ -84,9 +84,9 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
   Require(result.capacity >= 64 && result.capacity <= 32704 &&
               result.capacity % 64 == 0 && result.vocabulary > 0,
           "invalid chunk capacity/vocabulary");
-  std::string draft_policy;
-  Require(static_cast<bool>(input >> word >> draft_policy) &&
-              word == "draft_prefill_policy" && draft_policy == "single_draft16_64_gears",
+  Require(static_cast<bool>(input >> word >> result.draft_policy) &&
+              word == "draft_prefill_policy" && (result.draft_policy == "single_draft16_64_gears" ||
+                                               result.draft_policy == "static_draft16_64_oms"),
           "chunk plan needs single_draft16_64_gears; regenerate the plan with current AIR/OM and runner");
   const std::set<std::string> roles{"target_prefill", "target_decode",
                                     "target_verify", "draft"};
@@ -106,7 +106,21 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
               "chunk OM SHA-256 mismatch: " + graph.name);
     }
     std::set<std::string> inputs, outputs;
-    while (input >> word && (word == "I" || word == "O" || word == "C")) {
+    while (input >> word && (word == "I" || word == "O" || word == "C" || word == "static_gear64")) {
+      if (word == "static_gear64") {
+        std::string alternate;
+        Require(graph.name == "draft" && graph.static_model64.empty() &&
+                    result.draft_policy == "static_draft16_64_oms" &&
+                    static_cast<bool>(input >> std::quoted(alternate) >> graph.static_sha25664),
+                "invalid static Draft M64 plan");
+        graph.static_model64 = alternate;
+        graph.static_rows = 16;
+        Require(graph.static_model64 != graph.model, "static Draft gears need distinct OMs");
+        if (mode != "ordinary")
+          Require(Sha256File(graph.static_model64) == graph.static_sha25664,
+                  "chunk static M64 OM SHA-256 mismatch");
+        continue;
+      }
       if (word == "C") {
         std::string name, filename, hash;
         std::size_t bytes = 0;
@@ -138,6 +152,9 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
     }
     Require(word == "end" && !graph.inputs.empty() && !graph.outputs.empty(),
             "incomplete graph plan");
+    if (graph.name == "draft" && result.draft_policy == "static_draft16_64_oms")
+      Require(!graph.static_model64.empty() && graph.constants.empty(),
+              "offline NZ Draft requires both static OMs and embedded weights");
     for (const auto& spec : graph.inputs)
       Require(spec.name.rfind("draft_weight_", 0) != 0 || graph.constants.count(spec.name),
               "compressed Draft input has no constant payload");

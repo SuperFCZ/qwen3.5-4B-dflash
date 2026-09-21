@@ -77,6 +77,19 @@ def select_jobs(args):
                          model=str(om), model_sha256=graph["om"]["sha256"],
                          status="NOT_RUN", graph_calls=None, profiled_elapsed_ms=None, ms_per_call=None,
                          output=None, error=None))
+        if stage == "draft" and graph["metadata"].get("draft_compile_policy") == "static_draft16_64_oms":
+            gears = graph.get("static_gear_oms", [])
+            if [g.get("rows") for g in gears] != [16, 64] or gears[0]["om"] != graph["om"]:
+                raise ValueError("static Draft profile requires both M16 and M64 artifacts")
+            models = {}
+            for gear in gears:
+                record = gear["om"]
+                path = (manifest.parent / record["path"]).resolve()
+                if (not path.is_relative_to(manifest.parent) or not path.is_file()
+                        or hashlib.sha256(path.read_bytes()).hexdigest() != record["sha256"]):
+                    raise ValueError("static Draft profiling artifact changed")
+                models[str(gear["rows"])] = dict(model=str(path), model_sha256=record["sha256"])
+            jobs[-1]["static_gear_models"] = models
     return jobs, dict(path=str(index_path), sha256=hashlib.sha256(index_bytes).hexdigest())
 
 
@@ -160,6 +173,14 @@ def run_bundle_profile(args, *, run_single):
     if args.profile_audit_draft_inputs and not any(j["profile_stage"] in {"draft", "verify"} for j in jobs):
         raise ValueError("--profile-audit-draft-inputs needs a Draft or Verify selection")
     prompt, eos, source = prompt_and_eos(args, run)
+    # Stage profiling resets/prefills for each sample, then captures its first
+    # Draft call. Match that call's remaining feature rows to the actual OM.
+    remaining = (len(prompt.split(",")) - 1) % 64 + 1
+    rows = 64 if remaining > 16 else 16
+    for job in jobs:
+        if "static_gear_models" in job:
+            job.update(job["static_gear_models"][str(rows)])
+            job["context_rows"] = rows
     parent = run / "msprof"
     parent.mkdir(exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix="oms-", dir=parent))

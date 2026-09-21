@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash with one compact Draft / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
-  "package_revision": "r38",
+  "package_revision": "r39",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
     "version": 7,
@@ -232,7 +232,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/compiler.py",
-        "source_sha256": "d60c9cfaa3986a558485aabebc0e53a65acf10f61f7983c1a92fb157bb2e8a6c"
+        "source_sha256": "c6e95b79f78a3392d541386d22b9bb2de5aa0cc395a8f896a09c890e0739a416"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/contracts.py",
@@ -240,7 +240,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/cpp_runtime.py",
-        "source_sha256": "329b1ec635d0fea995259008e0039c5d4fedf6b779979c1d9f95e205797b1186"
+        "source_sha256": "750a168a600277eb5473a8b9e006f6816098f64ac6f365289c1bfc18f16472ad"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/custom_op_export.py",
@@ -256,11 +256,11 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/incremental.py",
-        "source_sha256": "b01ead9254603fa50e014511dd29740c5f271dd3bc478be38942a528781f09ac"
+        "source_sha256": "2500bb080c9319595868486c00fcd9b19fd5ac259b1536e8781e479c655af85c"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/incremental_plan.py",
-        "source_sha256": "35099aace1b4b2fea0e7d7e06ee13d9c1c2ce63c789aa27b352248c6d286202e"
+        "source_sha256": "c34571ff8c0aa83a7058c1084e3f41075ecafc17b4f3864639a118dd8da980bf"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/input_manifest.py",
@@ -296,7 +296,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/CMakeLists.txt",
-        "source_sha256": "6faa98d53ecb71aaf8d94891a465a142febe1ce60b5b6c2ea50275e06a20b71d"
+        "source_sha256": "582498ae51416352d6de8782a1314e59c86b7fad83e97a7496f48def03d8c931"
       },
       {
         "source_file": "framework/runtime/cpp/include/qwen35_dflash/acl_executor.hpp",
@@ -304,7 +304,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/include/qwen35_dflash/chunk.hpp",
-        "source_sha256": "0b1b1c0d03bc924c8de2eb7a0c7b47576782697e482cfd5d638e43e8578b5ee0"
+        "source_sha256": "58c2f43311c167907a4b9ffda9d5efe5529095f48c10cf855d50ff5187b7e2df"
       },
       {
         "source_file": "framework/runtime/cpp/include/qwen35_dflash/generation.hpp",
@@ -320,7 +320,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/src/acl_chunk.cpp",
-        "source_sha256": "2d16f221575801107bd31598934cf22e1f7518f490c51b2d0ad0d5af9ef17e53"
+        "source_sha256": "afba85a552bdb289b45838df63fc338886b0a5f07570d10b6d869884c5539232"
       },
       {
         "source_file": "framework/runtime/cpp/src/acl_executor.cpp",
@@ -328,7 +328,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/src/chunk.cpp",
-        "source_sha256": "2247e22d488b17a6c10b20a97331f06ecca8e16097cac4f8f32bf64cce06a4fc"
+        "source_sha256": "f96d53f77d5c315c806be5a956b8421c483411f4ffc6d386dbcbd9a0b6553ce0"
       },
       {
         "source_file": "framework/runtime/cpp/src/generation.cpp",
@@ -336,7 +336,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/src/main.cpp",
-        "source_sha256": "0122f5b6c1ffc90b840e30cb8ae89e9c066435b6ed1c295ba43135be6bddd7b7"
+        "source_sha256": "b41b6b82db224ac54fdca7c3654325bdd467389c678921db367c45f0689cf5ff"
       },
       {
         "source_file": "framework/runtime/cpp/src/sha256.cpp",
@@ -352,7 +352,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/tests/fake_acl/fake_acl.cpp",
-        "source_sha256": "efbc7342ad8a556ca9a7f0eea598b5b1b53e3b87b47d01f730a9800d24002b31"
+        "source_sha256": "9831ad8558e41389576eea032cd6f2adffb1651bbf4e0787f5af7326279c0b96"
       },
       {
         "source_file": "framework/runtime/cpp/tests/run_fake_runner.cmake",
@@ -500,7 +500,7 @@
       },
       {
         "source_file": "tools/benchmark_prompts.py",
-        "source_sha256": "5a85ee39bc2ce6ca892439813b09d1d07b98ccc77b2ac2d5e09eab44a9ab14bd"
+        "source_sha256": "c33452a229c51180bb4d081d47b1147352a692cde472da097054b1d35cc1284c"
       },
       {
         "source_file": "tests/test_prompt_suite.py",
@@ -532,7 +532,7 @@
       },
       {
         "source_file": "tools/benchmark_gdr_lengths.py",
-        "source_sha256": "e1585e7229583631bc6a4a54c72136ade784da46d7891509a39aa4f48d82be94"
+        "source_sha256": "2bd3230e5b117df081bd9be5d634e8953d4b723294ddde656f2400a815a60d73"
       },
       {
         "source_file": "tests/test_gdr_length_matrix.py",
@@ -564,7 +564,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/common_reuse.py",
-        "source_sha256": "09f0525681fdc80d339e4e5ae8b6fd0791a0c8adf056b93d62bb543a55e1be46"
+        "source_sha256": "6524b64fdcfc39426bf9db0954746f257aaec56a85dd37e659ec50f659e7039f"
       },
       {
         "source_file": "tests/test_common_gdr_reuse.py",
@@ -616,11 +616,11 @@
       },
       {
         "source_file": "tools/profile_om_bundle.py",
-        "source_sha256": "4fead1f0abd6c02f2c0f52daf68123d3562e105d0a8d89cc235f54798b2aa779"
+        "source_sha256": "deb0098025c3d4d670ec08e7e44c60c1842901e0f8a21ae0350b66e53c0d9f7b"
       },
       {
         "source_file": "tests/test_profile_om_bundle.py",
-        "source_sha256": "a466f0f0bda848e4cac0a3b79e44445a3c1c95186fb8daac964492bab7951cf0"
+        "source_sha256": "267ab1b93137f5c056815f734fce0527ebf728f29a3f913f44d80bbda4b739b1"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/weight_prepack.py",
@@ -632,7 +632,7 @@
       },
       {
         "source_file": "tests/test_weight_prepack.py",
-        "source_sha256": "55291f6c01b6462299d00a1e667489199f5922351f43b2ebb31ab78822d59fc5"
+        "source_sha256": "879870e7f29cb707464290493f7fc81f71d300075758dc23f87d284a9df3040a"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/atc_diagnostics.py",
@@ -649,6 +649,14 @@
       {
         "source_file": "tests/test_extract_atc_node.py",
         "source_sha256": "19dc0cbdeab90735ad5982204eeb3b9bb0ee0e5b2947341d5440497fbde6d104"
+      },
+      {
+        "source_file": "framework/python/qwen35_dflash/ascend310p/draft_gears.py",
+        "source_sha256": "f7000548ab8e08e4bef535458034fe9834531b843e88711774eb95ccf50ca41b"
+      },
+      {
+        "source_file": "tests/test_static_draft_gears.py",
+        "source_sha256": "034dad3d7f2c0dd3a7bdcc61b623460d40278d2559ba43e404b3edcbd7a1bb8b"
       }
     ],
     "supported_abis": [
@@ -728,9 +736,9 @@
       "numerics": "Matmul shape changes can alter rounding; expanded CPU GQA sample observed max abs 2.44e-4; original model gates retained; NPU token/acceptance/peak-memory checks pending"
     },
     "om_io_binding": {
-      "runner_version": "1.13.0",
+      "runner_version": "1.14.0",
       "policy": "prebound_ping_pong",
-      "scope": "prebound ping-pong descriptors for existing state banks; Draft CANN gear-control input shared between descriptor sets",
+      "scope": "Prebound ping-pong descriptors for shared state banks. Dynamic Draft shares its CANN gear-control input; offline NZ uses static M16/M64 OMs sharing feature/state/output buffers.",
       "validation": "Host fake-ACL equivalence only; real Ascend310P timing pending"
     }
   },
@@ -772,7 +780,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/draft_variants.py",
-        "source_sha256": "f36cf580a866ff848477b5a6f6093b3bd595c21e9fb1cc102beb83e15f82917e"
+        "source_sha256": "ad206f2a2768328515e67e082706b5944d07e8e96d3b9cc2cc35b7dc6fe50894"
       },
       {
         "source_file": "tools/build_draft_variants.py",
@@ -788,7 +796,7 @@
       },
       {
         "source_file": "tests/test_draft_variant_bundles.py",
-        "source_sha256": "3fa58790e5fd60eda0748b2eb7f3fde5f750a69be7eaa2f59bbaaf187d563447"
+        "source_sha256": "a06f638c62a68a918941be8c0c0eefe10792f102b0282a9243f8fcd8822538ea"
       },
       {
         "source_file": "tests/test_draft_comparison.py",
@@ -836,7 +844,7 @@
       },
       {
         "source_file": "tools/probe_draft_matmul_atc.py",
-        "source_sha256": "60fbe36e6bd6d0e284b5c2ccad9b1606134580ffb3352b6e188866bf2326570b"
+        "source_sha256": "538435b6f5f23d178bba1cc046de287e450f27569835de35798e6a574706aa5f"
       },
       {
         "source_file": "tests/test_weight_quant_layout.py",
@@ -844,7 +852,7 @@
       },
       {
         "source_file": "tests/test_draft_matmul_atc_probe.py",
-        "source_sha256": "92d4a9127820ed77e0bd22b8eb1004c854869e0c96b49b02c5f935b71516bc0c"
+        "source_sha256": "2235e7bf1a61e1285958de99e73e9f0307297eacae508b40e4d64efadb255c24"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/weight_prepack.py",
@@ -856,7 +864,7 @@
       },
       {
         "source_file": "tests/test_weight_prepack.py",
-        "source_sha256": "55291f6c01b6462299d00a1e667489199f5922351f43b2ebb31ab78822d59fc5"
+        "source_sha256": "879870e7f29cb707464290493f7fc81f71d300075758dc23f87d284a9df3040a"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/atc_diagnostics.py",
@@ -865,6 +873,14 @@
       {
         "source_file": "tests/test_atc_shape_diagnostics.py",
         "source_sha256": "72d52650fa95aa13f8b12b3495555ae94e7ad8c24d9583998b2392b2c94bf5ee"
+      },
+      {
+        "source_file": "framework/python/qwen35_dflash/ascend310p/draft_gears.py",
+        "source_sha256": "f7000548ab8e08e4bef535458034fe9834531b843e88711774eb95ccf50ca41b"
+      },
+      {
+        "source_file": "tests/test_static_draft_gears.py",
+        "source_sha256": "034dad3d7f2c0dd3a7bdcc61b623460d40278d2559ba43e404b3edcbd7a1bb8b"
       }
     ],
     "workflow": "normal export-air / compile-om and benchmark_gdr_lengths.py; flat seven-OM directory; mixed builtin/offline tests; ordinary baseline path reuse",
@@ -887,16 +903,13 @@
         "converter": "tools/pack_draft_weights_nz.py --manifest <existing W8 member manifest> --output-dir <new run directory>",
         "activation": "export-air --draft-weight-prepack-manifest <offline manifest>; native W8 only, default paths preserved",
         "representation": "Offline v1 NZ files remain compatible. Const.value, output and consumer use the same physical FRACTAL_NZ[K1,N1,16,32] descriptor with logical origin_shape[N,K] and origin format ND; no public-Tensor storage_* normalization on the raw serialized value. Only audited immutable NZ Const nodes carry _out_shape_locked=true. Byte/hash/zero-padding and edge consistency are checked before save. Public inputs and WeightQuant consumers remain unlocked.",
-        "runtime": "W8 weights reside in OM constants; 26 weight TransData removed from five-layer AIR; public dynamic input rank sum 47. Existing generic runner consumes the new manifest.",
-        "validation": "Physical-value descriptor revision: host export, byte-exact NZ payload, Const reconstruction and M16/64 reference checks PASS; local focused suite 195 passed, 1 skipped (fake ACL runner unavailable). Ascend310P ATC compilation, OM execution, numerical parity and latency for this revision are NOT_RUN.",
-        "probe": "probe_draft_matmul_atc.py --bits 8 --projection tiny gate_up --prepack-weights",
+        "runtime": "W8 weights reside in immutable offline NZ OM constants. The same symbolic AIR is specialized to separate static M16 and M64 OMs, without ATC dynamic_dims. Runner 1.14.0 selects by valid feature rows and shares prebound state/input/output buffers. Both OMs load before measurement with independent weight memory; their hashes and resident memory are reported.",
+        "validation": "Host export and byte-exact NZ payload checks, static-OM compile/manifest contracts and fake-ACL C++ 16/64 dispatch/state tests only. Ascend310P ATC compilation, OM execution, numerical parity and latency of this static specialization are NOT_RUN.",
+        "probe": "probe_draft_matmul_atc.py --bits 8 --projection tiny gate_up --prepack-weights --static-om-gears",
         "descriptor_policy": "locked-physical-nz-value-and-output-v4",
-        "receiver_r34": "Prepacked tiny and gate_up both FAIL during InferShapeForWeightQuantBatchMatmulV2 on CANN 9.0.0 / Ascend310P; byte-exact host roundtrip did not establish valid Const inference metadata.",
         "ge_descriptor_reference": "https://gitcode.com/cann/ge/blob/56305bf5718657c1bcfd2fe9473d9ecd68ce2b97/graph_metadef/graph/normal_graph/tensor.cc",
-        "receiver_r35": "Both tiny and gate_up FAIL in InferShapeForWeightQuantBatchMatmulV2 with descriptor=logical-value-physical-nz-output-v2 confirmed in receiver output. Actual failing shapes are absent from the provided log; Ka/Kb or dynamic-gear corruption remains unconfirmed.",
         "diagnostic_probe": "probe_draft_matmul_atc.py --bits 8 --projection tiny --prepack-weights --diagnose-prepack; locked prepacked dynamic16/64, locked prepacked static16, live-weight TransData dynamic positive control. Same values and math; live control intentionally has extra weight/scale inputs. Captures actual graph descriptors including _out_shape_locked on producer and WeightQuant.",
         "diagnostic_scope": "Real child-only ATC debug capture. Nonempty IGNORE_INFER_ERROR, including 0, is rejected. Merely mentioning a fusion pass in debug logs does not establish a fusion failure. Compile PASS still does not establish OM accuracy or performance.",
-        "receiver_r36": "CANN 9.0.0 / torch_npu 2.8.0.post1+gitc7b6b32 / Ascend310P: prepacked dynamic, prepacked static M16, and ND Const + TransData dynamic all FAIL. Actual Ka[256] != Kb[32]; WeightQuant weight origin becomes [8,4,16,32] instead of [64,256]. Producer Const/Data becomes NZ[8,4,1,1,16,32] with origin[8,4,16,32]. ND Const control first infers [64,256] correctly, then a folded Const has the same corrupted origin. Static failure rules out dynamic gears as the sole cause.",
         "shape_lock_reference": {
           "repository": "https://gitcode.com/cann/ge",
           "commit": "fe07bcd9d7e0ad8f487dd59b7ad73ff7f0736809",
@@ -909,19 +922,6 @@
           ],
           "mechanism": "ATTR_NAME_OUT_SHAPE_LOCKED is _out_shape_locked; InferShapePass skips only that node output re-inference; multi-batch Const-to-Data preserves other node attrs."
         },
-        "receiver_r37": {
-          "evidence": "User-provided matmul-atc-prepacked-r37/summary.json terminal summary and shape-diagnostics excerpts, 2026-09-20; original remote files not retrieved",
-          "descriptor_policy": "locked-logical-value-physical-nz-output-v3",
-          "prepacked_static16": "PASS",
-          "runtime_dynamic": "PASS",
-          "prepacked_dynamic": "FAIL",
-          "weightquant_inference": "x=[16,256] or [64,256], logical weight=[64,256]; consumer physical NZ=[8,4,16,32], origin=[64,256]",
-          "failure": "trans_TransData_1: NZ_2_ND src=(64,256), dst=(64,256); source rank must be destination rank+2. E10052 also reports invalid negative dims [-254,4,16,-1].",
-          "next_action": "Trace inserted TransData producer/consumer and parent Const to child Data shape/origin/storage metadata in retained GE dumps. Revalidate both dynamic gears; do not ignore inference errors.",
-          "om_execution": "NOT_RUN",
-          "numerical_parity": "NOT_RUN",
-          "latency": "NOT_RUN"
-        },
         "const_value_reference": {
           "repository": "https://gitcode.com/cann/ge",
           "commit": "59a14060e0e24528f0af26b1e5f72a1e455301c0",
@@ -932,7 +932,8 @@
             "compiler/graph/passes/multi_batch/multi_batch_clone_pass.cc"
           ],
           "mechanism": "CreateConstOp recreates output from raw value.GetTensorDesc(); preserve physical NZ there as well as on the outgoing edge."
-        }
+        },
+        "compile_policy": "static_draft16_64_oms"
       }
     }
   },

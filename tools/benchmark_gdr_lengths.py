@@ -17,6 +17,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(REPO / "framework/python"), str(REPO)]
 
 from tools import benchmark_prompts as suite
+from qwen35_dflash.ascend310p.draft_gears import om_hashes
 from qwen35_dflash.ascend310p.utils import atomic_write_json, require_run_output, sha256_file
 
 ROUTES = ("chunk", "mtp")
@@ -281,7 +282,8 @@ def prepare(args, root):
             "manifest": str(manifest), "manifest_sha256": sha256_file(manifest),
             "plan": str(plan), "plan_sha256": sha256_file(plan),
             "abi": contract["abi"], "capacity": contract["capacity"], "vocab_size": contract["vocab_size"],
-            "om_sha256": {graph["name"]: graph["om"]["sha256"] for graph in deployment["graphs"]},
+            "om_sha256": om_hashes(deployment["graphs"]),
+            "static_gear_oms": {g["name"]: g["static_gear_oms"] for g in deployment["graphs"] if "static_gear_oms" in g},
             "atc_commands": {graph["name"]: graph["atc_command"] for graph in deployment["graphs"]},
             "ordinary_contract": ordinary_contract(deployment, contract),
         }
