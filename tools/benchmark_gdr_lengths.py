@@ -73,8 +73,15 @@ def read_cell(summary_path, route, length, prompts):
             row["stage_timings"] = stage_timings(report)
             row["phase_timings"] = suite.phase_timings(report)
             for mode in ("ordinary", "dflash"):
+                row[mode + "_decode_measured_ms"] = suite.measured_decode_ms(report[mode])
                 row[mode + "_measured_tokens"] = sum(
                     len(m["generated_token_ids"]) for m in report[mode]["measurements"])
+            row["speedup_scope"] = suite.SPEEDUP_SCOPE
+            row["decode_time_speedup"] = suite.time_ratio(
+                row["ordinary_decode_measured_ms"], row["dflash_decode_measured_ms"])
+            row.pop("speedup", None)
+            row.pop("throughput_speedup", None)
+            row["generation_throughput_ratio"] = suite.summarize_prompt(report)["generation_throughput_ratio"]
             if row["generated_tokens"] > length or row["ordinary_generated_tokens"] > length:
                 raise ValueError("saved generation exceeds the requested budget")
         rows.append(row)
@@ -103,7 +110,8 @@ def compare_routes(cells, lengths):
                              if r["status"] in suite.MEASURED_STATUSES}
         matched = sorted(groups["chunk"].keys() & groups["mtp"].keys())
         entry = {"max_new_tokens": length, "matched_prompt_ids": matched,
-                 "mtp_over_chunk_throughput": None, "mtp_over_chunk_model_time_speedup": None}
+                 "speedup_scope": suite.SPEEDUP_SCOPE,
+                 "mtp_over_chunk_throughput": None, "mtp_over_chunk_decode_time_speedup": None}
         if matched:
             totals = {}
             for route in ROUTES:
@@ -111,8 +119,10 @@ def compare_routes(cells, lengths):
                 totals[route] = {
                     "tokens": sum(row["dflash_measured_tokens"] for row in rows),
                     "ms": sum(row["dflash_total_measured_ms"] for row in rows),
+                    "decode_ms": suite.aggregate_decode_ms(rows, "dflash"),
                 }
-            entry["mtp_over_chunk_model_time_speedup"] = totals["chunk"]["ms"] / totals["mtp"]["ms"]
+            entry["mtp_over_chunk_decode_time_speedup"] = suite.time_ratio(
+                totals["chunk"]["decode_ms"], totals["mtp"]["decode_ms"])
             chunk_tps = totals["chunk"]["tokens"] / totals["chunk"]["ms"]
             mtp_tps = totals["mtp"]["tokens"] / totals["mtp"]["ms"]
             entry["mtp_over_chunk_throughput"] = mtp_tps / chunk_tps if chunk_tps else None
@@ -148,7 +158,7 @@ def render(summary):
     if len(summary.get("routes", [])) > 1:
         lines += ["Ordinary is measured once per prompt/output budget and reused across both routes."]
     lines += ["", "Input tokens include the selected chat template; output budgets are listed separately.", "",
-        "| Max new tokens | GDR | Group | Measured / prompts | Acceptance | Tokens / round | DFlash tok/s | Speedup vs ordinary |",
+        "| Max new tokens | GDR | Group | Measured / prompts | Acceptance | Tokens / round | DFlash gen tok/s | Decode speedup vs ordinary |",
         "|---:|---|---|---:|---:|---:|---:|---:|",
     ]
     timing_rows = []
@@ -164,12 +174,12 @@ def render(summary):
                 f"{number(agg.get('weighted_acceptance_rate'), True)} | "
                 f"{number(agg.get('tokens_per_speculative_round'))} | "
                 f"{number(agg.get('dflash_tokens_per_second'))} | "
-                f"{number(agg.get('total_model_time_speedup'))} |")
+                f"{number(agg.get('decode_time_speedup'))} |")
             timing_rows.append(dict(id=f"{cell['verify_gdr']}/{cell['max_new_tokens']}/{group}",
                                     stage_timings=agg.get("stage_ms_per_call", {}),
                                     phase_timings=agg.get("phase_timings", {})))
     lines += [
-        "", "Acceptance is accepted/proposed; time speedup is sum ordinary model time / sum DFlash model time.",
+        "", "Acceptance is accepted/proposed.", suite.SPEEDUP_NOTE, suite.THROUGHPUT_NOTE,
         "Each row uses completed measurements admitted by the comparison policy; repeated-run drift is reported.",
         "Measured calls exclude warmups and startup. Draft includes any Draft calls during multi-chunk prefill.",
         "Verify includes commit inside the selected OM. ms/call is synchronized graph-call time, not kernel time.",
@@ -183,12 +193,12 @@ def render(summary):
     if observations:
         lines += ["", observations.rstrip()]
     if summary["route_comparison"]:
-        lines += ["", "| Max new tokens | Matched prompts | MTP/Chunk throughput | MTP speedup vs Chunk by model time |",
+        lines += ["", "| Max new tokens | Matched prompts | MTP/Chunk generation throughput | MTP/Chunk decode speedup |",
                   "|---:|---:|---:|---:|"]
         for row in summary["route_comparison"]:
             lines.append(
                 f"| {row['max_new_tokens']} | {len(row['matched_prompt_ids'])} | "
-                f"{number(row['mtp_over_chunk_throughput'])} | {number(row['mtp_over_chunk_model_time_speedup'])} |")
+                f"{number(row['mtp_over_chunk_throughput'])} | {number(row['mtp_over_chunk_decode_time_speedup'])} |")
         lines += ["", "Cross-route comparisons use matched prompts and each route's own output. Quality is not evaluated."]
     for cell in summary["cells"]:
         if cell.get("error"):
@@ -209,7 +219,8 @@ def save(root, summary):
         "verify_gdr", "max_new_tokens", "id", "dataset_id", "dataset_file", "dataset_line", "group", "input_tokens", "status", "acceptance_rate",
         "tokens_per_speculative_round", "generated_tokens", "ordinary_generated_tokens",
         "stop_reason", "ordinary_stop_reason", "dflash_tokens_per_second",
-        "ordinary_tokens_per_second", "speedup", "throughput_speedup",
+        "ordinary_tokens_per_second", "speedup_scope", "decode_time_speedup", "generation_throughput_ratio",
+        "ordinary_decode_measured_ms", "dflash_decode_measured_ms",
         *[stage + "_ms_per_call" for stage in STAGES],
         *[stage + "_ms_per_generation" for stage in STAGES],
         *[phase + "_phase_ms_per_generation" for phase in suite.PHASES], "raw_report",

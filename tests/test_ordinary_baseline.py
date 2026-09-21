@@ -51,6 +51,11 @@ def test_two_routes_execute_ordinary_once_per_budget(matrix_args, monkeypatch, l
         assert report["ordinary"] == ordinary
         assert report["dflash"] == raw["dflash"]
         stats = suite.summarize_prompt(report)
+        expected_decode_ratio = sum(m["latency_ms"]["decode"] for m in ordinary["measurements"]) / sum(
+            m["latency_ms"]["decode"] for m in raw["dflash"]["measurements"])
+        assert stats["decode_time_speedup"] == pytest.approx(expected_decode_ratio)
+        assert report["dflash_decode_time_speedup"] == pytest.approx(expected_decode_ratio)
+        assert report["speedup_scope"] == "decode_loop"
         assert stats["ordinary_total_measured_ms"] == sum(
             m["latency_ms"]["model_total"] for m in ordinary["measurements"])
         assert suite.stage_timings(report)["ordinary_decode"]["calls"] == (second["max_new_tokens"] - 1) * 3
@@ -76,6 +81,26 @@ def test_two_routes_execute_ordinary_once_per_budget(matrix_args, monkeypatch, l
     saved = derived_path.read_bytes()
     damaged_report = json.loads(saved)
     damaged_report["ordinary"]["measurements"][0]["latency_ms"]["model_total"] += 1
+    derived_path.write_text(json.dumps(damaged_report))
+    with pytest.raises(ValueError, match="comparison differs from source reports"):
+        baseline.validate_saved(last / "runner-batch.json", request)
+    derived_path.write_bytes(saved)
+    # Older derived comparisons can be re-read without rewriting evidence.
+    historical = json.loads(saved)
+    del historical["dflash_decode_time_speedup"], historical["speedup_scope"]
+    legacy = "dflash_speedup_over_ordinary_model_total_median"
+    historical[legacy] = (historical["ordinary"]["latency_ms"]["model_total"]["median"] /
+                          historical["dflash"]["latency_ms"]["model_total"]["median"])
+    derived_path.write_text(json.dumps(historical))
+    historical_bytes = derived_path.read_bytes()
+    baseline.validate_saved(last / "runner-batch.json", request)
+    assert derived_path.read_bytes() == historical_bytes
+    historical[legacy] += 1
+    derived_path.write_text(json.dumps(historical))
+    with pytest.raises(ValueError, match="comparison differs from source reports"):
+        baseline.validate_saved(last / "runner-batch.json", request)
+    damaged_report = json.loads(saved)
+    damaged_report["ordinary"]["measurements"][0]["latency_ms"]["decode"] += 1
     derived_path.write_text(json.dumps(damaged_report))
     with pytest.raises(ValueError, match="comparison differs from source reports"):
         baseline.validate_saved(last / "runner-batch.json", request)

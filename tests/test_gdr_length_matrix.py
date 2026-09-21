@@ -291,6 +291,7 @@ def measured_row(name, accepted, proposed, elapsed, tokens=20):
     return dict(id=name, status="PASS_WITH_DIFFERENCES", drafted_tokens=proposed,
                 accepted_draft_tokens=accepted, ordinary_total_measured_ms=100,
                 dflash_total_measured_ms=elapsed, speculative_rounds=2,
+                ordinary_decode_measured_ms=80, dflash_decode_measured_ms=elapsed * .8,
                 tokens_emitted_in_speculative_rounds=19, ordinary_measured_tokens=tokens,
                 dflash_measured_tokens=tokens, generated_tokens=tokens, ordinary_generated_tokens=tokens,
                 max_new_tokens=32, stage_timings=timings)
@@ -300,7 +301,7 @@ def test_weighted_metrics_use_actual_eos_tokens_and_calls():
     rows = [measured_row("a", 9, 10, 50), measured_row("b", 1, 90, 150)]
     totals = matrix.aggregate_cases(rows)
     assert totals["weighted_acceptance_rate"] == .1
-    assert totals["total_model_time_speedup"] == 1
+    assert totals["decode_time_speedup"] == 1
     assert totals["dflash_tokens_per_second"] == 200  # 40 actual tokens / 200 ms.
     assert totals["both_modes_reached_budget"] == 0  # EOS before budget=32.
     assert totals["stage_ms_per_call"]["verify"]["calls"] == 4
@@ -319,7 +320,7 @@ def test_cross_route_comparison_uses_only_matched_prompts():
     ]
     result, = matrix.compare_routes(cells, [32])
     assert result["matched_prompt_ids"] == ["a"]
-    assert result["mtp_over_chunk_model_time_speedup"] == 4
+    assert result["mtp_over_chunk_decode_time_speedup"] == 4
     assert result["mtp_over_chunk_throughput"] == 2  # MTP produced half as many tokens.
 
 
@@ -395,9 +396,29 @@ def test_real_batch_schema_without_per_case_fake_flag_keeps_timings(saved_matrix
         assert row[stage + "_ms_per_generation"]
     assert row["group"] == "long"
     assert row["dflash_prefill_phase_ms_per_generation"] == "12.0"
+    assert row["speedup_scope"] == "decode_loop"
+    assert row["ordinary_decode_measured_ms"] == row["dflash_decode_measured_ms"] == "54.0"
+    assert row["decode_time_speedup"] == "1.0"
+    assert "speedup" not in row and "throughput_speedup" not in row
     text = (tmp_path / "summary.md").read_text()
     assert "Ordinary Prefill" in text and "DFlash Prefill" in text and "Draft | Verify" in text
     assert "3.00 / 6.00" in text and "12.00" in text
+
+
+def test_matrix_recomputes_decode_from_locked_report(saved_matrix_cell):
+    summary, index, prompts = saved_matrix_cell
+    before = index.read_bytes()
+    payload = json.loads(summary.read_text())
+    payload["cases"][0].update(speedup=999, throughput_speedup=999,
+                               decode_time_speedup=999, ordinary_decode_measured_ms=999)
+    summary.write_text(json.dumps(payload))
+    cell = matrix.read_cell(summary, "chunk", 8, prompts)
+    row, = cell["cases"]
+    assert row["decode_time_speedup"] == 1
+    assert row["ordinary_decode_measured_ms"] == 54
+    assert cell["aggregate"]["decode_time_speedup"] == 1
+    assert "speedup" not in row and "throughput_speedup" not in row
+    assert index.read_bytes() == before
 
 
 @pytest.mark.parametrize("flag", [True, None, 0, "false"])

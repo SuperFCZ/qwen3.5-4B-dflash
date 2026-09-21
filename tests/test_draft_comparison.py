@@ -88,7 +88,7 @@ def test_comparison_uses_matched_prompts_and_actual_output_lengths():
              for v, rows in (("fp16", original), ("w4a16", quant))]
     row, = comparison.compare(cells)
     assert row["matched_prompt_ids"] == ["a"]
-    assert row["time_speedup_vs_fp16"] == 2
+    assert row["decode_time_speedup_vs_fp16"] == 2
     assert row["throughput_vs_fp16"] == 1
     assert row["acceptance_delta_pp"] == -80
 

@@ -82,10 +82,12 @@ def compare(cells):
         cur = {r["id"]: r for r in cell.get("cases", []) if r["status"] in suite.MEASURED_STATUSES}
         matched = sorted(ref.keys() & cur.keys())
         row = {k: cell[k] for k in ("draft_quantization", "verify_gdr", "max_new_tokens")}
-        row.update(matched_prompt_ids=matched, time_speedup_vs_fp16=None, throughput_vs_fp16=None, acceptance_delta_pp=None)
+        row.update(matched_prompt_ids=matched, speedup_scope=suite.SPEEDUP_SCOPE,
+                   decode_time_speedup_vs_fp16=None, throughput_vs_fp16=None, acceptance_delta_pp=None)
         if matched:
             a, b = (suite.aggregate_metrics([group[n] for n in matched]) for group in (ref, cur))
-            row.update(time_speedup_vs_fp16=sum(ref[n]["dflash_total_measured_ms"] for n in matched) / sum(cur[n]["dflash_total_measured_ms"] for n in matched),
+            row.update(decode_time_speedup_vs_fp16=suite.time_ratio(
+                           a["dflash_decode_measured_ms"], b["dflash_decode_measured_ms"]),
                        throughput_vs_fp16=b["dflash_tokens_per_second"] / a["dflash_tokens_per_second"])
             if a["weighted_acceptance_rate"] is not None and b["weighted_acceptance_rate"] is not None:
                 row["acceptance_delta_pp"] = 100 * (b["weighted_acceptance_rate"] - a["weighted_acceptance_rate"])
@@ -95,7 +97,7 @@ def compare(cells):
 
 def save(root, prepared):
     cells, datasets, timing = [], [], []
-    lines = ["| Draft | GDR | Output budget | Group | Measured / selected | Acceptance | Tokens / round | Ordinary tok/s | DFlash tok/s | Speedup | Draft ms/call | Verify ms/call |",
+    lines = ["| Draft | GDR | Output budget | Group | Measured / selected | Acceptance | Tokens / round | Ordinary gen tok/s | DFlash gen tok/s | Decode speedup | Draft ms/call | Verify ms/call |",
              "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     def number(value, percent=False):
         return "N/A" if value is None else f"{value:.2%}" if percent else f"{value:.2f}"
@@ -113,7 +115,7 @@ def save(root, prepared):
                           f"{a.get('measured_prompts', 0)} / {count}",
                           number(a.get("weighted_acceptance_rate"), True), number(a.get("tokens_per_speculative_round")),
                           number(a.get("ordinary_tokens_per_second")), number(a.get("dflash_tokens_per_second")),
-                          number(a.get("total_model_time_speedup")), number(stages.get("draft", {}).get("mean_ms")),
+                          number(a.get("decode_time_speedup")), number(stages.get("draft", {}).get("mean_ms")),
                           number(stages.get("verify", {}).get("mean_ms"))]
                 lines.append("| " + " | ".join(map(str, values)) + " |")
                 timing.append(dict(id=f"{variant}/{cell['verify_gdr']}/{cell['max_new_tokens']}/{group}",
@@ -126,13 +128,15 @@ def save(root, prepared):
         lines += ["", suite.render_datasets(datasets).rstrip()]
     comparisons = compare(cells)
     if comparisons:
-        lines += ["", "| Draft | GDR | Output budget | Matched | Acceptance change (pp) | Throughput / FP16 | Time speedup vs FP16 |",
+        lines += ["", "| Draft | GDR | Output budget | Matched | Acceptance change (pp) | Generation throughput / FP16 | Decode speedup vs FP16 |",
                   "|---|---|---:|---:|---:|---:|---:|"]
         for row in comparisons:
             lines.append(f"| {row['draft_quantization']} | {row['verify_gdr']} | {row['max_new_tokens']} | "
                          f"{len(row['matched_prompt_ids'])} | {number(row['acceptance_delta_pp'])} | "
-                         f"{number(row['throughput_vs_fp16'])} | {number(row['time_speedup_vs_fp16'])} |")
-    lines += ["", suite.render_timings(timing, measured_only=False).rstrip(), "",
+                         f"{number(row['throughput_vs_fp16'])} | {number(row['decode_time_speedup_vs_fp16'])} |")
+    lines += ["", suite.SPEEDUP_NOTE, suite.THROUGHPUT_NOTE,
+              "FP16 and cross-route speed comparisons also use only matched prompts' decode times.",
+              suite.render_timings(timing, measured_only=False).rstrip(), "",
               "Ordinary runs once per prompt/output budget. Each Draft generates its own output; task quality is not evaluated.",
               "Published quantized checkpoints have five layers; the current FP16 checkpoint has six. This is not a bitwidth-only ablation.",
               "Quantized Drafts retain packed weights and FP16 activations. The AIR/deployment draft_checkpoint_audit records the MatMul backend; peak workspace requires device profiling.",

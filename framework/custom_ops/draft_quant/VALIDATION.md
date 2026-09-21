@@ -34,7 +34,7 @@ W4/W8 分别以同 checkpoint 的原生 OM 为基线，FP16 Draft 另作性能�
 | 算子 | 所需解包、scale、布局、GEMM/归约及同步；离线转换和加载另列 |
 | Draft OM | 完整图及同步，C16/C64 分开 |
 | Decode 循环 | Draft + Verify/commit + 调度，记录 token、EOS、轮数和接受/提出数 |
-| 模型生成 | Prefill + Decode，对应 benchmark 加速比；两模式 token 数分别记录 |
+| Decode 加速比 | 普通 Decode 总耗时 / DFlash Decode 总耗时，不计 Prefill；两模式 token 数分别记录 |
 | 完整请求 | 按服务边界记录分词、传输、重置、文本解码等，区分冷启动与热服务 |
 
 阶段表和算子表有重叠，不相加。分别报告算子、Draft 和模型生成的收益。

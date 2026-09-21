@@ -37,8 +37,8 @@ source /absolute/path/dflash-env.sh
 | 优化量化 Draft、给自定义算子开发方提需求 | [架构、热点与算子需求](framework/custom_ops/draft_quant/README.md) |
 
 FP16 Draft + Chunk 开源数据集测试（输出上限 **512 token**）：5 个文件、2563 条问题，加权接受率 **26.79%**；
-用户汇总报告的模型生成加速比为 **2.42×**，数学类 **2.59–2.67×**、代码类 **2.04–2.07×**。
-此口径包含 Prefill + Decode 循环，不含加载、分词等完整请求开销。
+按已记录阶段耗时重算，Decode 加速比为 **2.44×**，数学类 **2.62–2.71×**、代码类 **2.05–2.11×**。
+此口径仅比较 Decode 循环，不计 Prefill 和加载、分词等请求开销。
 FP16、W4A16、W8A16 的自定义测试结果见下方链接。
 允许输出差异，任务质量未评估；[详细结果与 128 token 对比](docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md#开源数据集输出上限-512-token)。
 

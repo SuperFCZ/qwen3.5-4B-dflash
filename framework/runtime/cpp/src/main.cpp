@@ -639,10 +639,11 @@ void WriteReport(
     const std::string& error = {}) {
   const bool pass = result.token_id_mismatches == 0 && result.eos_mismatches == 0;
   const bool stable = result.ordinary.repeatable && result.dflash.repeatable;
-  const double speedup = result.dflash.model_total_ms.median > 0.0
-                             ? result.ordinary.model_total_ms.median /
-                                   result.dflash.model_total_ms.median
-                             : 0.0;
+  double ordinary_decode_ms = 0.0, dflash_decode_ms = 0.0;
+  for (const auto& measurement : result.ordinary.measurements)
+    ordinary_decode_ms += measurement.decode_ms;
+  for (const auto& measurement : result.dflash.measurements)
+    dflash_decode_ms += measurement.decode_ms;
   output << std::setprecision(17)
          << "{\"schema_version\":1,\"status\":\"" << (pass ? (stable ? "PASS" : "PASS_WITH_OBSERVATIONS") : "FAIL") << "\","
          << "\"scope\":\"AscendCL C++ " << (arguments.mode == "dflash" ? "DFlash-only" : "paired")
@@ -717,8 +718,10 @@ void WriteReport(
          << ",\"eos_mismatches\":" << result.eos_mismatches
          << ",\"first_difference\":";
   WriteParityDifference(output, result, arguments.prompt_token_ids.size());
-  output << "},\"dflash_speedup_over_ordinary_model_total_median\":";
-  if (pass) output << speedup; else output << "null";
+  output << "},\"speedup_scope\":\"decode_loop\",\"dflash_decode_time_speedup\":";
+  if (pass && ordinary_decode_ms > 0.0 && dflash_decode_ms > 0.0)
+    output << ordinary_decode_ms / dflash_decode_ms;
+  else output << "null";
   output << '}';
 }
 

@@ -117,7 +117,7 @@ def test_file_aggregation_weights_counters_and_actual_eos_work(tmp_path, monkeyp
     a, b = suite.dataset_results(summary)
     assert a["status"] == "FAIL_OR_INCOMPLETE" and a["measured_prompts"] == 2
     assert a["weighted_acceptance_rate"] == .1  # Not mean(90%, 1/90).
-    assert a["dflash_tokens_per_second"] == 200 and a["total_model_time_speedup"] == 1
+    assert a["dflash_tokens_per_second"] == 200 and a["decode_time_speedup"] == 1
     assert a["stage_ms_per_call"]["verify"]["mean_ms"] == pytest.approx(26 / 6)
     assert a["stage_ms_per_call"]["verify"]["mean_total_ms_per_generation"] == 13
     assert a["drift_observed_prompts"] == 1

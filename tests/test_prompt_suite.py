@@ -69,6 +69,13 @@ def test_batch_reuses_models_resets_prompts_and_preserves_parity(
             device_id=0, max_new_tokens=20, max_draft_tokens=15, chunk_abi=True, low_memory=low_memory)
         assert report["startup_ms"]["acl_and_model_load"] == 0
         stats = suite.summarize_prompt(report)
+        decode_totals = {mode: sum(m["latency_ms"]["decode"] for m in report[mode]["measurements"])
+                         for mode in ("ordinary", "dflash")}
+        expected_speedup = decode_totals["ordinary"] / decode_totals["dflash"]
+        assert report["speedup_scope"] == stats["speedup_scope"] == "decode_loop"
+        assert report["dflash_decode_time_speedup"] == pytest.approx(expected_speedup)
+        assert stats["decode_time_speedup"] == pytest.approx(expected_speedup)
+        assert "dflash_speedup_over_ordinary_model_total_median" not in report
         assert stats["speculative_rounds"] > 0
         assert 0 < stats["acceptance_rate"] < 1
         for mode in ("ordinary", "dflash"):
@@ -150,14 +157,16 @@ def test_changed_batch_is_rejected_before_model_loading(chunk_bundle, tmp_path, 
 def test_weighted_acceptance_keeps_failures_and_empty_denominator_visible():
     rows = [
         dict(id="a", status="PASS", drafted_tokens=10, accepted_draft_tokens=9,
-             ordinary_total_measured_ms=100, dflash_total_measured_ms=50),
+             ordinary_total_measured_ms=100, dflash_total_measured_ms=50,
+             ordinary_decode_measured_ms=80, dflash_decode_measured_ms=40),
         dict(id="b", status="PASS", drafted_tokens=90, accepted_draft_tokens=9,
-             ordinary_total_measured_ms=200, dflash_total_measured_ms=250),
+             ordinary_total_measured_ms=200, dflash_total_measured_ms=250,
+             ordinary_decode_measured_ms=120, dflash_decode_measured_ms=60),
         dict(id="bad", status="FAIL", error="token mismatch"),
     ]
     result = suite.aggregate(rows)
     assert result["weighted_acceptance_rate"] == 0.18  # Not (90% + 10%) / 2.
-    assert result["total_model_time_speedup"] == 1
+    assert result["decode_time_speedup"] == 2  # Prefill would give 1.
     assert result["passed_prompts"] == 2 and result["failed_prompts"] == 1
     assert suite.aggregate(rows[-1:])["weighted_acceptance_rate"] is None
     rows[0].update(drafted_tokens=0, accepted_draft_tokens=0)
@@ -270,7 +279,7 @@ def test_stable_parity_failure_keeps_both_outputs_and_locates_first_different_ro
     report = json.loads(Path(index["cases"][0]["report"]).read_text())
     assert report["failure_stage"] == "ordinary_dflash_parity"
     assert report["formal_latency_evidence"] is False
-    assert report["dflash_speedup_over_ordinary_model_total_median"] is None
+    assert report["dflash_decode_time_speedup"] is None
     assert report["ordinary_parity"]["token_id_mismatches"] > 0
     observed = suite.observed_acceptance(report)
     assert observed["available"] and 0 < observed["acceptance_rate"] < 1

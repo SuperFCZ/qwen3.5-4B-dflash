@@ -244,7 +244,7 @@ FP16 激活、group-128 scale、`inner_precise=0`。W8 使用 INT8 权重；W4 �
 - `datasets.csv`、`datasets/<ID>/summary.md`：每个离线文件在各 Draft/Verify 下的结果。
 - `cases.csv`：逐题数据，含 Draft 类型；各精度子目录的 `generations.txt` 保存文字输出。
 
-加速比包含 Prefill + Decode；指标定义及已有结果见 [测试结果](DFLASH_CURRENT_USAGE_AND_RESULTS.md)。
+加速比仅比较 Decode 循环，不计 Prefill；指标定义及已有结果见 [测试结果](DFLASH_CURRENT_USAGE_AND_RESULTS.md)。
 
 ## 单 OM profiling
 

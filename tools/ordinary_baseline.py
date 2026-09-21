@@ -12,6 +12,7 @@ from pathlib import Path
 from qwen35_dflash.ascend310p.cpp_runtime import _validate_mode_report
 from qwen35_dflash.ascend310p.repeatability import representative_output, repeatability_observation
 from qwen35_dflash.ascend310p.utils import atomic_write_json, sha256_file
+from qwen35_dflash.decode_metrics import SPEEDUP_SCOPE, measured_decode_ms, time_ratio
 
 ORDER = "saved ordinary baseline then DFlash"
 
@@ -230,8 +231,10 @@ def pair(ordinary_report, dflash_report, request, source, refs):
         ordinary_parity={"scope": "representative measurement 0 from each mode",
                          "status": "FAIL" if failed else "PASS", "token_id_mismatches": len(indices),
                          "eos_mismatches": eos_mismatches, "first_difference": difference},
-        dflash_speedup_over_ordinary_model_total_median=None if failed else
-            ordinary["latency_ms"]["model_total"]["median"] / dflash["latency_ms"]["model_total"]["median"])
+        speedup_scope=SPEEDUP_SCOPE,
+        dflash_decode_time_speedup=None if failed else
+            time_ratio(measured_decode_ms(ordinary), measured_decode_ms(dflash)))
+    report.pop("dflash_speedup_over_ordinary_model_total_median", None)
     if failed:
         report.update(failure_stage="ordinary_dflash_parity",
                       error="DFlash output differs from the reused ordinary greedy authority")
@@ -287,7 +290,18 @@ def merge(index, raw_index, request):
 
 def validate_saved(index, request):
     def check_report(name, report):
-        if json.loads((Path(str(index) + ".cases") / (name + ".json")).read_text()) != report:
+        saved = json.loads((Path(str(index) + ".cases") / (name + ".json")).read_text())
+        legacy = "dflash_speedup_over_ordinary_model_total_median"
+        if (legacy in saved and "dflash_decode_time_speedup" not in saved
+                and "speedup_scope" not in saved and "dflash_decode_time_speedup" in report):
+            # Validate the historical derived report against locked raw evidence
+            # without rewriting it or trusting its old scalar speedup.
+            report = copy.deepcopy(report)
+            ordinary_ms = report["ordinary"]["latency_ms"]["model_total"]["median"]
+            dflash_ms = report["dflash"]["latency_ms"]["model_total"]["median"]
+            report[legacy] = None if report["ordinary_parity"]["status"] != "PASS" else ordinary_ms / dflash_ms
+            del report["dflash_decode_time_speedup"], report["speedup_scope"]
+        if saved != report:
             raise ValueError(f"reused ordinary comparison differs from source reports: {name}")
     expected = comparisons(index, request, check_report)
     if json.loads(index.read_text()) != expected:

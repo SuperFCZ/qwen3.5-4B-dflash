@@ -20,7 +20,10 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(REPO / "framework/python"), str(REPO)]
 
 from tools import offline_datasets
-from qwen35_dflash.ascend310p.draft_gears import om_hashes
+from qwen35_dflash.decode_metrics import (
+    SPEEDUP_SCOPE, SPEEDUP_NOTE, THROUGHPUT_NOTE,
+    measured_decode_ms, aggregate_decode_ms, time_ratio,
+)
 
 DEFAULT_PROMPTS = [
     {"id": "zh_explain", "category": "中文解释", "prompt": "请用通俗的中文解释什么是机器学习，并用一个生活中的例子说明训练和推理的区别。"},
@@ -423,6 +426,7 @@ def summarize_prompt(report):
     emitted = sum(len(r["emitted_token_ids"]) for r in rounds)
     ordinary_ms = sum(m["latency_ms"]["model_total"] for m in ordinary["measurements"])
     dflash_ms = sum(m["latency_ms"]["model_total"] for m in measurements)
+    ordinary_decode_ms, dflash_decode_ms = map(measured_decode_ms, (ordinary, draft))
     draft_lengths = [len(m["generated_token_ids"]) for m in measurements]
     ordinary_lengths = [len(m["generated_token_ids"]) for m in ordinary["measurements"]]
     draft_tps = sum(draft_lengths) * 1000 / dflash_ms if dflash_ms > 0 else 0
@@ -458,10 +462,12 @@ def summarize_prompt(report):
         "ordinary_total_measured_ms": ordinary_ms, "dflash_total_measured_ms": dflash_ms,
         "ordinary_median_ms": ordinary["latency_ms"]["model_total"]["median"],
         "dflash_median_ms": draft["latency_ms"]["model_total"]["median"],
-        "speedup": ordinary["latency_ms"]["model_total"]["median"] / draft["latency_ms"]["model_total"]["median"],
+        "speedup_scope": SPEEDUP_SCOPE,
+        "ordinary_decode_measured_ms": ordinary_decode_ms, "dflash_decode_measured_ms": dflash_decode_ms,
+        "decode_time_speedup": time_ratio(ordinary_decode_ms, dflash_decode_ms),
         "dflash_tokens_per_second": draft_tps,
         "ordinary_tokens_per_second": ordinary_tps,
-        "throughput_speedup": draft_tps / ordinary_tps,
+        "generation_throughput_ratio": draft_tps / ordinary_tps,
     }
 
 
@@ -469,7 +475,8 @@ def aggregate(rows):
     good = [r for r in rows if r["status"] in MEASURED_STATUSES]
     drafted = sum(r["drafted_tokens"] for r in good)
     accepted = sum(r["accepted_draft_tokens"] for r in good)
-    latency = sum(r["dflash_total_measured_ms"] for r in good)
+    ordinary_decode_ms = aggregate_decode_ms(good, "ordinary")
+    dflash_decode_ms = aggregate_decode_ms(good, "dflash")
     return {"scope": "completed measurements admitted by output-comparison policy; repeatability drift is observational",
             "passed_prompts": sum(r["status"] == "PASS" for r in rows),
             "allowed_difference_prompts": sum(r["status"] == "PASS_WITH_DIFFERENCES" or bool(r.get("output_difference")) for r in good),
@@ -478,7 +485,9 @@ def aggregate(rows):
             "not_run_prompts": sum(r["status"] == "NOT_RUN" for r in rows),
             "drafted_tokens": drafted, "accepted_draft_tokens": accepted,
             "weighted_acceptance_rate": accepted / drafted if drafted else None,
-            "total_model_time_speedup": sum(r["ordinary_total_measured_ms"] for r in good) / latency if latency else None}
+            "speedup_scope": SPEEDUP_SCOPE,
+            "ordinary_decode_measured_ms": ordinary_decode_ms, "dflash_decode_measured_ms": dflash_decode_ms,
+            "decode_time_speedup": time_ratio(ordinary_decode_ms, dflash_decode_ms)}
 
 
 def aggregate_metrics(rows):
@@ -493,7 +502,7 @@ def aggregate_metrics(rows):
         totals[mode + "_measured_tokens"] = tokens
         totals[mode + "_tokens_per_second"] = tokens * 1000 / elapsed if elapsed else None
     ordinary_tps, dflash_tps = (totals[mode + "_tokens_per_second"] for mode in ("ordinary", "dflash"))
-    totals["throughput_speedup"] = dflash_tps / ordinary_tps if ordinary_tps and dflash_tps else None
+    totals["generation_throughput_ratio"] = dflash_tps / ordinary_tps if ordinary_tps and dflash_tps else None
     totals["both_modes_reached_budget"] = sum(
         row["generated_tokens"] == row["ordinary_generated_tokens"] == row.get("max_new_tokens") for row in good)
     totals["stage_ms_per_call"] = {}
@@ -555,7 +564,7 @@ def render_datasets(results):
     def number(value, percent=False):
         return "N/A" if value is None else f"{value:.2%}" if percent else f"{value:.2f}"
     lines = ["Acceptance by dataset file:", "",
-             "| Dataset file | GDR | Max new tokens | Status | Measured / selected | Accepted / proposed | Acceptance | Tokens / round | Ordinary tok/s | DFlash tok/s | Speedup |",
+             "| Dataset file | GDR | Max new tokens | Status | Measured / selected | Accepted / proposed | Acceptance | Tokens / round | Ordinary gen tok/s | DFlash gen tok/s | Decode speedup |",
              "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|"]
     show_draft = any("draft_quantization" in row for row in results)
     if show_draft:
@@ -571,11 +580,11 @@ def render_datasets(results):
                      f"{number(row['weighted_acceptance_rate'], True)} | "
                      f"{number(row['tokens_per_speculative_round'])} | "
                      f"{number(row['ordinary_tokens_per_second'])} | {number(row['dflash_tokens_per_second'])} | "
-                     f"{number(row['total_model_time_speedup'])} |")
+                     f"{number(row['decode_time_speedup'])} |")
         timing_rows.append(dict(id=(row.get("draft_quantization", "") + "/" if show_draft else "") +
                                f"{row['verify_gdr']}/{row['max_new_tokens']}/{name}",
                                 stage_timings=row["stage_ms_per_call"], phase_timings=row["phase_timings"]))
-    lines += ["", "Acceptance = sum accepted / sum proposed; speedup = sum ordinary time / sum DFlash time.",
+    lines += ["", "Acceptance = sum accepted / sum proposed.", SPEEDUP_NOTE, THROUGHPUT_NOTE,
               "Only admitted measurements contribute; measured/selected exposes incomplete files. Warmups and startup excluded.",
               "Each mode generates its own output. Task accuracy is not evaluated; repeated-run drift remains observable.",
               "", render_timings(timing_rows, measured_only=False).rstrip()]
@@ -599,7 +608,8 @@ def write_dataset_reports(root, summary):
               "allowed_difference_prompts", "drift_observed_prompts",
               "accepted_draft_tokens", "drafted_tokens", "weighted_acceptance_rate", "tokens_per_speculative_round",
               "ordinary_measured_tokens", "dflash_measured_tokens", "ordinary_tokens_per_second", "dflash_tokens_per_second",
-              "total_model_time_speedup", "throughput_speedup",
+              "speedup_scope", "decode_time_speedup", "generation_throughput_ratio",
+              "ordinary_decode_measured_ms", "dflash_decode_measured_ms",
               *[stage + "_ms_per_call" for stage in STAGES],
               *[stage + "_ms_per_generation" for stage in STAGES],
               *[phase + "_phase_ms_per_generation" for phase in PHASES]]
@@ -636,7 +646,7 @@ def write_dataset_reports(root, summary):
 def markdown(summary):
     def value(number, percent=False):
         return "N/A" if number is None else f"{number * 100:.2f}%" if percent else f"{number:.2f}"
-    lines = ["| Prompt | Input tokens | Status | Acceptance | Tokens / speculative round | DFlash tok/s | Speedup | Generated |",
+    lines = ["| Prompt | Input tokens | Status | Acceptance | Tokens / speculative round | DFlash gen tok/s | Decode speedup | Generated |",
              "|---|---:|---|---:|---:|---:|---:|---:|"]
     for row in summary["cases"]:
         input_tokens = row.get("input_tokens", "N/A")
@@ -647,7 +657,7 @@ def markdown(summary):
             generated = str(bounds[0]) if bounds[0] == bounds[1] else f"{bounds[0]}..{bounds[1]}"
             lines.append(f"| {row['id']} | {input_tokens} | {row['status']} | {value(row['acceptance_rate'], True)} | "
                          f"{value(row['tokens_per_speculative_round'])} | {value(row['dflash_tokens_per_second'])} | "
-                         f"{value(row['speedup'])}x | {generated} |")
+                         f"{value(row['decode_time_speedup'])} | {generated} |")
     totals = summary["aggregate"]
     protocol = summary.get("protocol", {})
     repeats = f"{protocol.get('warmup', 'N/A')}+{protocol.get('repetitions', 'N/A')}"
@@ -656,12 +666,13 @@ def markdown(summary):
               "Thinking: " + {False: "off", True: "on", None: "not recorded / raw input"}[protocol.get("enable_thinking")] + ".",
               f"Weighted acceptance: {value(totals['weighted_acceptance_rate'], True)}.",
               "Acceptance = accepted draft tokens / proposed draft tokens; warmups excluded.",
-              "Speedup > 1 means faster than ordinary generation; acceptance alone does not establish speedup."]
+              SPEEDUP_NOTE, THROUGHPUT_NOTE,
+              "Missing or zero decode durations give N/A; acceptance alone does not establish speedup."]
     if totals.get("allowed_difference_prompts"):
         lines += [f"Allowed output differences: {totals['allowed_difference_prompts']}; "
                   f"both modes completed independent {repeats} measurements. Output parity remains FAIL; task quality was not evaluated.",
-                  "Speedup compares model-loop time for each mode's own output. Different EOS lengths can change the work; "
-                  "JSON also records both token counts and throughput_speedup."]
+                  "Decode speedup compares each mode's own output. Different EOS lengths can change the work; "
+                  "JSON also records both token counts and generation_throughput_ratio."]
     if summary.get("ordinary_baseline"):
         lines += ["Ordinary measurements are reused from the first verification route; only DFlash ran in this cell."]
     if totals["passed_prompts"]:
@@ -880,6 +891,7 @@ def run(args):
             raise ValueError("--summarize-existing uses saved dataset selection; do not supply dataset inputs")
         return summarize_existing(args)
     from qwen35_dflash.ascend310p.cpp_runtime import resolve_cpp_runner, validate_cpp_runner_options
+    from qwen35_dflash.ascend310p.draft_gears import om_hashes
     from qwen35_dflash.ascend310p.generation import tokenize_prompt
     from qwen35_dflash.ascend310p.incremental_plan import write_incremental_plan
     from qwen35_dflash.ascend310p.utils import atomic_write_json, require_run_output, sha256_file

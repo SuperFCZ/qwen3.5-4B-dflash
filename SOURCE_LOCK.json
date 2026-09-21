@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash with one compact Draft / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
-  "package_revision": "r39",
+  "package_revision": "r40",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
     "version": 7,
@@ -164,7 +164,7 @@
     "files": [
       {
         "source_file": "README.md",
-        "source_sha256": "9c91ad0d289c6e4a2474cd373acd329f97999b7023163bb157b72071a4c73c20"
+        "source_sha256": "5b75905df83d42b46e04744a184c6453ca39d440ededa6544ab81012f3d55ec4"
       },
       {
         "source_file": "config/gdr_chunk_air_om_factory.example.json",
@@ -180,11 +180,11 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "06b8fa74389a51710cd0c81179c830ae9231caffdf8e53e14a9d8cfb81d5f07d"
+        "source_sha256": "6b92e56e39d17741190556e15ebe043ab782b9dc335620972faea6992b517a4b"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
-        "source_sha256": "a36e3b97e015bcfde85612e92af7e28d363f55cc5011ae6cbbccd8c8ab492ceb"
+        "source_sha256": "102df70acbaa0def8cb22a3d62a73d8e330f9fd62f5bd2c6016b2396b2409d52"
       },
       {
         "source_file": "framework/FRAMEWORK_LOCK.json",
@@ -292,11 +292,11 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/workflow.py",
-        "source_sha256": "e7bec58c49eddc24930e5e3026fb288e9caeb2b343fb0b8662990e4a3dac9b3d"
+        "source_sha256": "ec3781023d29a254c04682f0ce3e92ae61233e056985a006356317e3fa0f10d7"
       },
       {
         "source_file": "framework/runtime/cpp/CMakeLists.txt",
-        "source_sha256": "582498ae51416352d6de8782a1314e59c86b7fad83e97a7496f48def03d8c931"
+        "source_sha256": "dc633adb5a0c7fa705773270707f82d5b3326abd70012836a160a60362a840cd"
       },
       {
         "source_file": "framework/runtime/cpp/include/qwen35_dflash/acl_executor.hpp",
@@ -336,7 +336,7 @@
       },
       {
         "source_file": "framework/runtime/cpp/src/main.cpp",
-        "source_sha256": "b41b6b82db224ac54fdca7c3654325bdd467389c678921db367c45f0689cf5ff"
+        "source_sha256": "e8af9d2b6a745aa8fe5d5c28c371db979fb0d0523567d751d82afdda58e04761"
       },
       {
         "source_file": "framework/runtime/cpp/src/sha256.cpp",
@@ -500,11 +500,11 @@
       },
       {
         "source_file": "tools/benchmark_prompts.py",
-        "source_sha256": "c33452a229c51180bb4d081d47b1147352a692cde472da097054b1d35cc1284c"
+        "source_sha256": "372bca86e5b1a17dc71f4594cb4ae71c40fd38a5413b6208c620abfbb4fa4cd8"
       },
       {
         "source_file": "tests/test_prompt_suite.py",
-        "source_sha256": "870aacd9e5678644b46df8017b9292df206485aa0b996cbb00d20faa4a2582ae"
+        "source_sha256": "688d2b8c5253a026b92e880e71ac356a0b4eb65111e2b326c89f3221bceb88d1"
       },
       {
         "source_file": "tests/test_draft_compile_determinism.py",
@@ -516,11 +516,11 @@
       },
       {
         "source_file": "tests/test_prompt_analysis.py",
-        "source_sha256": "cb5ba3fd2bc73d4451e316adec560e83241e9fff8220682eb237df0f3f306d04"
+        "source_sha256": "c5c0dc6122ac99614c4d07e47743b8644fe7f316b39e8b1224e87b8debe69ed4"
       },
       {
         "source_file": "docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md",
-        "source_sha256": "6413ac988cabd229e4327280c93a47659f70a66793b0c73a842d989c1aa23168"
+        "source_sha256": "683adf7002e689f6bbe2c9a4397433876f9197cb5ed7769db254fa6254742826"
       },
       {
         "source_file": "framework/abi/dflash-mtp-v1.json",
@@ -532,11 +532,11 @@
       },
       {
         "source_file": "tools/benchmark_gdr_lengths.py",
-        "source_sha256": "2bd3230e5b117df081bd9be5d634e8953d4b723294ddde656f2400a815a60d73"
+        "source_sha256": "64eee409a733df5d1bf0b02de38263edd6cd44e3a4a6522479105eaccb86f713"
       },
       {
         "source_file": "tests/test_gdr_length_matrix.py",
-        "source_sha256": "8b83bc547b99d48cbb566336c53d75884e83e01b944bda92b2757af1c68881bc"
+        "source_sha256": "fd07752e1d878d40968038f12925a5ef34ef94be79a696e0350879a8083ebc45"
       },
       {
         "source_file": "config/dflash_env.sh.example",
@@ -588,7 +588,7 @@
       },
       {
         "source_file": "tests/test_offline_datasets.py",
-        "source_sha256": "7bfbe4be7b9014f07752a3eee5ec5a0ebc505a9b4ff78977b41a6c045dc9795d"
+        "source_sha256": "288dad1229872c8ee6d59096dec4a2d646cc3e0b9fb2e2a1a96a48c1c5d722eb"
       },
       {
         "source_file": "tools/offline_datasets.py",
@@ -596,11 +596,11 @@
       },
       {
         "source_file": "tools/ordinary_baseline.py",
-        "source_sha256": "d883075c1dc278b2f5b2fb34c0435c63aa3ec8c1be16dd9db7a677dff37754dd"
+        "source_sha256": "20bd521472ca79c540e21b6419c9f5e8b6889d5d7002ab98d3be4a56e155dd6f"
       },
       {
         "source_file": "tests/test_ordinary_baseline.py",
-        "source_sha256": "b162f28a2d93853036b604e84728fce40650057a44e0696188637acd23505069"
+        "source_sha256": "b40105edc9a35b426879bcfaa7670a45494247ed44495ff8577171a2342770e8"
       },
       {
         "source_file": "tests/test_compact_draft_execution.py",
@@ -657,6 +657,14 @@
       {
         "source_file": "tests/test_static_draft_gears.py",
         "source_sha256": "034dad3d7f2c0dd3a7bdcc61b623460d40278d2559ba43e404b3edcbd7a1bb8b"
+      },
+      {
+        "source_file": "tests/test_decode_metrics.py",
+        "source_sha256": "60b08143c3eb9d61a2b52b654f69e84c7712f1a887c3c54ca8fb609e89a500c9"
+      },
+      {
+        "source_file": "framework/python/qwen35_dflash/decode_metrics.py",
+        "source_sha256": "a5bb7a5fc35556daedc291d78c6785f59d6299bbd01835541b19b1505926b9e7"
       }
     ],
     "supported_abis": [
@@ -716,7 +724,7 @@
       "default_prompt_count": 20,
       "default_warmup": 1,
       "default_repetitions": 3,
-      "timing_output": "ordinary prefill/decode and DFlash prefill/draft/verify mean synchronized ms/call and cumulative mean ms/generation; full prefill/decode phases separately include orchestration and context-building Draft; timings in terminal, Markdown, JSON and per-prompt CSV",
+      "timing_output": "sum measured decode-loop time ratios for ordinary/DFlash, matched Draft and Verify comparisons; prefill excluded; missing or zero decode timing is N/A; generation throughput retains prefill + decode; phase and graph timings reported separately",
       "enable_thinking": false
     },
     "common_reuse": "export-air --draft-quantizations fp16 w4a16 w8a16 --verify-gdr both and compile-om produce seven unique OMs in one directory; shared prefill/decode and per-route verify compile once; six manifests select one Draft and one Verify",
@@ -736,7 +744,7 @@
       "numerics": "Matmul shape changes can alter rounding; expanded CPU GQA sample observed max abs 2.44e-4; original model gates retained; NPU token/acceptance/peak-memory checks pending"
     },
     "om_io_binding": {
-      "runner_version": "1.14.0",
+      "runner_version": "1.15.0",
       "policy": "prebound_ping_pong",
       "scope": "Prebound ping-pong descriptors for shared state banks. Dynamic Draft shares its CANN gear-control input; offline NZ uses static M16/M64 OMs sharing feature/state/output buffers.",
       "validation": "Host fake-ACL equivalence only; real Ascend310P timing pending"
@@ -788,7 +796,7 @@
       },
       {
         "source_file": "tools/benchmark_draft_variants.py",
-        "source_sha256": "3ee8db726e6064a679e3cd3766ee033bba2de4239c00e4b92d459880f6b62051"
+        "source_sha256": "9112d51b7e8bd0935cd79e831db083fb5acd70c702936accba0f3b92bfac1625"
       },
       {
         "source_file": "tests/test_draft_quantization.py",
@@ -800,7 +808,7 @@
       },
       {
         "source_file": "tests/test_draft_comparison.py",
-        "source_sha256": "ca78f43b7fa22993f600d8d1fced5a6675ace6f0f0891c21b518418d099c4716"
+        "source_sha256": "46997f41b0a29f6950f65d2649f92b6902028b6ef418be72b43a344977d0bd07"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/bundle_matrix.py",
@@ -967,11 +975,11 @@
       },
       {
         "source_file": "framework/custom_ops/draft_quant/VALIDATION.md",
-        "source_sha256": "cda045914af8a7ca3fd92cd44b0fb4ae5d13b3bae9311a4e9e65a28c3237e08a"
+        "source_sha256": "a034c5c944d8c08895cee8753e7f72c976ef94339b5796200eef9496d89cc415"
       },
       {
         "source_file": "framework/custom_ops/draft_quant/workloads.json",
-        "source_sha256": "12f53b1576bdccdd89303796513e083029aaa130c93edb20b14c205a05a6f0c1"
+        "source_sha256": "42825634147a467f9009410ab9d913c99b2129c58acd2cd71dbee1c8e663bccc"
       }
     ]
   }

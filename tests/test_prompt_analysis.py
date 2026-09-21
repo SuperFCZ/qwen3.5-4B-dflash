@@ -210,7 +210,10 @@ def test_offline_summary_needs_no_runner_or_model_and_keeps_sources(tmp_path, al
         row, = result["cases"]
         assert row["generated_tokens"] == 8  # Saved request, never the CLI default of 128.
         assert row["raw_status"] == "FAIL" and row["first_difference"]["index"] == 3
-        assert row["speedup"] == row["throughput_speedup"] == 2
+        assert row["decode_time_speedup"] is None  # Old fixture has no decode timings.
+        assert row["generation_throughput_ratio"] == 2
+        assert "speedup" not in row and "throughput_speedup" not in row
+        assert "N/Ax" not in proc.stdout
         assert row["draft_token_share_of_output"] == 0.75
         assert result["aggregate"]["allowed_difference_prompts"] == 1
         assert result["aggregate"]["weighted_acceptance_rate"] == 6 / 7

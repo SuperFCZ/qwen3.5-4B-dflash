@@ -24,6 +24,7 @@ from .compiler import (
     validate_soc_version,
 )
 from .exporter import export_air_bundle
+from ..decode_metrics import SPEEDUP_SCOPE, measured_decode_ms, time_ratio
 from .generation import (
     benchmark_prompt,
     load_backend,
@@ -317,17 +318,10 @@ def _latency_view(report: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _speedup_view(
+def _decode_speedup(
     ordinary: Mapping[str, Any], candidate: Mapping[str, Any]
-) -> dict[str, float | None]:
-    ordinary_latency = _latency_view(ordinary)
-    candidate_latency = _latency_view(candidate)
-    result: dict[str, float | None] = {}
-    for name in _SUMMARY_LATENCIES:
-        baseline = float(ordinary_latency[name]["median"])
-        value = float(candidate_latency[name]["median"])
-        result[name] = None if value <= 0.0 else baseline / value
-    return result
+) -> float | None:
+    return time_ratio(measured_decode_ms(ordinary), measured_decode_ms(candidate))
 
 
 def run_target_pipeline(
@@ -465,7 +459,8 @@ def run_target_pipeline(
             "ordinary": _latency_view(ordinary),
             "dflash": _latency_view(dflash),
         },
-        "dflash_speedup_over_ordinary_median": _speedup_view(ordinary, dflash),
+        "speedup_scope": SPEEDUP_SCOPE,
+        "dflash_decode_time_speedup": _decode_speedup(ordinary, dflash),
         "artifacts": {
             "target_preflight": file_record(preflight_log, relative_to=run_root),
             "air_manifest": file_record(

@@ -383,6 +383,7 @@ correction 或 bonus 成为下一轮 anchor，本轮不提前把它写入已提�
 | `latency_ms.prefill` | prompt 处理 |
 | `latency_ms.decode` | prefill 之后的生成循环 |
 | `latency_ms.model_total` | prefill + decode，排除加载、tokenizer 和 request reset |
+| `dflash_decode_time_speedup` | 普通 / DFlash 的测量轮次 Decode 总耗时之比，不计 Prefill；缺失或零耗时为 null |
 | `stage_ms` | 按图记录每次同步 OM 调用，包括必要的 H2D/D2H |
 | `profiled_elapsed_ms` | 带 msprof 开销的同步采集窗口，排除控制器等待 |
 
