@@ -210,25 +210,37 @@ Decode 时间加速比分别为 **0.45× / 0.62×**，两者均匹配 20 条。
 量化 checkpoint 为五层，FP16 为六层，此表包含模型结构差异。
 W8 单算子时延及投影映射见 [量化 Draft 优化分析](../framework/custom_ops/draft_quant/README.md)。
 
-### W8A16 复测
+### W8A16 离线 NZ
 
-`gdr-lengths-o0n3_wfe`：Chunk 验证、thinking 开启、输出上限 128 token；
-每个模式/每条 prompt 0 次预热、1 次测量。20 / 20 条均完成，状态为 `PASS_WITH_DIFFERENCES`；
-两种模式均各生成 128 token，接受 / 提出合计 **1906 / 9064**。
+`gdr-lengths-mjhazgip`：离线 NZ W8 Draft、Chunk 验证、thinking 开启、输出上限 128 token；
+每个模式/每条 prompt 1 次预热、3 次测量。20 / 20 条均完成，状态为 `PASS_WITH_DIFFERENCES`；
+两种模式每次均生成 128 token，接受 / 提出合计 **5718 / 27192**，不含预热。
 
 | 分组 | 完成 / 选择 | 接受率 | token/投机轮 | 普通 gen tok/s | DFlash gen tok/s | Decode 加速比 | Draft ms/call | Verify ms/call |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| all | 20 / 20 | 21.03% | 3.93 | 24.64 | 25.42 | 1.20× | 63.50 | 51.20 |
-| short | 8 / 8 | 21.20% | 3.98 | 28.39 | 34.39 | 1.22× | 63.20 | 51.16 |
-| long | 12 / 12 | 20.91% | 3.90 | 22.65 | 21.65 | 1.19× | 63.64 | 51.22 |
+| all | 20 / 20 | 21.03% | 3.93 | 24.67 | 29.16 | 1.39× | 47.89 | 51.17 |
+| short | 8 / 8 | 21.20% | 3.98 | 28.41 | 39.73 | 1.41× | 47.54 | 51.13 |
+| long | 12 / 12 | 20.91% | 3.90 | 22.68 | 24.77 | 1.38× | 48.04 | 51.20 |
 
 阶段耗时，单位 ms/次生成：
 
 | 分组 | 普通 Prefill | 普通 Decode | DFlash Prefill | DFlash Decode |
 |---|---:|---:|---:|---:|
-| all | 753.16 | 4441.36 | 1334.34 | 3701.45 |
-| short | 74.26 | 4434.83 | 74.99 | 3647.23 |
-| long | 1205.76 | 4445.72 | 2173.90 | 3737.60 |
+| all | 752.38 | 4436.34 | 1195.57 | 3193.72 |
+| short | 74.20 | 4431.58 | 74.89 | 3146.91 |
+| long | 1204.50 | 4439.52 | 1942.69 | 3224.93 |
+
+OM 调用耗时，单位 ms/次调用 / 累计平均 ms/次生成：
+
+| 分组 | 普通 Target Prefill | 普通 Target Decode | DFlash Target Prefill | Draft | Verify |
+|---|---:|---:|---:|---:|---:|
+| all | 75.20 / 751.99 | 34.90 / 4432.26 | 75.63 / 756.33 | 47.89 / 1977.69 | 51.17 / 1652.73 |
+| short | 74.12 / 74.12 | 34.86 / 4427.48 | 74.82 / 74.82 | 47.54 / 1515.27 | 51.13 / 1629.65 |
+| long | 75.24 / 1203.90 | 34.92 / 4435.45 | 75.67 / 1210.67 | 48.04 / 2285.97 | 51.20 / 1668.12 |
+
+对照前次同 20 条 W8 测量 `gdr-lengths-o0n3_wfe`，Draft 从 **63.50 降到 47.89 ms/call**（约 **24.6%**），
+DFlash Decode 从 **3701.45 降到 3193.72 ms/次生成**（约 **13.7%**），接受率均为 **21.03%**。
+前次为 0 次预热、1 次测量，本次为 1 次预热、3 次测量，以上为跨次测量对照。
 
 ## 数据来源
 
@@ -237,7 +249,8 @@ W8 单算子时延及投影映射见 [量化 Draft 优化分析](../framework/cu
 | FP16 开源数据集，512 token | `gdr-lengths-x2l5aydx` |
 | FP16 自定义 prompt 与 W4/W8 解量化对比，128 token | `gdr-lengths-isajibrf` |
 | FP16/W4/W8 原生 MatMul 对比，128 token | `gdr-lengths-waw8h36d` |
-| W8A16 自定义复测，128 token | `gdr-lengths-o0n3_wfe` |
+| W8A16 对照，128 token | `gdr-lengths-o0n3_wfe` |
+| W8A16 离线 NZ，20 条 / 128 token | `w8-nz-full-tsUMDuhH/gdr-lengths-mjhazgip` |
 
 各运行目录的 `summary.json` 保存汇总，各 Draft 子目录的 `cases.csv` 保存逐题结果；
 分文件报告见 `datasets/<dataset-id>/summary.json`、`summary.md` 和 `datasets.csv`。
