@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash with one compact Draft / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
-  "package_revision": "r40",
+  "package_revision": "r41",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
     "version": 7,
@@ -180,7 +180,7 @@
       },
       {
         "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "6b92e56e39d17741190556e15ebe043ab782b9dc335620972faea6992b517a4b"
+        "source_sha256": "7ac7ee2cc591165f6a38670299dc472aa167301e2a986a0e6874df65a4e901ba"
       },
       {
         "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
@@ -224,7 +224,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/acl_runtime.py",
-        "source_sha256": "c88b84ccd117707b7645edef3685bbe9736e392ed7b890f203a477b4db3441d5"
+        "source_sha256": "4d0efd22e0f9a2fdab4d0a9cd75b582878e743b1fe6cfbd0fdf8cbb23950f985"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/cli.py",
@@ -665,6 +665,14 @@
       {
         "source_file": "framework/python/qwen35_dflash/decode_metrics.py",
         "source_sha256": "a5bb7a5fc35556daedc291d78c6785f59d6299bbd01835541b19b1505926b9e7"
+      },
+      {
+        "source_file": "tools/validate_draft_matmul_om.py",
+        "source_sha256": "aefcbed4d89f654f24f7a58eefb59894fafb0341873c9fdc9482912db75fc4bd"
+      },
+      {
+        "source_file": "tests/test_draft_matmul_om_validation.py",
+        "source_sha256": "7203133a89ebb3baa12c71f48cd26c3e38a7e1fb7abf5b6787278fccca039984"
       }
     ],
     "supported_abis": [

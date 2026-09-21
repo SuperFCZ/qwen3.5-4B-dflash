@@ -308,7 +308,10 @@ class AclOmRuntime:
         *,
         device_id: int = 0,
         acl_module: Any | None = None,
+        static_gear_rows: int | None = None,
     ) -> None:
+        if static_gear_rows not in (None, 16, 64):
+            raise ValueError("static OM rows must be 16 or 64")
         self.manifest_path = Path(deployment_manifest_path).expanduser().resolve()
         self.manifest = load_json_object(self.manifest_path)
         if self.manifest.get("artifact_kind") != "qwen35-dflash-ascend310p-om-bundle":
@@ -319,6 +322,7 @@ class AclOmRuntime:
         self.device_id = int(device_id)
         self.acl = acl_module or importlib.import_module("acl")
         self.models: dict[str, _AclModel] = {}
+        self._loaded_om_hashes: dict[str, str] = {}
         self._initialized = False
         try:
             _check(self.acl.init(), "acl.init")
@@ -331,7 +335,11 @@ class AclOmRuntime:
                 name = str(graph["name"])
                 if name in self.models:
                     raise ValueError(f"deployment manifest repeats OM graph name: {name}")
-                om = graph["om"]
+                from .draft_gears import om_records
+                records = om_records(graph)
+                if static_gear_rows is not None and len(records) != 2:
+                    raise ValueError("explicit static gear selection requires both M16/M64 OMs")
+                om = records[1 if static_gear_rows == 64 else 0]
                 path = contained_path(self.root, str(om["path"]))
                 if not path.is_file() or sha256_file(path) != om["sha256"]:
                     raise ValueError(f"OM hash check failed before load: {name}")
@@ -342,6 +350,7 @@ class AclOmRuntime:
                     input_names=tuple(str(item) for item in graph.get("input_names", [])),
                     output_names=tuple(str(item) for item in graph.get("output_names", [])),
                 )
+                self._loaded_om_hashes[name] = str(om["sha256"])
         except BaseException:
             self.close()
             raise
@@ -385,10 +394,7 @@ class AclOmRuntime:
             _check(operation(), "acl.rt.synchronize_device")
 
     def artifact_hashes(self) -> dict[str, str]:
-        return {
-            str(graph["name"]): str(graph["om"]["sha256"])
-            for graph in self.manifest.get("graphs", [])
-        }
+        return dict(self._loaded_om_hashes)
 
     def close(self) -> None:
         for model in reversed(tuple(self.models.values())):

@@ -159,14 +159,28 @@ FP16 激活、group-128 scale、`inner_precise=0`。W8 使用 INT8 权重；W4 �
 ```
 
 输出 `manifest.json` 和 `weight-*.nz.bin`；脚本检查哈希、零填充和逐字节还原。
-在目标环境用 `probe_draft_matmul_atc.py --prepack-weights` 检查编译，并完成 OM 数值验证后，
-可在正常 `export-air` 命令中增加：
+小图先编译 M16/M64，再执行数值校验（需要 CANN Python `acl`）：
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
+  --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --device-id "$DEVICE_ID" \
+  --bits 8 --projection tiny gate_up --prepack-weights --static-om-gears \
+  --output-dir "$AI_RUN_DIR/matmul-atc-static"
+
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/validate_draft_matmul_om.py" \
+  --probe-summary "$AI_RUN_DIR/matmul-atc-static/summary.json" \
+  --device-id "$DEVICE_ID" --repetitions 3 \
+  --output-dir "$AI_RUN_DIR/matmul-om-validation"
+```
+
+校验直接复用四个 OM，检查 ABI、分组/分块边界、稠密输入和重复执行；CPU 仅生成参考结果。
+通过后可在正常 `export-air` 命令中增加：
 
 ```bash
 --draft-weight-prepack-manifest "$AI_RUN_DIR/w8-nz-weights/manifest.json"
 ```
 
-使用新的 bundle 目录导出、编译；不传该选项时使用默认运行时转换。
+使用新的 bundle 目录导出、编译；该选项将 W8 Draft 编译为两个静态 OM，需使用支持 M16/M64 选择的新 runner。
 复测对比固定权重 `TransData` 数量、Draft ms/call、生成时延和接受率。
 
 ## 统一测试
