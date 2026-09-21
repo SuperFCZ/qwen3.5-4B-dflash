@@ -13,43 +13,40 @@ from pathlib import Path
 
 import torch
 
-from .weight_quant_layout import GE_OP, POLICY, _dtype, _nz_shape, _source, _storage_desc
+from .weight_quant_layout import GE_OP, POLICY, _dtype, _nz_shape, _source
 from .utils import contained_path, load_json_object, sha256_file
 
 
 PREPACK_POLICY = "w8-int8-nz-const-v1"
-# Offline bytes remain v1. r36 proved that re-inference of the v2 Const
-# output replaces origin [N,K] with the physical NZ shape, then packs it again.
-# GE InferShapePass supports a node-local lock for an already fixed output.
-# Only validated immutable NZ constants get it; WeightQuant inference stays on.
-CONST_DESC_POLICY = "locked-logical-value-physical-nz-output-v3"
+# Offline bytes remain v1. AIR stores a GeTensor, not a normalized public
+# Tensor argument: its value and output must describe the SAME physical bytes.
+# GE CreateConstOp can recreate an output directly from the value descriptor.
+CONST_DESC_POLICY = "locked-physical-nz-value-and-output-v4"
 # ge_attr_define.cc: ATTR_NAME_OUT_SHAPE_LOCKED (leading underscore required).
 CONST_SHAPE_LOCK = "_out_shape_locked"
 
 
 def _const_value_desc(physical_desc):
-    """GE-normalized value metadata, separate from the NZ output descriptor.
+    """Keep the serialized GeTensor value in the output's physical format.
 
-    Match TensorAdapter::NormalizeGeTensorDesc: shape/format describe the
-    logical tensor, storage_shape/storage_format describe the actual bytes.
-    Its output and the WeightQuant input retain the physical NZ descriptor
-    with origin_shape=[N,K]. A separate node-local output-shape lock protects
-    this immutable output from re-inference. Receiver compilation must still
-    verify that CANN preserves that contract through all graph passes.
+    Logical [N,K] lives in origin_shape, physical [K1,N1,16,32] in shape.
+    TensorAdapter::NormalizeGeTensorDesc is for public Tensor arguments; its
+    logical-ND plus storage-attrs encoding must NOT be used as Const.value
+    alongside a physical-NZ output. Const cloning/folding consumes the raw
+    GeTensor descriptor, not those public-API storage attributes.
     """
     logical = list(physical_desc.attr["origin_shape"].list.i)
     storage = list(physical_desc.shape.dim)
     if (physical_desc.layout != "FRACTAL_NZ" or _dtype(physical_desc) != "DT_INT8"
             or len(logical) != 2 or min(logical) <= 0 or storage != _nz_shape(*logical)):
         raise ValueError("W8 Const value requires a valid logical/physical NZ descriptor")
-    value = _storage_desc(physical_desc, layout="ND", shape=logical, origin_shape=logical)
-    value.attr["storage_format"].i = 29
-    value.attr["storage_shape"].list.val_type = 2
-    value.attr["storage_shape"].list.i[:] = storage
-    # This is already normalized; normalizing it a second time would replace
-    # the NZ storage attributes with the logical ND shape/format.
-    value.attr["origin_format_is_set"].b = False
-    return value
+    if (physical_desc.attr["format_for_int"].i != 29
+            or physical_desc.attr["origin_format_for_int"].i != 2
+            or not physical_desc.attr["origin_shape_initialized"].b
+            or not physical_desc.attr["origin_format_is_set"].b
+            or "storage_shape" in physical_desc.attr or "storage_format" in physical_desc.attr):
+        raise ValueError("W8 Const value requires an unnormalized physical NZ descriptor")
+    return copy.deepcopy(physical_desc)
 
 
 def pack_int8_nz(weight):
@@ -152,9 +149,8 @@ def prepack_weight_quant_constants(graph, layout_audit, immutable_weights, cache
         data, logical_hash, cached = _cached_weight(matrix, cache)
         desc = copy.deepcopy(conversion.output_desc[0])
         name = conversion.name
-        # Const.value supplies a logical shape to GE inference. Its payload is
-        # prepacked, identified by storage attributes; the outgoing edge still
-        # supplies the physical NZ shape/format to the WeightNz tiler.
+        # Both the raw value and its edge describe the actual NZ bytes.
+        # The logical dimensions are retained separately in origin_shape.
         conversion.Clear()
         conversion.name, conversion.type = name, "Const"
         conversion.output_desc.add().CopyFrom(desc)
@@ -169,8 +165,8 @@ def prepack_weight_quant_constants(graph, layout_audit, immutable_weights, cache
                 "logical_shape": list(matrix.shape), "storage_shape": cached["storage_shape"],
                 "descriptor_policy": CONST_DESC_POLICY,
                 "output_shape_locked": True,
-                "value_shape": list(matrix.shape), "value_format": "ND",
-                "value_storage_shape": cached["storage_shape"], "value_storage_format": "FRACTAL_NZ",
+                "value_shape": cached["storage_shape"], "value_format": "FRACTAL_NZ",
+                "value_origin_shape": list(matrix.shape), "value_origin_format": "ND",
                 "logical_bytes": matrix.numel(), "storage_bytes": len(data),
                 "logical_sha256": logical_hash,
                 "storage_sha256": hashlib.sha256(data).hexdigest(),
@@ -254,8 +250,8 @@ def valid_prepacked_record(node):
             and record.get("dtype") == "int8" and record.get("format") == "FRACTAL_NZ"
             and record.get("descriptor_policy") == CONST_DESC_POLICY
             and record.get("output_shape_locked") is True
-            and record.get("value_shape") == shape and record.get("value_format") == "ND"
-            and record.get("value_storage_shape") == storage and record.get("value_storage_format") == "FRACTAL_NZ"
+            and record.get("value_shape") == storage and record.get("value_format") == "FRACTAL_NZ"
+            and record.get("value_origin_shape") == shape and record.get("value_origin_format") == "ND"
             and record.get("logical_shape") == shape and record.get("storage_shape") == storage
             and record.get("logical_bytes") == prod(shape) and record.get("storage_bytes") == prod(storage)
             and record.get("roundtrip") == "BIT_EXACT" and record.get("padding") == "ZERO"

@@ -315,7 +315,8 @@ def canonical_runtime_input_abi(
                     print(f"[export-air] W8 offline NZ constants={weight_quant['node_count']} "
                           "weight_transdata=0 roundtrip=BIT_EXACT "
                           f"const_value_shape={node['prepacked_constant']['value_shape']} "
-                          f"const_value_format=ND storage_format=FRACTAL_NZ "
+                          f"const_value_format={node['prepacked_constant']['value_format']} "
+                          f"const_value_origin={node['prepacked_constant']['value_origin_shape']} "
                           "const_output_shape_locked=true weightquant_inference=enabled "
                           f"descriptor={weight_quant['prepack']['descriptor_policy']}", flush=True)
             gdr_dtypes = _gdr_output_dtype_audit(export_graph)

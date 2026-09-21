@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "purpose": "runtime identity contract for Qwen3.5-4B DFlash two-pass chunk-GDR rollback with the original GDR effective-length ABI and optional Target-only W8A8 dynamic quantization configured by the original inference YAML; incremental three-OM DFlash with one compact Draft / optional fourth ordinary decode and Python/C++ single-window msprof diagnostics; optional GDR MTP bank-select verification in Torch-NPU direct inference and incremental AIR/OM/C++",
-  "package_revision": "r37",
+  "package_revision": "r38",
   "route_version": "dflash-rollback-original-quant-config-incremental-draft-kv-cache-two-pass-chunk-gdr",
   "package_layout": {
     "version": 7,
@@ -280,7 +280,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/runtime_input_export.py",
-        "source_sha256": "5fba7a9c23a4e91d2f55e93a63a06d8dd4526e87c6740a4f6f1cbb748d37ab28"
+        "source_sha256": "28deb492e615cb25da71189fd85ae7f51241569d23feabff002ea37e7aeff761"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/standard_op_export.py",
@@ -624,7 +624,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/weight_prepack.py",
-        "source_sha256": "64a6a62d0df26bae760d366a0877ae61c8aa5f8567a12cbdb7cdc6bf7322e7d2"
+        "source_sha256": "536915da7fd13f6f382f625fff4545498fa50e5f2daf7932357389d7131378e7"
       },
       {
         "source_file": "tools/pack_draft_weights_nz.py",
@@ -632,7 +632,7 @@
       },
       {
         "source_file": "tests/test_weight_prepack.py",
-        "source_sha256": "18a88ad5eb2edb88c6f1f792d45ce85714fd954580acb35dc4de1582aa656627"
+        "source_sha256": "55291f6c01b6462299d00a1e667489199f5922351f43b2ebb31ab78822d59fc5"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/atc_diagnostics.py",
@@ -848,7 +848,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/weight_prepack.py",
-        "source_sha256": "64a6a62d0df26bae760d366a0877ae61c8aa5f8567a12cbdb7cdc6bf7322e7d2"
+        "source_sha256": "536915da7fd13f6f382f625fff4545498fa50e5f2daf7932357389d7131378e7"
       },
       {
         "source_file": "tools/pack_draft_weights_nz.py",
@@ -856,7 +856,7 @@
       },
       {
         "source_file": "tests/test_weight_prepack.py",
-        "source_sha256": "18a88ad5eb2edb88c6f1f792d45ce85714fd954580acb35dc4de1582aa656627"
+        "source_sha256": "55291f6c01b6462299d00a1e667489199f5922351f43b2ebb31ab78822d59fc5"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/atc_diagnostics.py",
@@ -886,11 +886,11 @@
         "policy": "w8-int8-nz-const-v1",
         "converter": "tools/pack_draft_weights_nz.py --manifest <existing W8 member manifest> --output-dir <new run directory>",
         "activation": "export-air --draft-weight-prepack-manifest <offline manifest>; native W8 only, default paths preserved",
-        "representation": "Offline v1 NZ files remain compatible. Const.value is logical ND[N,K] with NZ storage attributes; output and consumer are physical NZ with origin[N,K]. Only audited immutable NZ Const nodes carry _out_shape_locked=true. Byte/hash/zero-padding and edge consistency are checked before save. Public inputs and WeightQuant consumers must remain unlocked.",
+        "representation": "Offline v1 NZ files remain compatible. Const.value, output and consumer use the same physical FRACTAL_NZ[K1,N1,16,32] descriptor with logical origin_shape[N,K] and origin format ND; no public-Tensor storage_* normalization on the raw serialized value. Only audited immutable NZ Const nodes carry _out_shape_locked=true. Byte/hash/zero-padding and edge consistency are checked before save. Public inputs and WeightQuant consumers remain unlocked.",
         "runtime": "W8 weights reside in OM constants; 26 weight TransData removed from five-layer AIR; public dynamic input rank sum 47. Existing generic runner consumes the new manifest.",
-        "validation": "r34-r36 prepacked receiver compilation FAIL. r37 receiver tiny static16 PASS and runtime-weight dynamic16/64 PASS; prepacked dynamic16/64 FAIL in inserted TransData NZ_2_ND with rank-2 source. WeightQuant logical K is now correct (256). Prepacked OM execution, numerical parity and latency remain NOT_RUN. Full dynamic prepacked Draft is not admitted.",
+        "validation": "Physical-value descriptor revision: host export, byte-exact NZ payload, Const reconstruction and M16/64 reference checks PASS; local focused suite 195 passed, 1 skipped (fake ACL runner unavailable). Ascend310P ATC compilation, OM execution, numerical parity and latency for this revision are NOT_RUN.",
         "probe": "probe_draft_matmul_atc.py --bits 8 --projection tiny gate_up --prepack-weights",
-        "descriptor_policy": "locked-logical-value-physical-nz-output-v3",
+        "descriptor_policy": "locked-physical-nz-value-and-output-v4",
         "receiver_r34": "Prepacked tiny and gate_up both FAIL during InferShapeForWeightQuantBatchMatmulV2 on CANN 9.0.0 / Ascend310P; byte-exact host roundtrip did not establish valid Const inference metadata.",
         "ge_descriptor_reference": "https://gitcode.com/cann/ge/blob/56305bf5718657c1bcfd2fe9473d9ecd68ce2b97/graph_metadef/graph/normal_graph/tensor.cc",
         "receiver_r35": "Both tiny and gate_up FAIL in InferShapeForWeightQuantBatchMatmulV2 with descriptor=logical-value-physical-nz-output-v2 confirmed in receiver output. Actual failing shapes are absent from the provided log; Ka/Kb or dynamic-gear corruption remains unconfirmed.",
@@ -921,6 +921,17 @@
           "om_execution": "NOT_RUN",
           "numerical_parity": "NOT_RUN",
           "latency": "NOT_RUN"
+        },
+        "const_value_reference": {
+          "repository": "https://gitcode.com/cann/ge",
+          "commit": "59a14060e0e24528f0af26b1e5f72a1e455301c0",
+          "version_scope": "upstream reference, not verified as exact receiver binary source",
+          "paths": [
+            "graph_metadef/graph/utils/op_desc_utils.cc",
+            "graph_metadef/graph/normal_graph/tensor.cc",
+            "compiler/graph/passes/multi_batch/multi_batch_clone_pass.cc"
+          ],
+          "mechanism": "CreateConstOp recreates output from raw value.GetTensorDesc(); preserve physical NZ there as well as on the outgoing edge."
         }
       }
     }

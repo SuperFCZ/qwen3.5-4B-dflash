@@ -50,17 +50,17 @@ def const(node, value):
 
 
 def check_const_value_shape(constant, x_shape):
-    """Check our value descriptor encoding, NOT the result of CANN inference.
-
-    CANN 9.0 checks the logical K dimensions, but this helper does not execute
-    the passes that choose/propagate them. The r35 receiver failure shows that
-    passing this check is insufficient. Actual compiler snapshots are needed.
-    """
-    shape = list(constant.attr["value"].t.desc.shape.dim)
-    if x_shape[-1] != shape[-1]:
-        raise ValueError(f"Ka[{x_shape[-1]}] != Kb[{shape[-1]}]")
-    assert len(shape) == 2
-    return [x_shape[0], shape[0]]
+    """Check serialized storage and logical K, not CANN inference success."""
+    desc = constant.attr["value"].t.desc
+    shape = list(desc.shape.dim)
+    origin = list(desc.attr["origin_shape"].list.i)
+    if desc.layout != "FRACTAL_NZ" or len(shape) != 4 or len(origin) != 2:
+        raise ValueError("Const.value must describe physical NZ with a logical matrix origin")
+    if x_shape[-1] != origin[-1]:
+        raise ValueError(f"Ka[{x_shape[-1]}] != Kb[{origin[-1]}]")
+    n, k = origin
+    assert shape == [(k + 31) // 32, (n + 15) // 16, 16, 32]
+    return [x_shape[0], n]
 
 
 @pytest.mark.parametrize("n,k", [(64, 256), (19456, 2560), (2560, 9728), (2560, 12800)])
@@ -74,12 +74,16 @@ def test_const_value_encoding_keeps_logical_k_and_physical_storage(n, k, m):
     desc.layout = "FRACTAL_NZ"
     desc.shape.dim[:] = [(k + 31) // 32, (n + 15) // 16, 16, 32]
     desc.attr["format_for_int"].i = 29
+    desc.attr["origin_format_for_int"].i = 2
     desc.attr["origin_shape"].list.i[:] = [n, k]
     desc.attr["origin_shape_initialized"].b = True
     desc.attr["origin_format_is_set"].b = True
+    # The former public-Tensor encoding gave value ND[N,K] and output NZ4D.
+    # It passed a logical-K-only check but cannot recreate the physical edge.
     node.attr["value"].t.desc.CopyFrom(desc)
-    # This regression must fail for r34 even though its origin_shape is right.
-    with pytest.raises(ValueError, match=r"!= Kb\[32\]"):
+    node.attr["value"].t.desc.shape.dim[:] = [n, k]
+    node.attr["value"].t.desc.layout = "ND"
+    with pytest.raises(ValueError, match="physical NZ"):
         check_const_value_shape(node, [m, k])
     node.attr["value"].t.desc.CopyFrom(_const_value_desc(desc))
     saved = type(graph).FromString(graph.SerializeToString())
@@ -87,7 +91,7 @@ def test_const_value_encoding_keeps_logical_k_and_physical_storage(n, k, m):
     assert check_const_value_shape(saved_weight, [m, k]) == [m, n]
     # Inference metadata must not turn the outgoing carrier into ND.
     assert saved_weight.output_desc[0] == desc
-    assert list(saved_weight.attr["value"].t.desc.attr["storage_shape"].list.i) == list(desc.shape.dim)
+    assert saved_weight.attr["value"].t.desc == desc
 
 
 @pytest.mark.parametrize("n,k", [(1, 1), (17, 130), (67, 256), (19456, 2560), (2560, 9728)])
@@ -131,15 +135,17 @@ def test_air_nz_constants_equal_original_graph_for_both_gears(tmp_path, shared, 
     assert CONST_SHAPE_LOCK == "_out_shape_locked"  # GE's literal has a leading underscore.
     assert [n.name for n in g.op if CONST_SHAPE_LOCK in n.attr and n.attr[CONST_SHAPE_LOCK].b] == [nz.name]
     tensor_desc = nz.attr["value"].t.desc
-    assert list(tensor_desc.shape.dim) == [64, 256]
-    assert tensor_desc.layout == "ND" and tensor_desc.attr["format_for_int"].i == 2
-    assert not tensor_desc.attr["origin_format_is_set"].b
-    assert tensor_desc.attr["storage_format"].i == 29
-    assert list(tensor_desc.attr["storage_shape"].list.i) == [8, 4, 16, 32]
+    assert list(tensor_desc.shape.dim) == [8, 4, 16, 32]
+    assert tensor_desc.layout == "FRACTAL_NZ" and tensor_desc.attr["format_for_int"].i == 29
+    assert tensor_desc.attr["origin_format_is_set"].b
+    assert tensor_desc.attr["origin_format_for_int"].i == 2
+    assert list(tensor_desc.attr["origin_shape"].list.i) == [64, 256]
+    assert "storage_shape" not in tensor_desc.attr and "storage_format" not in tensor_desc.attr
+    assert tensor_desc == nz.output_desc[0]
     assert list(nz.output_desc[0].shape.dim) == [8, 4, 16, 32]
     assert nz.output_desc[0].layout == "FRACTAL_NZ"
     assert list(nz.output_desc[0].attr["origin_shape"].list.i) == [64, 256]
-    # Exercise the serialized representation, including value's storage attrs.
+    # Exercise the serialized physical value, including origin metadata.
     g = type(g).FromString(g.SerializeToString())
     nz = next(node for node in g.op if node.name == "quant_weight_nz")
     for rows in (16, 64):
@@ -156,9 +162,9 @@ def test_air_nz_constants_equal_original_graph_for_both_gears(tmp_path, shared, 
     with pytest.raises(ValueError): validate_weight_quant_layout(broken)
     broken = copy.deepcopy(entry); broken["metadata"]["draft_quantization"] = "w4a16"
     with pytest.raises(ValueError): validate_weight_quant_layout(broken)
-    for field, bad in (("descriptor_policy", None), ("value_shape", [8, 4, 16, 32]),
-                       ("value_format", "FRACTAL_NZ"), ("value_storage_shape", [64, 256]),
-                       ("value_storage_format", "ND"), ("output_shape_locked", False)):
+    for field, bad in (("descriptor_policy", None), ("value_shape", [64, 256]),
+                       ("value_format", "ND"), ("value_origin_shape", [8, 4, 16, 32]),
+                       ("value_origin_format", "FRACTAL_NZ"), ("output_shape_locked", False)):
         broken = copy.deepcopy(entry)
         bad_audit = broken["runtime_input_abi"]["weight_quant_layout"]
         # Keep duplicate audit records internally consistent; validate the
@@ -172,7 +178,7 @@ def test_air_nz_constants_equal_original_graph_for_both_gears(tmp_path, shared, 
         validate_weight_quant_layout(legacy)
 
 
-@pytest.mark.parametrize("damage", ["physical_origin", "double_nz", "consumer", "payload", "unlocked",
+@pytest.mark.parametrize("damage", ["physical_origin", "double_nz", "consumer", "payload", "unlocked", "nd_value",
                                     "public_input_lock", "weightquant_lock"])
 def test_shape_lock_cannot_hide_bad_carrier_or_lock_runtime_computation(tmp_path, damage):
     g = fixture_graph()
@@ -192,12 +198,59 @@ def test_shape_lock_cannot_hide_bad_carrier_or_lock_runtime_computation(tmp_path
         nz.attr["value"].t.data = q.numpy().tobytes()  # same length, wrong ordering
     elif damage == "unlocked":
         del nz.attr[CONST_SHAPE_LOCK]
+    elif damage == "nd_value":
+        # Same packed bytes and logical origin as the bad receiver artifact;
+        # correct input/output descriptors alone must no longer admit this.
+        desc = nz.attr["value"].t.desc
+        desc.shape.dim[:] = [64, 256]
+        desc.layout = "ND"
+        desc.attr["format_for_int"].i = 2
+        desc.attr["storage_shape"].list.i[:] = [8, 4, 16, 32]
+        desc.attr["storage_format"].i = 29
     elif damage == "public_input_lock":
         next(n for n in g.op if n.name == "x").attr[CONST_SHAPE_LOCK].b = True
     else:
         quant.attr[CONST_SHAPE_LOCK].b = True
     with pytest.raises(ValueError):
         validate_prepacked_graph(g, audit)
+
+
+@pytest.mark.parametrize("rows", [16, 64])
+def test_value_alone_recreates_the_same_nz_edge_and_exact_output(tmp_path, rows):
+    """Const recreation uses the raw GeTensor descriptor, not storage_* attrs.
+
+    Model GE CreateConstOp's value-to-output boundary after serialization.
+    This is a host regression for the AIR contract, not a GE execution mock.
+    """
+    graph = fixture_graph()
+    original = copy.deepcopy(graph)
+    # Vary both axes so a row/tile permutation cannot pass by coincidence.
+    q = ((torch.arange(64).reshape(-1, 1) * 17 + torch.arange(256) * 13) % 256 - 128).to(torch.int8)
+    const(next(n for n in graph.op if n.name == "w"), q)
+    prepack_weight_quant_constants(graph, normalize_weight_quant_layout(graph), {"w:0": q},
+                                  load_prepacked_weights(cached_weight(tmp_path, q)))
+    graph = type(graph).FromString(graph.SerializeToString())
+    weight = next(n for n in graph.op if n.name == "quant_weight_nz")
+    tensor = copy.deepcopy(weight.attr["value"].t)
+    # Discard the old output entirely, as a newly created Const would do.
+    del weight.output_desc[:]
+    weight.output_desc.add().CopyFrom(tensor.desc)
+    physical = list(tensor.desc.shape.dim)
+    logical = list(tensor.desc.attr["origin_shape"].list.i)
+    assert tensor.desc.layout == "FRACTAL_NZ" and len(physical) == len(logical) + 2
+    assert physical == [8, 4, 16, 32] and logical == [64, 256]
+    consumer = copy.deepcopy(next(n for n in graph.op if n.name == "quant").input_desc[1])
+    consumer.name = tensor.desc.name  # port labels need not match across an edge
+    assert tensor.desc == consumer
+    # Interpret bytes directly by value.shape; no storage-attribute override.
+    nz = torch.frombuffer(bytearray(tensor.data), dtype=torch.int8).reshape(physical)
+    for k in (0, 31, 32, 127, 128, 255):
+        for n in (0, 15, 16, 63):
+            assert nz[k // 32, n // 16, n % 16, k % 32] == q[n, k]
+    x = (torch.arange(rows * 256).reshape(rows, 256) % 7 - 3).half() / 16
+    s = (1 + (torch.arange(64).reshape(-1, 1) * 3 + torch.arange(2) * 5) % 13).half() / 64
+    assert torch.equal(evaluate_weight_quant_graph(graph, dict(x=x, w=q, s=s)),
+                       evaluate_weight_quant_graph(original, dict(x=x, w=q, s=s)))
 
 
 @pytest.mark.parametrize("damage", ["runtime_input", "weight_changed", "payload_changed", "rehashed_wrong_layout"])
