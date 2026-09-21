@@ -4,7 +4,7 @@
 
 **Decode 加速比 = `sum(普通 Decode 循环耗时) / sum(DFlash Decode 循环耗时)`**。
 计入 Decode 内的 Draft、Verify、提交和循环调度；不计 Prefill、Prefill 中的上下文构建及加载等请求开销。
-以下加速比由已记录的阶段均值重算，保留两位小数；同一组内两模式的测量次数相同，均值之比等于总耗时之比。
+加速比取报告的 Decode 分项，或由已记录的阶段均值重算，保留两位小数；同一组内两模式的测量次数相同，均值之比等于总耗时之比。
 
 接受率 = 总接受候选 / 总提出候选；生成吞吐（gen tok/s）保留原口径：实际生成 token 总数 / (Prefill + Decode)。
 两模式各自生成输出；`PASS_WITH_DIFFERENCES` 表示输出存在差异并允许纳入性能统计，任务正确率未评估。
@@ -210,6 +210,26 @@ Decode 时间加速比分别为 **0.45× / 0.62×**，两者均匹配 20 条。
 量化 checkpoint 为五层，FP16 为六层，此表包含模型结构差异。
 W8 单算子时延及投影映射见 [量化 Draft 优化分析](../framework/custom_ops/draft_quant/README.md)。
 
+### W8A16 复测
+
+`gdr-lengths-o0n3_wfe`：Chunk 验证、thinking 开启、输出上限 128 token；
+每个模式/每条 prompt 0 次预热、1 次测量。20 / 20 条均完成，状态为 `PASS_WITH_DIFFERENCES`；
+两种模式均各生成 128 token，接受 / 提出合计 **1906 / 9064**。
+
+| 分组 | 完成 / 选择 | 接受率 | token/投机轮 | 普通 gen tok/s | DFlash gen tok/s | Decode 加速比 | Draft ms/call | Verify ms/call |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| all | 20 / 20 | 21.03% | 3.93 | 24.64 | 25.42 | 1.20× | 63.50 | 51.20 |
+| short | 8 / 8 | 21.20% | 3.98 | 28.39 | 34.39 | 1.22× | 63.20 | 51.16 |
+| long | 12 / 12 | 20.91% | 3.90 | 22.65 | 21.65 | 1.19× | 63.64 | 51.22 |
+
+阶段耗时，单位 ms/次生成：
+
+| 分组 | 普通 Prefill | 普通 Decode | DFlash Prefill | DFlash Decode |
+|---|---:|---:|---:|---:|
+| all | 753.16 | 4441.36 | 1334.34 | 3701.45 |
+| short | 74.26 | 4434.83 | 74.99 | 3647.23 |
+| long | 1205.76 | 4445.72 | 2173.90 | 3737.60 |
+
 ## 数据来源
 
 | 结果 | 运行目录 |
@@ -217,6 +237,7 @@ W8 单算子时延及投影映射见 [量化 Draft 优化分析](../framework/cu
 | FP16 开源数据集，512 token | `gdr-lengths-x2l5aydx` |
 | FP16 自定义 prompt 与 W4/W8 解量化对比，128 token | `gdr-lengths-isajibrf` |
 | FP16/W4/W8 原生 MatMul 对比，128 token | `gdr-lengths-waw8h36d` |
+| W8A16 自定义复测，128 token | `gdr-lengths-o0n3_wfe` |
 
 各运行目录的 `summary.json` 保存汇总，各 Draft 子目录的 `cases.csv` 保存逐题结果；
 分文件报告见 `datasets/<dataset-id>/summary.json`、`summary.md` 和 `datasets.csv`。

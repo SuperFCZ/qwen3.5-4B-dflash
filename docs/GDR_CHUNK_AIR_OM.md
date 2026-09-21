@@ -150,12 +150,15 @@ FP16 激活、group-128 scale、`inner_precise=0`。W8 使用 INT8 权重；W4 �
 
 ### W8 固定权重离线 NZ 转换
 
-预打包为实验选项。先从 W8 成员清单生成可复用的 NZ 文件，转换在 CPU 执行：
+从已有 W8 成员清单生成可复用的 NZ 文件，转换在 CPU 执行。
+`OM_BUNDLE_DIR` 指向原始 W8 包；本节的新权重、AIR、OM 和 runner 全部放在 `W8_NZ_DIR`：
 
 ```bash
+export W8_NZ_DIR="$(mktemp -d "$AI_RUN_DIR/w8-nz-full-XXXXXXXX")"
+
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/pack_draft_weights_nz.py" \
   --manifest "$OM_BUNDLE_DIR/air-manifest-w8a16-chunk.json" \
-  --output-dir "$AI_RUN_DIR/w8-nz-weights"
+  --output-dir "$W8_NZ_DIR/weights"
 ```
 
 输出 `manifest.json` 和 `weight-*.nz.bin`；脚本检查哈希、零填充和逐字节还原。
@@ -165,26 +168,58 @@ FP16 激活、group-128 scale、`inner_precise=0`。W8 使用 INT8 权重；W4 �
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
   --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --device-id "$DEVICE_ID" \
   --bits 8 --projection tiny gate_up --prepack-weights --static-om-gears \
-  --output-dir "$AI_RUN_DIR/matmul-atc-static"
+  --output-dir "$W8_NZ_DIR/matmul-atc-static"
 
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/validate_draft_matmul_om.py" \
-  --probe-summary "$AI_RUN_DIR/matmul-atc-static/summary.json" \
-  --build-cpp-runner \
+  --probe-summary "$W8_NZ_DIR/matmul-atc-static/summary.json" \
+  --build-cpp-runner --ascendcl-root "$CANN_ROOT" \
   --device-id "$DEVICE_ID" --repetitions 3 \
-  --output-dir "$AI_RUN_DIR/matmul-om-validation"
+  --output-dir "$W8_NZ_DIR/matmul-om-validation"
+
+export W8_NZ_RUNNER="$W8_NZ_DIR/matmul-om-validation/cpp-build/qwen35_dflash_acl_runner"
 ```
 
-首次校验在输出目录编译 C++ runner，使用当前 CANN 的头文件和库；可用 `--ascendcl-root "$ASCEND_HOME_PATH"` 指定工具链。
-后续用 `--runner /path/to/qwen35_dflash_acl_runner` 复用支持 `--matmul-probe` 的 runner。
-校验复用四个 OM，检查 ABI、分组/分块边界、稠密输入和重复执行；CPU 仅生成参考结果，C++ 执行不需要 Python `acl`。
-通过后可在正常 `export-air` 命令中增加：
+校验在输出目录构建支持静态 M16/M64 选择的 C++ runner，不需要 Python `acl`。
+检查四个 OM 的 ABI、分组/分块边界、稠密输入和重复执行后，再导出完整 W8 包：
 
 ```bash
---draft-weight-prepack-manifest "$AI_RUN_DIR/w8-nz-weights/manifest.json"
+"$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p export-air \
+  --factory qwen35_dflash.ascend310p.quant_factory:create_quant_incremental_graphs \
+  --factory-config "$AI_RUN_DIR/factory.json" \
+  --bundle-dir "$W8_NZ_DIR/bundle" \
+  --draft-quantizations w8a16 --w8a16-draft-dir "$DRAFT_W8A16_DIR" \
+  --verify-gdr chunk --draft-quant-matmul weight_quant \
+  --draft-weight-prepack-manifest "$W8_NZ_DIR/weights/manifest.json"
+
+"$MODEL_PYTHON" -B -m qwen35_dflash.ascend310p compile-om \
+  --air-manifest "$W8_NZ_DIR/bundle/air-manifest.json" \
+  --draft-quantizations w8a16 \
+  --atc "$ATC_BIN" --soc-version "$SOC_VERSION" --resume
 ```
 
-使用新的 bundle 目录导出、编译；该选项将 W8 Draft 编译为两个静态 OM，需使用支持 M16/M64 选择的新 runner。
-复测对比固定权重 `TransData` 数量、Draft ms/call、生成时延和接受率。
+每步成功后执行下一步。这里编译新包中的 Target 图及 W8 Draft；`--resume` 复用该新目录内已完成的产物。
+完整 Draft 的静态策略由导出清单记录，`compile-om` 无需添加 `--static-om-gears`；
+日志应出现 `draft static_rows=16` 和 `draft static_rows=64`。
+
+先测试短、长输入各一条，明确选择新 bundle 和对应 runner：
+
+```bash
+"$MODEL_PYTHON" -B "$REPO_ROOT/tools/benchmark_gdr_lengths.py" \
+  --run-dir "$W8_NZ_DIR" --runner "$W8_NZ_RUNNER" \
+  --runner-config "$RUNNER_CONFIG" --model-dir "$TARGET_DIR" \
+  --bundle-dir "$W8_NZ_DIR/bundle" --draft-quantization w8a16 \
+  --verify-gdr chunk --lengths 128 \
+  --prompt-id zh_explain --prompt-id long_zh_summary \
+  --enable-thinking --warmup 1 --repetitions 3 \
+  --max-draft-tokens "$MAX_DRAFT_TOKENS" --device-id "$DEVICE_ID" \
+  --low-memory --allow-output-differences
+```
+
+两条完成后，移除上述两个 `--prompt-id` 参数，重跑测试命令即可测量全部 20 条自定义输入。
+重新打开终端时，把 `W8_NZ_DIR` 设为这次已经生成的目录，并恢复 `W8_NZ_RUNNER`，无需重复转换和编译。
+`--draft-quantization w8a16` 只选择 checkpoint 类型；测量对象由 `--bundle-dir` 和其中的部署清单决定。
+对比接受率、Draft ms/call、Decode 加速比及 profile 中固定权重 `TransData` 的数量。
+Decode 加速比不含 Prefill；`--allow-output-differences` 允许记录性能，输出一致性仍单独判定。
 
 ## 统一测试
 
