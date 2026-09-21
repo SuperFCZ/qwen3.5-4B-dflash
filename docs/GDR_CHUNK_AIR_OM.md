@@ -159,7 +159,7 @@ FP16 激活、group-128 scale、`inner_precise=0`。W8 使用 INT8 权重；W4 �
 ```
 
 输出 `manifest.json` 和 `weight-*.nz.bin`；脚本检查哈希、零填充和逐字节还原。
-小图先编译 M16/M64，再执行数值校验（需要 CANN Python `acl`）：
+小图先编译 M16/M64，再用原生 AscendCL 执行数值校验：
 
 ```bash
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/probe_draft_matmul_atc.py" \
@@ -169,11 +169,14 @@ FP16 激活、group-128 scale、`inner_precise=0`。W8 使用 INT8 权重；W4 �
 
 "$MODEL_PYTHON" -B "$REPO_ROOT/tools/validate_draft_matmul_om.py" \
   --probe-summary "$AI_RUN_DIR/matmul-atc-static/summary.json" \
+  --build-cpp-runner \
   --device-id "$DEVICE_ID" --repetitions 3 \
   --output-dir "$AI_RUN_DIR/matmul-om-validation"
 ```
 
-校验直接复用四个 OM，检查 ABI、分组/分块边界、稠密输入和重复执行；CPU 仅生成参考结果。
+首次校验在输出目录编译 C++ runner，使用当前 CANN 的头文件和库；可用 `--ascendcl-root "$ASCEND_HOME_PATH"` 指定工具链。
+后续用 `--runner /path/to/qwen35_dflash_acl_runner` 复用支持 `--matmul-probe` 的 runner。
+校验复用四个 OM，检查 ABI、分组/分块边界、稠密输入和重复执行；CPU 仅生成参考结果，C++ 执行不需要 Python `acl`。
 通过后可在正常 `export-air` 命令中增加：
 
 ```bash

@@ -86,6 +86,12 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
   std::map<std::string, aclDataBuffer*> in, out;
   for (std::size_t i = 0; i < model.inputs.size(); ++i) in[model.inputs[i].name] = input->buffers[i];
   for (std::size_t i = 0; i < model.outputs.size(); ++i) out[model.outputs[i].name] = output->buffers[i];
+  if (model.role == "matmul_probe") {
+    // Identity fixture exercises native transport, never MatMul/device accuracy.
+    if (in.size() != 1 || out.size() != 1 || in.at("x")->size != out.at("y")->size) return 43;
+    std::memcpy(out.at("y")->data, in.at("x")->data, in.at("x")->size);
+    return ACL_SUCCESS;
+  }
   for (const auto& item : in)
     if (TouchesDiscard(item.second->data, item.second->size)) return 29;
   for (const auto& item : out) {

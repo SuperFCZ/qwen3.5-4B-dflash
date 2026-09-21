@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(qwen35_dflash_acl_runner VERSION 1.15.0 LANGUAGES CXX)
+project(qwen35_dflash_acl_runner VERSION 1.16.0 LANGUAGES CXX)
 
 option(QWEN35_DFLASH_BUILD_ACL_RUNNER "Build the AscendCL executable" ON)
 option(QWEN35_DFLASH_BUILD_TESTS "Build host-only scheduler tests" ON)
@@ -46,6 +46,7 @@ if(QWEN35_DFLASH_BUILD_ACL_RUNNER)
   endif()
 
   add_executable(qwen35_dflash_acl_runner
+    src/matmul_probe.cpp
     src/acl_executor.cpp
     src/acl_chunk.cpp
     src/stage_profile.cpp
@@ -80,6 +81,7 @@ if(QWEN35_DFLASH_BUILD_TESTS)
   target_compile_options(qwen35_dflash_fake_acl PRIVATE -Wall -Wextra -Wpedantic)
 
   add_executable(qwen35_dflash_acl_runner_fake
+    src/matmul_probe.cpp
     src/acl_executor.cpp
     src/acl_chunk.cpp
     src/stage_profile.cpp

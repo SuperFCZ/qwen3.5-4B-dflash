@@ -3,6 +3,7 @@
 #include "qwen35_dflash/generation.hpp"
 #include "qwen35_dflash/sha256.hpp"
 #include "qwen35_dflash/stage_profile.hpp"
+#include "qwen35_dflash/matmul_probe.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -63,6 +64,7 @@ struct Arguments {
 void Usage(std::ostream& stream) {
   stream
       << "Usage: qwen35_dflash_acl_runner [options]\n"
+      << "  --matmul-probe               static FP16 I/O OM diagnostic; use validate_draft_matmul_om.py --runner\n"
       << "  --model PATH                 hash-locked integrated OM\n"
       << "  --model-sha256 HEX           expected OM SHA-256\n"
       << "  --model-kind TYPE            recompute or chunk (model is a loading plan)\n"
@@ -921,6 +923,8 @@ bool RunPromptBatch(const Arguments& arguments, qwen35::dflash::GraphExecutor& e
 
 int main(int argc, char** argv) {
   try {
+    if (argc > 1 && std::string(argv[1]) == "--matmul-probe")
+      return qwen35::dflash::RunMatmulProbe(argc, argv);
     const Arguments arguments = ParseArguments(argc, argv);
     if (!std::filesystem::is_regular_file(arguments.model)) {
       throw std::runtime_error("OM file does not exist: " + arguments.model.string());

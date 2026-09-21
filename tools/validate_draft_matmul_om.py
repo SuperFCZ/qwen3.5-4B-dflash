@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Execute previously compiled offline-NZ W8 probe OMs against exact CPU oracles.
 
-Synthetic MatMul validation only. Uses CANN's Python acl binding; no checkpoint,
-ATC invocation, runtime weight conversion or full-Draft performance measurement.
+Synthetic MatMul validation only. Uses native AscendCL with --runner or
+--build-cpp-runner, or Python acl when neither is given. Reuses compiled OMs.
 """
 from __future__ import annotations
 
@@ -19,7 +19,9 @@ import numpy as np
 import torch
 
 from tools.probe_draft_matmul_atc import SHAPES, make_spec
+from tools import matmul_probe_cpp
 from qwen35_dflash.ascend310p.acl_runtime import AclOmRuntime
+from qwen35_dflash.ascend310p.cpp_runtime import build_cpp_runner
 from qwen35_dflash.ascend310p.draft_gears import STATIC_POLICY, verify_om_files
 from qwen35_dflash.ascend310p.utils import atomic_write_json, contained_path, require_run_output, sha256_file
 from qwen35_dflash.ascend310p.weight_prepack import load_prepacked_weights, _cached_weight
@@ -165,12 +167,37 @@ def check_abi(runtime, rows, k, n):
             raise ValueError(f"OM ABI differs: expected FP16 {expected}, got {values}")
 
 
+def evaluate_vectors(result, samples, repetitions, execute):
+    for index, (name, x, expected) in enumerate(samples):
+        item = dict(name=name, input_sha256=hashlib.sha256(x.tobytes()).hexdigest(),
+                    expected_sha256=hashlib.sha256(expected.tobytes()).hexdigest(),
+                    measurements=[])
+        result["vectors"].append(item)
+        for repetition in range(repetitions):
+            actual = execute(index, repetition, x)
+            comparison = compare(expected, actual)
+            item["measurements"].append(dict(comparison, repetition=repetition,
+                output_sha256=hashlib.sha256(actual.tobytes()).hexdigest()))
+            result["execution_status"] = "PASS"
+        item["repeat_drift"] = len({m["output_sha256"] for m in item["measurements"]}) != 1
+        item["status"] = "PASS" if not item["repeat_drift"] and all(
+            m["status"] == "PASS" for m in item["measurements"]) else "FAIL"
+    result.update(status="PASS" if all(v["status"] == "PASS" for v in result["vectors"]) else "FAIL",
+                  phase="complete")
+
+
 def run(args):
     root = require_run_output(args.output_dir)
     if root.exists():
         raise FileExistsError("use a new output directory; existing validation evidence is retained")
-    if args.device_id < 0 or args.repetitions < 1:
-        raise ValueError("device-id must be nonnegative and repetitions must be positive")
+    if not 0 <= args.device_id <= 65535 or not 1 <= args.repetitions <= 1000:
+        raise ValueError("device-id must be 0..65535 and repetitions must be 1..1000")
+    runner = getattr(args, "runner", None)
+    build_native = getattr(args, "build_cpp_runner", False)
+    if runner and build_native:
+        raise ValueError("use either --runner or --build-cpp-runner")
+    if getattr(args, "ascendcl_root", None) and not build_native:
+        raise ValueError("--ascendcl-root requires --build-cpp-runner")
     root.mkdir(parents=True)
     report = {
         "schema_version": 1, "status": "RUNNING",
@@ -178,7 +205,8 @@ def run(args):
         "probe_summary": record(args.probe_summary), "device_id": args.device_id,
         "validator": record(__file__),
         "synthetic_probe_builder": record(REPO / "tools/probe_draft_matmul_atc.py"),
-        "runtime": "CANN Python acl", "cpu_fallback": False,
+        "runtime": "AscendCL C++ matmul probe" if runner or build_native else "CANN Python acl",
+        "cpu_fallback": False,
         "reference_device": "CPU only for expected values; all candidate execution requires ACL",
         "numerical_gate": "finite and exact FP16 values on bounded dyadic inputs; no tolerance",
         "repetitions": args.repetitions, "cases": [],
@@ -188,6 +216,14 @@ def run(args):
         summary, jobs = prepare(args.probe_summary)
         report["compiled_environment"] = summary.get("environment")
         report["compiled_soc_version"] = summary.get("soc_version")
+        if build_native:
+            built = build_cpp_runner(build_dir=root / "cpp-build", output=root / "cpp-build.json",
+                                     ascendcl_root=getattr(args, "ascendcl_root", None))
+            runner = built["runner_path"]
+        if runner:
+            runner = matmul_probe_cpp.preflight(runner)
+            report["runner"] = record(runner)
+            report["native_transport"] = record(REPO / "tools/matmul_probe_cpp.py")
         for job in jobs:
             k, n = SHAPES[job["projection"]]
             units = weight_units(job)
@@ -196,33 +232,29 @@ def run(args):
                               execution_status="NOT_RUN", phase="load", vectors=[], sources=job["sources"])
                 report["cases"].append(result)
                 try:
-                    with AclOmRuntime(job["deployment"], device_id=args.device_id, static_gear_rows=rows) as runtime:
-                        result["om_sha256"] = runtime.artifact_hashes()[GRAPH]
-                        result["acl_module"] = getattr(runtime.acl, "__file__", None)
-                        check_abi(runtime, rows, k, n)
-                        result["phase"] = "execute"
-                        for name, x, expected in vectors(units, rows):
-                            item = dict(name=name, input_sha256=hashlib.sha256(x.tobytes()).hexdigest(),
-                                        expected_sha256=hashlib.sha256(expected.tobytes()).hexdigest(),
-                                        measurements=[])
-                            result["vectors"].append(item)
-                            for repetition in range(args.repetitions):
+                    samples = list(vectors(units, rows))
+                    if runner:
+                        outputs = matmul_probe_cpp.execute(runner, job, rows, samples,
+                            device_id=args.device_id, repetitions=args.repetitions, root=root, result=result)
+                        evaluate_vectors(result, samples, args.repetitions,
+                                         lambda index, repeat, x: outputs[index, repeat])
+                    else:
+                        with AclOmRuntime(job["deployment"], device_id=args.device_id, static_gear_rows=rows) as runtime:
+                            result["om_sha256"] = runtime.artifact_hashes()[GRAPH]
+                            result["acl_module"] = getattr(runtime.acl, "__file__", None)
+                            check_abi(runtime, rows, k, n)
+                            result["phase"] = "execute"
+                            def execute(index, repetition, x):
                                 outputs = runtime.run_graph(GRAPH, {"x": x})
                                 runtime.synchronize()
                                 if set(outputs) != {"y"}:
                                     raise ValueError("OM output names differ")
-                                actual = outputs["y"]
-                                comparison = compare(expected, actual)
-                                item["measurements"].append(dict(comparison, repetition=repetition,
-                                    output_sha256=hashlib.sha256(actual.tobytes()).hexdigest()))
-                                result["execution_status"] = "PASS"
-                            item["repeat_drift"] = len({m["output_sha256"] for m in item["measurements"]}) != 1
-                            item["status"] = "PASS" if not item["repeat_drift"] and all(
-                                m["status"] == "PASS" for m in item["measurements"]) else "FAIL"
-                        result.update(status="PASS" if all(v["status"] == "PASS" for v in result["vectors"]) else "FAIL",
-                                      phase="complete")
+                                return outputs["y"]
+                            evaluate_vectors(result, samples, args.repetitions, execute)
                 except Exception as error:
                     result.update(status="FAIL", error=f"{type(error).__name__}: {error}")
+                    if isinstance(error, ModuleNotFoundError) and error.name == "acl":
+                        result["error"] += "; use --build-cpp-runner or --runner <updated C++ runner>"
                     if result["phase"] == "execute":
                         result["execution_status"] = "FAIL"
                 print(f"[matmul-om] {job['projection']} M{rows} {result['status']} phase={result['phase']}", flush=True)
@@ -233,6 +265,8 @@ def run(args):
                         if item.get("status") == "FAIL":
                             print(f"  {item['name']}: {item['measurements'][0]}", flush=True)
                 atomic_write_json(root / "summary.json", report)
+        if runner and sha256_file(runner) != report["runner"]["sha256"]:
+            raise ValueError("C++ runner changed during validation")
         for source in [report["probe_summary"]] + [s for j in jobs for s in j["sources"]]:
             if sha256_file(source["path"]) != source["sha256"]:
                 raise ValueError("source probe artifacts changed during validation")
@@ -253,6 +287,11 @@ def main(argv=None):
     cli.add_argument("--output-dir", type=Path, required=True)
     cli.add_argument("--device-id", type=int, default=0)
     cli.add_argument("--repetitions", type=int, default=3)
+    native = cli.add_mutually_exclusive_group()
+    native.add_argument("--runner", type=Path, help="native AscendCL runner with --matmul-probe; no Python acl needed")
+    native.add_argument("--build-cpp-runner", action="store_true",
+                        help="build and use the native runner below output-dir; requires active CANN C++ toolkit")
+    cli.add_argument("--ascendcl-root", type=Path, help="optional CANN root for --build-cpp-runner")
     args = cli.parse_args(argv)
     try:
         return run(args)
