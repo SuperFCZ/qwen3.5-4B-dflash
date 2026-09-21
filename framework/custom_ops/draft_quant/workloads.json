@@ -2,16 +2,19 @@
   "schema_version": 1,
   "status": "REQUIREMENTS_ONLY",
   "target": "Ascend310P",
-  "review_source_commit": "2533557785df7538cdbc92da0df40f97e1da1239",
+  "review_source_commit": "d8b10ab8d1c0bb22f9147f232962eede1542fcf9",
   "provenance": {
     "kind": "user-provided-terminal-tables-and-source-review",
     "receiver": {
       "cann": "9.0.0",
       "torch_npu": "2.8.0.post1+gitc7b6b32"
     },
-    "benchmark_run": "gdr-lengths-waw8h36d",
+    "benchmark_run": "w8-nz-full-tsUMDuhH/gdr-lengths-mjhazgip",
     "profile_context_rows": 64,
-    "profile_block_rows": 16
+    "profile_block_rows": 16,
+    "comparison_run": "gdr-lengths-waw8h36d",
+    "profile_scope": "Earlier W8 runtime-weight-conversion graph, C64; not the current offline-NZ kernel breakdown",
+    "current_offline_nz_kernel_profile": null
   },
   "precision": {
     "activation": "float16",
@@ -315,7 +318,10 @@
       "speedup_scope": "decode_loop",
       "ordinary_decode_mean_ms": 4425.19,
       "dflash_decode_mean_ms": 2304.8,
-      "decode_time_speedup": 1.92
+      "decode_time_speedup": 1.92,
+      "run": "gdr-lengths-waw8h36d",
+      "warmup": 0,
+      "repetitions": 1
     },
     "w4a16": {
       "draft_ms": 94.68,
@@ -327,19 +333,298 @@
       "speedup_scope": "decode_loop",
       "ordinary_decode_mean_ms": 4425.19,
       "dflash_decode_mean_ms": 5081.96,
-      "decode_time_speedup": 0.87
+      "decode_time_speedup": 0.87,
+      "run": "gdr-lengths-waw8h36d",
+      "warmup": 0,
+      "repetitions": 1
     },
     "w8a16": {
-      "draft_ms": 63.52,
-      "verify_ms": 51.25,
+      "draft_ms": 47.89,
+      "verify_ms": 51.17,
       "acceptance_percent": 21.03,
       "tokens_per_round": 3.93,
-      "ordinary_tps": 24.74,
-      "dflash_tps": 25.41,
+      "ordinary_tps": 24.67,
+      "dflash_tps": 29.16,
       "speedup_scope": "decode_loop",
-      "ordinary_decode_mean_ms": 4425.19,
-      "dflash_decode_mean_ms": 3703.48,
-      "decode_time_speedup": 1.19
+      "ordinary_decode_mean_ms": 4436.34,
+      "dflash_decode_mean_ms": 3193.72,
+      "decode_time_speedup": 1.39,
+      "run": "w8-nz-full-tsUMDuhH/gdr-lengths-mjhazgip",
+      "warmup": 1,
+      "repetitions": 3,
+      "measured_prompts": 20,
+      "accepted": 5718,
+      "proposed": 27192,
+      "status": "PASS_WITH_DIFFERENCES",
+      "ordinary_output_parity": "FAIL",
+      "task_quality": "NOT_EVALUATED",
+      "ordinary_prefill_mean_ms": 752.38,
+      "dflash_prefill_mean_ms": 1195.57,
+      "draft_graph_cumulative_mean_ms": 1977.69,
+      "verify_graph_cumulative_mean_ms": 1652.73,
+      "draft_graph_scope": "includes pre-decode context-building calls",
+      "throughput_scope": "actual output tokens / (prefill + decode)"
     }
-  }
+  },
+  "architecture": {
+    "layers": 5,
+    "hidden_size": 2560,
+    "intermediate_size": 9728,
+    "selected_feature_width": 12800,
+    "unified_feature_width": 28160,
+    "q_heads": 32,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "block_rows": 16,
+    "max_proposal_tokens": 15,
+    "context_row_gears": [
+      16,
+      64
+    ],
+    "compile_policy": "static_draft16_64_oms",
+    "weight_layout": "w8-int8-nz-const-v1",
+    "weight_quant_calls_per_draft": 26,
+    "w8_projection_weight_bytes": 537395200,
+    "projection_scale_bytes": 8396800,
+    "byte_scope": "logical tensor sizes; not measured HBM traffic or resident device memory"
+  },
+  "current_w8_nz_groups": [
+    {
+      "group": "all",
+      "prompts": 20,
+      "acceptance_percent": 21.03,
+      "tokens_per_round": 3.93,
+      "draft_ms": 47.89,
+      "verify_ms": 51.17,
+      "decode_time_speedup": 1.39
+    },
+    {
+      "group": "short",
+      "prompts": 8,
+      "acceptance_percent": 21.2,
+      "tokens_per_round": 3.98,
+      "draft_ms": 47.54,
+      "verify_ms": 51.13,
+      "decode_time_speedup": 1.41
+    },
+    {
+      "group": "long",
+      "prompts": 12,
+      "acceptance_percent": 20.91,
+      "tokens_per_round": 3.9,
+      "draft_ms": 48.04,
+      "verify_ms": 51.2,
+      "decode_time_speedup": 1.38
+    }
+  ],
+  "decode_sensitivity": {
+    "scope": "optimistic algebraic budget, not a device prediction or hardware roofline",
+    "assumptions": [
+      "same proposal/acceptance trajectory",
+      "same Verify latency and invocation count",
+      "all non-Verify decode time optimizable"
+    ],
+    "baseline_decode_mean_ms": 3193.72,
+    "fixed_verify_mean_ms": 1652.73,
+    "formula": "new_decode = fixed_verify + (baseline_decode - fixed_verify) / non_verify_speed_factor",
+    "non_verify_factors": [
+      2,
+      3
+    ],
+    "zero_non_verify_relative_limit": 1.9323906506204884,
+    "matched_hardware_capability_profile": null
+  },
+  "operator_requirements": [
+    {
+      "id": "A",
+      "name": "DFlashGroupQuantLinear",
+      "priority": "P0",
+      "initial_scope": [
+        "w8a16 gate_up M16",
+        "w8a16 down M16"
+      ],
+      "input_dtypes": [
+        "float16",
+        "int8 FRACTAL_NZ",
+        "float16 GN"
+      ],
+      "output": "float16 [M,N]",
+      "precision_classification": "uncertain until native rounding/accumulation equivalence is established"
+    },
+    {
+      "id": "D",
+      "name": "DFlashW8GateUpSwiGLU",
+      "priority": "P1",
+      "input_shapes": [
+        [
+          16,
+          2560
+        ],
+        [
+          80,
+          1216,
+          16,
+          32
+        ],
+        [
+          20,
+          19456
+        ]
+      ],
+      "input_dtypes": [
+        "float16",
+        "int8 FRACTAL_NZ",
+        "float16 GN"
+      ],
+      "output_shape": [
+        16,
+        9728
+      ],
+      "output_dtype": "float16",
+      "projection_handoff_bytes_avoided_per_layer": 1245184,
+      "overlaps_with": "A gate_up"
+    },
+    {
+      "id": "C",
+      "name": "DFlashDraftLmHeadTop1",
+      "priority": "P1",
+      "input_shapes": [
+        [
+          15,
+          2560
+        ],
+        [
+          248320,
+          2560
+        ]
+      ],
+      "input_dtypes": [
+        "float16",
+        "float16"
+      ],
+      "output_shape": [
+        15
+      ],
+      "output_dtype": "int64",
+      "vocabulary_policy": "full vocabulary; lowest original token ID on equal FP16 logits"
+    },
+    {
+      "id": "E",
+      "name": "DFlashW8DownResidual",
+      "priority": "P2",
+      "input_shapes": [
+        [
+          16,
+          9728
+        ],
+        [
+          304,
+          160,
+          16,
+          32
+        ],
+        [
+          76,
+          2560
+        ],
+        [
+          16,
+          2560
+        ]
+      ],
+      "input_dtypes": [
+        "float16",
+        "int8 FRACTAL_NZ",
+        "float16 GN",
+        "float16"
+      ],
+      "output_shape": [
+        16,
+        2560
+      ],
+      "output_dtype": "float16",
+      "overlaps_with": "A down",
+      "projection_handoff_bytes_avoided_per_layer": 163840
+    },
+    {
+      "id": "F",
+      "name": "DFlashSegmentedGqaAttention",
+      "priority": "P2",
+      "query_shape": [
+        1,
+        32,
+        16,
+        128
+      ],
+      "cache_shape": [
+        1,
+        8,
+        "L",
+        128
+      ],
+      "block_kv_shape": [
+        1,
+        8,
+        16,
+        128
+      ],
+      "mask_shape": [
+        1,
+        1,
+        16,
+        "L+16"
+      ],
+      "mask_dtype": "bool",
+      "tensor_dtype": "float16",
+      "output_shape": [
+        1,
+        32,
+        16,
+        128
+      ],
+      "softmax_dtype": "float32",
+      "probabilities_before_pv": "float16",
+      "writes_cache": false,
+      "matmul_cast_behavior": "freeze actual ATC MatmulCast fusion semantics"
+    },
+    {
+      "id": "G",
+      "name": "DFlashContextOnly",
+      "priority": "separate prefill work",
+      "kind": "graph and runtime change, not one kernel",
+      "features_shape": [
+        1,
+        64,
+        28160
+      ],
+      "features_dtype": "float16",
+      "selected_features_shape": [
+        1,
+        64,
+        12800
+      ],
+      "start_position_dtype": "int64",
+      "valid_rows_dtype": "int16",
+      "initial_valid_rows": 64,
+      "cache_tensor_count": 10,
+      "cache_shape": [
+        1,
+        8,
+        "L",
+        128
+      ],
+      "cache_dtype": "float16",
+      "context_only_kv_m": 64,
+      "normal_decode_call_policy": "retain combined Draft",
+      "outputs": "10 updated cache tensors; no token output"
+    },
+    {
+      "id": "B",
+      "name": "DFlashW4UnpackNZ",
+      "priority": "W4-only follow-up",
+      "input_dtype": "uint8 offset-binary",
+      "output_dtype": "int8 FRACTAL_NZ",
+      "precision_classification": "exact reversible code/layout conversion"
+    }
+  ]
 }

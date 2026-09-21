@@ -172,7 +172,7 @@
       },
       {
         "source_file": "docs/DFLASH_ARCHITECTURE.md",
-        "source_sha256": "4e681fc9318210a1a891949589104daa5d4de050dd00a430ffa5f0c3346dee88"
+        "source_sha256": "bf95d3bced2aaad10d27a40816917d695cf98939c1228e9dfed1ddc6c77c482d"
       },
       {
         "source_file": "docs/assets/dflash-draft-flow.svg",
@@ -973,38 +973,50 @@
     "schema_version": 1,
     "status": "REQUIREMENTS_ONLY",
     "development_branch": "feature/gdr-chunk-verify",
-    "reviewed_source_revision": "2533557785df7538cdbc92da0df40f97e1da1239",
-    "scope": "Measured quantized Draft architecture review and custom-operator I/O, layout, precision and validation requirements; no new kernel implementation",
+    "reviewed_source_revision": "d8b10ab8d1c0bb22f9147f232962eede1542fcf9",
+    "scope": "Current offline-NZ W8 Draft review: measured decode budget, group Linear and fused operator I/O, layout, precision, integration and validation requirements; no new kernel implementation",
     "hardware_reference_policy": "use",
     "matched_capability_profile": null,
     "proposals": [
       "DFlashGroupQuantLinear",
-      "DFlashW4UnpackNZ",
-      "DFlashDraftLmHeadTop1"
+      "DFlashW8GateUpSwiGLU",
+      "DFlashDraftLmHeadTop1",
+      "DFlashW8DownResidual",
+      "DFlashSegmentedGqaAttention",
+      "DFlashContextOnly",
+      "DFlashW4UnpackNZ"
     ],
     "strict_policy": "No new approximate arithmetic or relaxed numerical thresholds; operator-local correctness and ordinary model parity are separate gates",
     "promotion": "Keep on development branch; target validation before merge to main",
     "sources": [
       {
         "source_file": "framework/custom_ops/README.md",
-        "source_sha256": "53dd0fe535b77c04c8b5067f293ebe6cbe3ba1477cc3e924967b7280e9628d8d"
+        "source_sha256": "a89fdb6b84ecafa6ea4c8bd1e53736b7e3a816bf0f0d150ac09ccd4f089afe09"
       },
       {
         "source_file": "framework/custom_ops/draft_quant/OPERATORS.md",
-        "source_sha256": "1343dc27cc757fc52d6ee521414bda0345f168577e90651211b66f17ad45f4c2"
+        "source_sha256": "d6d4d987ddf8f647185133a20e163c62a4a6e117e4e18481fb6c5dca3610c4d6"
       },
       {
         "source_file": "framework/custom_ops/draft_quant/README.md",
-        "source_sha256": "bb69cfc4c882660ea6a9da4efa1fc9737dd8e686a410104b259a551b2386d721"
+        "source_sha256": "ddc05468acd2de1b38cc9e476241e2eef5b51ce40627e0f0d37de132df8ee24d"
       },
       {
         "source_file": "framework/custom_ops/draft_quant/VALIDATION.md",
-        "source_sha256": "a034c5c944d8c08895cee8753e7f72c976ef94339b5796200eef9496d89cc415"
+        "source_sha256": "e4b9678d006e8656fef0489ad8eb2a036a6a282992d6b54a05326c7d0bfc70ca"
       },
       {
         "source_file": "framework/custom_ops/draft_quant/workloads.json",
-        "source_sha256": "42825634147a467f9009410ab9d913c99b2129c58acd2cd71dbee1c8e663bccc"
+        "source_sha256": "9118c553505262faaf798172c779c47dd659a1e6022fd59b2eb1afef52754bcb"
       }
-    ]
+    ],
+    "performance_evidence": {
+      "current_benchmark": "w8-nz-full-tsUMDuhH/gdr-lengths-mjhazgip",
+      "current_draft_ms": 47.89,
+      "current_verify_ms": 51.17,
+      "decode_speedup": 1.39,
+      "profile_scope": "earlier W8 C64 graph before offline NZ; not the current kernel breakdown",
+      "status": "user-reported; ordinary parity FAIL; task quality not evaluated"
+    }
   }
 }

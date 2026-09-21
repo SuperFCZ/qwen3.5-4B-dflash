@@ -39,7 +39,7 @@ OM Draft 的 QK/PV 矩阵乘默认 FP16，缩放、Mask、Softmax 为 FP32；
 ## Draft 内部流程
 
 参照 [DFlash 官方图 2](https://arxiv.org/pdf/2602.06036#page=4) 的
-“Target 特征注入各层 KV、MASK 块并行生成”结构，按本仓库的 6 层 Draft 重画。
+“Target 特征注入各层 KV、MASK 块并行生成”结构，图示为 FP16 六层版；W8/W4 为五层。
 **从左向右看：绿色主线生成候选，蓝色支路提供上下文。**
 
 ![Draft 的三个输入、两路计算及两个输出](assets/dflash-draft-flow.svg)
@@ -60,27 +60,30 @@ Chunk/MTP 共用选定精度的 Draft OM，把上下文更新和候选生成合�
 三精度对比时，共享 Target 输出特征层的并集；每个 Draft 选取自己的特征输入。
 发布的 W4/W8 checkpoint 为五层，FP16 为六层。量化路径保留压缩权重输入，默认使用 CANN
 `WeightQuantBatchMatmulV2`：FP16 激活 × INT8 权重，group-128 scale，`inner_precise=0`；
-310P AIR 使用内置 `TransData` 转为 NZ 权重，并设置 `transpose_weight=true`。
+310P AIR 设置 `transpose_weight=true`；当前 W8 优化包直接使用离线 NZ 常量及 C16/C64 静态 OM，
+通用路径使用内置 `TransData` 将 ND 权重转为 NZ。
 W4 在调用前将 packed byte 无损展开为 INT8，不保留完整 FP16 权重。
 `draft_quant_matmul=dequant` 可选显式解量化对照；实际 OM 时延和峰值显存须测量。
 三种 Draft 分开运行，不同时驻留；[构建与对比命令](GDR_CHUNK_AIR_OM.md#统一测试)。
 逻辑接口为 `(features, start_position, valid_rows, anchor, proposal_count, 历史 KV)`
 → `(候选 token, 更新后的 KV)`，位置和有效长度控制可见范围。
-W4/W8 另带一维只读权重输入，加载一次后常驻设备，图内恢复形状并解量化。
-OM 使用单个 Draft 的 16/64 两档上下文；特征缓冲区容量为 64 行，候选 block 始终为 16 行。
+通用 W4/W8 包另带一维只读权重输入，加载一次后常驻设备，图内恢复形状并解量化；
+离线 NZ W8 包将固定权重放入图常量。Draft 使用 16/64 两档上下文，离线 NZ 包分别编译为静态 OM；
+特征缓冲区容量为 64 行，候选 block 始终为 16 行。
 生成轮的新特征最多为“旧 anchor + 15 个接受 token”共 16 行；候选输出最多 15 个。
 每个非末尾的 Target 64 行特征块调用一次 Draft 建缓存，准备阶段候选丢弃；
 最后一块随首次正式生成处理。N 个输入 token 需 `ceil(N/64)-1` 次准备调用，1024 输入为 15 次。
 首次 Draft 根据有效特征数选择 16 或 64 档，后续 Verify 最多提交 16 行，自动切回 16 档。
-不复制特征切片，不增加第二个 Draft 或 KV 副本；CANN 档位控制缓冲区、权重布局和工作区计入显存实测。
+runtime 复用特征缓冲区与 current/next KV；各静态 OM 的常量、控制缓冲区和工作区计入显存实测。
 生成时仍是每轮一次 Draft + 一次 Verify。
 
 实现见 [Draft 模型](../models/dflash_v1/modeling_dflash.py)、
 [DraftGraph / PackedDraftLayer](../framework/python/qwen35_dflash/ascend310p/incremental.py)。
 
 OM 内每层将新增上下文和候选输入按行拼接，共用一次 K/V 投影；K/V 与 gate/up 权重在导出时打包替换。
-KV 使用整行 `ScatterNdUpdate`，GQA 将 Query 分组并入行维，避免复制历史 K/V。
-各 checkpoint 的层数与完整词表保持不变；每次加载一个 Draft OM，使用 current/next 缓存。
+KV 使用整行 `ScatterNdUpdate`，GQA 将 Query 分组并入行维，避免按 Q/KV head 倍数复制历史 K/V。
+各 checkpoint 的层数与完整词表保持不变；两档复用 current/next 状态缓冲区，
+静态 OM 各自模型常量和 workspace 的常驻量需单独记录。
 实际编译 workspace、峰值显存和浮点舍入需重新实测。
 
 </details>
@@ -116,8 +119,9 @@ MTP bank 在 OM 内消费；原生提交复制所选状态，避免跨轮保留�
 | `verify_chunk.om` | Chunk 两遍验证、接受判断、状态提交 | DFlash Chunk |
 | `verify_mtp.om` | MTP 验证、接受判断、选择状态 | DFlash MTP |
 
-普通模式加载 2 图；DFlash 加载 3 图；无独立 commit OM。
-三种 Draft、两条 Verify 共 7 个 OM，全部位于同一个 `om/` 目录。
+普通模式加载 2 图；DFlash 使用 Target Prefill、Draft、Verify 三个逻辑角色；无独立 commit OM。
+通用包的三种 Draft、两条 Verify 共 7 个 OM；离线 NZ W8 的 Draft 角色另有 C16/C64 两个静态文件，
+由部署清单指定并选择执行。文件均位于包的 `om/` 目录。
 Prefill、Decode 为所有组合共用；每条 Verify 在三种 Draft 间共用，每个 Draft 在两条验证路线间共用。
 运行时角色由清单映射到对应文件；紧凑执行只改变计算行数和调度，复用既有算子及模型权重。
 C++ 在设备上维护 KV、conv、recurrent state；低显存模式分组加载，并共享串行 workspace。
