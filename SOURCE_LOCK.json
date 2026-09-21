@@ -641,6 +641,14 @@
       {
         "source_file": "tests/test_atc_shape_diagnostics.py",
         "source_sha256": "72d52650fa95aa13f8b12b3495555ae94e7ad8c24d9583998b2392b2c94bf5ee"
+      },
+      {
+        "source_file": "tools/extract_atc_node.py",
+        "source_sha256": "23c97a9ed80b2392a5bce41e4e570ba30ef0df5c12db02507dee1169aa907d81"
+      },
+      {
+        "source_file": "tests/test_extract_atc_node.py",
+        "source_sha256": "19dc0cbdeab90735ad5982204eeb3b9bb0ee0e5b2947341d5440497fbde6d104"
       }
     ],
     "supported_abis": [
