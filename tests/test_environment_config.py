@@ -22,6 +22,7 @@ values = {k: os.environ.get(k) for k in (
     'BLOCK_SIZE', 'DEVICE_ID', 'TMPDIR', 'HF_HOME', 'TORCH_HOME', 'XDG_CACHE_HOME',
     'PYTHONPATH', 'PYTHONDONTWRITEBYTECODE', 'DFLASH_TEST_CANN_LOADS',
     'DRAFT_FP16_DIR', 'DRAFT_W4A16_DIR', 'DRAFT_W8A16_DIR', 'DRAFT_QUANTIZATION',
+    'DRAFT_WEIGHT_PREPACK',
     'DRAFT_SELECTED_DIR', 'DRAFT_VARIANTS_MANIFEST', 'SELECTED_DRAFT_DEPLOYMENT_MANIFEST'
 )}
 values['args'] = sys.argv[1:]
@@ -113,16 +114,19 @@ class EnvironmentConfigTests(unittest.TestCase):
                          ["--quant_mode", "enable", "--config", str(self.run / "qwen35-w8a8.yaml")])
         self.assertEqual(values["cwd"], str(self.root))
         self.assertEqual(values["PYTHONDONTWRITEBYTECODE"], "1")
+        self.assertEqual(values["DRAFT_WEIGHT_PREPACK"], "runtime")
         for name in ("TMPDIR", "HF_HOME", "TORCH_HOME", "XDG_CACHE_HOME"):
             self.assertTrue(Path(values[name]).is_relative_to(self.run))
         self.assertTrue((self.run / "reports").is_dir())
 
     def test_quantized_checkpoint_paths_and_selection_restore_in_fresh_shell(self):
         self.values.update(DRAFT_W4A16_DIR=str(self.root / "W4 weights"),
-                           DRAFT_W8A16_DIR=str(self.root / "W8 weights"), DRAFT_QUANTIZATION="w4a16")
+                           DRAFT_W8A16_DIR=str(self.root / "W8 weights"), DRAFT_QUANTIZATION="w4a16",
+                           DRAFT_WEIGHT_PREPACK="nz")
         self.write_config()
         values = self.probe()
         self.assertEqual(values["DRAFT_SELECTED_DIR"], str(self.root / "W4 weights"))
+        self.assertEqual(values["DRAFT_WEIGHT_PREPACK"], "nz")
         self.assertEqual(values["DRAFT_FP16_DIR"], self.values["DRAFT_DIR"])
         self.assertEqual(values["DRAFT_W8A16_DIR"], str(self.root / "W8 weights"))
         self.assertEqual(values["SELECTED_DRAFT_DEPLOYMENT_MANIFEST"],

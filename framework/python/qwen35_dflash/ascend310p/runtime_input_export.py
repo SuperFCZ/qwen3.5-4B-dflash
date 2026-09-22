@@ -231,7 +231,10 @@ def canonical_runtime_input_abi(
     capture_weight_quant_shapes: bool = False,
     weight_quant_probe: Mapping[str, Any] | None = None,
     weight_prepack_manifest: str | None = None,
+    weight_prepack_output: Path | None = None,
 ) -> Iterator[dict[str, Any]]:
+    if weight_prepack_manifest and weight_prepack_output is not None:
+        raise ValueError("select automatic NZ packing or an existing offline manifest")
     audit: dict[str, Any] = {
         "policy": "public-tensor-storage-identity-v1",
         "status": "ARMED",
@@ -289,9 +292,10 @@ def canonical_runtime_input_abi(
             try:
                 weight_quant = normalize_weight_quant_layout(export_graph, tensor_metadata,
                                                               probe_config=weight_quant_probe)
-                if prepacked is not None:
+                if prepacked is not None or weight_prepack_output is not None:
                     weight_quant = prepack_weight_quant_constants(
-                        export_graph, weight_quant, immutable_weights, prepacked)
+                        export_graph, weight_quant, immutable_weights, prepacked,
+                        output_dir=weight_prepack_output)
             except ValueError as error:
                 failure = weight_quant_layout_failure(export_graph, tensor_metadata, error)
                 audit["weight_quant_layout"] = failure

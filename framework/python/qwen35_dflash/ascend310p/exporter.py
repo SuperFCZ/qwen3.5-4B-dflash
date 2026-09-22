@@ -234,6 +234,9 @@ def export_air_bundle(
                 weight_quant_probe=spec.metadata.get("weight_quant_probe"),
                 weight_prepack_manifest=(spec.metadata.get("draft_weight_prepack_manifest")
                                          if spec.metadata.get("draft_weight_storage") else None),
+                weight_prepack_output=(graph_dir / "prepacked-weights"
+                                       if spec.metadata.get("draft_weight_storage")
+                                       and spec.metadata.get("draft_weight_prepack") == "nz" else None),
                 public_output_names=spec.output_names,
                 verify_discard_output_names=(
                     [s["name"] for s in spec.metadata["incremental_contract"]["verify_discard_states"]]

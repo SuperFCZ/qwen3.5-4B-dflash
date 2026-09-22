@@ -80,7 +80,7 @@ def _difference(old, new, path):
 
 
 def _config(config, *, targets=False):
-    ignored = {"draft_dir", "draft_quantization", "draft_quant_matmul", "draft_weight_prepack_manifest", "input_manifest"} if targets else {"verify_gdr"}
+    ignored = {"draft_dir", "draft_quantization", "draft_quant_matmul", "draft_weight_prepack", "draft_weight_prepack_manifest", "input_manifest"} if targets else {"verify_gdr"}
     return {k: v for k, v in config.items() if k not in ignored}
 
 

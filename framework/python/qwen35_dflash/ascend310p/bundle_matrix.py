@@ -43,6 +43,7 @@ def export_matrix(factory, config, bundle_dir, *, variants, routes, draft_dirs,
     from models.dflash_v1.draft_quantization import require_draft_checkpoint
     from .input_manifest import build_quant_input_manifest, verify_quant_input_manifest
     from .exporter import export_air_bundle
+    from .weight_prepack import validate_prepack_selection
 
     if factory != FACTORY:
         raise ValueError("Draft/route matrix requires the quant incremental factory")
@@ -50,6 +51,7 @@ def export_matrix(factory, config, bundle_dir, *, variants, routes, draft_dirs,
         raise ValueError("select distinct Draft types: fp16, w4a16, w8a16")
     if not routes or len(set(routes)) != len(routes) or any(r not in ("chunk", "mtp") for r in routes):
         raise ValueError("select distinct verification routes: chunk, mtp")
+    validate_prepack_selection(config, variants)
     root = require_run_output(bundle_dir)
     if root.exists() and any(root.iterdir()):
         raise FileExistsError(f"matrix export needs an empty bundle directory: {root}")
@@ -74,6 +76,8 @@ def export_matrix(factory, config, bundle_dir, *, variants, routes, draft_dirs,
             current = dict(config, draft_dir=directories[variant], draft_quantization=variant,
                            verify_gdr=route, input_manifest=str(inputs),
                            shared_draft_features=True, include_ordinary_decode=True)
+            if variant != "w8a16":
+                current.pop("draft_weight_prepack", None)
             name = f"air-manifest-{variant}-{route}.json"
             print(f"[export-air] {variant}/{route} START", flush=True)
             exported = export_air_bundle(factory, current, root, torchair_module=torchair_module,

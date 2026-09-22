@@ -271,12 +271,14 @@ def test_cannot_use_runtime_or_corrupt_offline_weights(tmp_path, damage):
         prepack_weight_quant_constants(g, audit, {"w:0": q}, load_prepacked_weights(manifest))
 
 
-def test_actual_air_save_hook_binds_immutable_values_before_conversion(monkeypatch, tmp_path):
+@pytest.mark.parametrize("automatic", [False, True])
+def test_actual_air_save_hook_binds_immutable_values_before_conversion(monkeypatch, tmp_path, automatic):
     g = fixture_graph(); g.op[0].output_desc[0].shape.dim[0] = 16
     x = torch.zeros(16, 256).half()
     q = (torch.arange(64 * 256).reshape(64, 256) % 256 - 128).to(torch.int8)
     s = torch.ones(64, 2).half() / 32
-    manifest = cached_weight(tmp_path / "cache", q)
+    options = ({"weight_prepack_output": tmp_path / "cache"} if automatic else
+               {"weight_prepack_manifest": str(cached_weight(tmp_path / "cache", q))})
     torchair = ModuleType("torchair")
     def original(inputs, graph, path, weight_name):
         for i, value in enumerate(inputs):
@@ -287,7 +289,7 @@ def test_actual_air_save_hook_binds_immutable_values_before_conversion(monkeypat
     monkeypatch.setitem(sys.modules, "torchair._utils.export_utils", module)
     monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
     with canonical_runtime_input_abi(torchair, public_inputs=[x], public_names=["x"],
-                                    weight_prepack_manifest=str(manifest)) as audit:
+                                    **options) as audit:
         module._convert_data_to_const([x, q, s], g, str(tmp_path), {id(q): "qweight", id(s): "scales"})
     assert audit["bindings"][0]["logical_name"] == "x"
     assert [n.name for n in g.op if n.type == "Data"] == ["x"]
@@ -296,6 +298,15 @@ def test_actual_air_save_hook_binds_immutable_values_before_conversion(monkeypat
     nz = next(op for op in g.op if op.name == "quant_weight_nz")
     assert check_const_value_shape(nz, [16, 256]) == [16, 64]
     assert not any(n.type == "TransData" for n in g.op)
+    # The saved cache and the actual AIR constant both restore the exact
+    # checkpoint values, including signed codes across group/tile boundaries.
+    cache = load_prepacked_weights(tmp_path / "cache/manifest.json")
+    from qwen35_dflash.ascend310p.weight_prepack import _cached_weight
+    assert _cached_weight(q, cache)[0] == nz.attr["value"].t.data
+    if automatic:
+        from qwen35_dflash.ascend310p.weight_prepack import write_prepacked_weights
+        with pytest.raises(FileExistsError):
+            write_prepacked_weights({"w:0": q}, tmp_path / "cache")
     assert module._convert_data_to_const is original
 
 

@@ -667,6 +667,9 @@ def create_quant_recompute_graph(
         "draft_precision": config.get("draft_quantization", "fp16").upper(),
         "draft_quantization": config.get("draft_quantization", "fp16"),
         "draft_checkpoint_audit": getattr(draft, "draft_quantization_audit", None),
+        **({"draft_weight_prepack": "nz"}
+           if config.get("draft_weight_prepack") == "nz" and config.get("draft_quantization") == "w8a16"
+           else {}),
         **({"draft_weight_prepack_manifest": str(config["draft_weight_prepack_manifest"])}
            if config.get("draft_weight_prepack_manifest") and config.get("draft_quantization") == "w8a16"
            else {}),

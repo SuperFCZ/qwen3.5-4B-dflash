@@ -610,7 +610,7 @@ def _source_identity(package_dir: Path) -> dict[str, object]:
         repository / "models" / "export_model_wrapper_qwen3_5_dflash_rollback.py",
         repository / "tools" / "run_msprof.sh",
         repository / "config" / "npu_benchmark_v1.json",
-        repository / "docs" / "DFLASH_RUN_AND_VALIDATE.md",
+        repository / "docs" / "USAGE.md",
     )
     files: dict[str, str] = {}
     for path in paths:

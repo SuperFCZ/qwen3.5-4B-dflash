@@ -24,6 +24,7 @@ export RECEIVER_ROOT="/absolute/path/qwen35-receiver"  # 仅运行已有 OM 可�
 # 常用参数
 export VERIFY_GDR=chunk       # chunk / mtp
 export DRAFT_QUANTIZATION=fp16 # OM Draft：fp16 / w4a16 / w8a16
+export DRAFT_WEIGHT_PREPACK=runtime # runtime / nz；nz 仅作用于选中的 W8A16
 export DEVICE_ID=0
 export KV_CAPACITY=2048       # prompt + 输出容量，64 的倍数
 export MAX_NEW_TOKENS=128

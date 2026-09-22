@@ -53,6 +53,8 @@ def variant_builder(tmp_path, monkeypatch):
             metadata={"quant_source_lock": {"sha256": "fixture-source"}, "quant_input_manifest_sha256": variant,
                       "target_input_identity": {"target": cfg.get("target_identity", "fixed-target")},
                       "draft_dir": variant,
+                      **({"draft_weight_prepack": "nz"}
+                         if cfg.get("draft_weight_prepack") == "nz" and variant == "w8a16" else {}),
                       **({"draft_weight_prepack_manifest": cfg["draft_weight_prepack_manifest"]}
                          if cfg.get("draft_weight_prepack_manifest") and variant == "w8a16" else {})},
             gdr=gdr, attention=attention_op, rotary=rotary,

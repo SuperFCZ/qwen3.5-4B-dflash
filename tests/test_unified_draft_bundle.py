@@ -21,9 +21,9 @@ def unified_export(variant_builder, tmp_path, monkeypatch):
                         lambda path, variant: {"variant": variant})
     monkeypatch.setattr("qwen35_dflash.ascend310p.input_manifest.build_quant_input_manifest",
                         lambda **kwargs: kwargs["output"].write_text("{}"))
-    def export(variants=("fp16", "w4a16", "w8a16"), routes=("chunk", "mtp"), backend="dequant"):
+    def export(variants=("fp16", "w4a16", "w8a16"), routes=("chunk", "mtp"), backend="dequant", **extra):
         return bundle_matrix.export_matrix(FACTORY, dict(target_dir="target", quant_config="quant",
-            receiver_models_dir="receiver", draft_quant_matmul=backend), tmp_path / "bundle",
+            receiver_models_dir="receiver", draft_quant_matmul=backend, **extra), tmp_path / "bundle",
             variants=variants, routes=routes, draft_dirs={v: v for v in variants}, torchair_module=build.air)
     return export, build.atc, calls
 
@@ -76,14 +76,53 @@ def test_all_payloads_checked_before_any_compile(unified_export):
 def test_normal_cli_accepts_matrix_and_compile_stays_separate(monkeypatch):
     parser = cli.build_parser()
     args = parser.parse_args(["export-air", "--factory", FACTORY, "--bundle-dir", "/bundle",
-                             "--verify-gdr", "both", "--draft-quantizations", "fp16", "w4a16", "w8a16"])
+                             "--verify-gdr", "both", "--draft-quantizations", "fp16", "w4a16", "w8a16",
+                             "--draft-weight-prepack", "nz"])
     seen = {}
-    monkeypatch.setattr(bundle_matrix, "export_matrix", lambda *a, **kw: seen.update(kw) or {"status": "PASS"})
+    monkeypatch.setattr(bundle_matrix, "export_matrix", lambda *a, **kw: seen.update(kw, config=a[1]) or {"status": "PASS"})
     assert args.handler(args) == 0
     assert seen["variants"] == ["fp16", "w4a16", "w8a16"] and seen["routes"] == ["chunk", "mtp"]
+    assert seen["config"]["draft_weight_prepack"] == "nz"
     compile_args = parser.parse_args(["compile-om", "--air-manifest", "/bundle/air-manifest.json",
                                      "--atc", "/atc", "--soc-version", "Ascend310P3"])
     assert compile_args.handler is cli.command_compile
+
+
+def test_one_matrix_mixes_runtime_and_offline_nz_without_separate_runner(unified_export, tmp_path):
+    export, atc, calls = unified_export
+    air = export(backend="weight_quant", draft_weight_prepack="nz")
+    result = compile_air_bundle(air["manifest_path"], atc_bin="/bin/true", soc_version="Ascend310P3",
+                               runner=atc, atc_identity="host-test")
+    root = Path(result["manifest_path"]).parent
+    assert len(list((root / "om").glob("*.om"))) == 8
+    assert len([c for c in calls if c[0] == "compile"]) == 8
+    for variant in ("fp16", "w4a16", "w8a16"):
+        for route in ("chunk", "mtp"):
+            entry = result["bundles"][variant][route]
+            _, deployment, contract = write_incremental_plan(root / entry["manifest"],
+                tmp_path / f"{variant}-{route}.plan", verify_gdr=route)
+            draft = next(g for g in deployment["graphs"] if g["name"] == "draft")
+            assert contract["draft_quantization"] == variant
+            if variant == "w8a16":
+                assert draft["metadata"]["draft_weight_storage"] == "w8-int8-nz-const-v1"
+                assert not draft.get("constant_inputs")
+                assert (root / "om/draft_w8a16_static64.om").is_file()
+            else:
+                assert "draft_weight_storage" not in draft["metadata"]
+                assert bool(draft.get("constant_inputs")) == (variant == "w4a16")
+
+
+@pytest.mark.parametrize("variants,backend,extra,message", [
+    (("fp16",), "weight_quant", {"draft_weight_prepack": "nz"}, "requires w8a16"),
+    (("w8a16",), "dequant", {"draft_weight_prepack": "nz"}, "requires --draft-quant-matmul"),
+    (("w8a16",), "weight_quant", {"draft_weight_prepack": "nz", "draft_weight_prepack_manifest": "cache"}, "not both"),
+])
+def test_invalid_prepack_options_fail_before_model_export(unified_export, tmp_path, variants, backend, extra, message):
+    export, _, calls = unified_export
+    with pytest.raises(ValueError, match=message):
+        export(variants=variants, backend=backend, **extra)
+    assert calls == []
+    assert not (tmp_path / "bundle").exists()
 
 
 def test_quant_failure_publishes_fp16_and_continues_other_quant(unified_export, tmp_path):

@@ -51,6 +51,8 @@ def _factory_config(args):
         config["draft_quantization"] = args.draft_quantization
     if getattr(args, "draft_quant_matmul", None) is not None:
         config["draft_quant_matmul"] = args.draft_quant_matmul
+    if getattr(args, "draft_weight_prepack", None) is not None:
+        config["draft_weight_prepack"] = args.draft_weight_prepack
     if getattr(args, "draft_weight_prepack_manifest", None) is not None:
         config["draft_weight_prepack_manifest"] = str(args.draft_weight_prepack_manifest)
     return config
@@ -74,9 +76,12 @@ def _export(args):
             variants=variants or [config.get("draft_quantization", "fp16")],
             routes=["chunk", "mtp"] if selection == "both" else [selection],
             draft_dirs={v: getattr(args, v + "_draft_dir", None) for v in ("fp16", "w4a16", "w8a16")})
+    from .weight_prepack import validate_prepack_selection
+    config = _factory_config(args)
+    validate_prepack_selection(config, [config.get("draft_quantization", "fp16")])
     return export_air_bundle(
         args.factory,
-        _factory_config(args),
+        config,
         args.bundle_dir,
         reuse_common_from=args.reuse_common_from,
         reuse_target_from=getattr(args, "reuse_target_from", None),
@@ -376,8 +381,11 @@ def _add_atc_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_draft_matrix_arguments(parser):
-    parser.add_argument("--draft-weight-prepack-manifest", type=Path,
-                        help="offline INT8 NZ manifest from pack_draft_weights_nz.py; applies only to native W8 Draft")
+    prepack = parser.add_mutually_exclusive_group()
+    prepack.add_argument("--draft-weight-prepack", choices=("runtime", "nz"),
+                         help="runtime conversion (default), or offline W8 NZ packing during AIR export; other Drafts are unchanged")
+    prepack.add_argument("--draft-weight-prepack-manifest", type=Path,
+                         help="reuse an existing offline INT8 NZ manifest instead of automatic packing")
     parser.add_argument("--draft-quant-matmul", choices=("weight_quant", "dequant"),
                         help="quantized Draft MatMul: CANN grouped A16W8 (default) or explicit decomposed baseline")
     parser.add_argument("--draft-quantizations", nargs="+", choices=("fp16", "w4a16", "w8a16"),

@@ -35,6 +35,9 @@ _dflash_activate_env() {
     case "${DRAFT_QUANTIZATION:-fp16}" in fp16|w4a16|w8a16) ;; *)
         echo "dflash-env: DRAFT_QUANTIZATION 只能是 fp16、w4a16 或 w8a16" >&2; return 1 ;;
     esac
+    case "${DRAFT_WEIGHT_PREPACK:-runtime}" in runtime|nz) ;; *)
+        echo "dflash-env: DRAFT_WEIGHT_PREPACK 只能是 runtime 或 nz" >&2; return 1 ;;
+    esac
     if [[ ! "${MAX_DRAFT_TOKENS:-15}" =~ ^([1-9]|1[0-5])$ ]]; then
         echo "dflash-env: MAX_DRAFT_TOKENS 必须为 1..15" >&2
         return 1
@@ -66,6 +69,7 @@ _dflash_activate_env() {
     export KV_CAPACITY="${KV_CAPACITY:-2048}" MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-128}"
     export MAX_DRAFT_TOKENS="${MAX_DRAFT_TOKENS:-15}" QUANT_MODE="${QUANT_MODE:-disable}"
     export DRAFT_QUANTIZATION="${DRAFT_QUANTIZATION:-fp16}"
+    export DRAFT_WEIGHT_PREPACK="${DRAFT_WEIGHT_PREPACK:-runtime}"
     export DRAFT_FP16_DIR="${DRAFT_FP16_DIR:-${DRAFT_DIR:-}}"
     dflash_name="DRAFT_${DRAFT_QUANTIZATION^^}_DIR"
     export DRAFT_SELECTED_DIR="${!dflash_name:-}"

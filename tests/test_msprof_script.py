@@ -10,7 +10,7 @@ import unittest
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 SCRIPT = REPOSITORY / "tools" / "run_msprof.sh"
-RUN_DOCUMENT = REPOSITORY / "docs" / "DFLASH_RUN_AND_VALIDATE.md"
+RUN_DOCUMENT = REPOSITORY / "docs" / "USAGE.md"
 
 
 class MsprofScriptTests(unittest.TestCase):

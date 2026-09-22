@@ -45,7 +45,7 @@ def expose_draft_constants(spec: AirGraphSpec) -> AirGraphSpec:
             names.extend((name + ".qweight", name + ".scales"))
     if not names:
         return spec
-    if (spec.metadata.get("draft_weight_prepack_manifest")
+    if ((spec.metadata.get("draft_weight_prepack_manifest") or spec.metadata.get("draft_weight_prepack") == "nz")
             and spec.metadata.get("draft_quantization") == "w8a16"):
         from .weight_prepack import PREPACK_POLICY
         if (spec.name != "draft" or not spec.metadata.get("incremental_contract")
@@ -54,7 +54,7 @@ def expose_draft_constants(spec: AirGraphSpec) -> AirGraphSpec:
             raise ValueError("offline NZ weights require the native W8 incremental Draft")
         # Keep immutable model buffers for TorchAir's constant binding. The
         # AIR save hook replaces only their weight conversion with a genuine
-        # NZ Const read from the hash-checked offline manifest.
+        # NZ Const from automatic offline packing or a hash-checked cache.
         return replace(spec, metadata=dict(spec.metadata, draft_weight_storage=PREPACK_POLICY,
                                            constant_tensors=[], constant_tensor_shapes={}))
     buffers = dict(spec.model.named_buffers())

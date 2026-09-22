@@ -149,13 +149,13 @@
   },
   "npu_benchmark": {
     "runner_file": "models/dflash_v1/benchmark_npu.py",
-    "runner_sha256": "a24a1e7eed954ad236cadd21dbcf3f6bbc7ae72f1777f1911293465debc1b2a4",
+    "runner_sha256": "8ec8eb04ee6a5ecbd9d4d15cb0f350f5d2f3f9060cd2cff029b17c12fd7465ea",
     "msprof_wrapper_file": "tools/run_msprof.sh",
-    "msprof_wrapper_sha256": "ae06d275e4df0a530ad17ab6c4e7d5b4ea8d912187f295c937ce38aebcb2a38b",
+    "msprof_wrapper_sha256": "6af3c32196e635140f9662fb3212ded0612ee562270aea50d4e4e63a59807338",
     "contract_file": "config/npu_benchmark_v1.json",
     "contract_sha256": "b5fdd64b1eaea44b3f53452bc260cf62de53ca38b1fcd8699bf4f9e358d99c76",
-    "documentation_file": "docs/DFLASH_RUN_AND_VALIDATE.md",
-    "documentation_sha256": "d59b8b9c8074797225e64a9dda763d3fbb4773332a69ea764ec2fac6dfb05404",
+    "documentation_file": "docs/USAGE.md",
+    "documentation_sha256": "f00fa777c430a0534ad0bee92171d663a2358cb54e3f15bb9e5d2df597c09c94",
     "policy": "strict-greedy gate before timing; original main inference.py and both rollback modes use an equal 32-token budget; quantized ordinary and DFlash use the exact same original YAML and resolved artifacts; rollback ordinary remains the scheduler-control baseline; rollback prefill uses block-aligned real-token chunks and rollback verify/accepted+1 commit defaults to two original-GDR chunk calls, with --verify-gdr mtp selecting native MTP and compact FP32 bank selection; separate ordinary/dflash processes; synchronized unprofiled 3+10 baseline; cumulative counters separated from resettable session state; copied-source content identity without VCS metadata; msprof diagnostic only with MSTX disabled by default and explicit opt-in; no CPU fallback; native msprof dynamic CLI single-stage and all-stage diagnostics with one loaded application, independent fresh-state warmups and one acknowledged window per stage; verify collects the first Chunk or unique MTP pass; accept-commit captures the accepted+1 second Chunk pass or MTP bank selection even at zero acceptance; decode-round collects the complete selected route; per-window GDR verify/commit layer counters, MTP state-selection counters when selected, and nonempty operator exports are required; separate raw directories and synchronized timing CSV; no pyACL and no formal latency or strict-greedy accuracy claim from stage diagnostics; ordinary Python and C++ prefill/decode/all windows; C++ DFlash prefill/draft/fused-verify/all windows; native C++ socket barriers and standard-library Python controller; actual graph-call counts checked; no device-performance claim from host fixtures; shared per-stage operator type/task reports grouped by input/output dtype, device/model and original CSV; general OM profiling entry prepares a fresh mode-specific plan from the selected deployment manifest"
   },
   "incremental_om_framework": {
@@ -164,35 +164,23 @@
     "files": [
       {
         "source_file": "README.md",
-        "source_sha256": "5b75905df83d42b46e04744a184c6453ca39d440ededa6544ab81012f3d55ec4"
+        "source_sha256": "1c463ab6be760493b2e57e100255fb89d2d6f8a6153678c8b1bfb150c7a5729e"
       },
       {
         "source_file": "config/gdr_chunk_air_om_factory.example.json",
         "source_sha256": "1bdddd6588d21f34e5ee93ad9a97e1a2223a7a0343dd429949fd6be0ef071b02"
       },
       {
-        "source_file": "docs/DFLASH_ARCHITECTURE.md",
-        "source_sha256": "bf95d3bced2aaad10d27a40816917d695cf98939c1228e9dfed1ddc6c77c482d"
+        "source_file": "docs/ARCHITECTURE.md",
+        "source_sha256": "f59e30ccd5574ad74c0fdcc36642e1817115b426f651be37ecbeb32705ae8081"
       },
       {
-        "source_file": "docs/assets/dflash-draft-flow.svg",
-        "source_sha256": "1635daa2439aea4082fe6c4818c353d4e7ff77a6822adc635d15433f9f880c83"
-      },
-      {
-        "source_file": "docs/GDR_CHUNK_AIR_OM.md",
-        "source_sha256": "0cddac83da503a50886c74da2e7886dca3d30e72c0f0ec40ed576337f9cfb9a0"
-      },
-      {
-        "source_file": "docs/QUANT_AIR_OM_FRAMEWORK.md",
-        "source_sha256": "102df70acbaa0def8cb22a3d62a73d8e330f9fd62f5bd2c6016b2396b2409d52"
+        "source_file": "docs/USAGE.md",
+        "source_sha256": "f00fa777c430a0534ad0bee92171d663a2358cb54e3f15bb9e5d2df597c09c94"
       },
       {
         "source_file": "framework/FRAMEWORK_LOCK.json",
         "source_sha256": "d92fa60d791b2f39bd359e583c7b6e93d908df116e360274ffcdbf226f1d1d1e"
-      },
-      {
-        "source_file": "framework/README.md",
-        "source_sha256": "7c30466e4f51e2ffd84e1a71627a467b97613443a224455dec2a3e4f0cfc2fa6"
       },
       {
         "source_file": "framework/abi/closed-runtime-baseline-v1.json",
@@ -228,7 +216,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/cli.py",
-        "source_sha256": "52973a5d73e5a3a871e4081da2506eb1de3fae6fe322397859aa13c1df2482cb"
+        "source_sha256": "f8657d857a894a4425dd8ce82398c430dc10ad3585dde4ac973773a432bde080"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/compiler.py",
@@ -248,7 +236,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/exporter.py",
-        "source_sha256": "0fdd8e3ac34054802d6b5f9a3a693d06a85eedf4dc80c0fa71482c30a6596508"
+        "source_sha256": "12c2257495667920aa0a488408ffab20b198a132553b92a1386cbad3d4b5d327"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/generation.py",
@@ -272,7 +260,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/quant_factory.py",
-        "source_sha256": "8e69b65ccd7f943950618bc73a5579cd1e6d75ebea57a6984700f4c868a35c3b"
+        "source_sha256": "78c409e5555d3fee1543ee64a1d1237ae590f0b66c06a3521e089ccde0eed34c"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/recompute_backend.py",
@@ -280,7 +268,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/runtime_input_export.py",
-        "source_sha256": "28deb492e615cb25da71189fd85ae7f51241569d23feabff002ea37e7aeff761"
+        "source_sha256": "c29df807b35e9ddcbee00ccfe23b82e2182a324349748332159996532a2d4341"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/standard_op_export.py",
@@ -463,10 +451,6 @@
         "source_sha256": "3b41b637acc8c9d987f0bf25ab9ff270d50a7e91158e57ec2c4e4b4f02c8a807"
       },
       {
-        "source_file": "tools/debug_draft_context/README.md",
-        "source_sha256": "cdf9a91b1461c985b28c4285c3916294e31604771284fc8e27df612df36c7862"
-      },
-      {
         "source_file": "tests/test_debug_draft_context.py",
         "source_sha256": "9b247093122f46755e02b0af0876d387193de1991fb4778d19d41fbe88bb65c8"
       },
@@ -519,8 +503,8 @@
         "source_sha256": "c5c0dc6122ac99614c4d07e47743b8644fe7f316b39e8b1224e87b8debe69ed4"
       },
       {
-        "source_file": "docs/DFLASH_CURRENT_USAGE_AND_RESULTS.md",
-        "source_sha256": "e66d7790118cac3096c546652bfc09ba26fa5489acb38a8389d32d288332a7ca"
+        "source_file": "docs/RESULTS.md",
+        "source_sha256": "23748d82666dd0a6dad846747414cef49dfd6f59ff3b159c4df01380ff79e867"
       },
       {
         "source_file": "framework/abi/dflash-mtp-v1.json",
@@ -540,11 +524,11 @@
       },
       {
         "source_file": "config/dflash_env.sh.example",
-        "source_sha256": "f04c81c489c376997813cfbc7d20f4018540469de958ee273ad9e5531ce9edd5"
+        "source_sha256": "50be66aefa1a7e19d6e9ce6cda95653b6c8dcd1fc64ec583a22b59a10e630c78"
       },
       {
         "source_file": "tools/activate_env.sh",
-        "source_sha256": "ec7d7b84644ce7b2454ab02269ccf355e23900c2d159b701d200999e7f9617b3"
+        "source_sha256": "e5032807ae35f84581dc5d362dc2ccc5d65dac5235b90ce4492da96a40cb2ee2"
       },
       {
         "source_file": "tools/python-bootstrap/sitecustomize.py",
@@ -552,7 +536,7 @@
       },
       {
         "source_file": "tests/test_environment_config.py",
-        "source_sha256": "43dbc1b638ef1f290f145068eee984860083e10899f23be5875300f14280f3af"
+        "source_sha256": "a208efaa5fb053f4d60b51444f429ff87acbd2b86aad28be9084f5732ecbd222"
       },
       {
         "source_file": "framework/abi/dflash-chunk-v4.json",
@@ -564,15 +548,11 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/common_reuse.py",
-        "source_sha256": "6524b64fdcfc39426bf9db0954746f257aaec56a85dd37e659ec50f659e7039f"
+        "source_sha256": "1a5c5d1ac40f7b589ec3ce28c7784812011364df252c712dab4a55533a381c36"
       },
       {
         "source_file": "tests/test_common_gdr_reuse.py",
         "source_sha256": "0c0c8c13cabf8d973788f3b9950c4f8d19145980b1e07f32eef4e8ef647f33a2"
-      },
-      {
-        "source_file": "docs/DFLASH_OPERATORS.md",
-        "source_sha256": "23e2e0a2b3a63791992443c3d39996978daace4cefdcf3554faeb79f6b6c28de"
       },
       {
         "source_file": "tests/test_internal_dflash_bridge_rollback.py",
@@ -624,7 +604,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/weight_prepack.py",
-        "source_sha256": "536915da7fd13f6f382f625fff4545498fa50e5f2daf7932357389d7131378e7"
+        "source_sha256": "a32de5f102f605a8f570177191b27b6c8b2b8fa271a591d9c423b684027031d2"
       },
       {
         "source_file": "tools/pack_draft_weights_nz.py",
@@ -632,7 +612,7 @@
       },
       {
         "source_file": "tests/test_weight_prepack.py",
-        "source_sha256": "879870e7f29cb707464290493f7fc81f71d300075758dc23f87d284a9df3040a"
+        "source_sha256": "c50dda7128da419a131bf5a1f7b3a54012bef4118594306d3aacee6ae36aaafb"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/atc_diagnostics.py",
@@ -689,6 +669,10 @@
       {
         "source_file": "tests/test_matmul_probe_cpp.py",
         "source_sha256": "54f23534b663b897b810b1409fc41e2d45e9e614832d5d192b4c4b7c507f5fa4"
+      },
+      {
+        "source_file": "docs/OPTIMIZATION.md",
+        "source_sha256": "4479118ea69cf68a8aa8d1176835940a3d337afd8b5d18f4327b39d8a4a3b31d"
       }
     ],
     "supported_abis": [
@@ -808,7 +792,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/draft_constants.py",
-        "source_sha256": "2eb22456cf76a19435fb24a18682455e60fd5ae3507016d831aaa5c049fb29e8"
+        "source_sha256": "507e8a36905f4beda5b9fc7a6e44613792eb978a75ca3861506ea5b2833e61c5"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/draft_variants.py",
@@ -828,7 +812,7 @@
       },
       {
         "source_file": "tests/test_draft_variant_bundles.py",
-        "source_sha256": "a06f638c62a68a918941be8c0c0eefe10792f102b0282a9243f8fcd8822538ea"
+        "source_sha256": "a5a70510c3def204f417411aa106ae93c08390343cd55f8a0e90071129be09d2"
       },
       {
         "source_file": "tests/test_draft_comparison.py",
@@ -836,11 +820,11 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/bundle_matrix.py",
-        "source_sha256": "440bbc9d8873ba15783734a17849e0b9ce1ae3b816894b487ae7ec2f38800eff"
+        "source_sha256": "4f77748567b22da8ca4936ea294668d207a830cb496aed055934a2b7539470c1"
       },
       {
         "source_file": "tests/test_unified_draft_bundle.py",
-        "source_sha256": "c829b90f2e3928e5c2e8f1219f04a11ae422c045c857a8feb574e80aef48033e"
+        "source_sha256": "be5af725d83881db1f4c1f4a21532ca10bdc3e3056636c8e114a771f2ba6c93d"
       },
       {
         "source_file": "tests/test_unified_benchmarks.py",
@@ -888,7 +872,7 @@
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/weight_prepack.py",
-        "source_sha256": "536915da7fd13f6f382f625fff4545498fa50e5f2daf7932357389d7131378e7"
+        "source_sha256": "a32de5f102f605a8f570177191b27b6c8b2b8fa271a591d9c423b684027031d2"
       },
       {
         "source_file": "tools/pack_draft_weights_nz.py",
@@ -896,7 +880,7 @@
       },
       {
         "source_file": "tests/test_weight_prepack.py",
-        "source_sha256": "879870e7f29cb707464290493f7fc81f71d300075758dc23f87d284a9df3040a"
+        "source_sha256": "c50dda7128da419a131bf5a1f7b3a54012bef4118594306d3aacee6ae36aaafb"
       },
       {
         "source_file": "framework/python/qwen35_dflash/ascend310p/atc_diagnostics.py",
@@ -990,24 +974,12 @@
     "promotion": "Keep on development branch; target validation before merge to main",
     "sources": [
       {
-        "source_file": "framework/custom_ops/README.md",
-        "source_sha256": "d9b575946747d4d521d2d34d0f27b648e7e9720e29c7592f3c1309e06f3e3bd3"
-      },
-      {
-        "source_file": "framework/custom_ops/draft_quant/OPERATORS.md",
-        "source_sha256": "60f2a65b17ee668ff8304defe7a8945fea28e59bbd7e1088830eab17b6f02db5"
-      },
-      {
-        "source_file": "framework/custom_ops/draft_quant/README.md",
-        "source_sha256": "b69c56061e170b3a97a7d6d528f16dbcb8ba275608273033c01340920b760371"
-      },
-      {
-        "source_file": "framework/custom_ops/draft_quant/VALIDATION.md",
-        "source_sha256": "4c08a3ced105945079dc4a129b6bdcb9d9cf6e7ba996353f53b7eed6221dda0e"
+        "source_file": "docs/OPTIMIZATION.md",
+        "source_sha256": "4479118ea69cf68a8aa8d1176835940a3d337afd8b5d18f4327b39d8a4a3b31d"
       },
       {
         "source_file": "framework/custom_ops/draft_quant/workloads.json",
-        "source_sha256": "206cd83f1c0a23d9a1d15bf95ad7248d079d0229959f8c4fa495f18f3e9dd20d"
+        "source_sha256": "f4354fdac95df66a4ea1a1c92e6dd041014c8936a50e5e37b78f3306a1769589"
       }
     ],
     "performance_evidence": {

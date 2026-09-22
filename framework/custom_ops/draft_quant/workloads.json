@@ -969,7 +969,7 @@
     }
   ],
   "interface_contract": {
-    "specification": "OPERATORS.md",
+    "specification": "../../../docs/OPTIMIZATION.md#自定义算子需求",
     "tensor_order": "as listed in signatures; semicolon separates compile attributes",
     "tensor_device": "one NPU; inputs and model constants readonly",
     "default_storage": "contiguous ND; strides expressed in elements",

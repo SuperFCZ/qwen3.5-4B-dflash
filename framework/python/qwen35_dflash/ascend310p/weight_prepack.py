@@ -14,7 +14,7 @@ from pathlib import Path
 import torch
 
 from .weight_quant_layout import GE_OP, POLICY, _dtype, _nz_shape, _source
-from .utils import contained_path, load_json_object, sha256_file
+from .utils import atomic_write_json, contained_path, file_record, load_json_object, require_run_output, sha256_file
 
 
 PREPACK_POLICY = "w8-int8-nz-const-v1"
@@ -24,6 +24,43 @@ PREPACK_POLICY = "w8-int8-nz-const-v1"
 CONST_DESC_POLICY = "locked-physical-nz-value-and-output-v4"
 # ge_attr_define.cc: ATTR_NAME_OUT_SHAPE_LOCKED (leading underscore required).
 CONST_SHAPE_LOCK = "_out_shape_locked"
+
+
+def validate_prepack_selection(config, variants):
+    """Reject unsupported selections before loading any checkpoint."""
+    mode = config.get("draft_weight_prepack", "runtime")
+    if mode not in ("runtime", "nz"):
+        raise ValueError("draft_weight_prepack must be runtime or nz")
+    if "draft_weight_prepack" in config and config.get("draft_weight_prepack_manifest"):
+        raise ValueError("select automatic weight prepack or an existing manifest, not both")
+    if mode == "nz":
+        if "w8a16" not in variants:
+            raise ValueError("NZ prepack requires w8a16 in --draft-quantizations")
+        if config.get("draft_quant_matmul", "weight_quant") != "weight_quant":
+            raise ValueError("NZ prepack requires --draft-quant-matmul weight_quant")
+
+
+def write_prepacked_weights(weights, output_dir):
+    """Build a hash-locked offline cache directly from immutable model weights."""
+    root = require_run_output(output_dir)
+    if not weights:
+        raise ValueError("offline NZ prepack requires at least one weight")
+    if root.exists() and any(root.iterdir()):
+        raise FileExistsError(f"offline NZ prepack needs an empty directory: {root}")
+    root.mkdir(parents=True, exist_ok=True)
+    records = []
+    for index, (name, value) in enumerate(weights.items()):
+        packed = pack_int8_nz(value)
+        matrix = value.detach().cpu().contiguous()
+        path = root / f"weight-{index:03d}.nz.bin"
+        path.write_bytes(packed.numpy().tobytes())
+        records.append(dict(file_record(path, relative_to=root), source_input=name,
+            dtype="int8", format="FRACTAL_NZ", logical_shape=list(matrix.shape),
+            storage_shape=list(packed.shape),
+            logical_sha256=hashlib.sha256(matrix.numpy().tobytes()).hexdigest(),
+            roundtrip="BIT_EXACT", padding="ZERO"))
+    return atomic_write_json(root / "manifest.json", dict(schema_version=1, status="PASS",
+        policy=PREPACK_POLICY, weight_count=len(records), weights=records))
 
 
 def _const_value_desc(physical_desc):
@@ -109,7 +146,7 @@ def _cached_weight(matrix, cache):
     return data, logical_hash, record
 
 
-def prepack_weight_quant_constants(graph, layout_audit, immutable_weights, cache):
+def prepack_weight_quant_constants(graph, layout_audit, immutable_weights, cache=None, *, output_dir=None):
     """Replace audited weight TransData with byte-exact NZ Const at AIR save.
 
     ``immutable_weights`` maps original GE weight edges to exporter-bound
@@ -117,6 +154,8 @@ def prepack_weight_quant_constants(graph, layout_audit, immutable_weights, cache
     Validate every source first. Preserve any original ND constant still used
     by another consumer, including control edges.
     """
+    if (cache is None) == (output_dir is None):
+        raise ValueError("provide exactly one offline NZ cache or output directory")
     if layout_audit.get("policy") != POLICY or not layout_audit.get("nodes"):
         raise ValueError("W8 NZ prepack requires the production WeightQuant layout audit")
     nodes = {node.name: node for node in graph.op}
@@ -142,10 +181,13 @@ def prepack_weight_quant_constants(graph, layout_audit, immutable_weights, cache
             raise ValueError("W8 NZ prepack descriptor does not match weight storage")
         plans.append((record, conversion, edge, value))
 
+    if cache is None:
+        manifest = write_prepacked_weights({edge: value for _, _, edge, value in plans}, output_dir)
+        cache = load_prepacked_weights(manifest)
     records, candidates = [], set()
     for record, conversion, edge, value in plans:
         matrix = value.detach().cpu().contiguous()
-        # Read the reusable offline carrier; export never repacks the weight.
+        # Both automatic export and an existing cache use the same validation.
         data, logical_hash, cached = _cached_weight(matrix, cache)
         desc = copy.deepcopy(conversion.output_desc[0])
         name = conversion.name

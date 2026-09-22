@@ -452,9 +452,8 @@ source_paths = [
     root / "tools" / "profile_om.py",
     root / "tools" / "profile_verify_om.py",
     root / "models" / "modeling_qwen3_5_hiai_nd.py",
-    root / "docs" / "DFLASH_RUN_AND_VALIDATE.md",
-    root / "docs" / "QUANT_AIR_OM_FRAMEWORK.md",
-    root / "docs" / "GDR_CHUNK_AIR_OM.md",
+    root / "docs" / "USAGE.md",
+    root / "docs" / "ARCHITECTURE.md",
     root / "config" / "npu_benchmark_v1.json",
     root / "config" / "gdr_chunk_air_om_factory.example.json",
 ]
