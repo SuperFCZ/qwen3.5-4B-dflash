@@ -20,20 +20,10 @@ Target 负责最终预测与验证；Draft 使用 Target 隐藏特征，一次�
 
 ## 一轮生成与状态提交
 
-```mermaid
-flowchart LR
-    P["Prompt"] --> T["Target Prefill：状态、特征、首 token"]
-    T --> D["Draft：anchor + MASK → 候选"]
-    D --> V["Target Verify"]
-    V --> A["连续匹配前缀：接受 a 个"]
-    A --> C["提交旧 anchor + a 个候选的状态"]
-    C --> O["输出接受前缀及修正 / bonus token"]
-    O --> E{"EOS / 长度上限"}
-    E -->|继续：末 token 作 anchor| D
-```
+![DFlash 预填充、候选验证、状态提交与生成循环](assets/dflash-generation-flow.svg)
 
-anchor 已输出，但其状态待本轮提交。候选 `A B C`、Target 判断 `A B X` 时，
-接受 2 个候选，提交旧 anchor、A、B 的状态，X 作下一轮 anchor；零接受仍提交旧 anchor。
+anchor 已输出，但其状态待本轮提交；零接受仍提交旧 anchor。
+图中接受判断与状态提交均在同一次 Verify OM 内完成。
 
 | 验证方式 | GDN 计算 | 接受 a 个候选后的状态 |
 |---|---|---|
@@ -46,23 +36,10 @@ ordinary Target 是 strict greedy 的权威，性能测量允许输出差异不�
 
 ## Draft 数据流
 
-```mermaid
-flowchart TD
-    F["新增 Target features：C=16 / 64"] --> FC["选列 → FC → hidden norm"]
-    B["anchor + 15 MASK"] --> EMB["embedding"]
-    EMB --> N["每层 block norm"]
-    FC --> KV["context 与 block 共用 K/V 投影"]
-    N --> KV
-    N --> Q["Q 投影 → Q norm / RoPE"]
-    KV --> CACHE["context K norm / RoPE → 持久 KV"]
-    KV --> ATT["block KV + 历史 KV → attention"]
-    CACHE --> ATT
-    Q --> ATT
-    ATT --> O["O 投影 + residual"]
-    O --> MLP["norm → gate/up → SiLU × up → down + residual"]
-    MLP --> NEXT["下一层；量化 Draft 共 5 层"]
-    NEXT --> HEAD["final norm → MASK 行 → FP16 head → Top-1"]
-```
+![DFlash Draft 的 Target 特征注入、并行候选生成与 KV 输出](assets/dflash-draft-flow.svg)
+
+参照 [DFlash 论文图 2](https://arxiv.org/pdf/2602.06036#page=4) 绘制，尺寸采用本项目配置。
+图中为 FP16 六层版；W4A16 / W8A16 为五层，选定 Target 特征宽度为 12800，其余结构对应上表。
 
 同一 FC 结果供各层 context K/V 使用；context 支路不依赖上一层 block hidden。
 持久 KV 只保存已提交上下文，anchor/MASK block 的 KV 是临时值。

@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="756" viewBox="0 0 1280 756" role="img" aria-labelledby="title desc">
+  <title id="title">DFlash：预填充、候选验证与状态提交</title>
+  <desc id="desc">Prompt 经过 Target Prefill 得到上下文状态、隐藏特征和首 token。若还需生成，以首 token 为 anchor 进入投机循环。Draft 并行提出候选，Target 验证 anchor 和候选，接受连续匹配的前缀 a 个，并提交旧 anchor 和 a 个候选对应的状态。输出接受前缀和修正或 bonus token；若 EOS 或达到输出上限则结束，否则新 token 作为下一轮 anchor，已提交位置的特征供下一轮 Draft 使用。接受判断和状态提交在同一次 Verify OM 内完成；拒绝后缀不提交。</desc>
+  <!-- Repository-native SVG; visual language matches dflash-draft-flow.svg.
+       Algorithmic steps are separated for explanation, not separate OM calls. -->
+  <defs>
+    <marker id="blue-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#2878a3"/></marker>
+    <marker id="green-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#238052"/></marker>
+    <style>
+      text { font-family: "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #172b3a; font-size: 18px; }
+      .heading { font-size: 22px; font-weight: 700; }
+      .label { font-size: 18px; font-weight: 700; }
+      .small { font-size: 15px; fill: #475e70; }
+      .tiny { font-size: 13px; fill: #475e70; }
+      .center { text-anchor: middle; }
+      .blue { fill: #eaf5fc; stroke: #79b3d2; stroke-width: 1.5; }
+      .green { fill: #eaf8ef; stroke: #79b995; stroke-width: 1.5; }
+      .blue-line { fill: none; stroke: #2878a3; stroke-width: 2.5; marker-end: url(#blue-arrow); stroke-linejoin: round; }
+      .green-line { fill: none; stroke: #238052; stroke-width: 2.5; marker-end: url(#green-arrow); stroke-linejoin: round; }
+      .accepted { fill: #ccefd7; stroke: #79b995; }
+      .anchor { fill: #ffe7a5; stroke: #d6a23d; }
+      .rejected { fill: #fdebec; stroke: #c87279; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="756" rx="16" fill="#fff"/>
+  <text x="24" y="43" class="heading">输入与预填充</text>
+  <text x="315" y="43" class="heading">每轮：提出候选 → 验证 → 提交</text>
+  <text x="1028" y="43" class="heading">输出与继续</text>
+  <path d="M24 65 H1256" stroke="#dce4eb"/>
+  <rect x="296" y="86" width="704" height="474" rx="18" fill="#f8fafc" stroke="#cbd5df" stroke-dasharray="7 5"/>
+
+  <!-- Prefill prepares state and emits the first token; enter the loop if needed. -->
+  <rect x="24" y="117" width="244" height="80" rx="12" class="blue"/>
+  <text x="146" y="150" class="label center">Prompt</text>
+  <text x="146" y="179" class="small center">输入 token 序列</text>
+  <path d="M146 197 V246" class="blue-line"/>
+
+  <rect x="24" y="246" width="244" height="157" rx="12" class="blue"/>
+  <text x="40" y="277" class="label">Target Prefill</text>
+  <text x="40" y="306" class="small">上下文状态 + Target 特征</text>
+  <rect x="40" y="320" width="80" height="31" rx="6" class="anchor"/>
+  <text x="80" y="341" class="tiny center">首 token</text>
+  <text x="130" y="342" class="small">→ anchor</text>
+  <text x="40" y="381" class="small">还需生成时，进入投机轮</text>
+  <path d="M268 316 H282 V209 H315" class="blue-line"/>
+
+  <!-- The proposal block is computed in parallel. -->
+  <rect x="315" y="142" width="198" height="135" rx="12" class="green"/>
+  <text x="414" y="173" class="label center">① Draft</text>
+  <text x="414" y="201" class="small center">anchor + MASK</text>
+  <text x="414" y="229" class="small center">一次前向，并行提出候选</text>
+  <text x="414" y="255" class="tiny center">读取已提交特征与历史 KV</text>
+  <path d="M513 209 H550" class="green-line"/>
+
+  <rect x="550" y="142" width="220" height="135" rx="12" class="blue"/>
+  <text x="660" y="173" class="label center">② Target Verify</text>
+  <text x="660" y="202" class="small center">验证 anchor + 候选</text>
+  <text x="660" y="230" class="small center">Target 预测作为判断依据</text>
+  <text x="660" y="255" class="tiny center">Chunk / MTP</text>
+  <path d="M770 209 H807" class="blue-line"/>
+
+  <rect x="807" y="142" width="174" height="135" rx="12" class="blue"/>
+  <text x="894" y="173" class="label center">③ 接受前缀</text>
+  <text x="894" y="204" class="small center">取连续匹配部分</text>
+  <text x="894" y="232" class="small center">接受 a 个候选</text>
+  <text x="894" y="256" class="tiny center">首个不匹配处停止接受</text>
+  <path d="M894 277 V398" class="blue-line"/>
+
+  <!-- Example: the rejected suffix never becomes committed state. -->
+  <rect x="315" y="363" width="455" height="177" rx="12" fill="#fff" stroke="#cbd5df"/>
+  <text x="333" y="393" class="label">一次验证示例</text>
+  <text x="333" y="430" class="small">Draft</text>
+  <text x="333" y="475" class="small">Target</text>
+  <g class="center">
+    <rect x="410" y="407" width="47" height="31" rx="6" class="accepted"/>
+    <rect x="467" y="407" width="47" height="31" rx="6" class="accepted"/>
+    <rect x="524" y="407" width="47" height="31" rx="6" class="rejected"/>
+    <text x="433.5" y="429">A</text><text x="490.5" y="429">B</text><text x="547.5" y="429">C</text>
+    <rect x="410" y="452" width="47" height="31" rx="6" class="accepted"/>
+    <rect x="467" y="452" width="47" height="31" rx="6" class="accepted"/>
+    <rect x="524" y="452" width="47" height="31" rx="6" class="anchor"/>
+    <text x="433.5" y="474">A</text><text x="490.5" y="474">B</text><text x="547.5" y="474">X</text>
+  </g>
+  <text x="597" y="430" class="small">接受 A、B，a = 2</text>
+  <text x="597" y="474" class="small">X 为下一轮 anchor</text>
+  <text x="333" y="518" class="small">提交旧 anchor、A、B；X 的状态留到下一轮提交。</text>
+
+  <rect x="807" y="398" width="174" height="142" rx="12" class="blue"/>
+  <text x="894" y="429" class="label center">④ 状态提交</text>
+  <text x="894" y="458" class="small center">旧 anchor</text>
+  <text x="894" y="484" class="small center">+ a 个接受候选</text>
+  <text x="894" y="516" class="tiny center">拒绝后缀不提交</text>
+  <path d="M981 469 H1028" class="blue-line"/>
+
+  <rect x="1028" y="398" width="228" height="142" rx="12" class="green"/>
+  <text x="1044" y="429" class="label">输出本轮 token</text>
+  <g class="center">
+    <rect x="1050" y="446" width="49" height="33" rx="6" class="accepted"/>
+    <rect x="1115" y="446" width="49" height="33" rx="6" class="accepted"/>
+    <rect x="1180" y="446" width="49" height="33" rx="6" class="anchor"/>
+    <text x="1074.5" y="469">A</text><text x="1139.5" y="469">B</text><text x="1204.5" y="469">X</text>
+  </g>
+  <text x="1044" y="516" class="small">接受前缀 + 修正 / bonus</text>
+  <path d="M1142 540 V576" class="green-line"/>
+
+  <rect x="1028" y="576" width="228" height="68" rx="12" fill="#fff" stroke="#79b995" stroke-width="1.5"/>
+  <text x="1142" y="604" class="center">EOS / 达到输出上限？</text>
+  <text x="1142" y="628" class="tiny center">按实际输出截断</text>
+  <path d="M1028 610 H294 V250 H315" class="green-line"/>
+  <text x="642" y="598" class="small center">否：新 token 作 anchor，带入新提交的 Target 特征</text>
+
+  <path d="M1142 644 V676" class="green-line"/>
+  <text x="1155" y="666" class="small">是</text>
+  <rect x="1088" y="676" width="108" height="34" rx="17" class="green"/>
+  <text x="1142" y="699" class="center">结束</text>
+
+  <rect x="24" y="730" width="13" height="13" rx="2" fill="#79b3d2"/>
+  <text x="46" y="742" class="small">Target / 持久状态</text>
+  <rect x="228" y="730" width="13" height="13" rx="2" fill="#79b995"/>
+  <text x="250" y="742" class="small">候选 / 输出路径</text>
+  <rect x="432" y="730" width="13" height="13" rx="2" class="anchor"/>
+  <text x="454" y="742" class="small">Target 给出的 anchor</text>
+  <text x="1256" y="742" text-anchor="end" class="tiny">②③④ 在同一次 Verify OM 内完成</text>
+</svg>
+

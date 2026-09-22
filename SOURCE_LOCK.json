@@ -172,7 +172,15 @@
       },
       {
         "source_file": "docs/ARCHITECTURE.md",
-        "source_sha256": "f59e30ccd5574ad74c0fdcc36642e1817115b426f651be37ecbeb32705ae8081"
+        "source_sha256": "48025f37b5fe803184dd1c6336fe91e3240cc2a3e74f49b915d1da18b8214cd1"
+      },
+      {
+        "source_file": "docs/assets/dflash-draft-flow.svg",
+        "source_sha256": "1635daa2439aea4082fe6c4818c353d4e7ff77a6822adc635d15433f9f880c83"
+      },
+      {
+        "source_file": "docs/assets/dflash-generation-flow.svg",
+        "source_sha256": "cd274c15a688f1a877567b92a6ae524fd511423265de87bafdbbf7d7c3d0cb3d"
       },
       {
         "source_file": "docs/USAGE.md",
