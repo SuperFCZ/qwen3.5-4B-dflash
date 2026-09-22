@@ -51,6 +51,21 @@ C 仅替 Draft 的 head/top1，F 替分段 attention，G 由 Prefill 调度选�
 每份性能报告同时记录动态有效行、物理行、调用数、接受/提出数；改变候选输出或接受轨迹时，
 不得将次数减少解释为同一计算任务的 kernel 加速。
 
+| 需求 | 配对区域与必须报告的收益项 |
+|---|---|
+| A | 同一 q/S/X 的 native WeightQuant 与自定义 Linear；逐投影、逐 M 记录时间差，格式转换不得移出计时 |
+| D / E | 同一 A 内核+独立激活/Add 对比融合版；另列相对完整 native 区域的时间，避免把 A 的收益算两次 |
+| C | 完整 head MatMul+ArgMax 对比 tiled head+最终归约；包含 partial workspace 和启动，不计调试 logits |
+| F | Concat、输入适配、QK/Softmax/PV、输出适配的整个区域；分 L、mask 类型，包含重算和第二遍 K 读取 |
+| G | 原完整 C64 Draft 对比 context-only 图，全部 cache 输出完成才停止计时；报告 Prefill、额外 OM 内存和加载成本，Decode 收益记 0 |
+| B | W4 解包+TransData 对比融合转换；若改离线/加载时转换，另报文件与常驻内存增长，不与 W8 混合比较 |
+
+报告字段至少包括：baseline/candidate 哈希、shape/layout、原始重复时间、区域 median/p95、
+`delta_ms=baseline-candidate`、原/新 workspace、额外常驻字节、实际调用数，以及数值门槛结论。
+容量和计算量用公式列出；实测 GM/HBM 流量没有证据时填 N/A，不能将理论省字节数当作 profiler 结果。
+delta 未超过重复测量波动，或组合 Draft/Decode 变慢时，不宣称收益。
+README 的 32.3 轮换算只适用于该次固定轨迹；新实验以各自逐轮记录、C16/C64 调用数重算。
+
 记录每个 tile 的 M/N/K、权重重读次数、GM 字节数、片上 buffer 生命周期和峰值占用。
 硬件 roofline 只能使用与接收端 SoC/运行配置匹配的带宽、算力及容量证据；缺失时标记未建立，
 不根据 Block Num 或跨芯片参数给出理论上限。

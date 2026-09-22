@@ -11,6 +11,21 @@
 Tensor 表未注明时均连续 ND；workspace 由 host 查询，不能与输入、输出或其他实例重叠。
 实现需给出每个支持形状的 workspace 字节数、对齐、分块/尾块规则、事件依赖和回退条件。
 
+### 调用与存储合同
+
+以下签名中 `;` 前为按顺序传入的 Tensor，后为编译属性；属性不是每轮上传的 Tensor。
+维度属性采用正整数，必须与 descriptor 一致；`bits/group_size/layout_version` 不允许运行中改变。
+每个输出的 shape/dtype 在 host 推导，内核写满声明的输出域；无隐藏状态或设备端分配。
+输入完成生产后才能启动，输出完成事件后才能复用输入/workspace；不同并发调用不能共用可写区。
+尺度和权重可以共享只读存储，不能在每次调用中复制、解包整张 W8 或重排 scale。
+
+表中 stride 以元素计，字节偏移需乘 dtype 字节数；BOOL/INT8/UINT8 为 1、FP16 为 2、
+FP32 为 4、INT64 为 8 字节。ND 连续布局最后一维 stride=1。
+NZ 连续存储的 stride 为 `[ceil(N/16)*512,512,32,1]`，
+逻辑 `[N,K]`、物理 `[K1,N1,16,32]` 与 origin 必须同时声明，不能互换。
+下文“输入/输出字节数”是张量容量，读写收益按独立中间量物化一次计算，不是实测 HBM 流量。
+不支持的 shape/stride/layout 在 host 拒绝；布局适配、fallback 的开销须包含在区域对照中。
+
 ## A：DFlashGroupQuantLinear
 
 替换 FC、Q、K/V、O、gate/up、down，优先 gate/up 和 down。
@@ -91,6 +106,16 @@ gate/up 的 W8/W4 权重分别为 49,807,360 / 24,903,680 字节，完整 FP16 �
 gate/up 输出前 9728 列为 gate，后 9728 列为 up；K/V 输出前 1024 列为 K，后 1024 列为 V。
 若后续融合 SwiGLU，保留 Linear→FP16、SiLU→FP16、乘 up→FP16 的基线舍入边界。
 
+首批接口容量如下；两种投影每次 Draft 各执行 5 次，C16/C64 档相同：
+
+| 投影 | X 字节 | W8 字节 | S 字节 | Y 字节 | 逻辑乘加次数/调用 |
+|---|---:|---:|---:|---:|---:|
+| gate/up | 81,920 | 49,807,360 | 778,240 | 622,592 | 796,917,760 |
+| down | 311,296 | 24,903,680 | 389,120 | 81,920 | 398,458,880 |
+
+一次乘加按 `M*N*K` 计数，若换算 FLOP 为其两倍。A 不减少这些逻辑乘加；
+收益来自相同工作量下的权重复用、反量化、搬运和计算调度，不能计入已经完成的离线 NZ 收益。
+
 建议先沿 N 分块，让一个 owner 完成所负责输出列的整个 K 归约；同一权重 tile 复用全部
 16 行，K tile 按 group 边界读取对应 S。只将当前/下一 tile 反量化到片上，
 流水衔接搬运、反量化与矩阵乘，避免 GM 中的整张 FP16 权重。
@@ -102,6 +127,10 @@ tile 尺寸与双缓冲是否可行须按实际 310P 的 L0/L1/UB 容量确定�
 
 将 W4 解包与 ND→NZ 合并，输出交给现有 CANN GEMM；不做浮点运算。
 
+```text
+DFlashW4UnpackNZ(packed; N, K, layout_version="nz_int8_v1") -> q_nz
+```
+
 | 输入/输出 | shape | dtype / format |
 |---|---|---|
 | packed | `[N,K/2]` | UINT8 ND，上述 offset-binary 顺序 |
@@ -110,6 +139,11 @@ tile 尺寸与双缓冲是否可行须按实际 310P 的 L0/L1/UB 容量确定�
 
 按 A 的 q 定义解包并排列，padding=INT8 0；无 scale、FP16 buffer 或原地写入。
 输入输出不重叠，输出须逐字节一致。
+解包后 `q_nz` 可作为 A 的 INT8 NZ 输入，但 scale 仍取原 W4 checkpoint，不能替换为 W8 scale。
+转换无 state，无 M 属性；实际计算值域仍是 W4 的 `[-8,7]`。
+读取 `N*K/2` 字节，写入 `ceil(K/32)*ceil(N/16)*512` 字节；消费者还需读取该 INT8 输出。
+若分离基线物化了 ND INT8 中间权重，融合能避免它的 `2*N*K` 字节写回和重读。
+这不减少后续 GEMM 工作量，也不给当前 W8 路线带来收益。
 
 | 执行方式 | 成本 |
 |---|---|
@@ -120,6 +154,11 @@ tile 尺寸与双缓冲是否可行须按实际 310P 的 L0/L1/UB 容量确定�
 ## C：DFlashDraftLmHeadTop1
 
 替换 `argmax(F.linear(hidden, head_weight))`，完整词表分块计算，输出 token ID。
+
+```text
+DFlashDraftLmHeadTop1(hidden, head_weight;
+                      M, K=2560, N=248320, weight_layout="fp16_nk") -> token_id
+```
 
 | 输入/输出 | shape | dtype / 约束 |
 |---|---|---|
@@ -134,6 +173,10 @@ tile 尺寸与双缓冲是否可行须按实际 310P 的 L0/L1/UB 容量确定�
 
 M=15 的完整 logits 为 7,449,600 字节，可省去其 GM 写入和读取；
 head 权重仍为 1,271,398,400 字节，完整投影的计算和权重读取仍需执行。
+hidden stride=`[2560,1]`、head stride=`[2560,1]`、ID stride=`[1]`；
+生产输入 hidden 为 76,800 字节，输出为 120 字节，逻辑乘加为 9,535,488,000 次/调用。
+hidden 已经过 final RMSNorm；算子不接收 embedding、anchor、cache、mask 或温度。
+输出 ID 是原词表列号，不是 tile 内下标。
 
 接入 `AirDFlashOps.top1`，首版仅用于 Draft。head 已只输入 MASK 行，不包含 anchor。
 `proposal_count` 的无效尾部置零仍由 `DraftGraph` 处理；算子不输出 softmax 概率，
@@ -142,8 +185,11 @@ head 权重仍为 1,271,398,400 字节，完整投影的计算和权重读取仍
 最终按“值大优先，相等 ID 小优先”归约。跨词表 tile 分块无需对 K 做 split-K。
 同一权重 tile 应复用 M 行，避免为 15 行扫描 15 次全词表权重。
 生产只输出 ID；调试额外输出 logits 的开销不得计入生产时延。
-首先可省去 7,449,600 字节 logits 的写入和重读，合计 14,899,200 字节，以及独立归约调度；
-这不等于能消除旧 profile 中完整 LM MatMul 的 6.73 ms。
+若用 P 个词表分区并行，workspace 至少声明 FP16 `partial_max[P,M]` 与 INT64
+`partial_id[P,M]` 两段及其对齐；原始容量 `10*P*M` 字节。每个 owner 写自己的分区，
+最终归约等待全部分区完成，尾 tile 的越界列不能参与比较。NaN 的判序另按原生 Top-1 行为匹配。
+小型 partial 的写读和第二次归约启动是新增成本，需从 logits 省下的读写收益中扣除。
+完整 MatMul 和权重读取仍在，不能将旧 profile 的 6.73 ms 全算成可节省时间。
 
 ## D：DFlashW8GateUpSwiGLU
 
@@ -161,6 +207,11 @@ DFlashW8GateUpSwiGLU(X, W_gate_up_nz, S_gate_up;
 | W_gate_up_nz | `[80,1216,16,32]` | INT8 NZ，逻辑 `[19456,2560]`；前 9728 输出列为 gate，后 9728 为 up |
 | S_gate_up | `[20,19456]` | FP16 GN，与 A 完全一致 |
 | Z | `[16,9728]` | FP16 ND；SwiGLU 结果，作为 down 的 X |
+
+attrs 固定为 `M=16,H=2560,I=9728,group_size=128,weight_layout=nz_int8_v1`；不接受 bias。
+X/Z 的 stride 分别为 `[2560,1]`/`[9728,1]`。X/W/S 容量与 A 的 gate/up 相同，
+唯一生产输出 Z 为 311,296 字节；不另输出 gate、up 或 SiLU 临时结果。
+接口不修改 X/W/S，down 必须在 Z 完成后读取。
 
 逐元素定义（`RN16` 表示基线到 FP16 的舍入）：
 
@@ -197,6 +248,11 @@ DFlashW8DownResidual(Z, W_down_nz, S_down, R) -> H_out
 | R | `[16,2560]` | FP16 ND；attention 输出投影与 residual 相加后的 hidden，**不是** post-norm 输入 Z |
 | H_out | `[16,2560]` | FP16 ND；下一层输入或最终 RMSNorm 输入 |
 
+编译属性固定为 `M=16,K=9728,N=2560,group_size=128,weight_layout=nz_int8_v1`；无 bias。
+Z/W/S 容量与 A 的 down 相同；R 与 H_out 各为 81,920 字节、stride=`[2560,1]`。
+每个输出元素只读取同位置 R，无广播。仅输出 H_out，不再输出独立 down 结果；
+模型外层须删除原残差 Add，避免重复相加。
+
 `D16=A(Z,W_down_nz,S_down)`，`H_out=RN16(R+D16)`。
 保留 GEMM 输出到 FP16 的舍入，不能实现为 `RN16(R+FP32_accumulator)`。
 R 只读且与 H_out 不重叠，首版不融合下一层 norm。
@@ -225,6 +281,10 @@ Q head `h` 对应 KV head `floor(h/4)`。逻辑 K/V 顺序为整个 cache 容量
 实现用两个基地址寻址，不在 GM 复制这两个大 Tensor；L 从部署清单取，不能硬编码为 prompt 长度。
 cache 元素偏移为 `((b*8+hkv)*L+s)*128+d`；cache 的 head stride 为 `L*128`，
 block 的 head stride 为 `16*128`，二者的行 stride 均为 128 个元素。
+Q/O 的 stride=`[65536,2048,128,1]`；mask 的最后两维 stride=`[L+16,1]`。
+常量维度、`L>0`、`kv_groups=4`、FP32 缩放常量为编译属性；mask 是必需的逐调用输入。
+令 `P=L+16`：Q/O 各 131,072 字节，cache 对共 `4096*L` 字节，block K/V 对共 65,536 字节，
+mask 为 `16*P` 字节。输出仅 O，不输出 scores、概率或新 cache；全部输入只读。
 上游若仍需要物化 transpose/contiguous，须把该布局成本计入融合区域的总耗时。
 
 基线数据流：
@@ -244,6 +304,21 @@ Softmax 的 FP32 归约和 **PV 前概率转 FP16** 均需保留。
 
 生产 mask 含 context 有效区、`proposal_count`、因果/双向与滑窗限制；算子逐元素消费 mask，
 不能按全因果处理所有层，不能将带洞 mask 解释成一个有效前缀长度。
+当前上游 mask 的精确定义如下，`ell=p+v`，`q=0..15`，`j=0..L+15`：
+
+```text
+query_position(q) = ell + q
+key_position(j)   = j                    if j < L else ell + (j-L)
+visible(j)        = (j < ell)            if j < L else (j-L <= proposal_count)
+distance(q,j)     = query_position(q) - key_position(j)
+mask[q,j]         = visible(j)
+if causal:        mask[q,j] &= distance(q,j) >= 0
+if window exists: mask[q,j] &= distance(q,j) < window
+if window exists and not causal: mask[q,j] &= -distance(q,j) < window
+```
+
+这些位置/层属性由调用方生成 mask，首版 F 不再接收第二套长度参数，避免两种语义冲突。
+block 第 0 行是 anchor；`proposal_count` 只限制 key 可见性和最终候选输出，不能据此省略 query 行。
 首版不跳过无效 query 行；全 mask 行的 NaN 等行为需与基线一致，不能自行返回零。
 需要保存整行统计量或重算 scores 的方案，须把二次 K 读取、workspace 与额外计算计入性能。
 
@@ -251,6 +326,18 @@ Softmax 的 FP32 归约和 **PV 前概率转 FP16** 均需保留。
 
 用于 C64 的非最后 prompt 块，替换 runner 中“完整 Draft 执行后丢弃候选”的调用。
 这是一张只保留有效消费者的图，先复用 A 与原有 norm/RoPE/cache 算子，不要求首版写成单 kernel。
+
+```text
+DFlashContextOnly(features, start_position, valid_rows,
+                  d0_key, d0_value, ..., d4_key, d4_value;
+                  C=64, L, source_layer_ids, draft_layer_ids, norm_epsilons)
+  -> (d0_key_next, d0_value_next, ..., d4_key_next, d4_value_next)
+```
+
+FC/KV 权重、scale、gamma、inv_freq 是下面列出的只读模型常量，不作为每轮 Host→Device 输入；
+签名只列运行时 Tensor。source/draft layer ID 列表分别来自部署的
+`target_feature_layers` / `draft_feature_layers`，按 checkpoint 顺序选取，不能只截取前 12800 列。
+`norm_epsilons` 与原 hidden/K norm 配置逐一绑定；不包含 proposal_count、anchor 或 head 权重。
 
 | 输入/输出 | shape | dtype / 含义 |
 |---|---|---|
@@ -264,10 +351,35 @@ Softmax 的 FP32 归约和 **PV 前概率转 FP16** 均需保留。
 | hidden norm gamma / 每层 K norm gamma | `[2560]` / `[128]` | FP16；K gamma 广播到 8 个 head |
 | RoPE inv_freq / norm epsilon | `[64]` / 标量属性 | FP32 / checkpoint 配置；复用当前常量构造，不另改 theta 或 epsilon |
 
+`features` stride=`[1802240,28160,1]`，容量 3,604,480 字节；两个控制 Tensor 分别为 8、2 字节。
+每个 cache 连续 BHLD，容量 `2048*L` 字节，输入/输出各 10 个，总容量各 `20480*L` 字节。
+state 列表按层号递增、先 key 后 value 排列，与现有 `draft_states` 一致。
+
 处理：选择 features → 无效行置零 → FC → hidden norm；五层各自做 context KV 投影、
 K norm、context RoPE，然后更新 `[p,p+64)` 的 K/V 行。各层 context 不读取 block hidden，
 因此 Q、O、gate/up、down、final norm、head 均没有通往输出 cache 的消费者，可以移出此图。
 `p+64<=L`，位置唯一；非写入区位型不变，不得将 block KV 写入输出。
+`p>=0`，`v=64`；本次更新 10 个 cache 的物理行切片共 1,310,720 字节。
+输出仍是完整 cache，不能未经 ABI 改造只返回 delta。功能式实现可能需要复制未写入区，必须计时。
+runner 在图完成后交换 current/next 并推进 cursor 到 `p+64`；不在 kernel 内维护有效长度。
+
+逐层语义（RMSNorm、反量化与 RoPE 的实际舍入保持原图）：
+
+```text
+slot[i] = index(source_layer_ids, draft_layer_ids[i])       # i=0..4
+selected[..., i*H:(i+1)*H] = features[..., slot[i]*H:(slot[i]+1)*H]
+projected = hidden_norm(FC(selected))                     # 所有层共享
+[Kraw_i, Vraw_i] = split(KV_i(projected), 1024)
+Kctx_i = RoPE(Knorm_i(reshape_heads(Kraw_i)), positions=p+arange(64))
+Vctx_i = reshape_heads(Vraw_i)                            # V 无 norm/RoPE
+Knext_i[:,:,p:p+64,:] = Kctx_i
+Vnext_i[:,:,p:p+64,:] = Vctx_i
+Knext_i/Vnext_i 在其他行逐位复制原 state
+```
+
+RoPE 对 `[first64,second64]` 使用 `rotate_half=[-second64,first64]`，不是相邻偶奇配对。
+位置先转 FP32，与原 FP32 inv_freq 相乘，拼接同一组 64 个频率得到 128 维，
+cos/sin 后转 FP16；乘法和加法的舍入按原 OM 执行。hidden norm 沿 2560 维，K norm 沿每头 128 维。
 若扩展 v<64，需与原图一致地计算/写入 C 行 scratch，并只将 v 行标记为有效；
 不能只比较有效区就宣称整个 cache 等价。
 

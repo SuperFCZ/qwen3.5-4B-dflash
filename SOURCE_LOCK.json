@@ -973,8 +973,8 @@
     "schema_version": 1,
     "status": "REQUIREMENTS_ONLY",
     "development_branch": "feature/gdr-chunk-verify",
-    "reviewed_source_revision": "d8b10ab8d1c0bb22f9147f232962eede1542fcf9",
-    "scope": "Current offline-NZ W8 Draft review: measured decode budget, group Linear and fused operator I/O, layout, precision, integration and validation requirements; no new kernel implementation",
+    "reviewed_source_revision": "7792ce34771c120a43c09c5bd7471e60e0ff66f2",
+    "scope": "Current offline-NZ W8 Draft operator signatures, tensor/attribute order, shapes/strides, mask/cache/precision contracts, per-region byte and compute savings, introduced costs and measured-round decode sensitivity; no new kernel implementation",
     "hardware_reference_policy": "use",
     "matched_capability_profile": null,
     "proposals": [
@@ -991,23 +991,23 @@
     "sources": [
       {
         "source_file": "framework/custom_ops/README.md",
-        "source_sha256": "a89fdb6b84ecafa6ea4c8bd1e53736b7e3a816bf0f0d150ac09ccd4f089afe09"
+        "source_sha256": "d9b575946747d4d521d2d34d0f27b648e7e9720e29c7592f3c1309e06f3e3bd3"
       },
       {
         "source_file": "framework/custom_ops/draft_quant/OPERATORS.md",
-        "source_sha256": "d6d4d987ddf8f647185133a20e163c62a4a6e117e4e18481fb6c5dca3610c4d6"
+        "source_sha256": "60f2a65b17ee668ff8304defe7a8945fea28e59bbd7e1088830eab17b6f02db5"
       },
       {
         "source_file": "framework/custom_ops/draft_quant/README.md",
-        "source_sha256": "ddc05468acd2de1b38cc9e476241e2eef5b51ce40627e0f0d37de132df8ee24d"
+        "source_sha256": "b69c56061e170b3a97a7d6d528f16dbcb8ba275608273033c01340920b760371"
       },
       {
         "source_file": "framework/custom_ops/draft_quant/VALIDATION.md",
-        "source_sha256": "e4b9678d006e8656fef0489ad8eb2a036a6a282992d6b54a05326c7d0bfc70ca"
+        "source_sha256": "4c08a3ced105945079dc4a129b6bdcb9d9cf6e7ba996353f53b7eed6221dda0e"
       },
       {
         "source_file": "framework/custom_ops/draft_quant/workloads.json",
-        "source_sha256": "9118c553505262faaf798172c779c47dd659a1e6022fd59b2eb1afef52754bcb"
+        "source_sha256": "206cd83f1c0a23d9a1d15bf95ad7248d079d0229959f8c4fa495f18f3e9dd20d"
       }
     ],
     "performance_evidence": {

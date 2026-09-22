@@ -5,7 +5,7 @@
 注意力融合优先级较低，长 prompt 的纯缓存构建则是单独的 Prefill 优化。
 
 环境：Ascend310P / CANN 9.0.0；现有 profile 记录 torch_npu `2.8.0.post1+gitc7b6b32`。
-测量来源为用户 benchmark 和 msprof，本文分析源码 `d8b10ab`。
+测量来源为用户 benchmark 和 msprof，本文分析源码 `7792ce3`。
 开发接口见 [算子需求](OPERATORS.md)，逐项验收见 [VALIDATION.md](VALIDATION.md)，
 形状、字节数和测量来源见 [workloads.json](workloads.json)。
 
@@ -123,8 +123,7 @@ gate/up 与 down 是首选，原因是旧 profile 中约 29.21 ms 花在它们�
 | P2 | F：分段 K/V 的 GQA Attention | 不复制整段 cache 来拼接 block，不将全 scores/probabilities 落 GM | 保留 QK/PV、FP32 Softmax、mask 和 cast 顺序 |
 | 独立 Prefill 项 | G：仅更新 context KV 的图 | 删除候选分支的 Q/O/MLP/head 计算 | 新增图及 runtime 分发；不计入 Decode 收益 |
 
-D/E 的矩阵乘收益与 A 重叠，不能分别相加。按分离实现计算，D 每层可避免 gate/up 中间量
-1,245,184 字节的写入+读取；E 为 163,840 字节。它们不能替代 A 的 GEMM 优化。
+D/E 的矩阵乘收益与 A 重叠，不能分别相加；其额外收益是激活/残差融合。
 F 的旧 QK/PV + Softmax 累计约 1.25 ms/次 Draft，因此本轮不优先重写 attention。
 W4 专用的解包需求 B 保留供后续复用，不属于当前 W8 热点。
 
@@ -152,6 +151,64 @@ block K/V 中的 anchor 仍被其他 query 使用，更早层的 anchor hidden �
 裁减行前需检查完整消费者；M16→M15 也可能仍占同一个物理 tile。
 
 ## 收益预算
+
+### 各算子省什么、还要付出什么
+
+以下字节数按对应中间 Tensor 在 GM 写入、读取各一次计算；编译器已融合的部分不能再计收益。
+每层内核的实际节省量记为 `δ = 原区域时间 - 新区域时间`，新区域包含布局适配、workspace
+读写及新增启动。只有同输入原生 OM 配对测量才能得到 δ，目前均未测。
+
+| 需求 | 可消除的工作 | 仍需执行 / 新增成本 | 单次完整 Draft 的时间节省 |
+|---|---|---|---|
+| A，先 gate/up、down | 低效的反量化、tile 搬运和调度；具体重读次数由 profile 确认 | 两类每层共 1,195,376,640 次乘加；五层 W8 权重 356.25 MiB、scale 5.57 MiB 仍需消费 | `5*δ_gate + 5*δ_down` |
+| D，gate/up+SwiGLU | 投影结果往返 1,245,184 B/层，五层 6,225,920 B；独立激活调度 | 完整 gate/up GEMM 与 SiLU 仍在；成对 gate/up tile 增加片上占用 | `5*δ_swiglu`，相对 A+独立激活，仅计融合增量 |
+| E，down+residual | down 结果往返 163,840 B/层，五层 819,200 B | down GEMM、R 读取及最终 hidden 写回仍在 | `5*δ_residual`，相对 A+独立 Add |
+| C，LM head+Top-1 | 完整 logits 往返 14,899,200 B/调用、独立 ArgMax 调度 | 9,535,488,000 次乘加及 1212.5 MiB head 权重；分区最大值/ID 的归约和 workspace | `δ_head`，每次 Draft 一次；不能省掉完整 head GEMM |
+| F，分段 attention | K/V 拼接结果往返 `8192*(L+16)` B/层；可进一步减少 scores/概率中间量 | QK/PV 仍共 `131072*(L+16)` 次乘加/层；Softmax；分块可能重读 K、重算 score | `5*δ_attention(L)`，须包含输入布局适配 |
+| G，context-only 图 | 每个非末 C64 块删除 Q/O/gate/up/down 共 20 个量化投影及候选 head/attention；KV 的 M80→64 | FC+五层 context KV 共 6 个投影、norm/RoPE、完整 cache 输出；新增图的加载/常驻内存 | **Decode 为 0**；Prefill 为 `准备调用数*δ_context` |
+| B，W4 解包+NZ | 若 ND INT8 中间量物化，省 `2*N*K` B/投影 | 读压缩 W4 `N*K/2` B，写 NZ `K1*N1*512` B，后续 GEMM 仍读 INT8；缓存需额外内存 | 当前 W8 为 0；W4 按其 26 个投影单独计量 |
+
+D 还可能减少独立 SiLU 输出的写读，但不能在未看实际融合图时重复加算。
+上述 D/E 中间量往返分别仅相当于对应 INT8 权重容量的 2.50%/0.66%；C 的 logits 往返
+约为 FP16 head 权重容量的 1.17%。这解释了为何优先优化 GEMM 本身；这些容量比例不是时延比例。
+F 中每个完整 FP32 scores 或 P32 Tensor 为 `2048*(L+16)` B，P16 为 `1024*(L+16)` B；
+这些是容量，不能相加当作已节省流量。L 是部署 cache 容量，随有效 prompt 变短不会自动缩小。
+分离 Attention 已避免 GQA 的 4 倍 KV 拷贝，不能再次宣称消除这一开销。
+
+G 的 C64 量化乘加从 11,848,908,800 降到 3,774,873,600 次，并删除 head 的
+9,535,488,000 次乘加；这不含 norm/attention 等计算。该图不再需要 Q/O/MLP 的
+456.25 MiB W8 权重及 1212.5 MiB FP16 head，但正常 Draft 仍需保留它们，
+因此这不是设备常驻内存的等量下降。新图的 FC/KV 权重共 56.25 MiB，若 OM 另存常量还会增加常驻。
+G 对本组长输入每条替换 15 次准备调用，短输入为 0，全部输入平均为 9 次：
+每次准备调用实测少 1 ms，则 long Prefill 少 15 ms、all Prefill 少 9 ms，Decode 不变。
+
+### 从内核收益换算到 Decode
+
+本次逐轮表三次测量共 1938 轮、60 次生成，平均每次生成 32.3 轮；每轮一个 Draft 和 Verify。
+所有输入的最后 prompt 块均超过 16 行，第一次 proposal 用 C64，其余轮用 C16。
+因此本组每次生成平均 **1 次 C64 + 31.3 次 C16** 在 Decode 内；额外平均 9 次 C64 准备调用在 Prefill 内。
+调用数来自逐轮记录，不能用包含 Prefill 的 Draft 累计时间直接推算 Decode 节省量。
+
+保持输出、接受轨迹、Verify 与调度不变，若完整 Draft 区域实测分别少 `δ64/δ16` ms：
+
+```text
+新 DFlash Decode = 3193.72 - (δ64 + 31.3*δ16) ms
+相对当前 W8 的 Decode 提升 = 3193.72 / 新 DFlash Decode
+相对 ordinary 的 Decode 加速比 = 4436.34 / 新 DFlash Decode
+```
+
+| 假设 C16/C64 每次 Draft 均减少 | 每次生成少用 | 新 Decode | 相对当前 W8 | 相对 ordinary |
+|---|---:|---:|---:|---:|
+| 1 ms | 32.30 ms | 3161.42 ms | 1.01× | 1.40× |
+| 5 ms | 161.50 ms | 3032.22 ms | 1.05× | 1.46× |
+| 10 ms | 323.00 ms | 2870.72 ms | 1.11× | 1.55× |
+
+此表是投入目标的敏感性分析，**不是已实现或预计必达的性能**。
+例如每层 gate/up 少 0.1 ms、down 少 0.1 ms，五层合计每轮少 1 ms，对应第一行；
+单靠省去 SiLU/Add 的小中间量，不足以据此承诺整个 Draft 提速数倍。
+A、D、E 必须按互不重叠的增量计，最终以组合 OM 和实际 Decode 的配对测量为准。
+
+### Verify 固定时的预算
 
 固定本次接受轨迹、Verify 图和调用次数，令 `T=3193.72 ms`、`V=1652.73 ms`。
 把 `T-V` 的全部时间都视为可优化，得到**乐观预算**，不是实测预测：

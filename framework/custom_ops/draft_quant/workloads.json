@@ -2,7 +2,7 @@
   "schema_version": 1,
   "status": "REQUIREMENTS_ONLY",
   "target": "Ascend310P",
-  "review_source_commit": "d8b10ab8d1c0bb22f9147f232962eede1542fcf9",
+  "review_source_commit": "7792ce34771c120a43c09c5bd7471e60e0ff66f2",
   "provenance": {
     "kind": "user-provided-terminal-tables-and-source-review",
     "receiver": {
@@ -432,7 +432,67 @@
       3
     ],
     "zero_non_verify_relative_limit": 1.9323906506204884,
-    "matched_hardware_capability_profile": null
+    "matched_hardware_capability_profile": null,
+    "observed_calls": {
+      "source": "user-provided gdr-lengths-mjhazgip generation-position round counts; warmups excluded",
+      "measured_generations": 60,
+      "decode_rounds_by_prompt": {
+        "zh_explain": 75,
+        "zh_plan": 207,
+        "math": 54,
+        "code": 102,
+        "translate": 54,
+        "summary": 102,
+        "en_explain": 90,
+        "creative": 81,
+        "long_zh_summary": 93,
+        "long_zh_qa": 105,
+        "long_zh_plan": 87,
+        "long_en_analysis": 108,
+        "long_en_math": 105,
+        "long_zh_code": 81,
+        "long_zh_translate": 81,
+        "long_zh_extract": 192,
+        "long_en_compare": 57,
+        "long_en_timeline": 90,
+        "long_en_rules": 81,
+        "long_en_story": 93
+      },
+      "decode_rounds_total": 1938,
+      "decode_rounds_per_generation": 32.3,
+      "decode_draft_c64_total": 60,
+      "decode_draft_c16_total": 1878,
+      "prefill_draft_c64_total": 540,
+      "prefill_draft_c64_per_generation": 9,
+      "scope": "each measured decode round calls one combined Draft and one Verify; all final prompt chunks in this run have more than 16 valid rows"
+    },
+    "per_gear_delta_formula": "new_decode_ms = 3193.72 - delta_C64_ms - 31.3*delta_C16_ms",
+    "draft_call_delta_scenarios": [
+      {
+        "assumed_saving_each_draft_call_ms": 1,
+        "decode_saving_per_generation_ms": 32.3,
+        "new_decode_mean_ms": 3161.42,
+        "relative_to_current_w8": 1.0102,
+        "relative_to_ordinary_decode": 1.4033,
+        "status": "CONDITIONAL_ARITHMETIC_NOT_MEASURED"
+      },
+      {
+        "assumed_saving_each_draft_call_ms": 5,
+        "decode_saving_per_generation_ms": 161.5,
+        "new_decode_mean_ms": 3032.22,
+        "relative_to_current_w8": 1.0533,
+        "relative_to_ordinary_decode": 1.4631,
+        "status": "CONDITIONAL_ARITHMETIC_NOT_MEASURED"
+      },
+      {
+        "assumed_saving_each_draft_call_ms": 10,
+        "decode_saving_per_generation_ms": 323.0,
+        "new_decode_mean_ms": 2870.72,
+        "relative_to_current_w8": 1.1125,
+        "relative_to_ordinary_decode": 1.5454,
+        "status": "CONDITIONAL_ARITHMETIC_NOT_MEASURED"
+      }
+    ]
   },
   "operator_requirements": [
     {
@@ -449,7 +509,43 @@
         "float16 GN"
       ],
       "output": "float16 [M,N]",
-      "precision_classification": "uncertain until native rounding/accumulation equivalence is established"
+      "precision_classification": "uncertain until native rounding/accumulation equivalence is established",
+      "candidate_region_latency_ms": null,
+      "candidate_validation": "NOT_RUN",
+      "ordered_inputs": [
+        "X",
+        "W",
+        "S"
+      ],
+      "ordered_outputs": [
+        "Y"
+      ],
+      "function": "Y[m,n] = sum_k X[m,k] * (q[n,k] * S[k//128,n]); preserve native dequantization, accumulation and rounding",
+      "compile_attributes": {
+        "bits": [
+          8,
+          4
+        ],
+        "group_size": 128,
+        "dimensions": [
+          "M",
+          "N",
+          "K"
+        ],
+        "weight_layout": [
+          "nz_int8_v1",
+          "nk_int8",
+          "nk_u4_offset_binary"
+        ]
+      },
+      "benefit": {
+        "initial_calls_per_draft": 10,
+        "saving_formula_ms": "5*delta_gate_up + 5*delta_down",
+        "retained_gate_up_down_fma_per_layer": 1195376640,
+        "retained_gate_up_down_w8_bytes_all_layers": 373555200,
+        "retained_gate_up_down_scale_bytes_all_layers": 5836800,
+        "mechanism": "tile-local dequantization, reuse over M, transfer/compute scheduling; no removal of logical GEMM work or already-offlined TransData"
+      }
     },
     {
       "id": "D",
@@ -482,7 +578,37 @@
       ],
       "output_dtype": "float16",
       "projection_handoff_bytes_avoided_per_layer": 1245184,
-      "overlaps_with": "A gate_up"
+      "overlaps_with": "A gate_up",
+      "candidate_region_latency_ms": null,
+      "candidate_validation": "NOT_RUN",
+      "ordered_inputs": [
+        "X",
+        "W_gate_up_nz",
+        "S_gate_up"
+      ],
+      "ordered_outputs": [
+        "Z"
+      ],
+      "function": "split FP16 Linear into gate/up; baseline FP16 SiLU(gate), then FP16 multiply by up",
+      "compile_attributes": {
+        "M": 16,
+        "H": 2560,
+        "I": 9728,
+        "group_size": 128,
+        "weight_layout": "nz_int8_v1"
+      },
+      "input_bytes": [
+        81920,
+        49807360,
+        778240
+      ],
+      "output_bytes": 311296,
+      "benefit": {
+        "calls_per_draft": 5,
+        "materialized_projection_roundtrip_bytes_avoidable_all_layers": 6225920,
+        "saving_formula_ms": "5*delta_swiglu_in_addition_to_A",
+        "cost": "full GEMM and SiLU retained; paired gate/up local buffers; zero claimed savings for intermediates already fused"
+      }
     },
     {
       "id": "C",
@@ -506,7 +632,48 @@
         15
       ],
       "output_dtype": "int64",
-      "vocabulary_policy": "full vocabulary; lowest original token ID on equal FP16 logits"
+      "vocabulary_policy": "full vocabulary; lowest original token ID on equal FP16 logits",
+      "candidate_region_latency_ms": null,
+      "candidate_validation": "NOT_RUN",
+      "ordered_inputs": [
+        "hidden",
+        "head_weight"
+      ],
+      "ordered_outputs": [
+        "token_id"
+      ],
+      "function": "full FP16-logit vocabulary argmax; minimum original ID for equal values; match native NaN behavior",
+      "compile_attributes": {
+        "M_range": [
+          1,
+          15
+        ],
+        "K": 2560,
+        "N": 248320,
+        "weight_layout": "fp16_nk"
+      },
+      "m15_input_bytes": [
+        76800,
+        1271398400
+      ],
+      "m15_output_bytes": 120,
+      "partial_workspace": {
+        "max_dtype": "float16",
+        "id_dtype": "int64",
+        "shape": [
+          "P",
+          "M"
+        ],
+        "unaligned_bytes": "10*P*M",
+        "P": "number of vocabulary partitions"
+      },
+      "benefit": {
+        "calls_per_draft": 1,
+        "materialized_logits_roundtrip_bytes_avoidable": 14899200,
+        "retained_fma_m15": 9535488000,
+        "saving_formula_ms": "delta_complete_head_region",
+        "cost": "full head GEMM/weight consumption retained; partial workspace and final reduction included"
+      }
     },
     {
       "id": "E",
@@ -544,7 +711,39 @@
       ],
       "output_dtype": "float16",
       "overlaps_with": "A down",
-      "projection_handoff_bytes_avoided_per_layer": 163840
+      "projection_handoff_bytes_avoided_per_layer": 163840,
+      "candidate_region_latency_ms": null,
+      "candidate_validation": "NOT_RUN",
+      "ordered_inputs": [
+        "Z",
+        "W_down_nz",
+        "S_down",
+        "R"
+      ],
+      "ordered_outputs": [
+        "H_out"
+      ],
+      "function": "round down Linear to FP16, add same-element residual R and round to FP16",
+      "compile_attributes": {
+        "M": 16,
+        "K": 9728,
+        "N": 2560,
+        "group_size": 128,
+        "weight_layout": "nz_int8_v1"
+      },
+      "input_bytes": [
+        311296,
+        24903680,
+        389120,
+        81920
+      ],
+      "output_bytes": 81920,
+      "benefit": {
+        "calls_per_draft": 5,
+        "materialized_projection_roundtrip_bytes_avoidable_all_layers": 819200,
+        "saving_formula_ms": "5*delta_residual_in_addition_to_A",
+        "cost": "down GEMM, residual read and final hidden write retained; remove original external residual Add"
+      }
     },
     {
       "id": "F",
@@ -585,7 +784,51 @@
       "softmax_dtype": "float32",
       "probabilities_before_pv": "float16",
       "writes_cache": false,
-      "matmul_cast_behavior": "freeze actual ATC MatmulCast fusion semantics"
+      "matmul_cast_behavior": "freeze actual ATC MatmulCast fusion semantics",
+      "candidate_region_latency_ms": null,
+      "candidate_validation": "NOT_RUN",
+      "ordered_inputs": [
+        "Q",
+        "K_cache",
+        "V_cache",
+        "K_block",
+        "V_block",
+        "mask"
+      ],
+      "ordered_outputs": [
+        "O"
+      ],
+      "function": "grouped-query attention over read-only cache then temporary block, using explicit boolean mask and native softmax/cast boundaries",
+      "compile_attributes": {
+        "batch": 1,
+        "q_heads": 32,
+        "kv_heads": 8,
+        "query_rows": 16,
+        "head_dim": 128,
+        "cache_capacity": "L",
+        "kv_groups": 4,
+        "scale": "same FP32 constant as native 128**-0.5"
+      },
+      "input_bytes": [
+        131072,
+        "2048*L",
+        "2048*L",
+        32768,
+        32768,
+        "16*(L+16)"
+      ],
+      "output_bytes": 131072,
+      "benefit": {
+        "calls_per_draft": 5,
+        "P_definition": "L+16",
+        "materialized_concat_roundtrip_bytes_avoidable_per_layer": "8192*P",
+        "full_score32_bytes_per_layer": "2048*P",
+        "full_probability32_bytes_per_layer": "2048*P",
+        "full_probability16_bytes_per_layer": "1024*P",
+        "retained_qk_pv_fma_per_layer": "131072*P",
+        "saving_formula_ms": "5*delta_attention_region(L)",
+        "cost": "QK/PV/softmax retained; repeated K reads, score recomputation and input/output adapters counted; existing GQA does not duplicate KV by four"
+      }
     },
     {
       "id": "G",
@@ -616,7 +859,74 @@
       "cache_dtype": "float16",
       "context_only_kv_m": 64,
       "normal_decode_call_policy": "retain combined Draft",
-      "outputs": "10 updated cache tensors; no token output"
+      "outputs": "10 updated cache tensors; no token output",
+      "candidate_region_latency_ms": null,
+      "candidate_validation": "NOT_RUN",
+      "ordered_runtime_inputs": [
+        "features",
+        "start_position",
+        "valid_rows",
+        "d0_key",
+        "d0_value",
+        "d1_key",
+        "d1_value",
+        "d2_key",
+        "d2_value",
+        "d3_key",
+        "d3_value",
+        "d4_key",
+        "d4_value"
+      ],
+      "ordered_outputs": [
+        "d0_key_next",
+        "d0_value_next",
+        "d1_key_next",
+        "d1_value_next",
+        "d2_key_next",
+        "d2_value_next",
+        "d3_key_next",
+        "d3_value_next",
+        "d4_key_next",
+        "d4_value_next"
+      ],
+      "readonly_model_constants": [
+        "FC W/S",
+        "five layer KV W/S",
+        "hidden norm gamma",
+        "five K norm gamma",
+        "RoPE inv_freq"
+      ],
+      "compile_attributes": [
+        "C=64",
+        "L=deployment cache capacity",
+        "source_layer_ids",
+        "draft_layer_ids",
+        "native norm epsilons"
+      ],
+      "function": "select exact Target feature slots, FC+hidden norm, five independent context KV projections with K norm/RoPE, functional whole-row cache update; no candidate branch",
+      "feature_bytes": 3604480,
+      "control_input_bytes": [
+        8,
+        2
+      ],
+      "cache_input_bytes_total": "20480*L",
+      "cache_output_bytes_total": "20480*L",
+      "updated_slice_bytes_total": 1310720,
+      "benefit": {
+        "decode_saving_ms": 0,
+        "quant_projection_calls_before": 26,
+        "quant_projection_calls_after": 6,
+        "c64_quant_fma_before": 11848908800,
+        "c64_quant_fma_after": 3774873600,
+        "head_fma_removed": 9535488000,
+        "w8_projection_bytes_unused_by_context_graph": 478412800,
+        "head_bytes_unused_by_context_graph": 1271398400,
+        "w8_projection_bytes_retained_by_context_graph": 58982400,
+        "prefill_saving_formula_ms": "(ceil(prompt_tokens/64)-1)*delta_context",
+        "current_long_prepare_calls": 15,
+        "current_all_mean_prepare_calls": 9,
+        "cost": "full cache output semantics retained; additional graph dispatch and resident constants; normal Draft weights remain loaded"
+      }
     },
     {
       "id": "B",
@@ -624,7 +934,54 @@
       "priority": "W4-only follow-up",
       "input_dtype": "uint8 offset-binary",
       "output_dtype": "int8 FRACTAL_NZ",
-      "precision_classification": "exact reversible code/layout conversion"
+      "precision_classification": "exact reversible code/layout conversion",
+      "candidate_region_latency_ms": null,
+      "candidate_validation": "NOT_RUN",
+      "ordered_inputs": [
+        "packed"
+      ],
+      "ordered_outputs": [
+        "q_nz"
+      ],
+      "input_shape": [
+        "N",
+        "K/2"
+      ],
+      "output_shape": [
+        "ceil(K/32)",
+        "ceil(N/16)",
+        16,
+        32
+      ],
+      "compile_attributes": {
+        "N": "positive workload N",
+        "K": "positive even workload K",
+        "layout_version": "nz_int8_v1"
+      },
+      "function": "unpack even-K low nibble offset-binary codes minus 8 and reorder to INT8 NZ; zero padding; no floating point",
+      "benefit": {
+        "current_w8_saving_ms": 0,
+        "packed_read_bytes": "N*K/2",
+        "nz_write_bytes": "ceil(K/32)*ceil(N/16)*512",
+        "materialized_nd_int8_roundtrip_bytes_avoidable": "2*N*K",
+        "cost": "INT8 output still written/read by GEMM; cached or offline unpack increases weight storage; W4 scales unchanged"
+      }
     }
-  ]
+  ],
+  "interface_contract": {
+    "specification": "OPERATORS.md",
+    "tensor_order": "as listed in signatures; semicolon separates compile attributes",
+    "tensor_device": "one NPU; inputs and model constants readonly",
+    "default_storage": "contiguous ND; strides expressed in elements",
+    "dimension_validation": "host rejects logical/storage/origin/attribute conflicts before launch",
+    "w8_nz_strides": [
+      "ceil(N/16)*512",
+      512,
+      32,
+      1
+    ],
+    "workspace": "host-queryable byte size and alignment for every supported shape; per-invocation ownership; no input/output alias",
+    "completion": "output and workspace may be reused only after stream completion dependency",
+    "measurement": "include adapters, extra launches and reduction workspace traffic in region timing"
+  }
 }

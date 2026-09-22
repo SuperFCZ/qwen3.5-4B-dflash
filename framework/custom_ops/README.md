@@ -2,8 +2,8 @@
 
 | 内容 | 文档 |
 |---|---|
-| 当前离线 NZ W8 Draft 结构、实测热点、优先级与 Decode 收益预算 | [优化分析](draft_quant/README.md) |
-| W8 Linear、SwiGLU/残差融合、完整词表 Top-1、GQA Attention 和缓存构建的 I/O、功能与精度要求 | [算子需求](draft_quant/OPERATORS.md) |
+| 当前离线 NZ W8 Draft 结构、逐算子读写/计算收益、成本及 Decode 换算 | [优化分析](draft_quant/README.md) |
+| 调用签名、输入输出顺序、shape/dtype/stride、数学功能、mask/cache 语义与精度要求 | [算子需求](draft_quant/OPERATORS.md) |
 | 数值、模型集成和性能验收 | [验收要求](draft_quant/VALIDATION.md) |
 | 固定形状、字节数和测量数据 | [workloads.json](draft_quant/workloads.json) |
 
