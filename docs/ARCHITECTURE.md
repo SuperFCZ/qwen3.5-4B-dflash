@@ -36,12 +36,21 @@ ordinary Target 是 strict greedy 的权威，性能测量允许输出差异不�
 
 ## Draft 数据流
 
+### FP16 Draft
+
 ![DFlash Draft 的 Target 特征注入、并行候选生成与 KV 输出](assets/dflash-draft-flow.svg)
 
 参照 [DFlash 论文图 2](https://arxiv.org/pdf/2602.06036#page=4) 绘制，尺寸采用本项目配置。
-图中为 FP16 六层版；W4A16 / W8A16 为五层，选定 Target 特征宽度为 12800，其余结构对应上表。
+图中为 FP16 六层版，选定 Target 特征宽度为 20480，MLP intermediate 为 9216。
 
-同一 FC 结果供各层 context K/V 使用；context 支路不依赖上一层 block hidden。
+### W8A16 Draft
+
+![W8A16 Draft 的五层结构、group-128 量化投影与共享 FP16 head](assets/dflash-w8a16-draft-flow.svg)
+
+W8A16 为五层，选定 Target 特征宽度为 12800，MLP intermediate 为 9728。
+FC 和层内线性投影采用 W8A16；embedding / 完整词表 head 保持 FP16。图中部署采用离线 NZ。
+
+两版均将同一 FC 结果供各层 context K/V 使用；context 支路不依赖上一层 block hidden。
 持久 KV 只保存已提交上下文，anchor/MASK block 的 KV 是临时值。
 K/V、gate/up 已分别合并投影；每次量化 Draft 共 26 次 WeightQuant 和一次 FP16 head MatMul。
 

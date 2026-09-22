@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="888" viewBox="0 0 1280 888" role="img" aria-labelledby="title desc">
+  <title id="title">W8A16 DFlash Draft：五层结构、量化投影与共享 FP16 head</title>
+  <desc id="desc">从左向右读。选定五层 Target 特征，每 token 12800 维，经 W8A16 FC 和 RMSNorm 得到 2560 维 context。每层把新增 context 与归一化后的 anchor/MASK block 合并为一次 K/V 投影，产生各 1024 维的 K 和 V；context K 经过 K Norm 和 RoPE，更新五层各自的 FP16 持久 KV，block KV 只用于本轮 attention。固定 16 行 anchor 加 MASK 经共享 FP16 embedding、五层 Draft Attention 和 MLP、最终 RMSNorm，再对 15 个 MASK 行执行共享 FP16 全词表 LM head 和 Top1，返回最多 15 个有效候选。Q 投影 2560 到 4096，O 投影 4096 到 2560；gate/up 合并投影 2560 到 19456，SiLU(gate) 乘 up 得到 9728 维，down 投影回 2560 维。FC 与五层 KV、Q、O、gate/up、down 共 26 个量化投影，采用 INT8 权重、group-128 FP16 scale、FP16 输入输出。离线 NZ 部署把权重预先转为 FRACTAL_NZ 常量。Norm、RoPE、attention 和残差按当前 OM 实现执行；Verify 与接受后的 Target 状态提交不在 Draft 内部。</desc>
+  <!-- Repository-native companion to dflash-draft-flow.svg.
+       Shapes and fusion boundaries follow DraftGraph / PackedDraftLayer.
+       Context and normalized block rows share ONE K/V call per layer. -->
+  <defs>
+    <marker id="blue-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#2878a3"/></marker>
+    <marker id="green-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#238052"/></marker>
+    <style>
+      text { font-family: "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #172b3a; font-size: 18px; }
+      .heading { font-size: 22px; font-weight: 700; }
+      .label { font-size: 18px; font-weight: 700; }
+      .small { font-size: 15px; fill: #475e70; }
+      .tiny { font-size: 13px; fill: #475e70; }
+      .center { text-anchor: middle; }
+      .blue { fill: #eaf5fc; stroke: #79b3d2; stroke-width: 1.5; }
+      .green { fill: #eaf8ef; stroke: #79b995; stroke-width: 1.5; }
+      .blue-line { fill: none; stroke: #2878a3; stroke-width: 2.5; marker-end: url(#blue-arrow); stroke-linejoin: round; }
+      .green-line { fill: none; stroke: #238052; stroke-width: 2.5; marker-end: url(#green-arrow); stroke-linejoin: round; }
+      .anchor { fill: #ffe7a5; stroke: #d6a23d; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="888" rx="16" fill="#fff"/>
+  <text x="24" y="43" class="heading">输入</text>
+  <text x="315" y="43" class="heading">W8A16 Draft：一次前向，并行生成候选</text>
+  <text x="1028" y="43" class="heading">输出</text>
+  <path d="M24 65 H1256" stroke="#dce4eb"/>
+  <rect x="296" y="86" width="704" height="610" rx="18" fill="#f8fafc" stroke="#cbd5df" stroke-dasharray="7 5"/>
+
+  <!-- Five selected Target features feed one shared context FC. -->
+  <rect x="24" y="117" width="244" height="126" rx="12" class="blue"/>
+  <text x="40" y="148" class="label">① 新增 Target 特征</text>
+  <text x="40" y="176" class="small">选定 5 层，C = 16 / 64 行</text>
+  <text x="40" y="203" class="small">每 token：5 × 2560 维</text>
+  <text x="40" y="229" class="tiny">从统一特征中选列 → 12800 维</text>
+
+  <rect x="315" y="135" width="153" height="94" rx="10" class="blue"/>
+  <text x="391.5" y="161" class="label center">W8A16 FC</text>
+  <text x="391.5" y="188" class="small center">12800 → 2560</text>
+  <text x="391.5" y="215" class="small center">→ RMSNorm</text>
+  <path d="M268 182 H315" class="blue-line"/>
+
+  <rect x="503" y="124" width="190" height="125" rx="10" class="blue"/>
+  <text x="598" y="151" class="label center">各层 W8A16 K/V</text>
+  <text x="598" y="177" class="small center">2560 → 2048</text>
+  <text x="598" y="201" class="tiny center">context + block 合并投影</text>
+  <text x="598" y="225" class="tiny center">K / V 各 1024 维</text>
+  <path d="M468 182 H503" class="blue-line"/>
+
+  <rect x="738" y="132" width="243" height="111" rx="10" class="blue"/>
+  <text x="859.5" y="161" class="label center">追加到上下文 KV</text>
+  <text x="859.5" y="187" class="small center">context K：Norm + RoPE</text>
+  <text x="859.5" y="215" class="small center">5 层 × (K, V)，FP16</text>
+  <path d="M693 182 H738" class="blue-line"/>
+
+  <rect x="24" y="268" width="244" height="82" rx="12" class="blue"/>
+  <text x="40" y="299" class="label">② 历史上下文 KV</text>
+  <text x="40" y="328" class="small">新请求为空，跨轮复用</text>
+  <path d="M268 310 H711 V215 H738" class="blue-line"/>
+
+  <rect x="1028" y="132" width="228" height="111" rx="12" class="blue"/>
+  <text x="1044" y="161" class="label">更新后的上下文 KV</text>
+  <text x="1044" y="187" class="small">仅保存已提交上下文</text>
+  <text x="1044" y="215" class="small">5 层缓存，供后续轮复用</text>
+  <path d="M981 182 H1028" class="blue-line"/>
+
+  <text x="623" y="380" class="small">上下文 KV 供 5 层分别读取</text>
+
+  <!-- Fixed 16-row proposal block; embedding and full-vocabulary head stay FP16. -->
+  <rect x="24" y="426" width="244" height="139" rx="12" class="green"/>
+  <text x="40" y="455" class="label">③ anchor + MASK 块</text>
+  <g class="center">
+    <rect x="40" y="472" width="59" height="33" rx="6" class="anchor"/>
+    <text x="69.5" y="494" class="tiny">anchor</text>
+    <rect x="106" y="472" width="50" height="33" rx="6" fill="#ccefd7"/>
+    <text x="131" y="494" class="tiny">MASK</text>
+    <rect x="163" y="472" width="50" height="33" rx="6" fill="#ccefd7"/>
+    <text x="188" y="494" class="tiny">MASK</text>
+    <text x="235" y="495">…</text>
+  </g>
+  <text x="40" y="533" class="small">物理块：1 anchor + 15 MASK</text>
+  <text x="40" y="554" class="tiny">有效候选数 K ≤ 15</text>
+
+  <rect x="315" y="453" width="153" height="84" rx="10" class="green"/>
+  <text x="391.5" y="478" class="center">Target</text>
+  <text x="391.5" y="503" class="center">Embedding</text>
+  <text x="391.5" y="525" class="small center">共享权重，FP16</text>
+  <path d="M268 495 H315" class="green-line"/>
+
+  <rect x="500" y="415" width="249" height="246" rx="12" fill="#d8efdf" stroke="#79b995"/>
+  <rect x="515" y="430" width="219" height="89" rx="8" fill="#fff" stroke="#79b995"/>
+  <text x="624.5" y="453" class="label center">Attention</text>
+  <text x="624.5" y="476" class="small center">Q / O：W8A16</text>
+  <text x="624.5" y="497" class="tiny center">Q 32 / KV 8 heads，dim 128</text>
+  <text x="624.5" y="514" class="tiny center">含本轮临时 block KV</text>
+  <path d="M468 495 H515" class="green-line"/>
+  <path d="M860 243 V352 H574 V430" class="blue-line"/>
+  <path d="M624.5 519 V545" class="green-line"/>
+
+  <rect x="515" y="545" width="219" height="100" rx="8" fill="#fff" stroke="#79b995"/>
+  <text x="624.5" y="568" class="label center">MLP：W8A16</text>
+  <text x="624.5" y="592" class="small center">gate/up：2560 → 19456</text>
+  <text x="624.5" y="614" class="small center">SiLU(gate) × up → 9728</text>
+  <text x="624.5" y="635" class="small center">down：9728 → 2560</text>
+  <text x="624.5" y="684" class="label center">Draft 层 × 5</text>
+
+  <rect x="773" y="457" width="208" height="169" rx="10" class="green"/>
+  <text x="877" y="484" class="center">最终 RMSNorm</text>
+  <text x="877" y="513" class="label center">仅取 15 个 MASK 行</text>
+  <text x="877" y="542" class="center">共享 FP16 LM head</text>
+  <text x="877" y="570" class="small center">2560 → 248320</text>
+  <text x="877" y="601" class="small center">全词表 Top1</text>
+  <path d="M734 595 H754 V527 H773" class="green-line"/>
+
+  <rect x="1028" y="457" width="228" height="126" rx="12" class="green"/>
+  <text x="1044" y="486" class="label">最多 15 个有效候选</text>
+  <g class="center">
+    <rect x="1050" y="503" width="49" height="33" rx="6" fill="#ccefd7"/>
+    <text x="1074.5" y="526">A</text>
+    <rect x="1115" y="503" width="49" height="33" rx="6" fill="#ccefd7"/>
+    <text x="1139.5" y="526">B</text>
+    <rect x="1180" y="503" width="49" height="33" rx="6" fill="#ccefd7"/>
+    <text x="1204.5" y="526">…</text>
+  </g>
+  <text x="1044" y="567" class="small">送 Chunk / MTP Verify</text>
+  <path d="M981 527 H1028" class="green-line"/>
+  <text x="1044" y="611" class="small">anchor 不重复输出为候选</text>
+
+  <!-- Deployment and precision are separate from the two runtime data paths. -->
+  <rect x="24" y="727" width="1232" height="114" rx="12" fill="#f8fafc" stroke="#cbd5df"/>
+  <text x="40" y="755" class="label">量化与部署</text>
+  <text x="190" y="755" class="small">投影：INT8 权重 + FP16 scale，group = 128；输入 / 输出为 FP16。</text>
+  <text x="40" y="784" class="small">离线 NZ 模式：权重预先转为 FRACTAL_NZ 常量；C16 / C64 两个静态 OM，block 固定 16 行。</text>
+  <text x="40" y="814" class="small">每次：1 FC + 5 × (KV、Q、O、gate/up、down) = 26 次 WeightQuant；embedding / head 保持 FP16。</text>
+
+  <rect x="24" y="862" width="13" height="13" rx="2" fill="#79b3d2"/>
+  <text x="46" y="874" class="small">上下文 / 持久状态</text>
+  <rect x="228" y="862" width="13" height="13" rx="2" fill="#79b995"/>
+  <text x="250" y="874" class="small">本轮并行候选路径</text>
+  <rect x="432" y="862" width="13" height="13" rx="2" class="anchor"/>
+  <text x="454" y="874" class="small">Target 给出的 anchor</text>
+  <text x="1256" y="874" text-anchor="end" class="tiny">每层保留 Norm、RoPE 和两次残差</text>
+</svg>
