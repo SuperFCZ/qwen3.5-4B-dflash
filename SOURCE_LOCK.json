@@ -155,7 +155,7 @@
     "contract_file": "config/npu_benchmark_v1.json",
     "contract_sha256": "b5fdd64b1eaea44b3f53452bc260cf62de53ca38b1fcd8699bf4f9e358d99c76",
     "documentation_file": "docs/USAGE.md",
-    "documentation_sha256": "f00fa777c430a0534ad0bee92171d663a2358cb54e3f15bb9e5d2df597c09c94",
+    "documentation_sha256": "125e9be3e503bc675784ffad50b1b9cf314db1615210018de0baee61ba86fe17",
     "policy": "strict-greedy gate before timing; original main inference.py and both rollback modes use an equal 32-token budget; quantized ordinary and DFlash use the exact same original YAML and resolved artifacts; rollback ordinary remains the scheduler-control baseline; rollback prefill uses block-aligned real-token chunks and rollback verify/accepted+1 commit defaults to two original-GDR chunk calls, with --verify-gdr mtp selecting native MTP and compact FP32 bank selection; separate ordinary/dflash processes; synchronized unprofiled 3+10 baseline; cumulative counters separated from resettable session state; copied-source content identity without VCS metadata; msprof diagnostic only with MSTX disabled by default and explicit opt-in; no CPU fallback; native msprof dynamic CLI single-stage and all-stage diagnostics with one loaded application, independent fresh-state warmups and one acknowledged window per stage; verify collects the first Chunk or unique MTP pass; accept-commit captures the accepted+1 second Chunk pass or MTP bank selection even at zero acceptance; decode-round collects the complete selected route; per-window GDR verify/commit layer counters, MTP state-selection counters when selected, and nonempty operator exports are required; separate raw directories and synchronized timing CSV; no pyACL and no formal latency or strict-greedy accuracy claim from stage diagnostics; ordinary Python and C++ prefill/decode/all windows; C++ DFlash prefill/draft/fused-verify/all windows; native C++ socket barriers and standard-library Python controller; actual graph-call counts checked; no device-performance claim from host fixtures; shared per-stage operator type/task reports grouped by input/output dtype, device/model and original CSV; general OM profiling entry prepares a fresh mode-specific plan from the selected deployment manifest"
   },
   "incremental_om_framework": {
@@ -164,7 +164,7 @@
     "files": [
       {
         "source_file": "README.md",
-        "source_sha256": "1c463ab6be760493b2e57e100255fb89d2d6f8a6153678c8b1bfb150c7a5729e"
+        "source_sha256": "3f7a5f1750de3eedb6fb0d71cfad521f2562382529a8e38e7164ca5b35e2a8f5"
       },
       {
         "source_file": "config/gdr_chunk_air_om_factory.example.json",
@@ -176,7 +176,7 @@
       },
       {
         "source_file": "docs/USAGE.md",
-        "source_sha256": "f00fa777c430a0534ad0bee92171d663a2358cb54e3f15bb9e5d2df597c09c94"
+        "source_sha256": "125e9be3e503bc675784ffad50b1b9cf314db1615210018de0baee61ba86fe17"
       },
       {
         "source_file": "framework/FRAMEWORK_LOCK.json",
@@ -504,7 +504,7 @@
       },
       {
         "source_file": "docs/RESULTS.md",
-        "source_sha256": "23748d82666dd0a6dad846747414cef49dfd6f59ff3b159c4df01380ff79e867"
+        "source_sha256": "c8429b20b8c114ba5def643bdb704376ce15605873ec498cd4b1526376104ddd"
       },
       {
         "source_file": "framework/abi/dflash-mtp-v1.json",
@@ -672,7 +672,7 @@
       },
       {
         "source_file": "docs/OPTIMIZATION.md",
-        "source_sha256": "4479118ea69cf68a8aa8d1176835940a3d337afd8b5d18f4327b39d8a4a3b31d"
+        "source_sha256": "9d1c55db89ca2bccda3d96dcfcf0ed0838c3434d00fda0b2616950f0447c4390"
       }
     ],
     "supported_abis": [
@@ -975,11 +975,11 @@
     "sources": [
       {
         "source_file": "docs/OPTIMIZATION.md",
-        "source_sha256": "4479118ea69cf68a8aa8d1176835940a3d337afd8b5d18f4327b39d8a4a3b31d"
+        "source_sha256": "9d1c55db89ca2bccda3d96dcfcf0ed0838c3434d00fda0b2616950f0447c4390"
       },
       {
         "source_file": "framework/custom_ops/draft_quant/workloads.json",
-        "source_sha256": "f4354fdac95df66a4ea1a1c92e6dd041014c8936a50e5e37b78f3306a1769589"
+        "source_sha256": "63ea33742325206f6ec898d0fb43736f6098d9725e78cb4bb25a221774c5d2f0"
       }
     ],
     "performance_evidence": {

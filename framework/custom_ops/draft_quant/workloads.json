@@ -2,7 +2,7 @@
   "schema_version": 1,
   "status": "REQUIREMENTS_ONLY",
   "target": "Ascend310P",
-  "review_source_commit": "7792ce34771c120a43c09c5bd7471e60e0ff66f2",
+  "review_source_commit": "93be6b0ef29aac5d94a93383cdedd38fe71dc261",
   "provenance": {
     "kind": "user-provided-terminal-tables-and-source-review",
     "receiver": {
@@ -418,21 +418,16 @@
     }
   ],
   "decode_sensitivity": {
-    "scope": "optimistic algebraic budget, not a device prediction or hardware roofline",
+    "scope": "conditional arithmetic, not predicted or measured performance",
     "assumptions": [
-      "same proposal/acceptance trajectory",
-      "same Verify latency and invocation count",
-      "all non-Verify decode time optimizable"
+      "unchanged proposal/acceptance trajectory",
+      "unchanged Verify time and invocation count"
     ],
-    "baseline_decode_mean_ms": 3193.72,
+    "ordinary_decode_mean_ms": 4436.34,
+    "current_w8_decode_mean_ms": 3193.72,
     "fixed_verify_mean_ms": 1652.73,
-    "formula": "new_decode = fixed_verify + (baseline_decode - fixed_verify) / non_verify_speed_factor",
-    "non_verify_factors": [
-      2,
-      3
-    ],
-    "zero_non_verify_relative_limit": 1.9323906506204884,
-    "matched_hardware_capability_profile": null,
+    "formula": "new_decode_ms = 1652.73 + t_C64_ms + 31.3*t_C16_ms + H_ms",
+    "H": "remaining decode-loop overhead excluding Prefill and complete Draft/Verify calls",
     "observed_calls": {
       "source": "user-provided gdr-lengths-mjhazgip generation-position round counts; warmups excluded",
       "measured_generations": 60,
@@ -466,33 +461,17 @@
       "prefill_draft_c64_per_generation": 9,
       "scope": "each measured decode round calls one combined Draft and one Verify; all final prompt chunks in this run have more than 16 valid rows"
     },
+    "scenario": {
+      "draft_c16_ms": 13.33,
+      "draft_c64_ms": 13.33,
+      "H_ms": 0,
+      "new_decode_ms": 2083.2889999999998,
+      "speedup_vs_ordinary": 2.1294885155156105,
+      "status": "IDEAL_BUDGET_WITH_ZERO_OTHER_OVERHEAD"
+    },
+    "zero_draft_and_other_overhead_speedup_vs_ordinary": 2.6842496959575977,
     "per_gear_delta_formula": "new_decode_ms = 3193.72 - delta_C64_ms - 31.3*delta_C16_ms",
-    "draft_call_delta_scenarios": [
-      {
-        "assumed_saving_each_draft_call_ms": 1,
-        "decode_saving_per_generation_ms": 32.3,
-        "new_decode_mean_ms": 3161.42,
-        "relative_to_current_w8": 1.0102,
-        "relative_to_ordinary_decode": 1.4033,
-        "status": "CONDITIONAL_ARITHMETIC_NOT_MEASURED"
-      },
-      {
-        "assumed_saving_each_draft_call_ms": 5,
-        "decode_saving_per_generation_ms": 161.5,
-        "new_decode_mean_ms": 3032.22,
-        "relative_to_current_w8": 1.0533,
-        "relative_to_ordinary_decode": 1.4631,
-        "status": "CONDITIONAL_ARITHMETIC_NOT_MEASURED"
-      },
-      {
-        "assumed_saving_each_draft_call_ms": 10,
-        "decode_saving_per_generation_ms": 323.0,
-        "new_decode_mean_ms": 2870.72,
-        "relative_to_current_w8": 1.1125,
-        "relative_to_ordinary_decode": 1.5454,
-        "status": "CONDITIONAL_ARITHMETIC_NOT_MEASURED"
-      }
-    ]
+    "matched_hardware_capability_profile": null
   },
   "operator_requirements": [
     {
@@ -523,8 +502,7 @@
       "function": "Y[m,n] = sum_k X[m,k] * (q[n,k] * S[k//128,n]); preserve native dequantization, accumulation and rounding",
       "compile_attributes": {
         "bits": [
-          8,
-          4
+          8
         ],
         "group_size": 128,
         "dimensions": [
@@ -533,9 +511,7 @@
           "K"
         ],
         "weight_layout": [
-          "nz_int8_v1",
-          "nk_int8",
-          "nk_u4_offset_binary"
+          "nz_int8_v1"
         ]
       },
       "benefit": {
@@ -544,7 +520,42 @@
         "retained_gate_up_down_fma_per_layer": 1195376640,
         "retained_gate_up_down_w8_bytes_all_layers": 373555200,
         "retained_gate_up_down_scale_bytes_all_layers": 5836800,
-        "mechanism": "tile-local dequantization, reuse over M, transfer/compute scheduling; no removal of logical GEMM work or already-offlined TransData"
+        "mechanism": "tile-local dequantization, reuse over M, transfer/compute scheduling; no removal of logical GEMM work or already-offlined TransData",
+        "final_calls_per_draft": 26,
+        "all_projection_budget_ms": 5.0,
+        "gate_up_down_budget_ms": 3.6
+      },
+      "required_final_scope": [
+        "gate_up M16",
+        "down M16",
+        "Q M16",
+        "O M16",
+        "KV M32/M80",
+        "FC M16/M64"
+      ],
+      "implementation_plan": {
+        "initial_tiles": {
+          "M": 16,
+          "N": [
+            64,
+            128
+          ],
+          "K": 128
+        },
+        "ownership": "one owner completes full K reduction of its output tile; no cross-owner split-K in initial kernel",
+        "weights": "direct NZ tile reads; signed INT8 and per-K-group FP16 scales; on-chip dequantization, no full FP16 weight tensor in GM",
+        "reuse": "all M rows per weight tile; reuse across FC/KV M-subtiles when supported by measured local-memory capacity",
+        "pipeline": "DMA -> dequant -> matmul dependencies; reuse buffer only after final consumer; validate target transfer paths",
+        "initial_payload_bytes": {
+          "X": 4096,
+          "q": 8192,
+          "scale": 128,
+          "dequant_weight": 16384,
+          "fp32_accumulator_candidate": 4096
+        },
+        "double_buffer_payload_plus_accumulator_bytes": 61696,
+        "memory_map": "not a UB allocation: host must assign UB/L1/L0A/L0B/L0C, alignment, conversion scratch and liveness separately",
+        "precision": "native dequantization and accumulation must be characterized before choosing rounding or split-K"
       }
     },
     {
@@ -607,13 +618,14 @@
         "calls_per_draft": 5,
         "materialized_projection_roundtrip_bytes_avoidable_all_layers": 6225920,
         "saving_formula_ms": "5*delta_swiglu_in_addition_to_A",
-        "cost": "full GEMM and SiLU retained; paired gate/up local buffers; zero claimed savings for intermediates already fused"
+        "cost": "full GEMM and SiLU retained; paired gate/up local buffers; zero claimed savings for intermediates already fused",
+        "combined_with_A_region_budget_ms": 2.4
       }
     },
     {
       "id": "C",
       "name": "DFlashDraftLmHeadTop1",
-      "priority": "P1",
+      "priority": "P0",
       "input_shapes": [
         [
           15,
@@ -673,12 +685,20 @@
         "retained_fma_m15": 9535488000,
         "saving_formula_ms": "delta_complete_head_region",
         "cost": "full head GEMM/weight consumption retained; partial workspace and final reduction included"
+      },
+      "implementation_plan": {
+        "partition": "vocabulary N tiles, full K reduction, all 15 candidate rows reuse head weight tiles",
+        "logits": "cast each completed tile to baseline FP16 before local Top-1; retain original token ID",
+        "reduction": "FP16 max and INT64 minimum original ID on tie; wait all partitions before final output",
+        "physical_rows": "optional 16-row padding; padded row never produces token",
+        "budget_ms": 6.0,
+        "cost_basis": "complete GEMM plus partial/final Top-1 and any layout adapters; saved logits traffic alone is insufficient"
       }
     },
     {
       "id": "E",
       "name": "DFlashW8DownResidual",
-      "priority": "P2",
+      "priority": "P1",
       "input_shapes": [
         [
           16,
@@ -742,7 +762,8 @@
         "calls_per_draft": 5,
         "materialized_projection_roundtrip_bytes_avoidable_all_layers": 819200,
         "saving_formula_ms": "5*delta_residual_in_addition_to_A",
-        "cost": "down GEMM, residual read and final hidden write retained; remove original external residual Add"
+        "cost": "down GEMM, residual read and final hidden write retained; remove original external residual Add",
+        "combined_with_A_region_budget_ms": 1.2
       }
     },
     {
@@ -983,5 +1004,81 @@
     "workspace": "host-queryable byte size and alignment for every supported shape; per-invocation ownership; no input/output alias",
     "completion": "output and workspace may be reused only after stream completion dependency",
     "measurement": "include adapters, extra launches and reduction workspace traffic in region timing"
+  },
+  "benchmark_reference": {
+    "mode": "ordinary (original Target without DFlash)",
+    "speedup_formula": "sum ordinary decode_loop_ms / sum DFlash decode_loop_ms",
+    "prefill_included": false,
+    "fp16_draft_role": "optimization comparator only, not generation performance baseline"
+  },
+  "performance_target": {
+    "status": "ENGINEERING_BUDGET_NOT_MEASURED",
+    "comparison": "current FP16 Draft versus optimized W8 Draft, complete synchronized OM calls",
+    "reference_fp16_approx_ms": 20.0,
+    "observed_fp16_mixed_ms": 20.22,
+    "minimum_draft_speed_factor_vs_fp16": 1.5,
+    "planned_w8_call_max_ms": 13.33,
+    "current_w8_mixed_ms": 47.89,
+    "required_factor_from_current_w8_approx": 3.5917499999999998,
+    "acceptance": "sum matched FP16 Draft time / sum matched W8 Draft time >= 1.5; report C16/C64 separately and matched mix",
+    "constraints": [
+      "unchanged checkpoints and target feature selections",
+      "FP16 activations, scales, full-vocabulary head",
+      "all adapters, KV updates, head, Top-1 and call overhead included",
+      "generic head/attention improvements also applicable to FP16; report upgraded FP16 separately if integrated"
+    ],
+    "regions": [
+      {
+        "name": "5 gate_up plus SwiGLU",
+        "calls": 5,
+        "total_budget_ms": 2.4,
+        "per_call_budget_ms": 0.48,
+        "weight_and_scale_bytes": 252928000
+      },
+      {
+        "name": "5 down plus residual",
+        "calls": 5,
+        "total_budget_ms": 1.2,
+        "per_call_budget_ms": 0.24,
+        "weight_and_scale_bytes": 126464000
+      },
+      {
+        "name": "FC + 5 KV + 5 Q + 5 O",
+        "calls": 16,
+        "total_budget_ms": 1.4,
+        "weight_and_scale_bytes": 166400000
+      },
+      {
+        "name": "full FP16 head and Top-1",
+        "calls": 1,
+        "total_budget_ms": 6.0,
+        "weight_bytes": 1271398400
+      },
+      {
+        "name": "attention norm RoPE cache layout call overhead",
+        "total_budget_ms": 2.0
+      }
+    ],
+    "sum_region_budgets_ms": 13.0,
+    "matched_hardware_capability_profile": null,
+    "hardware_roofline_status": "N/A: target-matched measured bandwidth, local-memory portrait and current kernel profile unavailable"
+  },
+  "weight_work_ledger": {
+    "scope": "logical weight/scale payloads only; not measured traffic or resident memory",
+    "fp16_projection_weight_bytes": 1268776960,
+    "w8_projection_weight_bytes": 537395200,
+    "w8_projection_scale_bytes": 8396800,
+    "shared_fp16_head_bytes": 1271398400,
+    "fp16_total_bytes": 2540175360,
+    "w8_total_bytes": 1817190400,
+    "one_read_byte_ratio": 1.3978586723768736,
+    "w8_head_fraction": 0.6996506254930689,
+    "one_read_required_average_GB_per_s_at_13_33_ms": 136.32336084021006,
+    "assumptions": [
+      "each weight read once",
+      "equal effective bandwidth",
+      "excludes embedding lookup, norms, KV, activations and workspace",
+      "not a hardware ceiling or achieved speed"
+    ]
   }
 }

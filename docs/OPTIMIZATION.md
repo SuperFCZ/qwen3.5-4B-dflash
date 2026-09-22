@@ -1,52 +1,114 @@
 # 未来优化
 
-优先优化 W8A16 的小 M、group-128 矩阵乘，先覆盖 gate/up、down。
-当前基线为离线 NZ、静态 C16/C64、Chunk，20 条输入：Draft **47.89 ms/call**，
-Verify **51.17 ms/call**，Decode **1.39×**。完整数据见 [测试结果](RESULTS.md)。
+## 目标与比较口径
 
-## 优先级与收益依据
+**测试性能基线始终是不用 DFlash 的原版**：Decode 加速比 = ordinary Decode / DFlash Decode。
+FP16 Draft 约 20 ms 仅用作 W8 Draft 的优化对照，不能替代 ordinary 基线。
 
-| 优先级 | 方案 | 收益来源 |
+当前 W8 离线 NZ 的完整 Draft 平均 **47.89 ms/call**，FP16 为 **20.22 ms/call**；
+W8 至少比 FP16 Draft 快 1.5 倍，按约 20 ms 的参考值规划为 **≤13.33 ms/call**。
+这要求 W8 相对当前实现加速约 **3.59 倍**，并非把 47.89 ms 降低三分之一即可。
+完整测量见 [测试结果](RESULTS.md)。
+
+最终验收用同设备、同样本、同 C16/C64 调用分布分别测量 FP16 与 W8，要求
+`Σ FP16 Draft 时间 / Σ W8 Draft 时间 ≥ 1.5`；分别报告两档和总体。
+计时包括整张 Draft 的 FC、全部 block、KV 更新、完整 head、Top-1 和同步调用开销，
+不能用单个 gate/up kernel 的倍数代替。FP16 六层、W8 五层的 checkpoint 均保持不变。
+这里的 20 ms 对照是当前 FP16 实现；head/attention 优化同样可用于 FP16，
+若也集成到 FP16，须另报优化后的 FP16 对照，不能将通用优化的收益全部归因于量化。
+
+## 结构与达到目标的障碍
+
+[DraftGraph](../framework/python/qwen35_dflash/ascend310p/incremental.py) 已把 K/V、gate/up 各合并成一次投影。
+W8 每次执行 **1 个 FC + 5 × (KV、Q、O、gate/up、down) = 26 个量化投影**，
+随后对 15 个候选做完整 FP16 词表 head。Q/O/MLP 的 M=16，FC 的 M=C，
+KV 的 M=C+16，C 为 16 或 64。正常解码已将 context 和 block 共用的 KV 权重合并读取。
+
+### 权重容量账本
+
+| 范围 | FP16 Draft | W8A16 Draft |
+|---|---:|---:|
+| FC + 各层投影权重 | 1,268,776,960 B | 537,395,200 B |
+| group scale | — | 8,396,800 B |
+| 完整 FP16 head | 1,271,398,400 B | 1,271,398,400 B |
+| 上述合计 | 2,540,175,360 B | 1,817,190,400 B |
+
+不含 embedding 查询、norm、KV、activation 和 workspace；这些是逻辑容量，不是设备实测流量。
+head 为 **1212.5 MiB（约 1.18 GiB）**，占 W8 表内字节量约 **70%**。
+
+若各权重只读一遍、两版有效带宽相同且访存主导，字节量之比仅 **1.40**。
+这个简化模型下，压缩投影权重本身不足以得到 1.5×；仍须减少重读、提高执行效率或削减其他开销。
+它不是硬件上限：实际 cache、调度、片上反量化和累加方式会改变结果。
+按 13.33 ms 处理 W8 表内全部字节，对应约 **136 GB/s** 的平均处理速率要求，
+尚未计其他读写和计算；不能据此断言设备能达到。
+
+### 优先级
+
+| 优先级 | 方案 | 对 13.33 ms 目标的作用 |
 |---|---|---|
-| P0 | A：W8 group Linear | 片上分块反量化、权重复用与搬运/计算流水；先做 gate/up、down |
-| P1 | D：gate/up + SwiGLU | 在 A 上融合激活，减少中间张量写回和重读 |
-| P1 | C：完整词表 head + Top-1 | 分块计算、归约，避免完整 logits 落显存 |
-| P2 | E：down + residual | 在 A 上融合残差，减少 down 中间量 |
-| P2 | F：分段 K/V attention | 减少 cache 拼接与 scores/probability 中间量 |
-| Prefill 专项 | G：context-only 图 | 建缓存时只计算 FC/KV/norm/RoPE，删除无消费者的候选分支 |
-| W4 专项 | B：W4 解包 + NZ | 合并解包与格式转换；不影响 W8 |
+| P0 | A：W8 group Linear | 片上分块反量化、复用权重、搬运/计算重叠；必须最终覆盖全部 26 次投影 |
+| P0 | C：完整词表 head + Top-1 | 同时优化 FP16 head 的 MatMul 数据流；只省 logits 写回远远不够 |
+| P1 | D/E：gate/up + SwiGLU、down + residual | 建立在 A 上的 epilogue，减少中间落显存；与 A 的收益重叠 |
+| P2 | F：分段 K/V attention | 减少 cache 拼接与 scores/probability 中间量；作为其余开销的优化 |
+| Prefill 专项 | G：context-only 图 | 删除建缓存时无消费者的候选分支，收益只计 Prefill |
+| W4 专项 | B：W4 解包 + NZ | 合并解包与转换，不计入 W8 目标 |
 
-已提供的 C64 profile 中，gate/up 五次合计 20.85 ms、down 五次 8.35 ms、head 6.73 ms。
-该 profile 来自 runtime 权重转换版本，只用于定位优先级；尚无当前离线 NZ 的单算子分解，
-不能把这些时间当作 47.89 ms 的组成，也不能再次计入已离线化的权重 TransData 收益。
+已测 W8 runtime C64 profile：26 个 WeightQuant 共 40.22 ms，其中五次 gate/up 共 20.85 ms、
+五次 down 共 8.35 ms；FP16 head MatMul 为 6.73 ms。
+这组数据用于确定热点，不是当前离线 NZ 的分项；当前版本须重新取得逐算子时间。
+已离线化的权重 TransData 不再列为待获取收益。
 
-量化投影的 W8 权重共 512.5 MiB、FP16 scale 约 8.01 MiB；FP16 head 单独为 1212.5 MiB。
-这些是张量容量，实际访存量还取决于 tiling 与重读。K/V 和 gate/up 已合并投影，不能重复计收益。
+按该 profile，只做 gate/up、down 不能达到预算：其余 16 个 WeightQuant 加 head
+已约 **17.75 ms**，还未计 attention 等。只融合激活/残差也不够：
+D/E 五层合计最多避免约 7.05 MB 的指定中间张量写读；C 省下的 logits 写读约 14.90 MB，
+都不能替代仍需处理的 1.27 GB head 权重。
 
-其他代码层机会：减少控制量的 AI_CPU Cast；按实际候选数选择更小计算档位；
-或用更多显存缓存热点反量化权重。后两者分别可能改变接受轨迹、浮点舍入，
-均需同输入配对验证，不能按权重压缩比例承诺提速。
+## 完整 Draft 的工程时延预算
 
-## Decode 收益预算
+下面是**为达到目标而分配的预算，不是预测或已测结果**。所有区域按集成后的不重叠范围计时；
+若某项超出预算，必须从其他项找到实测余量。
 
-本次 DFlash Decode 平均 3193.72 ms，ordinary 为 4436.34 ms；
-每次生成平均 32.3 轮，即 1 次 C64 + 31.3 次 C16 Draft。
-保持接受轨迹及 Verify 不变，若两档每次分别节省 `δ64 / δ16` ms：
+| 区域 | 次数 | 区域合计预算 | 每次平均预算 | 权重 + scale 容量 / 区域时间 |
+|---|---:|---:|---:|---:|
+| gate/up（含融合 SwiGLU） | 5 | ≤2.40 ms | ≤0.48 ms | 约 105 GB/s |
+| down（含融合 residual） | 5 | ≤1.20 ms | ≤0.24 ms | 约 105 GB/s |
+| FC + KV + Q + O | 16 | ≤1.40 ms | 按各形状分配 | 约 119 GB/s |
+| 完整 FP16 head + Top-1 | 1 | ≤6.00 ms | ≤6.00 ms | 约 212 GB/s |
+| attention、norm、RoPE、cache、布局及调用开销 | — | ≤2.00 ms | — | 单独测量 |
+| 合计 | — | **≤13.00 ms** | — | 给 13.33 ms 留约 0.33 ms 余量 |
+
+速率列只是“一遍处理权重”的量级要求，不含其他流量，不是芯片带宽测量。
+当前缺少匹配此 Ascend310P/CANN 的有效带宽、片上容量/搬运路径测量以及离线 NZ 分项 profile，
+因此硬件 roofline 与可实现加速上限为 **N/A**。现在能给出工程路径，尚不能保证达到 1.5×。
+
+实现先后顺序：
+
+1. 用真实 gate/up、down 权重与激活做 A 的 M16 最小内核；先看完整区域是否接近 0.48/0.24 ms，
+   再扩展 Q/O/KV/FC，验证 M16/32/64/80，避免只优化十个热点后其余投影成为下限。
+2. 同时用完整 248320 词表、M=15 测 C。按 N 分区复用全部候选行的权重 tile，
+   连同 partial Top-1 归约计时；若 head 仍占大部分预算，应优先解决 head 数据流。
+3. 在 A 的稳定 tile 上逐项加入 D/E；检查是否因缓冲增加、权重重读或同步增多而抵消收益。
+   F 和控制量的 AI_CPU Cast 优化用于压低剩余开销，不预记未经测量的节省。
+4. 接回 C16/C64 Draft，对比同输入输出/KV、完整图时延，再跑 20 条与数据集。
+   更改 head 精度、缩小词表、将激活量化为 INT8 或降低层数属于另一模型/精度方案，
+   不计入当前 W8A16、完整 FP16 head 的目标。
+
+## 对完整 Decode 的影响
+
+本次 W8 测量每次生成平均 32.3 轮，即 1 次 C64 + 31.3 次 C16；
+ordinary Decode 为 4436.34 ms，Verify 累计为 1652.73 ms。
+保持接受轨迹、Verify 与调用次数不变，令完整 Draft 两档耗时为 t64/t16，
+其余 Decode 循环开销为 H（不含 Prefill），则：
 
 ```text
-新 Decode 时间 = 3193.72 - δ64 - 31.3 × δ16
-新 Decode 加速比 = 4436.34 / 新 Decode 时间
+新 DFlash Decode = 1652.73 + t64 + 31.3 × t16 + H
+Decode 加速比 = 4436.34 / 新 DFlash Decode
 ```
 
-| 每次 Draft 两档均节省 | 新 Decode ms | 相对 ordinary 的 Decode 加速比 |
-|---|---:|---:|
-| 1 ms | 3161.42 | 1.40× |
-| 5 ms | 3032.22 | 1.46× |
-| 10 ms | 2870.72 | 1.55× |
-
-这是固定轨迹下的敏感性计算，不是性能预测。Verify 累计约 1652.73 ms；
-即使其余 Decode 开销全部消失，相对当前 DFlash 的上限也约为 1.93×。
-因此，仅优化 Draft 不能支持“完整 Decode 比当前版本快 4 倍”的目标。
+两档若均达到 13.33 ms，H=0 的理想预算约为 **2083.29 ms、2.13× ordinary**；
+实际须加入 H。这个结果不能写成“Decode 比 FP16 DFlash 快 1.5 倍”。
+只改 Draft 而 Verify 保持不变时，令 Draft 和 H 都为零，相对 ordinary 的理想上限约 **2.68×**。
+这些是固定轨迹的算术边界，不是未来测试成绩；C16/C64 混合图均值不得直接当作 t16 或 t64。
 
 ## 自定义算子需求
 
@@ -103,6 +165,36 @@ gate/up 输出前 9728 列为 gate、后 9728 为 up；K/V 前 1024 列为 K、�
 split-K、归约重排及反量化 dtype 的变化须数值验证。基线属性为
 `transpose_x=false, transpose_weight=true, antiquant_group_size=128, inner_precise=0`。
 
+**首版内核组织：**
+
+1. 编译时固定 M/N/K；按 N tile 分工，优先试 `M_tile=16、N_tile=64/128、K_tile=128`。
+   K tile 对齐一个 scale group；扩到 K_tile=256 时必须使用两个 group 的 scale。
+2. 从离线 NZ 直接搬入 INT8 tile 和 GN scale，在片上完成 signed INT8→浮点和逐 group 缩放；
+   将符合原生舍入的 FP16 权重 tile 送入矩阵乘路径。激活仍为 FP16，
+   禁止把整个 [N,K] 反量化为 FP16 后写回全局内存。
+3. 同一权重 tile 服务该块全部 16 行。FC/KV 的 M=32/64/80 另外调度，
+   在片上资源允许时复用权重 tile 处理多个 M 子块；不能为每个 M 子块无条件重读整张权重。
+4. 预取下一块、反量化当前块、矩阵乘已就绪块重叠执行。DMA 完成才能反量化，
+   反量化完成才能矩阵乘，矩阵乘的最后一个消费者完成后才能复用缓冲；
+   具体存储级间路径和事件须按本机 310P 工具链实现，不照搬其他芯片。
+5. 每个 owner 独占 `Y[m0:m1,n0:n1]` 并完成整个 K 归约；首版不做跨 owner split-K。
+   只在归约结束后执行基线规定的输出舍入、写回。不得用 FP16 累加替代未经确认的原生累加。
+
+以 M_tile=16、N_tile=64、K_tile=128 为例，单个逻辑 tile 的最低 payload：
+
+| 缓冲 | shape / dtype | 字节 |
+|---|---|---:|
+| X | [16,128] FP16 | 4096 |
+| q | [64,128] INT8 | 8192 |
+| group scale | [64] FP16 | 128 |
+| 反量化 W | [64,128] FP16 | 16384 |
+| 累加器候选 | [16,64] FP32 | 4096 |
+
+前四项双缓冲加一份累加器为 61,696 B，但它们分属不同存储级，
+**不代表“有 64 KiB UB 就能放下”**。host/tiling 必须另列 UB/L1/L0A/L0B/L0C 的实际分配、
+转排布临时区、对齐和生命周期；归约顺序/累加模式以同输入原生输出验证。
+若资源不够，先减 tile 或调整流水，不隐式溢出到全局内存，也不引入精度降级。
+
 ### D：DFlashW8GateUpSwiGLU
 
 接入 gate/up 投影到 SwiGLU 区域，每层一次，输出直接供 down 使用。
@@ -120,6 +212,12 @@ X/W/S 采用 A 的 gate/up 契约，Z 为 **FP16 ND [16,9728]**、311,296 字节
 
 若分离图物化 gate/up 输出，每层可避免其写入与重读 **1,245,184 字节**，五层约 6.23 MB。
 矩阵乘收益归 A；D 的额外收益仅计激活融合，并扣除片上资源增加的成本。
+
+按输出列 j 配对 gate 的 j 列和 up 的 j+9728 列；它们在现有合并权重中并不相邻。
+两路 tile 都完成 K 归约和 FP16 舍入后，才做 SiLU 与相乘。
+可比较两次对应 tile 搬运与版本化的离线交错布局；后者必须逐字节逆变换，
+不改变 GN scale 对应关系。完整 [16,19456] 中间结果不出片上，
+但不能因两套累加器让权重重读增加。该区域整体受前述五层 2.40 ms 预算约束。
 
 ### C：DFlashDraftLmHeadTop1
 
@@ -145,6 +243,16 @@ M=15 的 hidden 为 76,800 字节，输出 120 字节，完整计算为 9,535,48
 可避免 logits 写回/重读 **14,899,200 字节**，但仍需处理 **1,271,398,400 字节** head 权重。
 partial 归约和启动计入成本，不能把整个 head 耗时算成节省量。
 
+**首版实现：**按词表 N 分区，每个分区用矩阵乘 tile 同时处理 15 个候选行，
+物理可补齐 16 行，补齐行不输出 token。沿 K=2560 完整归约，生成一小块 FP16 logits，
+就地更新各行 (max,id)，最后归约各分区的 [P,M] 结果；head 权重 tile 应复用所有候选行，
+不能每个 token 独立扫描完整词表。比较 max 时保持 FP16 边界、原始 ID 和最小 ID tie-break。
+
+该算子达到 ≤6 ms 预算的关键是完整 head MatMul 的实际执行效率。
+仅删除 14.90 MB logits 写读不等于省去 1.27 GB head 读取；
+原生 head 已接近本机带宽极限时，Top-1 融合可能仅有小幅收益。
+需同时报告权重实际读取量、tile 重读次数、分区负载、归约耗时和整张 Draft 时间。
+
 ### E：DFlashW8DownResidual
 
 替换 down 与残差 Add，删除调用方原 Add，避免重复相加。
@@ -159,6 +267,9 @@ Z/W/S 采用 A 的 down 契约。R、H_out 均为 **FP16 ND [16,2560]**，各 81
 R 为 post-attention residual hidden；不广播、不原地修改。
 先舍入 down 输出再加残差，不使用 `RN16(R+FP32_accumulator)`，不融合下一层 norm。
 每层可避免 down 中间量写入/重读 **163,840 字节**，五层 819,200 字节；与 A 的收益不重复计数。
+
+残差在最终输出 tile 阶段读取，完成 `down→FP16→residual add→FP16` 后写入独占输出区。
+与下一层 RMSNorm 融合会引入跨列归约，首版分开实现。A 的 down 加 E 合计受五层 1.20 ms 预算约束。
 
 ### F：DFlashSegmentedGqaAttention
 
@@ -266,6 +377,9 @@ norm 保留 FP32 reduction/rsqrt → normalized 转 FP16 → 乘存储 gamma 的
 
 性能用当前 baseline/candidate 同设备、同输入配对，预热 3 次、测量 10 次；
 报告原始时间、median/p95、区域与完整 Draft/Decode、workspace 和峰值显存。
+子图数值对照使用同一个 W8 checkpoint 的原生子图，性能报告基线仍是 ordinary。
+另用 FP16 Draft 测完整 Draft 的 1.5× 优化目标；C16/C64 分别报告，
+最终调用分布加权的时延比 ≥1.5，任何档位的回退和额外调度都计入总时间。
 布局适配、归约启动和输出复制均计入；A 与 D/E 收益不重复相加，G 只计 Prefill。
 时差未超过波动或完整 Decode 变慢，不宣称提速。
 
