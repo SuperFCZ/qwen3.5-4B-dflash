@@ -42,6 +42,7 @@ if (( ${#packages[@]} != 1 )); then
     exit 1
 fi
 rm -rf -- "$INSTALL_DIR"
+mkdir -p "$(dirname "$INSTALL_DIR")"
 env -u ASCEND_CUSTOM_OPP_PATH bash "${packages[0]}" --install-path="$INSTALL_DIR"
 
 vendor_env="$INSTALL_DIR/vendors/customize/bin/set_env.bash"
