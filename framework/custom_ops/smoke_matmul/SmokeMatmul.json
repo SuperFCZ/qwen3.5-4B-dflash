@@ -1,0 +1,12 @@
+[
+  {
+    "op": "SmokeMatmul",
+    "input_desc": [
+      {"name": "x", "param_type": "required", "format": ["ND"], "type": ["float16"]},
+      {"name": "w", "param_type": "required", "format": ["ND"], "type": ["float16"]}
+    ],
+    "output_desc": [
+      {"name": "y", "param_type": "required", "format": ["ND"], "type": ["float16"]}
+    ]
+  }
+]
