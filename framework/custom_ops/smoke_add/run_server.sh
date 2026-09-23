@@ -6,6 +6,7 @@ cann_root=${CANN_ROOT:-${ASCEND_HOME_PATH:-/usr/local/Ascend/ascend-toolkit/late
 soc_version=Ascend310P3
 build_root="$here/.build"
 op_project="$build_root/CustomOp"
+INSTALL_DIR=/home/w00949577/z50058744/custom_ops_runtime/smoke_add
 
 if [[ -f "$cann_root/set_env.sh" ]]; then
     cann_env="$cann_root/set_env.sh"
@@ -40,16 +41,25 @@ if (( ${#packages[@]} != 1 )); then
     echo "Expected one custom_opp_*.run in $op_project/build_out; found ${#packages[@]}" >&2
     exit 1
 fi
-bash "${packages[0]}"
+rm -rf -- "$INSTALL_DIR"
+env -u ASCEND_CUSTOM_OPP_PATH bash "${packages[0]}" --install-path="$INSTALL_DIR"
 
-opp_path=${ASCEND_OPP_PATH:-"$cann_root/opp"}
-vendor_api="$opp_path/vendors/customize/op_api"
+vendor_env="$INSTALL_DIR/vendors/customize/bin/set_env.bash"
+if [[ ! -f "$vendor_env" ]]; then
+    echo "Installed custom OPP environment missing: $vendor_env" >&2
+    exit 1
+fi
+set +u
+source "$vendor_env"
+set -u
+vendor_api="$INSTALL_DIR/vendors/customize/op_api"
 if [[ ! -f "$vendor_api/include/aclnn_add_custom.h" ]]; then
     echo "Installed ACLNN header missing: $vendor_api/include/aclnn_add_custom.h" >&2
     exit 1
 fi
 export LD_LIBRARY_PATH="$vendor_api/lib:${LD_LIBRARY_PATH:-}"
+rm -rf -- "$build_root/test"
 cmake -S "$here/test" -B "$build_root/test" \
-    -DCANN_ROOT="$cann_root" -DASCEND_OPP_PATH="$opp_path"
+    -DCANN_ROOT="$cann_root" -DASCEND_OPP_PATH="$INSTALL_DIR"
 cmake --build "$build_root/test" --parallel
 "$build_root/test/smoke_add_test" "${DEVICE_ID:-0}"
