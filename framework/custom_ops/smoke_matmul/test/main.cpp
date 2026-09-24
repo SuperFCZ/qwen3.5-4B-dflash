@@ -18,7 +18,9 @@ template <typename T>
 void Check(T result, const char *action)
 {
     if (result != ACL_SUCCESS) {
-        throw std::runtime_error(std::string(action) + " failed: " + std::to_string(result));
+        const char *recent = aclGetRecentErrMsg();
+        throw std::runtime_error(std::string(action) + " failed: " + std::to_string(result) +
+                                 "; aclGetRecentErrMsg: " + (recent != nullptr ? recent : "<none>"));
     }
 }
 

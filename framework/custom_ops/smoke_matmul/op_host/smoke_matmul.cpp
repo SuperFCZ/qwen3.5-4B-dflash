@@ -49,7 +49,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     uint64_t ubSize = 0;
     platform.GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubSize);
     tiling.set_localMemSize(ubSize);
-    context->SetTilingKey(2);  // 310P path with local UB workspace.
+    context->SetTilingKey(0);
     context->SetBlockDim(1);
     tiling.SaveToBuffer(context->GetRawTilingData()->GetData(),
                         context->GetRawTilingData()->GetCapacity());
