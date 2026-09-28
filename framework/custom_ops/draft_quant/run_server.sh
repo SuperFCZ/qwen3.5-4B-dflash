@@ -5,6 +5,11 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 cann_root=${CANN_ROOT:-${ASCEND_HOME_PATH:-/usr/local/Ascend/ascend-toolkit/latest}}
 python_bin=${MODEL_PYTHON:-python3}
 device_id=${DEVICE_ID:-0}
+suite=${DFLASH_SUITE:-a1}
+if [[ "$suite" != a1 && "$suite" != tiny ]]; then
+    echo "DFLASH_SUITE must be a1 or tiny" >&2
+    exit 1
+fi
 
 if [[ -f "$cann_root/set_env.sh" ]]; then
     cann_env="$cann_root/set_env.sh"
@@ -26,8 +31,8 @@ fi
 # Each invocation owns a fresh build, isolated OPP and evidence directory.
 # Prior packages, results and the model OPP installation are never overwritten.
 mkdir -p "$here/.build" "$here/.runs"
-build_root=$(mktemp -d "$here/.build/tiny.XXXXXXXX")
-run_root=$(mktemp -d "$here/.runs/tiny.XXXXXXXX")
+build_root=$(mktemp -d "$here/.build/$suite.XXXXXXXX")
+run_root=$(mktemp -d "$here/.runs/$suite.XXXXXXXX")
 op_project="$build_root/CustomOp"
 install_dir="$build_root/opp"
 data_dir="$run_root/data"
@@ -38,7 +43,6 @@ echo "Target: Ascend310P3 / CANN 9.0.0; using $cann_root"
 echo "Build: $build_root"
 echo "Evidence: $run_root"
 git -C "$here" rev-parse HEAD > "$run_root/source-commit.txt"
-"$python_bin" "$here/test/reference.py" prepare "$data_dir"
 
 phase=msopgen
 msopgen gen -i "$here/DFlashGroupQuantLinear.json" -c ai_core-Ascend310P3 -lan cpp -out "$op_project"
@@ -81,14 +85,8 @@ export LD_LIBRARY_PATH="$vendor_api/lib:${LD_LIBRARY_PATH:-}"
 phase=build_runner
 cmake -S "$here/test" -B "$build_root/test" -DCANN_ROOT="$cann_root" -DASCEND_OPP_PATH="$install_dir"
 cmake --build "$build_root/test" --parallel
-phase=custom_aclnn
-while IFS= read -r case_name; do
-    echo "Custom tiny: $case_name"
-    "$build_root/test/dflash_group_quant_linear_test" "$device_id" "$data_dir/$case_name"
-done < "$data_dir/cases.txt"
-phase=native_eager
-"$python_bin" "$here/test/reference.py" native "$data_dir" --device-id "$device_id"
-phase=compare
-"$python_bin" "$here/test/reference.py" check "$data_dir"
-echo "Comparison: $data_dir/comparison.json"
+phase=correctness_suite
+"$python_bin" "$here/test/run_suite.py" --output-dir "$data_dir" \
+    --runner "$build_root/test/dflash_group_quant_linear_test" --device-id "$device_id" --suite "$suite"
+echo "Summary: $data_dir/suite.json"
 echo "Native OM / full Draft / performance remain NOT_RUN."

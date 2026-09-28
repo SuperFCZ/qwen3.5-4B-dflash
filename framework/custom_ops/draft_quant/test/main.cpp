@@ -9,11 +9,9 @@
 
 #include "acl/acl.h"
 #include "aclnn_d_flash_group_quant_linear.h"
+#include "../op_host/d_flash_group_quant_linear_contract.h"
 
 namespace {
-constexpr int64_t kM = 16;
-constexpr int64_t kK = 256;
-constexpr int64_t kN = 64;
 constexpr int kRepetitions = 2;
 constexpr size_t kGuard = 512;  // retain device pointer alignment after the prefix
 constexpr uint8_t kCanary = 0xA5;
@@ -149,16 +147,33 @@ void CheckScales(const std::vector<uint8_t> &raw)
         }
     }
 }
+
+int64_t ParseDimension(const char *text)
+{
+    size_t end = 0;
+    const std::string value(text);
+    const int64_t result = std::stoll(value, &end);
+    if (end != value.size()) throw std::runtime_error("invalid dimension: " + value);
+    return result;
+}
 }  // namespace
 
 int main(int argc, char **argv)
 {
     std::string dataDir;
     try {
-        if (argc != 3) throw std::runtime_error("usage: dflash_group_quant_linear_test DEVICE_ID CASE_DIR");
+        if (argc != 3 && argc != 6) {
+            throw std::runtime_error("usage: dflash_group_quant_linear_test DEVICE_ID CASE_DIR [M K N]");
+        }
         dataDir = argv[2];
-        // Invalidate previous successful evidence before touching the device.
+        // Invalidate previous evidence even when dimension validation fails.
         std::ofstream(dataDir + "/execution.json") << "{\"status\":\"RUNNING\"}\n";
+        const int64_t kM = argc == 6 ? ParseDimension(argv[3]) : 16;
+        const int64_t kK = argc == 6 ? ParseDimension(argv[4]) : 256;
+        const int64_t kN = argc == 6 ? ParseDimension(argv[5]) : 64;
+        if (!draft_quant_contract::IsSupportedShape(kM, kK, kN)) {
+            throw std::runtime_error("A1 requires M16 K256/512/1024 N64/128/256");
+        }
         auto x = ReadBytes(dataDir + "/x.bin", kM * kK * 2);
         auto w = ReadBytes(dataDir + "/w_nz.bin", kN * kK);
         auto s = ReadBytes(dataDir + "/s_gn.bin", (kK / 128) * kN * 2);
@@ -200,9 +215,12 @@ int main(int argc, char **argv)
         report << "{\"status\":\"PASS\",\"runtime\":\"AscendCL ACLNN\","
                   "\"op\":\"DFlashGroupQuantLinear\",\"cpu_fallback\":false,"
                   "\"input_readonly\":true,\"guards_intact\":true,\"repetitions\":" << kRepetitions <<
+                  ",\"m\":" << kM << ",\"k\":" << kK << ",\"n\":" << kN <<
+                  ",\"tile_n\":64,\"tile_k\":" << draft_quant_contract::KTile(kK) <<
                   ",\"device_id\":" << r.deviceId << ",\"workspace_bytes\":" << peakWorkspace << "}\n";
         if (!report) throw std::runtime_error("cannot write execution report");
-        std::cout << "ACLNN tiny execution completed; workspace=" << peakWorkspace
+        std::cout << "ACLNN A1 execution completed; M=" << kM << " K=" << kK << " N=" << kN
+                  << "; workspace=" << peakWorkspace
                   << " bytes, guards/inputs intact; numerical comparison follows\n";
         return EXIT_SUCCESS;
     } catch (const std::exception &e) {

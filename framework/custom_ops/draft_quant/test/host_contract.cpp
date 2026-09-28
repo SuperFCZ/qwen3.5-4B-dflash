@@ -22,6 +22,22 @@ bool Accepted(const Shape &origin, const Shape &storage, Format originFormat, Fo
 
 int main()
 {
+    for (int64_t k : {256, 512, 1024}) {
+        for (int64_t n : {64, 128, 256}) {
+            assert(draft_quant_contract::IsSupportedShape(16, k, n));
+            const Shape logicalShape{{n, k}}, physicalShape{{k / 32, n / 16, 16, 32}};
+            assert(draft_quant_contract::IsNzWeightDescriptor(&logicalShape, &physicalShape,
+                Format::ND, Format::NZ, Format::ND, Format::NZ, n, k));
+            assert(draft_quant_contract::IsNzWeightDescriptor(&physicalShape, &physicalShape,
+                Format::NZ, Format::NZ, Format::ND, Format::NZ, n, k));
+            assert(draft_quant_contract::KTile(k) == (k == 256 ? 256 : 128));
+            assert(draft_quant_contract::UserUbBytes(k) == (k == 256 ? 49408 : 24704));
+        }
+    }
+    assert(!draft_quant_contract::IsSupportedShape(32, 256, 64));
+    assert(!draft_quant_contract::IsSupportedShape(16, 384, 64));
+    assert(!draft_quant_contract::IsSupportedShape(16, 512, 80));
+    assert(!draft_quant_contract::IsSupportedShape(16, -256, 64));
     const Shape logical{{64, 256}};
     const Shape physical{{8, 4, 16, 32}};
 

@@ -10,12 +10,13 @@ import unittest
 import reference as ref
 
 
-def checker_fixture(root, native_transform=None, custom_transform=None):
+def checker_fixture(root, native_transform=None, custom_transform=None, shape=ref.TINY):
     """Synthetic records for checker tests ONLY; never physical device evidence."""
-    ref.prepare(root)
+    ref.prepare(root, shape)
     manifest = ref.load_cases(root)
     native = {"status": "PASS", "cpu_fallback": False, "group_size": 128, "inner_precise": 0,
               "reference_policy": ref.NATIVE_POLICY,
+              "mkn": [shape.m, shape.k, shape.n],
               "manifest_sha256": ref.digest((root / "manifest.json").read_bytes()),
               "environment": {"device_id": 0}, "cases": []}
     for case in manifest["cases"]:
@@ -29,6 +30,7 @@ def checker_fixture(root, native_transform=None, custom_transform=None):
         native["cases"].append({"name": case["name"], "output_sha256": [ref.digest(golden)] * 2})
         ref.write_json(folder / "execution.json", {"status": "PASS", "runtime": "AscendCL ACLNN",
             "op": "DFlashGroupQuantLinear", "cpu_fallback": False, "device_id": 0,
+            "m": shape.m, "k": shape.k, "n": shape.n, "tile_n": 64, "tile_k": shape.tile_k,
             "input_readonly": True, "guards_intact": True, "repetitions": 2})
     ref.write_json(root / "native-eager.json", native)
 

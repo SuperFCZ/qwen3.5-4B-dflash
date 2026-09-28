@@ -6,6 +6,9 @@
 
 namespace optiling {
 BEGIN_TILING_DATA_DEF(DFlashGroupQuantLinearTilingData)
+TILING_DATA_FIELD_DEF(uint32_t, globalK);
+TILING_DATA_FIELD_DEF(uint32_t, globalN);
+TILING_DATA_FIELD_DEF(uint32_t, tileK);
 TILING_DATA_FIELD_DEF(uint64_t, matmulUbBytes);
 TILING_DATA_FIELD_DEF_STRUCT(TCubeTiling, cubeTilingData);
 END_TILING_DATA_DEF;
