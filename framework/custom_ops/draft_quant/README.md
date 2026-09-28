@@ -14,7 +14,7 @@ GE 类型为 `DFlashGroupQuantLinear`，生成的 C 接口为
 `aclnnDFlashGroupQuantLinear(...)`。tiny ABI 为 `dflash-group-quant-linear-tiny-v1`；
 M/N/K、group size 和 `nz_int8_v1` 为编译常量，无动态 shape 或可调属性。
 
-| 张量 | 逻辑/origin shape | 物理/storage shape | dtype / format |
+| 张量 | 模型逻辑 shape（GE origin） | 物理/storage shape | dtype / format |
 | --- | --- | --- | --- |
 | X | `[16,256]` | `[16,256]` | FP16 ND |
 | W_nz | `[64,256]` | `[8,4,16,32]` | signed INT8 FRACTAL_NZ |
@@ -29,9 +29,22 @@ Y = CubeMatMul(X, W16.T), output FP16
 
 NZ 字节序与现有 `weight_prepack.pack_int8_nz` 一致；tiny 维度全部对齐，无 padding。
 W 的物理 stride 为 `[2048,512,32,1]`。X、S、Y 连续，stride 分别为
-`[256,1]`、`[64,1]`、`[64,1]`；W 的 ACL 描述使用 origin `[64,256]`、
-逻辑 stride `[256,1]`、NZ storage `[8,4,16,32]`，不能将物理载体标成 ND。
+`[256,1]`、`[64,1]`、`[64,1]`。GE 描述保留 W 的逻辑 origin `[64,256]` / ND，
+storage 为 `[8,4,16,32]` / FRACTAL_NZ。
+**直接 ACLNN 测试使用物理 NZ ViewShape `[8,4,16,32]`，storage 同形，stride 为
+`[2048,512,32,1]`，format 为 FRACTAL_NZ。** `aclCreateTensor` 的首个 shape 参数是
+ViewShape，不能把它等同于 GE 的 origin_shape。两条路径的权重字节完全相同；
+tiny 的模型 N=64、K=256 仍由固定契约声明，manifest 中 `w_origin` 记录该模型逻辑形状。
 从模块 scale `[N,G]` 到 `[G,N]` 只移动 FP16 字节。
+
+在 [CANN opbase v9.0.0 的单算子实现](https://gitcode.com/cann/opbase/blob/v9.0.0/src/nnopbase/individual_op/executor/indv_executor_tensor.cpp)
+中，`NnopbaseSaveTensor` 将 ViewShape 同时写入 tiling 的 origin/storage shape，
+NZ 的 origin/storage format 也都来自输入 storage format。旧 runner 用 `[64,256]`
+ViewShape 搭配四维 NZ storage，会在 tiling 中变成二维 shape，触发 `ValidInput` 拒绝；
+只删除 `origin_format == ND` 的判断仍不足以修复。
+host 现在严格接受 GE 逻辑描述和 ACLNN 物理描述两种组合，仍拒绝二维 storage、
+错误轴序、ND 物理载体及错误 dtype。校验失败会打印三个输入和输出的实际 dtype、
+origin/storage format、origin/storage shape。升级时须同时重新构建 OPP 和 ACLNN runner。
 
 GE infer/tiling 拒绝不符合固定 shape、dtype、format 的描述。S 必须为正且有限，
 测试 host 在复制到设备前校验其 FP16 位型；直接调用生成 API 的调用方也必须满足这一前提。
@@ -116,6 +129,8 @@ python3 -m unittest discover -s framework/custom_ops/draft_quant/test -p 'test_*
 bash -n framework/custom_ops/draft_quant/run_server.sh
 ```
 
-仅需 Python 标准库。覆盖独立 NZ permutation、signed code、scale 位型转置、精确整数 oracle、
-group 边界错误检测、ULP/非有限值、文件损坏及缺少设备证据时拒绝通过。
-本地不运行 Ascend C 编译、ACLNN 数值验证或性能测试。
+数据与比较器测试仅需 Python 标准库。覆盖独立 NZ permutation、signed code、scale 位型转置、
+精确整数 oracle、group 边界错误检测、ULP/非有限值、文件损坏及缺少设备证据时拒绝通过。
+新增的 host 元数据契约测试使用本地 C++17 编译器，直接测试共享 shape 校验函数，覆盖
+GE/ACLNN 合法描述、旧二维 NZ 描述及同字节数的错误轴序；缺少 C++ 编译器时明确跳过。
+该测试不依赖 CANN，不代表 Ascend C 编译、ACLNN 数值验证或性能测试通过。

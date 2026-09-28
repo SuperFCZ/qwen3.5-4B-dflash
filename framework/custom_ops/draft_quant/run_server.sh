@@ -46,7 +46,9 @@ if [[ ! -f "$op_project/op_kernel/d_flash_group_quant_linear.cpp" ]]; then
     echo "Unexpected msopgen kernel naming; inspect $op_project before building" >&2
     exit 1
 fi
-cp "$here/op_host/d_flash_group_quant_linear.cpp" "$here/op_host/d_flash_group_quant_linear_tiling.h" "$op_project/op_host/"
+cp "$here/op_host/d_flash_group_quant_linear.cpp" \
+   "$here/op_host/d_flash_group_quant_linear_tiling.h" \
+   "$here/op_host/d_flash_group_quant_linear_contract.h" "$op_project/op_host/"
 cp "$here/op_kernel/d_flash_group_quant_linear.cpp" "$op_project/op_kernel/"
 phase=build
 (

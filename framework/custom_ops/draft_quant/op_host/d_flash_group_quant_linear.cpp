@@ -2,6 +2,7 @@
 #include <initializer_list>
 #include <limits>
 
+#include "d_flash_group_quant_linear_contract.h"
 #include "d_flash_group_quant_linear_tiling.h"
 #include "register/op_def_registry.h"
 #include "tiling/platform/platform_ascendc.h"
@@ -19,15 +20,7 @@ constexpr uint64_t kScaleBytes = (kK / kGroup) * kN * 2;
 constexpr uint64_t kWeightBytes = kN * kK * 2;
 constexpr uint64_t kUserUbBytes = kCodesBytes + kScaleBytes + kWeightBytes;
 
-bool IsShape(const gert::Shape *shape, std::initializer_list<int64_t> dims)
-{
-    if (shape == nullptr || shape->GetDimNum() != dims.size()) return false;
-    size_t index = 0;
-    for (int64_t dim : dims) {
-        if (shape->GetDim(index++) != dim) return false;
-    }
-    return true;
-}
+using draft_quant_contract::IsShape;
 
 bool ValidInput(gert::TilingContext *context, size_t index, ge::DataType dtype,
                 ge::Format format, std::initializer_list<int64_t> origin,
@@ -40,20 +33,68 @@ bool ValidInput(gert::TilingContext *context, size_t index, ge::DataType dtype,
            IsShape(&shape->GetOriginShape(), origin) &&
            IsShape(&shape->GetStorageShape(), storage);
 }
+
+bool ValidWeightInput(gert::TilingContext *context)
+{
+    const auto *shape = context->GetInputShape(1);
+    const auto *desc = context->GetInputDesc(1);
+    return shape != nullptr && desc != nullptr && desc->GetDataType() == ge::DT_INT8 &&
+           draft_quant_contract::IsNzWeightDescriptor(
+               &shape->GetOriginShape(), &shape->GetStorageShape(),
+               desc->GetOriginFormat(), desc->GetStorageFormat(),
+               ge::FORMAT_ND, ge::FORMAT_FRACTAL_NZ, kN, kK);
+}
+
+void PrintShape(const gert::Shape *shape)
+{
+    if (shape == nullptr) {
+        std::fprintf(stderr, "<null>");
+        return;
+    }
+    std::fprintf(stderr, "[");
+    for (size_t i = 0; i < shape->GetDimNum(); ++i) {
+        std::fprintf(stderr, "%s%lld", i == 0 ? "" : ",", static_cast<long long>(shape->GetDim(i)));
+    }
+    std::fprintf(stderr, "]");
+}
+
+void DumpTensor(gert::TilingContext *context, size_t index, bool output)
+{
+    const auto *shape = output ? context->GetOutputShape(index) : context->GetInputShape(index);
+    const auto *desc = output ? context->GetOutputDesc(index) : context->GetInputDesc(index);
+    std::fprintf(stderr, "DFlashGroupQuantLinear: %s[%zu]", output ? "output" : "input", index);
+    if (desc == nullptr) {
+        std::fprintf(stderr, " desc=<null>");
+    } else {
+        std::fprintf(stderr, " dtype=%d origin_format=%d storage_format=%d",
+                     static_cast<int>(desc->GetDataType()), static_cast<int>(desc->GetOriginFormat()),
+                     static_cast<int>(desc->GetStorageFormat()));
+    }
+    std::fprintf(stderr, " origin_shape=");
+    PrintShape(shape == nullptr ? nullptr : &shape->GetOriginShape());
+    std::fprintf(stderr, " storage_shape=");
+    PrintShape(shape == nullptr ? nullptr : &shape->GetStorageShape());
+    std::fprintf(stderr, "\n");
+}
 }  // namespace
 
 namespace optiling {
 static ge::graphStatus TilingFunc(gert::TilingContext *context)
 {
-    // FRACTAL_NZ must carry BOTH logical [N,K] and physical [K1,N1,16,32].
-    // A rank-4 ND carrier or an FP16-NZ descriptor is a different ABI.
+    // GE and direct ACLNN use different origin metadata for the same NZ bytes.
+    // Storage remains strictly [8,4,16,32]; a rank-4 ND carrier is still invalid.
     if (!ValidInput(context, 0, ge::DT_FLOAT16, ge::FORMAT_ND, {kM, kK}, {kM, kK}) ||
-        !ValidInput(context, 1, ge::DT_INT8, ge::FORMAT_FRACTAL_NZ,
-                    {kN, kK}, {kK / 32, kN / 16, 16, 32}) ||
+        !ValidWeightInput(context) ||
         !ValidInput(context, 2, ge::DT_FLOAT16, ge::FORMAT_ND,
                     {kK / kGroup, kN}, {kK / kGroup, kN})) {
         std::fprintf(stderr, "DFlashGroupQuantLinear: requires tiny M16 K256 N64, "
-                             "INT8 NZ origin=[64,256] storage=[8,4,16,32], FP16 GN=[2,64]\n");
+                             "INT8 NZ storage=[8,4,16,32], origin=ND [64,256] (GE) "
+                             "or NZ [8,4,16,32] (ACLNN), FP16 GN=[2,64]; "
+                             "formats ND=%d NZ=%d, dtypes FP16=%d INT8=%d\n",
+                     static_cast<int>(ge::FORMAT_ND), static_cast<int>(ge::FORMAT_FRACTAL_NZ),
+                     static_cast<int>(ge::DT_FLOAT16), static_cast<int>(ge::DT_INT8));
+        for (size_t i = 0; i < 3; ++i) DumpTensor(context, i, false);
+        DumpTensor(context, 0, true);
         return ge::GRAPH_FAILED;
     }
     const auto *yShape = context->GetOutputShape(0);
@@ -61,7 +102,11 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     if (yShape == nullptr || yDesc == nullptr ||
         yDesc->GetDataType() != ge::DT_FLOAT16 || yDesc->GetStorageFormat() != ge::FORMAT_ND ||
         !IsShape(&yShape->GetOriginShape(), {kM, kN}) ||
-        !IsShape(&yShape->GetStorageShape(), {kM, kN})) return ge::GRAPH_FAILED;
+        !IsShape(&yShape->GetStorageShape(), {kM, kN})) {
+        std::fprintf(stderr, "DFlashGroupQuantLinear: requires FP16 ND output [16,64]\n");
+        DumpTensor(context, 0, true);
+        return ge::GRAPH_FAILED;
+    }
 
     auto platform = platform_ascendc::PlatformAscendC(context->GetPlatformInfo());
     uint64_t ubBytes = 0;
@@ -124,8 +169,11 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
 namespace ge {
 static graphStatus InferShape(gert::InferShapeContext *context)
 {
+    // Accept the GE logical origin and the direct ACLNN physical NZ view.
+    // Tiling additionally enforces the matching format/storage combination.
+    const auto *w = context->GetInputShape(1);
     if (!IsShape(context->GetInputShape(0), {kM, kK}) ||
-        !IsShape(context->GetInputShape(1), {kN, kK}) ||
+        (!IsShape(w, {kN, kK}) && !IsShape(w, {kK / 32, kN / 16, 16, 32})) ||
         !IsShape(context->GetInputShape(2), {kK / kGroup, kN})) return GRAPH_FAILED;
     auto *y = context->GetOutputShape(0);
     if (y == nullptr) return GRAPH_FAILED;

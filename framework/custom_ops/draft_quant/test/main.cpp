@@ -124,17 +124,18 @@ struct Resources {
     }
 };
 
-void MakeTensor(DeviceTensor &tensor, const std::vector<int64_t> &origin,
+void MakeTensor(DeviceTensor &tensor, const std::vector<int64_t> &view,
                 const std::vector<int64_t> &storage, aclDataType dtype, aclFormat format,
                 size_t bytes, const std::vector<uint8_t> *host = nullptr)
 {
     tensor.buffer.Allocate(bytes);
     if (host != nullptr) tensor.buffer.CopyIn(*host);
-    // Strides describe the logical ND tensor, while storage describes actual NZ
-    // bytes. Never reinterpret [8,4,16,32] as an ND logical weight argument.
-    std::vector<int64_t> strides(origin.size(), 1);
-    for (size_t i = origin.size(); i > 1; --i) strides[i - 2] = strides[i - 1] * origin[i - 1];
-    tensor.desc = aclCreateTensor(origin.data(), origin.size(), dtype, strides.data(), 0,
+    // aclCreateTensor's first shape is ViewShape, not GE origin_shape. CANN
+    // 9.0 individual ACLNN uses that view for BOTH Host Tiling shapes. The NZ
+    // weight must therefore use its physical view with physical NZ strides.
+    std::vector<int64_t> strides(view.size(), 1);
+    for (size_t i = view.size(); i > 1; --i) strides[i - 2] = strides[i - 1] * view[i - 1];
+    tensor.desc = aclCreateTensor(view.data(), view.size(), dtype, strides.data(), 0,
                                   format, storage.data(), storage.size(), tensor.buffer.data);
     if (tensor.desc == nullptr) throw std::runtime_error("aclCreateTensor failed");
 }
@@ -168,7 +169,8 @@ int main(int argc, char **argv)
         Check(aclrtSetDevice(r.deviceId), "aclrtSetDevice"); r.deviceReady = true;
         Check(aclrtCreateStream(&r.stream), "aclrtCreateStream");
         MakeTensor(r.x, {kM, kK}, {kM, kK}, ACL_FLOAT16, ACL_FORMAT_ND, x.size(), &x);
-        MakeTensor(r.w, {kN, kK}, {kK / 32, kN / 16, 16, 32}, ACL_INT8, ACL_FORMAT_FRACTAL_NZ, w.size(), &w);
+        const std::vector<int64_t> nzShape = {kK / 32, kN / 16, 16, 32};
+        MakeTensor(r.w, nzShape, nzShape, ACL_INT8, ACL_FORMAT_FRACTAL_NZ, w.size(), &w);
         MakeTensor(r.s, {kK / 128, kN}, {kK / 128, kN}, ACL_FLOAT16, ACL_FORMAT_ND, s.size(), &s);
         MakeTensor(r.y, {kM, kN}, {kM, kN}, ACL_FLOAT16, ACL_FORMAT_ND, kM * kN * 2);
 
