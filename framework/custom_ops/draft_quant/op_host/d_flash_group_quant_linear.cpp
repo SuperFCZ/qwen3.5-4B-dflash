@@ -97,7 +97,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
                         context->GetRawTilingData()->GetCapacity());
     context->GetRawTilingData()->SetDataSize(tiling.GetDataSize());
     context->GetWorkspaceSizes(1)[0] = static_cast<size_t>(platform.GetLibApiWorkSpaceSize());
-    const auto &cube = tiling.cubeTilingData;
+    auto &cube = tiling.cubeTilingData;
     const int64_t aTileBytes = static_cast<int64_t>(cube.get_baseM()) * cube.get_baseK() * 2;
     const int64_t bTileBytes = static_cast<int64_t>(cube.get_baseN()) * cube.get_baseK() * 2;
     const int64_t cTileBytes = static_cast<int64_t>(cube.get_baseM()) * cube.get_baseN() * 4;
