@@ -4,8 +4,10 @@ Ascend 310P3 / CANN 9.0.0 的独立 Ascend C 原型，固定
 **M=16、K=256、N=64、group_size=128**。源码、构建和 ACLNN 测试均在本目录；
 未接入 Qwen/DFlash 模型、AIR 导出或运行主流程。`workloads.json` 仍是完整优化需求账本。
 
-当前状态：已实现待服务器编译和数值验证的原型。本地 CPU 单元测试只验证数据布局、
-oracle 和比较器，不代表 Ascend C 编译通过、设备结果正确或性能达标。
+当前状态：服务器已反馈构建、安装、ACLNN 执行、输入只读和哨兵检查通过，六个 case 的
+custom 输出与 CPU 参考均为 0 bit 差异。此前原生 eager 对照存在 GN/NG scale 视图错误，
+本次已修复该对照入口，修复后的 native 比较仍待服务器复核。本地 CPU 单元测试只验证
+数据布局、oracle 和比较器，不替代 NPU 数值、原生 OM 或性能验收。
 
 ## 固定接口
 
@@ -94,8 +96,9 @@ bash framework/custom_ops/draft_quant/run_server.sh
 
 脚本依次执行 msopgen、覆盖手写源码、构建、安装独立 OPP、构建 ACLNN runner、
 执行 custom、执行同输入原生 eager WeightQuant、逐位比较。
-无需模型权重。原生对照使用 `antiquant_group_size=128, inner_precise=0`；
-缺少 torch_npu 或原生执行失败时直接失败，没有 CPU fallback。
+无需模型权重。原生对照复用仓库的 `weight_quant_linear()`，使用
+`antiquant_group_size=128, inner_precise=0`；缺少 torch_npu、原生执行失败、重复漂移、
+非有限输出或原生 exact case 未通过 CPU 自校验时直接失败，没有 CPU fallback。
 
 每次运行保留独立的 `.build/tiny.*/` 和 `.runs/tiny.*/`，不删除此前结果。
 OPP 安装在该次 build 目录内，安装器子进程清除 `ASCEND_CUSTOM_OPP_PATH` 后安装；
@@ -107,8 +110,11 @@ OPP 安装在该次 build 目录内，安装器子进程清除 `ASCEND_CUSTOM_OP
 - `data/manifest.json`：固定 ABI、NZ origin/storage、输入及 CPU golden 的 SHA256。
 - 每个 case 的 `actual-{0,1}.bin`、`native-{0,1}.bin`、`execution.json`：
   两次执行、输入只读检查、输出/workspace 哨兵和 workspace 字节数。
-- `data/native-eager.json`：原生环境、输入 manifest 绑定和输出 SHA256。
+- `data/native-eager.json`：原生环境、输入 manifest 绑定、输出 SHA256、scale 存储/视图/stride、
+  生产 helper 源码 SHA256，以及原生输出对 CPU 的自校验结果。
 - `data/comparison.json`：逐 case 位型差异数、max abs、max ULP、首个差异位置、重复漂移。
+  `cpu` 为 custom 对 CPU，`native_eager` 为 custom 对 native，新增 `native_vs_cpu`
+  为 native 对 CPU；控制台同时打印这三组差异，`failed_checks` 标明失败的是哪一组。
 
 默认包含 6 组 case：正负零、NZ/group 边界 one-hot、两组 dense signed、仅第二 group、
 非二进制精确 scale 的 rounding probe。所有 code 范围含 -128/127。
@@ -134,3 +140,37 @@ bash -n framework/custom_ops/draft_quant/run_server.sh
 新增的 host 元数据契约测试使用本地 C++17 编译器，直接测试共享 shape 校验函数，覆盖
 GE/ACLNN 合法描述、旧二维 NZ 描述及同字节数的错误轴序；缺少 C++ 编译器时明确跳过。
 该测试不依赖 CANN，不代表 Ascend C 编译、ACLNN 数值验证或性能测试通过。
+
+## 原生对照的 scale 视图修复
+
+custom 输入继续使用连续 GN `[2,64]`。原生 eager 调用中，weight 是 `q.t()` 转置视图，
+scale 必须与生产调用一致：连续 NG `[64,2]` 存储上的 GN 转置视图，stride=`[1,2]`。
+两者表示同一组 scale 数值，但物理存储不同。
+
+[CANN ops-nn v9.0.0 的 ACLNN 实现](https://gitcode.com/cann/ops-nn/blob/v9.0.0/matmul/weight_quant_batch_matmul_v2/op_host/op_api/aclnn_weight_quant_batch_matmul_v2.cpp)
+在 `CheckContiguous()` 中，把 weight 的 transpose 标志同时传给 scale 的
+`TensorContiguousProcess()`；该分支的 `CreateTransposedView()` 先重建视图，
+随后 310P 的 `TransposeAndTransDataForInputsGroup()` 执行 group scale 转置。
+旧测试脚本把连续 GN 与 `q.t()` 一起传入，使 GN 字节被误读成 NG。
+CPU 上模拟这一错位，可以完整复现服务器报告的五组非零输入差异：
+764、1022、1024、763、1023 个 bit mismatch，包括各组的 max abs、ULP 和首个错误位型。
+
+现在先把 `s_gn.bin` 逐字节转回 NG，再调用生产 `weight_quant_linear()` 生成正确转置视图。
+原生参考策略标记为 `production-ng-backed-scale-view-v1`，比较器拒绝没有该标记的旧 native
+结果；原有 `actual-*.bin` 和输入无需重算，CPU 与 native 的精度门槛没有放宽。
+本次不修改 custom kernel、B 的 VECOUT/ND/transpose 路径或 tiling 参数。
+
+若复用已经成功执行的 custom 结果，可在**已加载相同 CANN/torch_npu 环境**的服务器仓库
+根目录运行以下命令。先复制原 data，保留旧证据；这里只重跑原生对照与比较，无需重新编译：
+
+```bash
+old_data=framework/custom_ops/draft_quant/.runs/tiny.ddgHaC8f/data  # 修改为实际已运行目录
+rerun_root=$(mktemp -d "$PWD/framework/custom_ops/draft_quant/.runs/reference.XXXXXXXX")
+cp -a "$old_data" "$rerun_root/data"
+"${MODEL_PYTHON:-python3}" framework/custom_ops/draft_quant/test/reference.py native "$rerun_root/data" --device-id "${DEVICE_ID:-0}"
+"${MODEL_PYTHON:-python3}" framework/custom_ops/draft_quant/test/reference.py check "$rerun_root/data"
+```
+
+若原生 exact case 自校验失败，`native` 返回非零并保存 `native-eager.json` 中的诊断，
+不能据此认定 custom kernel 出错。`rounding_probe` 的 native/CPU 差异仍仅作诊断；
+custom/native 必须逐位一致。

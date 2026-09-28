@@ -10,6 +10,33 @@ import unittest
 import reference as ref
 
 
+def checker_fixture(root, native_transform=None, custom_transform=None):
+    """Synthetic records for checker tests ONLY; never physical device evidence."""
+    ref.prepare(root)
+    manifest = ref.load_cases(root)
+    native = {"status": "PASS", "cpu_fallback": False, "group_size": 128, "inner_precise": 0,
+              "reference_policy": ref.NATIVE_POLICY,
+              "manifest_sha256": ref.digest((root / "manifest.json").read_bytes()),
+              "environment": {"device_id": 0}, "cases": []}
+    for case in manifest["cases"]:
+        folder = root / case["name"]
+        raw = (folder / "cpu.bin").read_bytes()
+        golden = native_transform(case["name"], raw) if native_transform else raw
+        actual = custom_transform(case["name"], raw) if custom_transform else raw
+        for repeat in range(ref.REPETITIONS):
+            (folder / f"native-{repeat}.bin").write_bytes(golden)
+            (folder / f"actual-{repeat}.bin").write_bytes(actual)
+        native["cases"].append({"name": case["name"], "output_sha256": [ref.digest(golden)] * 2})
+        ref.write_json(folder / "execution.json", {"status": "PASS", "runtime": "AscendCL ACLNN",
+            "op": "DFlashGroupQuantLinear", "cpu_fallback": False, "device_id": 0,
+            "input_readonly": True, "guards_intact": True, "repetitions": 2})
+    ref.write_json(root / "native-eager.json", native)
+
+
+def one_bit_error(name, raw):
+    return bytes([raw[0] ^ 1]) + raw[1:] if name == "group_nz_boundaries" else raw
+
+
 class ReferenceTests(unittest.TestCase):
     def test_nz_byte_permutation_against_physical_loop(self):
         q = [(n * 71 + k * 23) % 256 - 128 for n in range(ref.N) for k in range(ref.K)]
@@ -29,6 +56,36 @@ class ReferenceTests(unittest.TestCase):
         raw = struct.pack("<128H", *bits)
         expected = struct.pack("<128H", *(bits[n * 2 + g] for g in range(2) for n in range(64)))
         self.assertEqual(ref.scales_to_gn(raw), expected)
+        self.assertEqual(ref.scales_to_ng(expected), raw)
+        with self.assertRaises(ValueError):
+            ref.scales_to_ng(expected[:-1])
+
+    def test_gn_ng_mixup_reproduces_reported_native_failures(self):
+        # Receiver report after the ACLNN metadata fix: custom matches CPU on all six fixtures.
+        # Reinterpreting contiguous GN as NG reproduces every reported native
+        # mismatch count, error bound and first pair of FP16 bits on CPU.
+        observed = {
+            "group_nz_boundaries": (764, 0.08935546875, 2048, "0xab08", "0xacb0"),
+            "dense_signed_391": (1022, 2.21240234375, 30784, "0xbe65", "0xbcfc"),
+            "dense_signed_817": (1024, 2.126953125, 30230, "0x3ae3", "0x39be"),
+            "second_group_only": (763, 0.61962890625, 2048, "0x2840", "0x2660"),
+            "rounding_probe": (1023, 11.69140625, 35742, "0x3e0a", "0x40ca"),
+        }
+        for name, xraw, q, s_gn, _ in ref.cases():
+            with self.subTest(case=name):
+                correct = ref.cpu_reference(xraw, q, s_gn)
+                wrong = ref.cpu_reference(xraw, q, ref.scales_to_gn(s_gn))
+                delta = ref.compare(wrong, correct)
+                if name == "signed_zero":
+                    self.assertTrue(delta["bitwise_equal"])
+                else:
+                    self.assertEqual((delta["bit_mismatches"], delta["max_abs_error"], delta["max_ulp"],
+                                      delta["first_difference"]["expected_bits"],
+                                      delta["first_difference"]["actual_bits"]), observed[name])
+                # NG storage is re-viewed as NG by CANN, then per-group scale
+                # transpose creates the original GN bytes for its kernel.
+                fixed_gn = ref.scales_to_gn(ref.scales_to_ng(s_gn))
+                self.assertEqual(fixed_gn, s_gn)
 
     def test_exact_fixtures_match_independent_integer_dot(self):
         for name, xraw, q, scales_raw, exact in ref.cases():
@@ -94,6 +151,12 @@ class ReferenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ref.unpack_nz(bytes(ref.N * ref.K - 1))
 
+    def test_cpu_gate_keeps_rounding_probe_diagnostic(self):
+        self.assertEqual(ref.cpu_gate({"finite": True, "bitwise_equal": True}, True), "PASS")
+        self.assertEqual(ref.cpu_gate({"finite": True, "bitwise_equal": False}, True), "FAIL")
+        self.assertEqual(ref.cpu_gate({"finite": True, "bitwise_equal": False}, False), "DIAGNOSTIC_ONLY")
+        self.assertEqual(ref.cpu_gate({"finite": False, "bitwise_equal": True}, False), "FAIL")
+
     def test_fixture_hash_lock_and_missing_device_evidence(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
             root = Path(directory) / "data"
@@ -110,30 +173,60 @@ class ReferenceTests(unittest.TestCase):
                 ref.load_cases(root)
 
     def test_checker_rejects_wrong_custom_output_with_native_evidence(self):
-        # Synthetic records exercise reporting ONLY, never a device test.
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
             root = Path(directory) / "data"
-            ref.prepare(root)
-            manifest = ref.load_cases(root)
-            native = {"status": "PASS", "cpu_fallback": False, "group_size": 128, "inner_precise": 0,
-                      "manifest_sha256": ref.digest((root / "manifest.json").read_bytes()),
-                      "environment": {"device_id": 0}, "cases": []}
-            for case in manifest["cases"]:
-                folder = root / case["name"]
-                raw = (folder / "cpu.bin").read_bytes()
-                for repeat in range(ref.REPETITIONS):
-                    (folder / f"native-{repeat}.bin").write_bytes(raw)
-                    damaged = b"\x00\x7e" + raw[2:] if case["name"] == "rounding_probe" else raw
-                    (folder / f"actual-{repeat}.bin").write_bytes(damaged)
-                native["cases"].append({"name": case["name"], "output_sha256": [ref.digest(raw)] * 2})
-                ref.write_json(folder / "execution.json", {"status": "PASS", "runtime": "AscendCL ACLNN",
-                    "op": "DFlashGroupQuantLinear", "cpu_fallback": False, "device_id": 0,
-                    "input_readonly": True, "guards_intact": True, "repetitions": 2})
-            ref.write_json(root / "native-eager.json", native)
+            checker_fixture(root, custom_transform=lambda name, raw:
+                            b"\x00\x7e" + raw[2:] if name == "rounding_probe" else raw)
             self.assertFalse(ref.check(root))
             result = json.loads((root / "comparison.json").read_text())
             self.assertEqual(result["native_om_parity"], "NOT_RUN")
             self.assertEqual(result["cases"][-1]["status"], "FAIL")
+
+    def test_checker_identifies_bad_native_reference(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(directory) / "data"
+            checker_fixture(root, native_transform=one_bit_error)
+            self.assertFalse(ref.check(root))
+            result = json.loads((root / "comparison.json").read_text())
+            comparison = result["cases"][1]["comparisons"][0]
+            self.assertEqual(comparison["cpu"]["bit_mismatches"], 0)
+            self.assertEqual(comparison["native_vs_cpu"]["bit_mismatches"], 1)
+            self.assertEqual(comparison["custom_cpu_gate"], "PASS")
+            self.assertEqual(comparison["native_cpu_gate"], "FAIL")
+            self.assertEqual(comparison["failed_checks"], ["native_reference_vs_cpu", "custom_vs_native"])
+
+    def test_checker_rejects_shared_custom_native_error(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(directory) / "data"
+            checker_fixture(root, native_transform=one_bit_error, custom_transform=one_bit_error)
+            self.assertFalse(ref.check(root))
+            result = json.loads((root / "comparison.json").read_text())
+            comparison = result["cases"][1]["comparisons"][0]
+            self.assertEqual(comparison["native_eager"]["bit_mismatches"], 0)
+            self.assertEqual(comparison["failed_checks"], ["custom_vs_cpu", "native_reference_vs_cpu"])
+
+    def test_checker_allows_cpu_rounding_difference_only_for_diagnostic_case(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(directory) / "data"
+            def rounding_difference(name, raw):
+                return bytes([raw[0] ^ 1]) + raw[1:] if name == "rounding_probe" else raw
+            checker_fixture(root, native_transform=rounding_difference, custom_transform=rounding_difference)
+            self.assertTrue(ref.check(root))
+            result = json.loads((root / "comparison.json").read_text())
+            comparison = result["cases"][-1]["comparisons"][0]
+            self.assertEqual(comparison["native_cpu_gate"], "DIAGNOSTIC_ONLY")
+            self.assertEqual(comparison["native_eager"]["bit_mismatches"], 0)
+
+    def test_checker_rejects_old_native_scale_policy(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(directory) / "data"
+            checker_fixture(root)
+            report_path = root / "native-eager.json"
+            native = json.loads(report_path.read_text())
+            del native["reference_policy"]
+            ref.write_json(report_path, native)
+            with self.assertRaisesRegex(ValueError, "stale native reference"):
+                ref.check(root)
 
 
 if __name__ == "__main__":

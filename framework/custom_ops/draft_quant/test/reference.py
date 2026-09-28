@@ -14,11 +14,14 @@ import math
 from pathlib import Path
 import random
 import struct
+import sys
 
 M, K, N, GROUP = 16, 256, 64, 128
 NZ_SHAPE = (8, 4, 16, 32)
 REPETITIONS = 2
 ABI = "dflash-group-quant-linear-tiny-v1"
+NATIVE_POLICY = "production-ng-backed-scale-view-v1"
+REPO = Path(__file__).resolve().parents[4]
 
 
 def half(value):
@@ -62,6 +65,19 @@ def scales_to_gn(scales_ng):
         raise ValueError("expected FP16 [64,2] scale bytes")
     return b"".join(scales_ng[2 * (n * 2 + g):2 * (n * 2 + g + 1)]
                     for g in range(2) for n in range(N))
+
+
+def scales_to_ng(scales_gn):
+    """Restore production [N,G] storage, preserving every original FP16 bit.
+
+    The custom kernel consumes contiguous GN. Native WeightQuant with q.t()
+    instead receives the production GN *view* of contiguous NG storage. CANN
+    9.0's TensorContiguousProcess uses the weight transpose flag for scale too.
+    """
+    if len(scales_gn) != N * (K // GROUP) * 2:
+        raise ValueError("expected FP16 [2,64] scale bytes")
+    return b"".join(scales_gn[2 * (g * N + n):2 * (g * N + n + 1)]
+                    for n in range(N) for g in range(K // GROUP))
 
 
 def validate_inputs(x_raw, q, s_raw):
@@ -196,15 +212,33 @@ def compare(expected, actual):
                                  "actual_bits": f"0x{ab[first]:04x}"} if first is not None else None}
 
 
+def cpu_gate(difference, exact):
+    if not difference["finite"]:
+        return "FAIL"
+    if not exact:
+        return "DIAGNOSTIC_ONLY"
+    return "PASS" if difference["bitwise_equal"] else "FAIL"
+
+
 def native(root, device_id):
     manifest = load_cases(root)
     report = {"status": "RUNNING", "backend": "torch_npu native WeightQuant (eager)",
               "inner_precise": 0, "group_size": GROUP, "cpu_fallback": False,
+              "reference_policy": NATIVE_POLICY,
+              "entrypoint": "models.dflash_v1.weight_quant_matmul.weight_quant_linear",
+              "scale_storage_layout": "NG", "scale_view_shape": [K // GROUP, N],
+              "scale_view_stride": [1, K // GROUP],
               "manifest_sha256": digest((root / "manifest.json").read_bytes()), "cases": []}
     path = root / "native-eager.json"
     try:
         import torch
         import torch_npu
+        # Reuse exactly the same weight/scale view construction as the model.
+        # This changes only the standalone native oracle, never the model path.
+        sys.path.insert(0, str(REPO))
+        from models.dflash_v1.weight_quant_matmul import weight_quant_linear
+        report["entrypoint_sha256"] = digest(
+            (REPO / "models/dflash_v1/weight_quant_matmul.py").read_bytes())
         torch.npu.set_device(device_id)
         device = f"npu:{device_id}"
         report["environment"] = {"torch": str(torch.__version__), "torch_npu": str(torch_npu.__version__),
@@ -217,11 +251,19 @@ def native(root, device_id):
                                             dtype=dtype).reshape(shape).to(device)
                 x = tensor("x.bin", torch.float16, (M, K))
                 q = tensor("q_nk.bin", torch.int8, (N, K))
-                s = tensor("s_gn.bin", torch.float16, (K // GROUP, N))
-                outputs = []
+                # Reorder bytes on CPU, then transfer contiguous [N,G]. The
+                # production helper passes scales_ng.t(): logical GN, stride
+                # [1,G], backed by NG. Do NOT make that transposed view contiguous.
+                ng_raw = scales_to_ng((folder / "s_gn.bin").read_bytes())
+                scales_ng = torch.frombuffer(bytearray(ng_raw), dtype=torch.float16).reshape(
+                    N, K // GROUP).to(device)
+                scale_view = scales_ng.t()
+                if (tuple(scale_view.shape) != (K // GROUP, N) or
+                        tuple(scale_view.stride()) != (1, K // GROUP)):
+                    raise ValueError("native scale must be the production GN view of NG storage")
+                outputs, cpu_comparisons = [], []
                 for repeat in range(REPETITIONS):
-                    y = torch.ops.npu.npu_weight_quant_batchmatmul.default(
-                        x, q.t(), s, antiquant_group_size=GROUP, inner_precise=0)
+                    y = weight_quant_linear(x, q, scales_ng)
                     torch.npu.synchronize()
                     if y.dtype != torch.float16 or tuple(y.shape) != (M, N):
                         raise ValueError("native WeightQuant output ABI differs")
@@ -229,25 +271,40 @@ def native(root, device_id):
                     raw = struct.pack(f"<{len(bits)}h", *bits)
                     (folder / f"native-{repeat}.bin").write_bytes(raw)
                     outputs.append(digest(raw))
+                    difference = compare((folder / "cpu.bin").read_bytes(), raw)
+                    cpu_comparisons.append({"repeat": repeat, "difference": difference,
+                                            "status": cpu_gate(difference, case["cpu_exact"])})
+                repeat_drift = outputs[0] != outputs[1]
+                valid = not repeat_drift and all(c["status"] != "FAIL" for c in cpu_comparisons)
                 report["cases"].append({"name": case["name"], "output_sha256": outputs,
-                                        "repeat_drift": outputs[0] != outputs[1]})
-        report["status"] = "PASS" if all(not c["repeat_drift"] for c in report["cases"]) else "FAIL"
+                                        "repeat_drift": repeat_drift, "cpu_exact": case["cpu_exact"],
+                                        "cpu_comparisons": cpu_comparisons,
+                                        "status": "PASS" if valid else "FAIL"})
+                print(f"native reference {case['name']}: {'PASS' if valid else 'FAIL'} "
+                      f"native_vs_cpu bits={cpu_comparisons[0]['difference']['bit_mismatches']} "
+                      f"gate={cpu_comparisons[0]['status']}", flush=True)
+        report["status"] = "PASS" if all(c["status"] == "PASS" for c in report["cases"]) else "FAIL"
     except Exception as error:
         report.update(status="FAIL", error=f"{type(error).__name__}: {error}")
         raise
     finally:
         write_json(path, report)
+    return report["status"] == "PASS"
 
 
 def check(root):
     manifest = load_cases(root)
     native_report = json.loads((root / "native-eager.json").read_text())
+    if native_report.get("reference_policy") != NATIVE_POLICY:
+        raise ValueError("stale native reference: rerun native with the production NG-backed scale view")
     if (native_report.get("status") != "PASS" or native_report.get("cpu_fallback") is not False or
             native_report.get("group_size") != GROUP or native_report.get("inner_precise") != 0 or
             native_report.get("manifest_sha256") != digest((root / "manifest.json").read_bytes()) or
             [c["name"] for c in native_report["cases"]] != [c["name"] for c in manifest["cases"]]):
-        raise ValueError("native eager evidence missing, failed, or from different inputs")
+        raise ValueError("native reference execution/CPU self-check failed, or input evidence differs; "
+                         "inspect native-eager.json before diagnosing the custom kernel")
     report = {"abi": ABI, "status": "PASS", "scope": "tiny ACLNN correctness only",
+              "reference_policy": NATIVE_POLICY,
               "native_om_parity": "NOT_RUN", "full_draft_validation": "NOT_RUN", "performance": "NOT_RUN",
               "numerical_gate": "bitwise FP16; atol=0 rtol=0; nonfinite fails", "cases": []}
     for case, native_case in zip(manifest["cases"], native_report["cases"]):
@@ -265,21 +322,36 @@ def check(root):
             golden = (folder / f"native-{repeat}.bin").read_bytes()
             if digest(golden) != native_case["output_sha256"][repeat]:
                 raise ValueError("native output changed after execution")
-            cpu_diff = compare((folder / "cpu.bin").read_bytes(), actual)
+            cpu_raw = (folder / "cpu.bin").read_bytes()
+            cpu_diff = compare(cpu_raw, actual)
+            native_cpu_diff = compare(cpu_raw, golden)
             native_diff = compare(golden, actual)
+            custom_cpu_gate = cpu_gate(cpu_diff, case["cpu_exact"])
+            native_cpu_gate = cpu_gate(native_cpu_diff, case["cpu_exact"])
             passed = (native_diff["bitwise_equal"] and native_diff["finite"] and
-                      (not case["cpu_exact"] or (cpu_diff["bitwise_equal"] and cpu_diff["finite"])))
+                      custom_cpu_gate != "FAIL" and native_cpu_gate != "FAIL")
+            failures = []
+            if custom_cpu_gate == "FAIL": failures.append("custom_vs_cpu")
+            if native_cpu_gate == "FAIL": failures.append("native_reference_vs_cpu")
+            if not native_diff["finite"] or not native_diff["bitwise_equal"]:
+                failures.append("custom_vs_native")
             item["comparisons"].append({"repeat": repeat, "status": "PASS" if passed else "FAIL",
-                                         "cpu": cpu_diff, "native_eager": native_diff})
+                                         "cpu": cpu_diff, "native_eager": native_diff,
+                                         "native_vs_cpu": native_cpu_diff,
+                                         "custom_cpu_gate": custom_cpu_gate,
+                                         "native_cpu_gate": native_cpu_gate, "failed_checks": failures})
             outputs.append(digest(actual))
         item["repeat_drift"] = outputs[0] != outputs[1]
         item["status"] = "PASS" if not item["repeat_drift"] and all(
             c["status"] == "PASS" for c in item["comparisons"]) else "FAIL"
         report["cases"].append(item)
         if item["status"] != "PASS": report["status"] = "FAIL"
+        first = item["comparisons"][0]
         print(f"{case['name']}: {item['status']} "
-              f"native bits={item['comparisons'][0]['native_eager']['bit_mismatches']} "
-              f"ULP={item['comparisons'][0]['native_eager']['max_ulp']}", flush=True)
+              f"custom_vs_cpu bits={first['cpu']['bit_mismatches']} "
+              f"native_vs_cpu bits={first['native_vs_cpu']['bit_mismatches']} "
+              f"custom_vs_native bits={first['native_eager']['bit_mismatches']} "
+              f"ULP={first['native_eager']['max_ulp']}", flush=True)
     write_json(root / "comparison.json", report)
     print(f"{report['status']}: tiny only; native OM / full Draft / performance NOT_RUN")
     return report["status"] == "PASS"
@@ -292,7 +364,8 @@ def main():
     cli.add_argument("--device-id", type=int, default=0)
     args = cli.parse_args()
     if args.mode == "prepare": prepare(args.data_dir)
-    elif args.mode == "native": native(args.data_dir, args.device_id)
+    elif args.mode == "native":
+        if not native(args.data_dir, args.device_id): return 1
     elif not check(args.data_dir): return 1
     return 0
 
