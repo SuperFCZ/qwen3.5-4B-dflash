@@ -38,6 +38,30 @@ int main()
     assert(!draft_quant_contract::IsSupportedShape(16, 384, 64));
     assert(!draft_quant_contract::IsSupportedShape(16, 512, 80));
     assert(!draft_quant_contract::IsSupportedShape(16, -256, 64));
+
+    // Regression: K=256 uses IterateAll, so a returned baseK=256 is valid.
+    // Neither the dequantization group nor the caller's buffer size changes.
+    for (int64_t baseK : {16, 32, 64, 128, 256}) {
+        assert(draft_quant_contract::IsCompatibleCubePlan(256, {16, 64, 256, 16, 64, baseK}));
+    }
+    for (int64_t badK : {-16, 0, 129, 512}) {
+        assert(!draft_quant_contract::IsCompatibleCubePlan(256, {16, 64, 256, 16, 64, badK}));
+    }
+    // Keep all restrictions on the receiver's passing K=512/1024 path.
+    for (int64_t k : {512, 1024}) {
+        assert(draft_quant_contract::IsCompatibleCubePlan(k, {16, 64, 128, 16, 64, 128}));
+        assert(!draft_quant_contract::IsCompatibleCubePlan(k, {16, 64, 128, 16, 64, 256}));
+        assert(!draft_quant_contract::IsCompatibleCubePlan(k, {16, 64, 128, 16, 64, 64}));
+    }
+    for (int64_t k : {256, 512, 1024}) {
+        const int64_t tileK = draft_quant_contract::KTile(k);
+        assert(!draft_quant_contract::IsCompatibleCubePlan(k, {32, 64, tileK, 16, 64, 128}));
+        assert(!draft_quant_contract::IsCompatibleCubePlan(k, {16, 128, tileK, 16, 64, 128}));
+        assert(!draft_quant_contract::IsCompatibleCubePlan(k, {16, 64, tileK * 2, 16, 64, 128}));
+        assert(!draft_quant_contract::IsCompatibleCubePlan(k, {16, 64, tileK, 32, 64, 128}));
+        assert(!draft_quant_contract::IsCompatibleCubePlan(k, {16, 64, tileK, 16, 32, 128}));
+    }
+    assert(!draft_quant_contract::IsCompatibleCubePlan(384, {16, 64, 128, 16, 64, 128}));
     const Shape logical{{64, 256}};
     const Shape physical{{8, 4, 16, 32}};
 

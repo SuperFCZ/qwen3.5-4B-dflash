@@ -29,6 +29,29 @@ inline uint64_t UserUbBytes(int64_t k)
     return kColumnTile * tileK * 3 + (tileK / kGroupSize) * kColumnTile * 2;
 }
 
+struct CubePlan {
+    int64_t singleM, singleN, singleK;
+    int64_t baseM, baseN, baseK;
+};
+
+inline bool IsCompatibleCubePlan(int64_t globalK, const CubePlan &plan)
+{
+    if (!IsSupportedShape(kRows, globalK, kColumnTile)) return false;
+    const int64_t tileK = KTile(globalK);
+    // The owner and the local B allocation always describe exactly 16x64xtileK.
+    if (plan.singleM != kRows || plan.singleN != kColumnTile || plan.singleK != tileK ||
+        plan.baseM != kRows || plan.baseN != kColumnTile) return false;
+
+    if (tileK == globalK) {
+        // IterateAll owns the entire K reduction. CANN's final Cube baseK can
+        // differ from SetFixSplit's requested 128; in particular 256 is valid.
+        // Quantization groups were already applied while building FP16 B.
+        return plan.baseK > 0 && plan.baseK <= tileK && plan.baseK % 16 == 0;
+    }
+    // Keep the already-validated streamed partial-sum contract unchanged.
+    return plan.baseK == kGroupSize;
+}
+
 template <typename Shape>
 bool IsShape(const Shape *shape, std::initializer_list<int64_t> dims)
 {

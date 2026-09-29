@@ -5,8 +5,10 @@
 不修改 Qwen/DFlash 模型、导出或运行主流程；真实 gate/up/down 属于下一阶段。
 
 原版 tiny `(M,K,N)=(16,256,64)` 已由用户在服务器确认全 PASS，包括修正 scale 视图后的
-native eager 比较。本次 A1 是新的候选实现：本机没有 NPU，**新增形状的 CANN 编译、
-NPU 数值与原生 OM 验收仍待服务器执行**。CPU 测试不能替代这些验收，也不提供性能成绩。
+native eager 比较。A1 最新服务器反馈中，K=512/1024 的六种形状通过，K=256 的三种形状
+在 Host Tiling 的过严检查处被拒绝。本次按执行路径修正了该检查，**修复后的 K=256 仍待
+服务器重跑，整个 A1 尚未验收全 PASS**。本机没有 NPU；CPU 测试不能替代设备或原生 OM
+验收，也不提供性能成绩。
 
 ## 接口与范围
 
@@ -55,9 +57,19 @@ host 同时兼容 GE 的逻辑 origin ND 描述与 ACLNN 的物理 origin NZ 描
   每次 Iterate 后等待所有流水，才能复用 UB；K tile 之间没有
   `GetTensorC()` 或 `End()`。下一个 N tile 重新初始化累加器，最后统一 `End()`。
 
-Host 固定 `baseM=singleCoreM=16`、`baseN=singleCoreN=64`，满足 partial-sum 的单输出块
-约束，baseK=128。`SetShape(16,64,tileK)` 与 `SetOrgShape(16,N,K,tileK)` 分别声明
-当前计算块、全局 A/C stride 和局部 B stride；返回的 tiling 不符合这些要求则拒绝启动。
+Host 固定 `baseM=singleCoreM=16`、`baseN=singleCoreN=64` 和 `singleCoreK=tileK`。
+`SetShape(16,64,tileK)` 与 `SetOrgShape(16,N,K,tileK)` 分别声明当前计算块、全局 A/C
+stride 和局部 B stride。baseK 按实际执行路径检查：K=256 的 `IterateAll()` 允许 SDK 返回
+不超过 256 的正数、16 对齐 baseK（包括 256）；K=512/1024 的 partial-sum 路径继续严格
+要求 baseK=128。量化 group_size=128 与 Cube 内部 baseK 是不同概念，两个 group 的 scale
+在送入 Cube 前已分别应用。
+
+[CANN v9.0.0 单核 tiling 实现](https://gitcode.com/cann/asc-devkit/blob/v9.0.0/impl/adv_api/tiling/matmul/matmul_tiling_algorithm.cpp)
+的 `GetL0FactorsCand()` 会按 K 形状与片上容量选择 K 候选，最终 baseK 不能仅由
+`SetFixSplit(16,64,128)` 的参数推定。旧代码对所有分支都要求 baseK=128，误拒绝整段 K
+路径的合法结果，报 `tiling violates the single-output-block accumulation contract`。
+现在仍拒绝不匹配的 singleCore 范围和 M/N 分块；拒绝日志会同时打印路径、期望值及实际
+singleCore/base M/N/K，便于直接定位差异，不修改 SDK 的返回 tiling。
 
 依据官方 v9.0.0 的 [MatmulImplBase](https://gitcode.com/cann/asc-devkit/blob/v9.0.0/impl/adv_api/detail/matmul/matmul_impl_base.h)
 和 [Norm scheduler](https://gitcode.com/cann/asc-devkit/blob/v9.0.0/impl/adv_api/detail/matmul/scheduler/base/scheduler_norm.h)：

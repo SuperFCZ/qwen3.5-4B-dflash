@@ -149,12 +149,23 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
                      static_cast<long long>(k), static_cast<long long>(n), static_cast<long long>(tileK));
         return ge::GRAPH_FAILED;
     }
-    // Iterate(enPartialSum) requires exactly one baseM x baseN output block.
+    // Whole-K IterateAll and streamed Iterate(enPartialSum) have different
+    // baseK contracts; group_size is not the Cube's internal reduction tile.
     auto &cube = tiling.cubeTilingData;  // CANN 9.0 getters are non-const.
-    if (cube.get_baseM() != kM || cube.get_baseN() != kTileN ||
-        cube.get_singleCoreM() != kM || cube.get_singleCoreN() != kTileN ||
-        cube.get_singleCoreK() != tileK || cube.get_baseK() != kGroup) {
-        std::fprintf(stderr, "DFlashGroupQuantLinear: tiling violates the single-output-block accumulation contract\n");
+    const draft_quant_contract::CubePlan plan{
+        cube.get_singleCoreM(), cube.get_singleCoreN(), cube.get_singleCoreK(),
+        cube.get_baseM(), cube.get_baseN(), cube.get_baseK()};
+    if (!draft_quant_contract::IsCompatibleCubePlan(k, plan)) {
+        std::fprintf(stderr, "DFlashGroupQuantLinear: incompatible %s tiling for K=%lld N=%lld; "
+                             "singleCore M/N/K actual=%lld/%lld/%lld expected=16/64/%lld; "
+                             "base M/N/K actual=%lld/%lld/%lld; expected M/N=16/64, baseK %s\n",
+                     tileK == k ? "whole-K IterateAll" : "streamed partial-sum",
+                     static_cast<long long>(k), static_cast<long long>(n),
+                     static_cast<long long>(plan.singleM), static_cast<long long>(plan.singleN),
+                     static_cast<long long>(plan.singleK), static_cast<long long>(tileK),
+                     static_cast<long long>(plan.baseM), static_cast<long long>(plan.baseN),
+                     static_cast<long long>(plan.baseK),
+                     tileK == k ? "must be positive, 16-aligned and <=256" : "must equal 128");
         return ge::GRAPH_FAILED;
     }
     tiling.set_globalK(k);
