@@ -97,8 +97,20 @@ DFLASH_SUITE=tiny bash framework/custom_ops/draft_quant/run_server.sh
 
 脚本执行 msopgen、覆盖手写源码、构建、安装独立 OPP、构建 runner，再运行 A1 suite。
 本次 tiling 数据结构和 runner 都有更新，**须重新构建 OPP 与 runner**，不要混用旧安装包。
-每次使用独立 `.build/a1.*`、`.runs/a1.*`（tiny 模式使用 `tiny.*`），不删除旧结果，
+每次使用独立 `.build/a1-*`、`.runs/a1-*`（tiny 模式使用 `tiny-*`），不删除旧结果，
 不替换模型 OPP，产物已忽略且不进入 Git。
+
+**CANN 9.0 路径约束：**
+[NnopbaseGetOpJsonPath](https://gitcode.com/cann/opbase/blob/v9.0.0/src/nnopbase/individual_op/executor/indv_bininfo.cpp)
+使用完整路径中第一个 `.o` 推导 JSON，而非只替换文件后缀。已出现的
+`.build/a1.ovznlDEL/.../DFlashGroupQuantLinear_*.o` 会被截断成 `.build/a1.json`，
+使 `GetWorkspaceSize` 在 kernel 注册阶段报 `161002 / NnopbaseReadJsonConfig`，尚未执行
+Host Tiling。构建、安装成功不能排除这一文件查找错误。
+
+脚本使用连字符分隔随机后缀，并在编译前执行 `path_preflight`；父目录或符号链接目标中
+的 `.o` / `.json` 同样会检查。安装后 `installed_opp_preflight` 核对本算子的实际 `.o`、
+SDK 将推导的 JSON 路径、JSON 可解析性及文件 SHA256。检查失败则停止，不反复运行九种
+形状。检查仅验证文件路径和 JSON，不改 SDK、生成的 metadata 或 kernel 数值逻辑。
 
 测试入口可单独使用：
 
@@ -117,6 +129,8 @@ C++ runner 用法为 `dflash_group_quant_linear_test DEVICE_ID CASE_DIR [M K N]`
 失败后保留其阶段和日志，继续检查其他形状，任意失败都会让最终进程返回非零。
 
 - `server.log` / `source-commit.txt`：构建、tiling、执行日志和源码提交。
+- `path-preflight.json` / `opp-preflight.json`：路径前缀及已安装 object/JSON 配对检查；
+  明确标记 NPU 为 `NOT_RUN`。
 - 每个 workload 的 `manifest.json`：ABI、形状、tile、NZ/scale 布局和输入/golden SHA256。
 - 每个 case 的 `runner.log`、`execution.json`、`actual-{0,1}.bin`：设备结果、形状身份、
   workspace、输入只读和输出/workspace 哨兵检查。

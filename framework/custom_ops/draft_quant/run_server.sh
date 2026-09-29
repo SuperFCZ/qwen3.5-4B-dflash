@@ -31,8 +31,10 @@ fi
 # Each invocation owns a fresh build, isolated OPP and evidence directory.
 # Prior packages, results and the model OPP installation are never overwritten.
 mkdir -p "$here/.build" "$here/.runs"
-build_root=$(mktemp -d "$here/.build/$suite.XXXXXXXX")
-run_root=$(mktemp -d "$here/.runs/$suite.XXXXXXXX")
+# CANN 9.0 derives JSON from the FIRST '.o' in an object path. A directory
+# such as a1.ovznlDEL truncates it to a1.json. Keep random suffixes after '-'.
+build_root=$(mktemp -d "$here/.build/${suite}-XXXXXXXX")
+run_root=$(mktemp -d "$here/.runs/${suite}-XXXXXXXX")
 op_project="$build_root/CustomOp"
 install_dir="$build_root/opp"
 data_dir="$run_root/data"
@@ -43,6 +45,8 @@ echo "Target: Ascend310P3 / CANN 9.0.0; using $cann_root"
 echo "Build: $build_root"
 echo "Evidence: $run_root"
 git -C "$here" rev-parse HEAD > "$run_root/source-commit.txt"
+phase=path_preflight
+"$python_bin" "$here/test/opp_preflight.py" --root "$build_root" --report "$run_root/path-preflight.json"
 
 phase=msopgen
 msopgen gen -i "$here/DFlashGroupQuantLinear.json" -c ai_core-Ascend310P3 -lan cpp -out "$op_project"
@@ -81,6 +85,8 @@ if [[ ! -f "$vendor_api/include/aclnn_d_flash_group_quant_linear.h" ]]; then
     echo "Generated ACLNN header missing under $vendor_api/include" >&2
     exit 1
 fi
+phase=installed_opp_preflight
+"$python_bin" "$here/test/opp_preflight.py" --install-root "$install_dir" --report "$run_root/opp-preflight.json"
 export LD_LIBRARY_PATH="$vendor_api/lib:${LD_LIBRARY_PATH:-}"
 phase=build_runner
 cmake -S "$here/test" -B "$build_root/test" -DCANN_ROOT="$cann_root" -DASCEND_OPP_PATH="$install_dir"
