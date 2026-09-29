@@ -20,6 +20,20 @@ from a2_common import (ABI, CASE_NAMES, REPO, SHAPES, record, replay_context_row
 sys.path[:0] = [str(REPO / "framework/python"), str(REPO)]
 
 
+def require_draft_row_update(torch_module):
+    """Check the production overload's registration; replay tests NPU execution."""
+    message = ("A2 capture requires callable torch.ops.npu.npu_scatter_nd_update.default "
+               "for the production functional whole-row cache update. Load the receiver "
+               "torch_npu extension that registers this operator; no fallback is used.")
+    try:
+        operation = torch_module.ops.npu.npu_scatter_nd_update.default
+    except AttributeError as error:
+        raise RuntimeError(message) from error
+    if not callable(operation):
+        raise RuntimeError(message)
+    return operation
+
+
 def frozen_inputs(report_path, config, feature_layers):
     import numpy as np
     report_path = report_path.resolve()
@@ -132,6 +146,7 @@ def capture(args):
         device_name = torch.npu.get_device_name(args.device_id)
         if "310P" not in device_name.upper():
             raise ValueError(f"A2 expects Ascend 310P, got {device_name}")
+        row_update = require_draft_row_update(torch)
         ops = AirDFlashOps(quant_matmul_backend="weight_quant")
         draft = load_quantized_draft(DFlashDraftModel, args.draft_dir, variant="w8a16", ops=ops,
                                      device=device, dtype=torch.float16)
@@ -154,7 +169,7 @@ def capture(args):
 
         # The final down hook exits before the vocabulary head is touched.
         graph = DraftGraph(draft, FrozenEmbedding(), torch.nn.Identity(),
-                           consume_source=True, feature_layers=layers).eval()
+                           row_update=row_update, consume_source=True, feature_layers=layers).eval()
         manifest.update(checkpoint=draft.draft_quantization_audit, source=source,
                         embedding=embedding_source,
                         environment={"torch": str(torch.__version__), "torch_npu": str(torch_npu.__version__),
