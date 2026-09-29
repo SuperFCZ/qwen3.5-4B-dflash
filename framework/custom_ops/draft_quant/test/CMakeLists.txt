@@ -21,3 +21,6 @@ foreach(library ASCENDCL_LIBRARY CUST_OPAPI_LIBRARY ACL_OP_COMPILER_LIBRARY NNOP
 endforeach()
 target_link_libraries(dflash_group_quant_linear_test PRIVATE "${ASCENDCL_LIBRARY}" "${CUST_OPAPI_LIBRARY}"
                       "${ACL_OP_COMPILER_LIBRARY}" "${NNOPBASE_LIBRARY}")
+add_executable(dflash_native_om_test native_om.cpp)
+target_include_directories(dflash_native_om_test PRIVATE "${CANN_ROOT}/include")
+target_link_libraries(dflash_native_om_test PRIVATE "${ASCENDCL_LIBRARY}")

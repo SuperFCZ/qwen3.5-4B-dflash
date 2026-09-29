@@ -91,8 +91,9 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
         !ValidWeightInput(context, n, k) ||
         !ValidInput(context, 2, ge::DT_FLOAT16, ge::FORMAT_ND,
                     {k / kGroup, n}, {k / kGroup, n})) {
-        std::fprintf(stderr, "DFlashGroupQuantLinear A1: requires M=16 K in {256,512,1024} "
-                             "N in {64,128,256}, INT8 NZ storage=[K/32,N/16,16,32], "
+        std::fprintf(stderr, "DFlashGroupQuantLinear: requires M=16 with A1 K={256,512,1024} "
+                             "N={64,128,256} or A2 (K,N)={(2560,19456),(9728,2560)}, "
+                             "INT8 NZ storage=[K/32,N/16,16,32], "
                              "origin=ND [N,K] (GE) or physical NZ (ACLNN), FP16 GN=[K/128,N]; "
                              "formats ND=%d NZ=%d, dtypes FP16=%d INT8=%d\n",
                      static_cast<int>(ge::FORMAT_ND), static_cast<int>(ge::FORMAT_FRACTAL_NZ),

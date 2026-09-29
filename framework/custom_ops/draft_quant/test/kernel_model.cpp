@@ -25,9 +25,10 @@ static void Check(uint32_t k, uint32_t n, int pattern)
         for (uint32_t c = 0; c < n; ++c) scales[g * n + c] = static_cast<half>((1 + (g * 5 + c) % 13) / 64.0f);
     }
     for (uint32_t row = 0; row < m; ++row) {
-        if (pattern == 0) {
-            const uint32_t group = row % (k / 128);
-            const uint32_t pos = group * 128 + (row / (k / 128) % 2 ? 127 : 0);
+        if (pattern == 0 || pattern == 3) {
+            const uint32_t group = pattern == 3 ? (row == 15 ? k / 128 - 1 : row * (k / 128) / 16)
+                                                : row % (k / 128);
+            const uint32_t pos = group * 128 + ((pattern == 3 ? row : row / (k / 128)) % 2 ? 127 : 0);
             x[row * k + pos] = static_cast<half>((row % 2 ? -1.0f : 1.0f) / 128);
         } else if (pattern == 1) {
             for (uint32_t i = 0; i < k; ++i) x[row * k + i] = static_cast<half>((i + row) % 3 ? 1.0f / 128 : -1.0f / 128);
@@ -66,9 +67,11 @@ static void Check(uint32_t k, uint32_t n, int pattern)
     assert(cpuMetrics.partials == (n / 64) * (k / tileK - 1));
     assert(cpuMetrics.outputs == n / 64 && cpuMetrics.stores == m * n && cpuMetrics.ends == 1);
     for (uint32_t row = 0; row < m; ++row) {
+        std::vector<uint32_t> nonzero;
+        for (uint32_t i = 0; i < k; ++i) if (x[row * k + i] != 0) nonzero.push_back(i);
         for (uint32_t c = 0; c < n; ++c) {
             double sum = 0;
-            for (uint32_t i = 0; i < k; ++i) {
+            for (uint32_t i : nonzero) {
                 const half w = static_cast<half>(static_cast<float>(q[c * k + i]) *
                                                 static_cast<float>(scales[(i / 128) * n + c]));
                 sum += static_cast<double>(x[row * k + i]) * static_cast<double>(w);
@@ -83,5 +86,7 @@ int main()
     for (uint32_t k : {256U, 512U, 1024U})
         for (uint32_t n : {64U, 128U, 256U})
             for (int pattern = 0; pattern < 3; ++pattern) Check(k, n, pattern);
-    std::cout << "CPU kernel model: 27 indexing/accumulation cases passed; NPU NOT_RUN\n";
+    Check(2560, 19456, 3);
+    Check(9728, 2560, 3);
+    std::cout << "CPU kernel model: 27 A1 + 2 full-shape sparse A2 cases passed; NPU NOT_RUN\n";
 }

@@ -7,91 +7,13 @@
 #include <string>
 #include <vector>
 
-#include "acl/acl.h"
+#include "runner_common.h"
 #include "aclnn_d_flash_group_quant_linear.h"
 #include "../op_host/d_flash_group_quant_linear_contract.h"
 
 namespace {
 constexpr int kRepetitions = 2;
-constexpr size_t kGuard = 512;  // retain device pointer alignment after the prefix
-constexpr uint8_t kCanary = 0xA5;
-
-template <typename T>
-void Check(T result, const char *action)
-{
-    if (result != ACL_SUCCESS) {
-        const char *recent = aclGetRecentErrMsg();
-        throw std::runtime_error(std::string(action) + " failed: " + std::to_string(result) +
-                                 "; aclGetRecentErrMsg: " + (recent != nullptr ? recent : "<none>"));
-    }
-}
-
-std::vector<uint8_t> ReadBytes(const std::string &path, size_t count)
-{
-    std::vector<uint8_t> result(count);
-    std::ifstream file(path, std::ios::binary);
-    if (!file.read(reinterpret_cast<char *>(result.data()), count) ||
-        file.peek() != std::char_traits<char>::eof()) {
-        throw std::runtime_error("input file has wrong size: " + path);
-    }
-    return result;
-}
-
-void WriteBytes(const std::string &path, const std::vector<uint8_t> &bytes)
-{
-    std::ofstream file(path, std::ios::binary);
-    file.write(reinterpret_cast<const char *>(bytes.data()), bytes.size());
-    if (!file) throw std::runtime_error("cannot write: " + path);
-}
-
-struct GuardedBuffer {
-    void *allocation = nullptr;
-    void *data = nullptr;
-    size_t bytes = 0;
-
-    void Release()
-    {
-        if (allocation != nullptr) aclrtFree(allocation);
-        allocation = data = nullptr;
-        bytes = 0;
-    }
-
-    void Allocate(size_t size)
-    {
-        Release();
-        bytes = size;
-        Check(aclrtMalloc(&allocation, bytes + 2 * kGuard, ACL_MEM_MALLOC_HUGE_FIRST), "aclrtMalloc");
-        data = static_cast<uint8_t *>(allocation) + kGuard;
-        Check(aclrtMemset(allocation, bytes + 2 * kGuard, kCanary, bytes + 2 * kGuard), "init guards");
-    }
-
-    void CopyIn(const std::vector<uint8_t> &host)
-    {
-        if (host.size() != bytes) throw std::runtime_error("copy input size differs");
-        Check(aclrtMemcpy(data, bytes, host.data(), bytes, ACL_MEMCPY_HOST_TO_DEVICE), "copy input");
-    }
-
-    std::vector<uint8_t> CopyOut() const
-    {
-        std::vector<uint8_t> host(bytes);
-        Check(aclrtMemcpy(host.data(), bytes, data, bytes, ACL_MEMCPY_DEVICE_TO_HOST), "copy output");
-        return host;
-    }
-
-    void CheckGuards() const
-    {
-        if (allocation == nullptr) return;
-        std::vector<uint8_t> before(kGuard), after(kGuard);
-        Check(aclrtMemcpy(before.data(), kGuard, allocation, kGuard, ACL_MEMCPY_DEVICE_TO_HOST), "read prefix");
-        Check(aclrtMemcpy(after.data(), kGuard, static_cast<uint8_t *>(data) + bytes,
-                          kGuard, ACL_MEMCPY_DEVICE_TO_HOST), "read suffix");
-        const auto intact = [](uint8_t value) { return value == kCanary; };
-        if (!std::all_of(before.begin(), before.end(), intact) ||
-            !std::all_of(after.begin(), after.end(), intact)) {
-            throw std::runtime_error("device buffer guard overwritten");
-        }
-    }
-};
+using namespace draft_quant_test;
 
 struct DeviceTensor {
     GuardedBuffer buffer;
@@ -162,17 +84,25 @@ int main(int argc, char **argv)
 {
     std::string dataDir;
     try {
-        if (argc != 3 && argc != 6) {
-            throw std::runtime_error("usage: dflash_group_quant_linear_test DEVICE_ID CASE_DIR [M K N]");
+        if (argc != 3 && argc != 6 && argc != 8) {
+            throw std::runtime_error("usage: dflash_group_quant_linear_test DEVICE_ID CASE_DIR [M K N [WARMUP REPETITIONS]]");
         }
         dataDir = argv[2];
         // Invalidate previous evidence even when dimension validation fails.
         std::ofstream(dataDir + "/execution.json") << "{\"status\":\"RUNNING\"}\n";
-        const int64_t kM = argc == 6 ? ParseDimension(argv[3]) : 16;
-        const int64_t kK = argc == 6 ? ParseDimension(argv[4]) : 256;
-        const int64_t kN = argc == 6 ? ParseDimension(argv[5]) : 64;
+        const int64_t kM = argc >= 6 ? ParseDimension(argv[3]) : 16;
+        const int64_t kK = argc >= 6 ? ParseDimension(argv[4]) : 256;
+        const int64_t kN = argc >= 6 ? ParseDimension(argv[5]) : 64;
         if (!draft_quant_contract::IsSupportedShape(kM, kK, kN)) {
-            throw std::runtime_error("A1 requires M16 K256/512/1024 N64/128/256");
+            throw std::runtime_error("unsupported A1/A2 shape");
+        }
+        Timing timing;
+        if (argc == 8) {
+            const auto warmup = ParseDimension(argv[6]), repetitions = ParseDimension(argv[7]);
+            if (warmup < 3 || warmup > 100 || repetitions < 10 || repetitions > 1000)
+                throw std::runtime_error("timing requires 3..100 warmups and 10..1000 repetitions");
+            timing.warmup = static_cast<int>(warmup);
+            timing.repetitions = static_cast<int>(repetitions);
         }
         auto x = ReadBytes(dataDir + "/x.bin", kM * kK * 2);
         auto w = ReadBytes(dataDir + "/w_nz.bin", kN * kK);
@@ -190,26 +120,38 @@ int main(int argc, char **argv)
         MakeTensor(r.y, {kM, kN}, {kM, kN}, ACL_FLOAT16, ACL_FORMAT_ND, kM * kN * 2);
 
         uint64_t peakWorkspace = 0;
-        for (int repeat = 0; repeat < kRepetitions; ++repeat) {
+        std::vector<uint8_t> firstOutput;
+        for (int repeat = 0; repeat < kRepetitions + timing.warmup + timing.repetitions; ++repeat) {
             // Different FP16 NaN poison on each call exposes unwritten output.
-            Check(aclrtMemset(r.y.buffer.data, r.y.buffer.bytes, 0x7F + repeat * 128,
+            Check(aclrtMemset(r.y.buffer.data, r.y.buffer.bytes, 0x7F + (repeat % 2) * 128,
                               r.y.buffer.bytes), "poison output");
             uint64_t workspaceBytes = 0;
             aclOpExecutor *executor = nullptr;
+            const auto begin = Clock::now();
             Check(aclnnDFlashGroupQuantLinearGetWorkspaceSize(r.x.desc, r.w.desc, r.s.desc, r.y.desc,
                                                               &workspaceBytes, &executor),
                   "aclnnDFlashGroupQuantLinearGetWorkspaceSize");
             if (workspaceBytes > 0 && r.workspace.bytes != workspaceBytes) r.workspace.Allocate(workspaceBytes);
             peakWorkspace = std::max(peakWorkspace, workspaceBytes);
+            const auto prepared = Clock::now();
             Check(aclnnDFlashGroupQuantLinear(r.workspace.data, workspaceBytes, executor, r.stream),
                   "aclnnDFlashGroupQuantLinear");
             Check(aclrtSynchronizeStream(r.stream), "aclrtSynchronizeStream");
+            const auto completed = Clock::now();
+            if (repeat >= kRepetitions + timing.warmup) {
+                timing.prepare.push_back(Milliseconds(begin, prepared));
+                timing.execute.push_back(Milliseconds(prepared, completed));
+            }
             r.x.buffer.CheckGuards(); r.w.buffer.CheckGuards(); r.s.buffer.CheckGuards();
             r.y.buffer.CheckGuards(); r.workspace.CheckGuards();
             if (r.x.buffer.CopyOut() != x || r.w.buffer.CopyOut() != w || r.s.buffer.CopyOut() != s) {
                 throw std::runtime_error("read-only input changed");
             }
-            WriteBytes(dataDir + "/actual-" + std::to_string(repeat) + ".bin", r.y.buffer.CopyOut());
+            const auto actual = r.y.buffer.CopyOut();
+            if (repeat == 0) firstOutput = actual;
+            if (actual != firstOutput) throw std::runtime_error("custom output repeat drift");
+            if (repeat < kRepetitions)
+                WriteBytes(dataDir + "/actual-" + std::to_string(repeat) + ".bin", actual);
         }
         std::ofstream report(dataDir + "/execution.json");
         report << "{\"status\":\"PASS\",\"runtime\":\"AscendCL ACLNN\","
@@ -217,9 +159,14 @@ int main(int argc, char **argv)
                   "\"input_readonly\":true,\"guards_intact\":true,\"repetitions\":" << kRepetitions <<
                   ",\"m\":" << kM << ",\"k\":" << kK << ",\"n\":" << kN <<
                   ",\"tile_n\":64,\"tile_k\":" << draft_quant_contract::KTile(kK) <<
-                  ",\"device_id\":" << r.deviceId << ",\"workspace_bytes\":" << peakWorkspace << "}\n";
+                  ",\"device_id\":" << r.deviceId << ",\"workspace_bytes\":" << peakWorkspace
+                  << ",\"tracked_device_allocation_bytes\":"
+                  << (x.size() + w.size() + s.size() + kM * kN * 2 + peakWorkspace +
+                      (4 + (peakWorkspace ? 1 : 0)) * 2 * kGuard);
+        timing.Write(report);
+        report << "}\n";
         if (!report) throw std::runtime_error("cannot write execution report");
-        std::cout << "ACLNN A1 execution completed; M=" << kM << " K=" << kK << " N=" << kN
+        std::cout << "ACLNN execution completed; M=" << kM << " K=" << kK << " N=" << kN
                   << "; workspace=" << peakWorkspace
                   << " bytes, guards/inputs intact; numerical comparison follows\n";
         return EXIT_SUCCESS;

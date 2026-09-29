@@ -1,20 +1,22 @@
-# DFlashGroupQuantLinear A1：N/K 分块正确性
+# DFlashGroupQuantLinear：A1 分块正确性与 A2 真实投影
 
 目标为 Ascend 310P3 / CANN 9.0.0。A1 固定 M=16、group_size=128，支持
 **K=256/512/1024 × N=64/128/256，共九种形状**。实现、注册、构建及测试都在本目录，
-不修改 Qwen/DFlash 模型、导出或运行主流程；真实 gate/up/down 属于下一阶段。
+不修改 Qwen/DFlash 模型、导出或运行主流程。A2 新增真实 gate/up/down 的两个固定形状；
+真实数据采集、原生 OM 编译与运行命令见 **[A2.md](A2.md)**。
 
 原版 tiny `(M,K,N)=(16,256,64)` 已由用户在服务器确认全 PASS，包括修正 scale 视图后的
-native eager 比较。A1 最新服务器反馈中，K=512/1024 的六种形状通过，K=256 的三种形状
-在 Host Tiling 的过严检查处被拒绝。本次按执行路径修正了该检查，**修复后的 K=256 仍待
-服务器重跑，整个 A1 尚未验收全 PASS**。本机没有 NPU；CPU 测试不能替代设备或原生 OM
-验收，也不提供性能成绩。
+native eager 比较。2026-09-29 用户服务器反馈 **`PASS: 9 a1 workloads`**，证据目录为
+`.runs/a1-3Sxqrl3r/data/suite.json`。A1 已通过其合成数据验收；rounding probe 中 CPU 的
+1 bit 差异是诊断项，custom 与 native eager 仍逐位一致。**A2 尚待服务器编译/运行。**
+本机没有 NPU；CPU 测试不能替代设备或原生 OM 验收，也不提供性能成绩。
 
 ## 接口与范围
 
 GE 类型仍为 `DFlashGroupQuantLinear`，ACLNN 调用签名不变：
 `aclnnDFlashGroupQuantLinearGetWorkspaceSize(x, w_nz, s, y, ...)`，随后执行
-`aclnnDFlashGroupQuantLinear(...)`。Host 从 X 和 S 读取 K/N，只接受上述固定形状集合；
+`aclnnDFlashGroupQuantLinear(...)`。Host 从 X 和 S 读取 K/N，只接受 A1 的九种形状，
+以及 A2 的 `(K,N)=(2560,19456)/(9728,2560)`；
 不支持动态未知维度、M 的其他档位或不对齐尾块。
 
 | 张量 | 模型逻辑 / GE origin shape | 物理 shape | dtype / format |
@@ -41,8 +43,11 @@ host 同时兼容 GE 的逻辑 origin ND 描述与 ACLNN 的物理 origin NZ 描
 | 256 | 64 | 256 | 1 | 49,408 |
 | 512 | 64 | 128 | 4 | 24,704 |
 | 1024 | 64 | 128 | 8 | 24,704 |
+| 2560（gate/up） | 64 | 128 | 20 | 24,704 |
+| 9728（down） | 64 | 128 | 76 | 24,704 |
 
-一个核顺序处理 1/2/4 个 N tile。每个 tile 独占 16×64 的输出，完整归约所有 K。
+一个核顺序处理 N/64 个 N tile：A1 为 1/2/4 个，A2 gate/up 为 304 个、down 为 40 个。
+每个 tile 独占 16×64 的输出，完整归约所有 K。
 这一阶段不做多核分工、预取、双缓冲或性能调优。
 
 - **搬入：**按全局 NZ 的 K32 plane 读取当前 64 列，plane 间距使用全局 N；
@@ -50,7 +55,7 @@ host 同时兼容 GE 的逻辑 origin ND 描述与 ACLNN 的物理 origin NZ 描
 - **反量化：**signed INT8→FP16，再按各 group 的 FP16 scale 相乘，得到片上的
   ND `[64,tileK]` 权重。权重服务全部 16 行，不写回 GM。
 - **K=256：**保留已验证的 `IterateAll()` 整段 K 路径，仅增加 N tile 地址偏移。
-- **K=512/1024：**每个 tile 重新 `SetTensorA/SetTensorB`，第一次 `Iterate(false)`
+- **K>256：**每个 tile 重新 `SetTensorA/SetTensorB`，第一次 `Iterate(false)`
   初始化 Cube 累加器，后续 `Iterate(true)` 累加至同一个 FP32 L0C。
   全部 K 完成后才 `GetTensorC()`，只执行一次最终 FP16 输出舍入。
 - **生命周期：**DMA 后显式等待 MTE2→Scalar/Vector 事件，分别保护 scale 标量读取与 q Cast。
@@ -188,8 +193,9 @@ bash -n framework/custom_ops/draft_quant/run_server.sh
 Python 测试仅依赖标准库，覆盖九种形状的布局、scale 位型、边界、相消 oracle、输出尺寸
 和形状身份。另用本地 C++17 编译器（kernel 模型需支持 `_Float16`）测试共享 host 契约，以及在 CPU API 模型下执行实际
 kernel 源码的 27 组索引/累加案例，检查缓冲边界、输入只读、全局 stride、调用次序和结果。
-CPU 模型不模拟设备流水、L1/L0 物理行为，也不验证 CANN 编译或硬件数值。
+CPU 模型还执行两个真实 A2 尺寸的稀疏输入，覆盖所有 N tile、全局 stride 和最后一个
+K group。模型不模拟设备流水、L1/L0 物理行为，也不验证 CANN 编译或硬件数值。
 
 A1 结果只验收本页的合成形状。报告中原生 OM、真实模型投影、完整 Draft 和性能仍为
-`NOT_RUN`。A2 再扩真实 gate/up/down 权重与激活；后续还需 M32/M64/M80、图导出以及
+`NOT_RUN`。A2 的独立验证入口见 [A2.md](A2.md)；后续还需 M32/M64/M80、custom 图接入以及
 [OPTIMIZATION.md](../../../docs/OPTIMIZATION.md) 规定的同输入原生 OM 和完整模型验收。

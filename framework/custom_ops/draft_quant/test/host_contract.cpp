@@ -38,6 +38,20 @@ int main()
     assert(!draft_quant_contract::IsSupportedShape(16, 384, 64));
     assert(!draft_quant_contract::IsSupportedShape(16, 512, 80));
     assert(!draft_quant_contract::IsSupportedShape(16, -256, 64));
+    for (const auto &pair : {std::vector<int64_t>{2560, 19456}, std::vector<int64_t>{9728, 2560}}) {
+        const auto k = pair[0], n = pair[1];
+        assert(draft_quant_contract::IsSupportedShape(16, k, n));
+        assert(!draft_quant_contract::IsSupportedShape(64, k, n));
+        const Shape logical{{n, k}}, physical{{k / 32, n / 16, 16, 32}};
+        assert(draft_quant_contract::IsNzWeightDescriptor(&logical, &physical,
+            Format::ND, Format::NZ, Format::ND, Format::NZ, n, k));
+        assert(draft_quant_contract::IsNzWeightDescriptor(&physical, &physical,
+            Format::NZ, Format::NZ, Format::ND, Format::NZ, n, k));
+        assert(draft_quant_contract::UserUbBytes(k) == 24704);
+    }
+    assert(!draft_quant_contract::IsSupportedShape(16, 2560, 2560));
+    assert(!draft_quant_contract::IsSupportedShape(16, 9728, 19456));
+    assert(!draft_quant_contract::IsSupportedShape(16, 2560, 64));
 
     // Regression: K=256 uses IterateAll, so a returned baseK=256 is valid.
     // Neither the dequantization group nor the caller's buffer size changes.
@@ -48,12 +62,12 @@ int main()
         assert(!draft_quant_contract::IsCompatibleCubePlan(256, {16, 64, 256, 16, 64, badK}));
     }
     // Keep all restrictions on the receiver's passing K=512/1024 path.
-    for (int64_t k : {512, 1024}) {
+    for (int64_t k : {512, 1024, 2560, 9728}) {
         assert(draft_quant_contract::IsCompatibleCubePlan(k, {16, 64, 128, 16, 64, 128}));
         assert(!draft_quant_contract::IsCompatibleCubePlan(k, {16, 64, 128, 16, 64, 256}));
         assert(!draft_quant_contract::IsCompatibleCubePlan(k, {16, 64, 128, 16, 64, 64}));
     }
-    for (int64_t k : {256, 512, 1024}) {
+    for (int64_t k : {256, 512, 1024, 2560, 9728}) {
         const int64_t tileK = draft_quant_contract::KTile(k);
         assert(!draft_quant_contract::IsCompatibleCubePlan(k, {32, 64, tileK, 16, 64, 128}));
         assert(!draft_quant_contract::IsCompatibleCubePlan(k, {16, 128, tileK, 16, 64, 128}));

@@ -6,9 +6,15 @@ cann_root=${CANN_ROOT:-${ASCEND_HOME_PATH:-/usr/local/Ascend/ascend-toolkit/late
 python_bin=${MODEL_PYTHON:-python3}
 device_id=${DEVICE_ID:-0}
 suite=${DFLASH_SUITE:-a1}
-if [[ "$suite" != a1 && "$suite" != tiny ]]; then
-    echo "DFLASH_SUITE must be a1 or tiny" >&2
+if [[ "$suite" != a1 && "$suite" != tiny && "$suite" != a2 ]]; then
+    echo "DFLASH_SUITE must be a1, tiny or a2" >&2
     exit 1
+fi
+if [[ "$suite" == a2 ]]; then
+    if [[ ! -f "${A2_BUNDLE:-}" || ! -f "${A2_NATIVE_OM_MANIFEST:-}" ]]; then
+        echo "A2 needs A2_BUNDLE=.../manifest.json and A2_NATIVE_OM_MANIFEST=.../native-om.json; see A2.md" >&2
+        exit 1
+    fi
 fi
 
 if [[ -f "$cann_root/set_env.sh" ]]; then
@@ -92,7 +98,19 @@ phase=build_runner
 cmake -S "$here/test" -B "$build_root/test" -DCANN_ROOT="$cann_root" -DASCEND_OPP_PATH="$install_dir"
 cmake --build "$build_root/test" --parallel
 phase=correctness_suite
-"$python_bin" "$here/test/run_suite.py" --output-dir "$data_dir" \
-    --runner "$build_root/test/dflash_group_quant_linear_test" --device-id "$device_id" --suite "$suite"
+if [[ "$suite" == a2 ]]; then
+    "$python_bin" "$here/test/run_a2.py" --output-dir "$data_dir" \
+        --runner "$build_root/test/dflash_group_quant_linear_test" \
+        --om-runner "$build_root/test/dflash_native_om_test" --device-id "$device_id" \
+        --bundle "$A2_BUNDLE" --native-om-manifest "$A2_NATIVE_OM_MANIFEST" \
+        --warmup "${A2_WARMUP:-3}" --repetitions "${A2_REPETITIONS:-10}"
+else
+    "$python_bin" "$here/test/run_suite.py" --output-dir "$data_dir" \
+        --runner "$build_root/test/dflash_group_quant_linear_test" --device-id "$device_id" --suite "$suite"
+fi
 echo "Summary: $data_dir/suite.json"
-echo "Native OM / full Draft / performance remain NOT_RUN."
+if [[ "$suite" == a2 ]]; then
+    echo "A2 isolated native OM parity/timing recorded; full Draft and decode performance remain NOT_RUN."
+else
+    echo "Native OM / full Draft / performance remain NOT_RUN."
+fi

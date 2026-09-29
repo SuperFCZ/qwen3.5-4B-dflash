@@ -33,11 +33,18 @@ public:
             accumulatorLive_ = true;
         }
         for (uint32_t m = 0; m < tiling_.singleM; ++m) {
+            // Sparse CPU fixtures can cover the full A2 address space without
+            // spending billions of host operations multiplying finite B by 0.
+            // This is only an oracle optimization, never production code.
+            std::vector<std::pair<uint32_t, float>> terms;
+            for (uint32_t k = 0; k < tiling_.singleK; ++k) {
+                const float value = static_cast<float>(x_.GetValue(m * tiling_.orgKa + k));
+                if (value != 0) terms.emplace_back(k, value);
+            }
             for (uint32_t n = 0; n < tiling_.singleN; ++n) {
                 float &sum = accumulator_[m * tiling_.singleN + n];
-                for (uint32_t k = 0; k < tiling_.singleK; ++k) {
-                    sum += static_cast<float>(x_.GetValue(m * tiling_.orgKa + k)) *
-                           static_cast<float>(w_.GetValue(n * tiling_.singleK + k));
+                for (const auto &term : terms) {
+                    sum += term.second * static_cast<float>(w_.GetValue(n * tiling_.singleK + term.first));
                 }
             }
         }

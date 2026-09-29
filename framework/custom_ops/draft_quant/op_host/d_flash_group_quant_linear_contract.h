@@ -13,8 +13,10 @@ constexpr int64_t kColumnTile = 64;
 
 inline bool IsSupportedShape(int64_t m, int64_t k, int64_t n)
 {
-    return m == kRows && (k == 256 || k == 512 || k == 1024) &&
-           (n == 64 || n == 128 || n == 256);
+    const bool a1 = (k == 256 || k == 512 || k == 1024) &&
+                    (n == 64 || n == 128 || n == 256);
+    const bool a2 = (k == 2560 && n == 19456) || (k == 9728 && n == 2560);
+    return m == kRows && (a1 || a2);
 }
 
 inline int64_t KTile(int64_t k)
@@ -36,7 +38,10 @@ struct CubePlan {
 
 inline bool IsCompatibleCubePlan(int64_t globalK, const CubePlan &plan)
 {
-    if (!IsSupportedShape(kRows, globalK, kColumnTile)) return false;
+    // A2 only permits its two complete (K,N) pairs. The Cube itself still
+    // sees a 64-column local tile; that is not a new global workload.
+    if (globalK != 256 && globalK != 512 && globalK != 1024 &&
+        globalK != 2560 && globalK != 9728) return false;
     const int64_t tileK = KTile(globalK);
     // The owner and the local B allocation always describe exactly 16x64xtileK.
     if (plan.singleM != kRows || plan.singleN != kColumnTile || plan.singleK != tileK ||
