@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import replace
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -95,7 +96,7 @@ def variant_builder(tmp_path, monkeypatch):
                    shared_draft_features=True, verify_gdr=route, **(extra or {}))
         air = export_air_bundle(FACTORY, cfg, tmp_path / variant / route,
             torchair_module=Air(), reuse_target_from=reuse_target, reuse_common_from=reuse_common)
-        result = compile_air_bundle(air["manifest_path"], soc_version="Ascend310P3", atc_bin="/bin/true",
+        result = compile_air_bundle(air["manifest_path"], soc_version="Ascend310P3", atc_bin=shutil.which("true"),
                                    runner=atc, atc_identity="fake-atc")
         return Path(result["manifest_path"])
     build.air, build.atc = Air(), atc

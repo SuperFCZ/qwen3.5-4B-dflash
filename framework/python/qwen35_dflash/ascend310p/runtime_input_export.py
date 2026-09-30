@@ -261,7 +261,9 @@ def canonical_runtime_input_abi(
     from .weight_quant_layout import (
         capture_weight_quant_metadata, normalize_weight_quant_layout, weight_quant_layout_failure,
     )
-    from .weight_prepack import load_prepacked_weights, prepack_weight_quant_constants
+    from .weight_prepack import (
+        load_prepacked_weights, prepack_weight_quant_constants, restore_fileconstant_weight_descriptors,
+    )
     prepacked = load_prepacked_weights(weight_prepack_manifest) if weight_prepack_manifest else None
 
     with _PATCH_LOCK, capture_weight_quant_metadata(capture_weight_quant_shapes) as tensor_metadata:
@@ -293,6 +295,8 @@ def canonical_runtime_input_abi(
                 weight_quant = normalize_weight_quant_layout(export_graph, tensor_metadata,
                                                               probe_config=weight_quant_probe)
                 if prepacked is not None or weight_prepack_output is not None:
+                    weight_quant["fileconstant_descriptors"] = restore_fileconstant_weight_descriptors(
+                        export_graph, weight_quant, immutable_weights, tensor_metadata)
                     weight_quant = prepack_weight_quant_constants(
                         export_graph, weight_quant, immutable_weights, prepacked,
                         output_dir=weight_prepack_output)
