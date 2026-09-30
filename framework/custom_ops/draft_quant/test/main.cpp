@@ -84,8 +84,8 @@ int main(int argc, char **argv)
 {
     std::string dataDir;
     try {
-        if (argc != 3 && argc != 6 && argc != 8) {
-            throw std::runtime_error("usage: dflash_group_quant_linear_test DEVICE_ID CASE_DIR [M K N [WARMUP REPETITIONS]]");
+        if (argc != 3 && argc != 6 && argc != 8 && argc != 9) {
+            throw std::runtime_error("usage: dflash_group_quant_linear_test DEVICE_ID CASE_DIR [M K N [WARMUP REPETITIONS [--continuous]]]");
         }
         dataDir = argv[2];
         // Invalidate previous evidence even when dimension validation fails.
@@ -97,7 +97,9 @@ int main(int argc, char **argv)
             throw std::runtime_error("unsupported A1/A2 shape");
         }
         Timing timing;
-        if (argc == 8) {
+        if (argc == 9 && std::string(argv[8]) != "--continuous") throw std::runtime_error("unknown timing option");
+        timing.continuous = argc == 9;
+        if (argc >= 8) {
             const auto warmup = ParseDimension(argv[6]), repetitions = ParseDimension(argv[7]);
             if (warmup < 3 || warmup > 100 || repetitions < 10 || repetitions > 1000)
                 throw std::runtime_error("timing requires 3..100 warmups and 10..1000 repetitions");
@@ -121,38 +123,39 @@ int main(int argc, char **argv)
 
         uint64_t peakWorkspace = 0;
         std::vector<uint8_t> firstOutput;
-        for (int repeat = 0; repeat < kRepetitions + timing.warmup + timing.repetitions; ++repeat) {
-            // Different FP16 NaN poison on each call exposes unwritten output.
-            Check(aclrtMemset(r.y.buffer.data, r.y.buffer.bytes, 0x7F + (repeat % 2) * 128,
-                              r.y.buffer.bytes), "poison output");
-            uint64_t workspaceBytes = 0;
-            aclOpExecutor *executor = nullptr;
-            const auto begin = Clock::now();
+        uint64_t workspaceBytes = 0;
+        aclOpExecutor *executor = nullptr;
+        auto prepare = [&]() {
+            workspaceBytes = 0;
+            executor = nullptr;
             Check(aclnnDFlashGroupQuantLinearGetWorkspaceSize(r.x.desc, r.w.desc, r.s.desc, r.y.desc,
                                                               &workspaceBytes, &executor),
                   "aclnnDFlashGroupQuantLinearGetWorkspaceSize");
+            if (timing.continuous && !firstOutput.empty() && workspaceBytes != peakWorkspace)
+                throw std::runtime_error("workspace requirement changed during fixed-input benchmark");
             if (workspaceBytes > 0 && r.workspace.bytes != workspaceBytes) r.workspace.Allocate(workspaceBytes);
             peakWorkspace = std::max(peakWorkspace, workspaceBytes);
-            const auto prepared = Clock::now();
+        };
+        auto execute = [&]() {
             Check(aclnnDFlashGroupQuantLinear(r.workspace.data, workspaceBytes, executor, r.stream),
                   "aclnnDFlashGroupQuantLinear");
             Check(aclrtSynchronizeStream(r.stream), "aclrtSynchronizeStream");
-            const auto completed = Clock::now();
-            if (repeat >= kRepetitions + timing.warmup) {
-                timing.prepare.push_back(Milliseconds(begin, prepared));
-                timing.execute.push_back(Milliseconds(prepared, completed));
-            }
+        };
+        auto poison = [&](int repeat) {
+            Check(aclrtMemset(r.y.buffer.data, r.y.buffer.bytes, 0x7F + (repeat % 2) * 128,
+                              r.y.buffer.bytes), "poison output");
+        };
+        auto verify = [&](const std::string &outputName) {
             r.x.buffer.CheckGuards(); r.w.buffer.CheckGuards(); r.s.buffer.CheckGuards();
             r.y.buffer.CheckGuards(); r.workspace.CheckGuards();
-            if (r.x.buffer.CopyOut() != x || r.w.buffer.CopyOut() != w || r.s.buffer.CopyOut() != s) {
+            if (r.x.buffer.CopyOut() != x || r.w.buffer.CopyOut() != w || r.s.buffer.CopyOut() != s)
                 throw std::runtime_error("read-only input changed");
-            }
             const auto actual = r.y.buffer.CopyOut();
-            if (repeat == 0) firstOutput = actual;
+            if (firstOutput.empty()) firstOutput = actual;
             if (actual != firstOutput) throw std::runtime_error("custom output repeat drift");
-            if (repeat < kRepetitions)
-                WriteBytes(dataDir + "/actual-" + std::to_string(repeat) + ".bin", actual);
-        }
+            if (!outputName.empty()) WriteBytes(dataDir + "/" + outputName, actual);
+        };
+        RunMeasuredCalls(timing, prepare, execute, poison, verify);
         std::ofstream report(dataDir + "/execution.json");
         report << "{\"status\":\"PASS\",\"runtime\":\"AscendCL ACLNN\","
                   "\"op\":\"DFlashGroupQuantLinear\",\"cpu_fallback\":false,"

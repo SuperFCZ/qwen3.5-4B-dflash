@@ -91,6 +91,16 @@ static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_
             assert(cpuMetrics.partials == owned * (k / tileK - 1));
             assert(cpuMetrics.outputs == owned && cpuMetrics.stores == owned * m * 64);
             assert(cpuMetrics.ends == (owned ? 1U : 0U));
+            const auto chunks = owned * (k / tileK);
+#if DFLASH_GROUP_QUANT_DEQUANT_MODE == 1
+            assert(cpuMetrics.castCalls == chunks * (tileK / 32));
+            assert(cpuMetrics.mulsCalls == chunks * (tileK / 128) * 64);
+            assert(cpuMetrics.vectorBarriers == chunks * 2);
+#else
+            assert(cpuMetrics.castCalls == chunks * (tileK / 32) * 64);
+            assert(cpuMetrics.mulsCalls == cpuMetrics.castCalls);
+            assert(cpuMetrics.vectorBarriers == cpuMetrics.castCalls * 2);
+#endif
         }
         assert(Bits(output.front()) == Bits(static_cast<half>(-17)) && Bits(output.back()) == Bits(static_cast<half>(-17)));
         assert(x == savedX && scales == savedScale && nz == savedNz);
@@ -109,5 +119,6 @@ int main()
             for (int pattern = 0; pattern < 3; ++pattern) Check(k, n, pattern, {1, 2, 3, 8});
     Check(2560, 19456, 3, {1, 3, 8});
     Check(9728, 2560, 3, {1, 3, 8});
-    std::cout << "CPU kernel model: 114 single/multi-core runs, every output has one owner; NPU NOT_RUN\n";
+    std::cout << "CPU kernel model: mode=" << DFLASH_GROUP_QUANT_DEQUANT_MODE
+              << "; 114 single/multi-core runs, every output has one owner; NPU NOT_RUN\n";
 }

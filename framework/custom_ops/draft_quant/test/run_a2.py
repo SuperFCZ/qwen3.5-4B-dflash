@@ -79,6 +79,9 @@ def compare_outputs(custom, native, eager, shape):
 
 
 def run(args):
+    timing_protocol = getattr(args, "timing_protocol", "checked-v1")
+    if timing_protocol not in ("checked-v1", "continuous-v1"):
+        raise ValueError("unsupported timing protocol")
     if not 3 <= args.warmup <= 100 or not 10 <= args.repetitions <= 1000 or args.device_id < 0:
         raise ValueError("need nonnegative device, warmup 3..100 and repetitions 10..1000")
     bundle_path, om_manifest = args.bundle.resolve(), args.native_om_manifest.resolve()
@@ -95,6 +98,7 @@ def run(args):
               "device_id": args.device_id, "numerical_gate": "bitwise FP16 vs native OM; atol=0 rtol=0; nonfinite fails",
               "cases": [], "full_draft_validation": "NOT_RUN", "decode_performance": "NOT_RUN",
               "native_om_parity": "NOT_RUN", "isolated_timing": "NOT_RUN",
+              "timing_protocol": timing_protocol,
               "process_peak_device_memory": "NOT_MEASURED"}
     summary = root / "suite.json"
     write_json(summary, report)
@@ -107,7 +111,7 @@ def run(args):
             shape = case_shape(case)
             validate_layout(bundle_path.parent, case)
             om = checked_file(om_manifest.parent, compiled["om"])
-            outputs, executions = {}, {}
+            outputs, executions, bracket_outputs = {}, {}, {}
             # Alternate which implementation is run first across pairs.
             order = ("native_om", "custom") if index % 2 == 0 else ("custom", "native_om")
             row["execution_order"] = list(order)
@@ -121,6 +125,8 @@ def run(args):
                 if kind == "native_om":
                     command.append(str(om))
                 command += [str(v) for v in (*shape, args.warmup, args.repetitions)]
+                if timing_protocol == "continuous-v1":
+                    command.append("--continuous")
                 write_json(dest / "command.json", command)
                 with (dest / "runner.log").open("w") as log:
                     subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True,
@@ -128,9 +134,16 @@ def run(args):
                 execution = json.loads((dest / "execution.json").read_text())
                 validate_execution(execution, shape, args.device_id,
                                    "AscendCL ACLNN" if kind == "custom" else "AscendCL native OM",
-                                   args.warmup, args.repetitions)
+                                   args.warmup, args.repetitions, timing_protocol)
                 executions[kind] = execution
                 outputs[kind] = [(dest / f"actual-{i}.bin").read_bytes() for i in range(2)]
+                if timing_protocol == "continuous-v1":
+                    bracket_outputs[kind] = []
+                    for filename in ("benchmark-last.bin", "postcheck.bin"):
+                        raw = (dest / filename).read_bytes()
+                        if raw != outputs[kind][0]:
+                            raise ValueError(f"{kind}: benchmark tail/postcheck differs from correctness output")
+                        bracket_outputs[kind].append(record(dest / filename, root))
             row["phase"] = "comparison"
             eager = checked_file(bundle_path.parent, case["files"]["eager-0.bin"]).read_bytes()
             comparison = compare_outputs(outputs["custom"], outputs["native_om"], eager, shape)
@@ -143,6 +156,7 @@ def run(args):
             row.update(status=comparison["status"], phase="complete",
                        comparison=record(directory / "comparison.json", root),
                        native_om=compiled["om"], executions=executions,
+                       bracket_outputs=bracket_outputs,
                        outputs={kind: [record(directory / kind / f"actual-{i}.bin", root) for i in range(2)]
                                 for kind in outputs})
             bits = comparison["custom_vs_native_om"]
@@ -173,6 +187,7 @@ def main():
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--repetitions", type=int, default=10)
+    parser.add_argument("--timing-protocol", choices=("checked-v1", "continuous-v1"), default="checked-v1")
     parser.add_argument("--timeout", type=int, default=1800, help="seconds per isolated runner process")
     return run(parser.parse_args())
 

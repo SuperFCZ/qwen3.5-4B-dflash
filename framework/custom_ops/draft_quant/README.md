@@ -5,7 +5,8 @@
 不修改 Qwen/DFlash 模型、导出或运行主流程。A2 新增真实 gate/up/down 的两个固定形状；
 真实数据采集、原生 OM 编译与运行命令见 **[A2.md](A2.md)**。
 用户已确认 A2 全部通过。当前 A3 在相同 tile 上按 N 分配多个核，构建、回归及单核对照
-命令见 **[A3.md](A3.md)**；A3 设备验收尚待服务器执行。
+命令见 **[A3.md](A3.md)**；A3 多核版本已由用户确认通过。当前 A3.1 优化批量反量化并增加
+连续计时，运行入口与新 A/B 要求见 **[A3_1.md](A3_1.md)**，设备验收仍待执行。
 
 原版 tiny `(M,K,N)=(16,256,64)` 已由用户在服务器确认全 PASS，包括修正 scale 视图后的
 native eager 比较。2026-09-29 用户服务器反馈 **`PASS: 9 a1 workloads`**，证据目录为
@@ -117,6 +118,8 @@ DFLASH_SUITE=tiny bash framework/custom_ops/draft_quant/run_server.sh
 
 当前各 suite 默认使用 A3 多核调度。`DFLASH_SUITE=a3` 会同时跑 A1 和真实 A2 数据，
 并强制检查 host launch 记录；需要已有 `A2_BUNDLE` / `A2_NATIVE_OM_MANIFEST`，详见 [A3.md](A3.md)。
+当前构建默认使用 `batched` 反量化；设置 `DFLASH_DEQUANT_MODE=legacy` 保留原指令序列。
+`DFLASH_SUITE=a31` 使用无逐次回读干扰的 `continuous-v1` 协议，不能与旧计时混算加速比。
 
 脚本执行 msopgen、覆盖手写源码、构建、安装独立 OPP、构建 runner，再运行 A1 suite。
 本次 tiling 数据结构和 runner 都有更新，**须重新构建 OPP 与 runner**，不要混用旧安装包。

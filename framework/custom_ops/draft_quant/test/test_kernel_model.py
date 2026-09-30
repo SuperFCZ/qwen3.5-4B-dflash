@@ -17,11 +17,13 @@ class KernelModelTests(unittest.TestCase):
             command = [compiler, "-std=c++17", "-O2", "-ffp-contract=off", "-Wall", "-Wextra", "-Werror",
                        "-Wno-unused-parameter", "-I", str(here / "cpu_kernel_include"),
                        str(here / "kernel_model.cpp"), "-o", str(binary)]
-            compiled = subprocess.run(command, capture_output=True, text=True)
-            self.assertEqual(compiled.returncode, 0, compiled.stdout + compiled.stderr)
-            executed = subprocess.run([str(binary)], capture_output=True, text=True)
-            self.assertEqual(executed.returncode, 0, executed.stdout + executed.stderr)
-            self.assertIn("NPU NOT_RUN", executed.stdout)
+            for mode in (0, 1):
+                with self.subTest(dequant_mode=mode):
+                    compiled = subprocess.run(command + [f"-DDFLASH_GROUP_QUANT_DEQUANT_MODE={mode}"], capture_output=True, text=True)
+                    self.assertEqual(compiled.returncode, 0, compiled.stdout + compiled.stderr)
+                    executed = subprocess.run([str(binary)], capture_output=True, text=True)
+                    self.assertEqual(executed.returncode, 0, executed.stdout + executed.stderr)
+                    self.assertIn("NPU NOT_RUN", executed.stdout)
 
 
 if __name__ == "__main__":

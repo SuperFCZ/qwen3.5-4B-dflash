@@ -1,5 +1,8 @@
 #include "kernel_operator.h"
 #include "lib/matmul_intf.h"
+#include "d_flash_group_quant_linear_build_config.h"
+
+static_assert(DFLASH_GROUP_QUANT_DEQUANT_MODE <= 1U, "unsupported dequantization mode");
 
 using namespace matmul;
 
@@ -76,6 +79,31 @@ extern "C" __global__ __aicore__ void d_flash_group_quant_linear(
             AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(vectorReady);
             AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(vectorReady);
             AscendC::PipeBarrier<PIPE_ALL>();
+#if DFLASH_GROUP_QUANT_DEQUANT_MODE == 1
+            // INT8 NZ tile: [tileK/32, 64, 32]. Each repeat casts one N row's
+            // K32 slice into its final ND [64,tileK] location. Repeat strides
+            // are in 32-byte units: source=32B, destination=tileK*sizeof(half).
+            const AscendC::UnaryRepeatParams castParams{
+                1, 1, static_cast<uint8_t>(tileK * sizeof(half) / 32), 1};
+            for (uint32_t k1 = 0; k1 < tileK / kNzK0; ++k1) {
+                AscendC::Cast(wLocal[k1 * kNzK0], qLocal[k1 * kTileN * kNzK0],
+                    AscendC::RoundMode::CAST_NONE, static_cast<uint64_t>(kNzK0),
+                    static_cast<uint8_t>(kTileN), castParams);
+            }
+            // The Casts write disjoint slices; all must finish before the
+            // in-place Muls reads the assembled rows. Muls writes disjoint
+            // N/group slices, preserving the original FP16 multiplication.
+            AscendC::PipeBarrier<PIPE_V>();
+            for (uint32_t group = 0; group < tileK / kGroup; ++group) {
+                for (uint32_t n = 0; n < kTileN; ++n) {
+                    const half scale = sLocal.GetValue(group * kTileN + n);
+                    const uint32_t dst = n * tileK + group * kGroup;
+                    AscendC::Muls(wLocal[dst], wLocal[dst], scale, kGroup);
+                }
+            }
+            AscendC::PipeBarrier<PIPE_V>();
+#else
+            // A3 control: keep the original per-K32 instruction sequence.
             for (uint32_t group = 0; group < tileK / kGroup; ++group) {
                 for (uint32_t n = 0; n < kTileN; ++n) {
                     const half scale = sLocal.GetValue(group * kTileN + n);
@@ -91,6 +119,7 @@ extern "C" __global__ __aicore__ void d_flash_group_quant_linear(
                     }
                 }
             }
+#endif
             AscendC::PipeBarrier<PIPE_ALL>();
             mm.SetTensorA(xGm[kBegin]);
             mm.SetTensorB(wLocal, true);

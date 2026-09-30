@@ -6,4 +6,10 @@
 // the tracked default and the operator's public ACLNN ABI stay unchanged.
 #define DFLASH_GROUP_QUANT_CORE_LIMIT 0U
 
+// 0 keeps the A3 instruction sequence as a benchmark control; 1 batches
+// dequantization. The conditional also permits CPU-model compilation of both.
+#ifndef DFLASH_GROUP_QUANT_DEQUANT_MODE
+#define DFLASH_GROUP_QUANT_DEQUANT_MODE 1U
+#endif
+
 #endif

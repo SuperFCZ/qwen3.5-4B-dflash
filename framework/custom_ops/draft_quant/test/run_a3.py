@@ -13,7 +13,7 @@ import run_a2
 import run_suite
 
 
-def collect_launches(a1_root, real_root, limit):
+def collect_launches(a1_root, real_root, limit, dequant_mode=None):
     a1 = json.loads((a1_root / "suite.json").read_text())
     real = json.loads((real_root / "suite.json").read_text())
     if a1.get("status") != "PASS" or real.get("status") != "PASS":
@@ -25,14 +25,14 @@ def collect_launches(a1_root, real_root, limit):
         for case in workload["custom_cases"]:
             directory = a1_root / workload["name"] / case["name"]
             execution = json.loads((directory / "execution.json").read_text())
-            plan = launch_evidence(directory / "runner.log", workload["mkn"], limit, execution["workspace_bytes"])
+            plan = launch_evidence(directory / "runner.log", workload["mkn"], limit, execution["workspace_bytes"], dequant_mode)
             evidence["a1"].append({"name": workload["name"] + "/" + case["name"], "launch": plan})
     if len(evidence["a1"]) != 81:
         raise ValueError("A3 requires all 81 A1 cases")
     for case in real["cases"]:
         execution = case["executions"]["custom"]
         plan = launch_evidence(real_root / case["name"] / "custom/runner.log",
-                               [execution[d] for d in ("m", "k", "n")], limit, execution["workspace_bytes"])
+                               [execution[d] for d in ("m", "k", "n")], limit, execution["workspace_bytes"], dequant_mode)
         if limit != 1 and plan["block_dim"] < 2:
             raise ValueError("A3 multi-core acceptance requires at least two cores on every real projection")
         native = case["executions"]["native_om"]
@@ -45,13 +45,16 @@ def collect_launches(a1_root, real_root, limit):
 def run(args):
     config = load_build_config(args.build_config)
     limit = config["core_limit"]
+    timing_protocol = getattr(args, "timing_protocol", "checked-v1")
+    stage = "A3.1" if timing_protocol == "continuous-v1" else "A3"
     root = args.output_dir.resolve()
     root.mkdir(parents=True, exist_ok=False)
     report = {"abi": "dflash-group-quant-linear-a3-v1", "policy": POLICY, "status": "RUNNING",
               "mode": "single-core-control" if limit == 1 else "multi-core",
               "build": config, "build_config_sha256": sha256(args.build_config),
+              "stage": stage, "timing_protocol": timing_protocol,
               "device_id": args.device_id, "checks": {}, "multicore_validation": "NOT_RUN",
-              "timing_scope": "isolated diagnostic launch+sync, same A2 measurement protocol",
+              "timing_scope": "isolated diagnostic launch+sync; see timing_protocol",
               "full_draft_validation": "NOT_RUN", "decode_performance": "NOT_RUN"}
     summary = root / "suite.json"
     write_json(summary, report)
@@ -69,7 +72,7 @@ def run(args):
             report["checks"][name] = {"status": "FAIL", "error": f"{type(error).__name__}: {error}"}
         write_json(summary, report)
     try:
-        launches, real = collect_launches(root / "a1", root / "real", limit)
+        launches, real = collect_launches(root / "a1", root / "real", limit, config["dequant_mode"])
         load_build_config(args.build_config)
         if sha256(args.build_config) != report["build_config_sha256"]:
             raise ValueError("build configuration changed during execution")
@@ -82,7 +85,7 @@ def run(args):
         print(f"FAIL: A3 launch validation: {error}", flush=True)
     report["status"] = "PASS" if all(row["status"] == "PASS" for row in report["checks"].values()) else "FAIL"
     write_json(summary, report)
-    print(f"{report['status']}: A3 {report['mode']}; A1 + 10 real projections; summary: {summary}", flush=True)
+    print(f"{report['status']}: {stage} {config['dequant_mode']} {report['mode']}; A1 + 10 real projections; summary: {summary}", flush=True)
     print("Full Draft / decode performance NOT_RUN", flush=True)
     return 0 if report["status"] == "PASS" else 1
 
@@ -98,6 +101,7 @@ def main():
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--repetitions", type=int, default=10)
+    parser.add_argument("--timing-protocol", choices=("checked-v1", "continuous-v1"), default="checked-v1")
     parser.add_argument("--timeout", type=int, default=1800)
     args = parser.parse_args()
     if args.device_id < 0 or not args.runner.is_file() or not args.om_runner.is_file():

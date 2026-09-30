@@ -51,12 +51,16 @@ def load_run(path, mode):
     return report, real, real_path.parent
 
 
-def compatible_runs(single, multi):
+def compatible_runs(single, multi, *, allow_dequant_change=False):
     for key in ("bundle_sha256", "native_om_manifest_sha256", "device_id"):
         if single.get(key) is None or single.get(key) != multi.get(key):
             raise ValueError(f"single/multi runs must use the same {key}")
     if not single["build"].get("source_sha256") or single["build"]["source_sha256"] != multi["build"].get("source_sha256"):
         raise ValueError("control/candidate must use the same host/kernel/runner source; only the build core cap differs")
+    if single.get("timing_protocol", "checked-v1") != multi.get("timing_protocol", "checked-v1"):
+        raise ValueError("timing protocols differ; rerun both implementations with the same measurement boundaries")
+    if not allow_dequant_change and single["build"].get("dequant_mode", "legacy") != multi["build"].get("dequant_mode", "legacy"):
+        raise ValueError("single/multi-core comparisons require the same dequantization mode")
 
 
 def timings(execution):
@@ -83,8 +87,8 @@ def run(single_path, multi_path, output):
         for key in ("m", "k", "n", "device_id"):
             if left[key] != right[key]:
                 raise ValueError(f"execution identity differs: {key}")
-        for key in ("scope", "warmup", "repetitions"):
-            if left["timing"][key] != right["timing"][key]:
+        for key in ("scope", "warmup", "repetitions", "protocol"):
+            if left["timing"].get(key, "checked-v1") != right["timing"].get(key, "checked-v1"):
                 raise ValueError(f"timing protocol differs: {key}")
         dimensions = SimpleNamespace(m=left["m"], n=left["n"])
         expected = checked_file(single_root, a["outputs"]["custom"][0]).read_bytes()

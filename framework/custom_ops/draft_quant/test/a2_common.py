@@ -149,7 +149,7 @@ def validate_native_graph(graph, case, bundle_hash):
         raise ValueError("exported native NZ Const differs from the captured checkpoint codes")
 
 
-def validate_execution(report, shape, device, runtime, warmup, repetitions):
+def validate_execution(report, shape, device, runtime, warmup, repetitions, timing_protocol=None):
     if (report.get("status") != "PASS" or report.get("runtime") != runtime or
             report.get("cpu_fallback") is not False or report.get("input_readonly") is not True or
             report.get("guards_intact") is not True or report.get("repetitions") != 2 or
@@ -161,6 +161,13 @@ def validate_execution(report, shape, device, runtime, warmup, repetitions):
                                         report.get("tile_n") != 64 or report.get("tile_k") != 128):
         raise ValueError("custom execution contract differs")
     timing = report.get("timing", {})
+    if timing_protocol is not None and timing.get("protocol", "checked-v1") != timing_protocol:
+        raise ValueError("runner timing protocol differs from the requested measurement")
+    if timing_protocol == "continuous-v1" and (
+            timing.get("per_timed_call_readback") is not False or timing.get("per_timed_call_poison") is not False or
+            timing.get("correctness_before_calls") != 2 or timing.get("correctness_after_calls") != 1 or
+            timing.get("timed_tail_checked") is not True):
+        raise ValueError("continuous timing lacks bracketed correctness/guard validation")
     samples = timing.get("execute_sync", {}).get("samples_ms", [])
     if (timing.get("status") != "MEASURED" or timing.get("warmup") != warmup or
             timing.get("repetitions") != repetitions or len(samples) != repetitions or

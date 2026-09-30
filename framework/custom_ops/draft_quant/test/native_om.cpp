@@ -82,8 +82,8 @@ int main(int argc, char **argv)
 {
     std::string directory;
     try {
-        if (argc != 9) throw std::runtime_error(
-            "usage: dflash_native_om_test DEVICE CASE_DIR OM M K N WARMUP REPETITIONS");
+        if (argc != 9 && argc != 10) throw std::runtime_error(
+            "usage: dflash_native_om_test DEVICE CASE_DIR OM M K N WARMUP REPETITIONS [--continuous]");
         directory = argv[2];
         std::ofstream(directory + "/execution.json") << "{\"status\":\"RUNNING\"}\n";
         const auto m = Number(argv[4]), k = Number(argv[5]), n = Number(argv[6]);
@@ -92,7 +92,10 @@ int main(int argc, char **argv)
         if (!draft_quant_contract::IsSupportedShape(m, k, n) || device < 0 || device > 65535 ||
             warmup < 3 || warmup > 100 || repetitions < 10 || repetitions > 1000)
             throw std::runtime_error("unsupported shape/device or timing counts");
+        if (argc == 10 && std::string(argv[9]) != "--continuous") throw std::runtime_error("unknown timing option");
         Timing timing;
+        timing.continuous = argc == 10;
+        timing.collectPrepare = false;
         timing.warmup = static_cast<int>(warmup);
         timing.repetitions = static_cast<int>(repetitions);
         const auto x = ReadBytes(directory + "/x.bin", m * k * 2);
@@ -100,23 +103,25 @@ int main(int argc, char **argv)
         session.device = static_cast<int>(device);
         session.Load(argv[3]); session.Bind(m, k, n, x);
         std::vector<uint8_t> first;
-        for (int repeat = 0; repeat < 2 + timing.warmup + timing.repetitions; ++repeat) {
-            Check(aclrtMemset(session.y.data, session.y.bytes, 0x7F + (repeat % 2) * 128,
-                              session.y.bytes), "poison output");
-            const auto begin = Clock::now();
+        auto execute = [&]() {
             Check(aclmdlExecuteAsync(session.model, session.inputs, session.outputs, session.stream),
                   "aclmdlExecuteAsync");
             Check(aclrtSynchronizeStream(session.stream), "aclrtSynchronizeStream");
-            const auto completed = Clock::now();
-            if (repeat >= 2 + timing.warmup) timing.execute.push_back(Milliseconds(begin, completed));
+        };
+        auto poison = [&](int repeat) {
+            Check(aclrtMemset(session.y.data, session.y.bytes, 0x7F + (repeat % 2) * 128,
+                              session.y.bytes), "poison output");
+        };
+        auto verify = [&](const std::string &outputName) {
             session.x.CheckGuards(); session.y.CheckGuards();
             session.workspace.CheckGuards(); session.weights.CheckGuards();
             if (session.x.CopyOut() != x) throw std::runtime_error("native OM modified input");
             const auto actual = session.y.CopyOut();
-            if (repeat == 0) first = actual;
+            if (first.empty()) first = actual;
             if (actual != first) throw std::runtime_error("native OM output repeat drift");
-            if (repeat < 2) WriteBytes(directory + "/actual-" + std::to_string(repeat) + ".bin", actual);
-        }
+            if (!outputName.empty()) WriteBytes(directory + "/" + outputName, actual);
+        };
+        RunMeasuredCalls(timing, []() {}, execute, poison, verify);
         std::ofstream report(directory + "/execution.json");
         report << "{\"status\":\"PASS\",\"runtime\":\"AscendCL native OM\",\"cpu_fallback\":false,"
                   "\"input_readonly\":true,\"guards_intact\":true,\"io_validated\":true,\"repetitions\":2,"

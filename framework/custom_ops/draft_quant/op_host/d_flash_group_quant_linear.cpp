@@ -216,10 +216,12 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     // Machine-readable launch evidence. The ACLNN executor owns the opaque
     // tiling buffer; the test coordinator verifies this record against shape
     // and build identity instead of guessing the kernel's launch dimensions.
-    std::fprintf(stdout, "DFLASH_GROUP_QUANT_LAUNCH {\"version\":1,\"policy\":\"n-tile-cyclic-v1\","
+    std::fprintf(stdout, "DFLASH_GROUP_QUANT_LAUNCH {\"version\":2,\"policy\":\"n-tile-cyclic-v1\","
+                         "\"dequant_mode\":\"%s\","
                          "\"m\":16,\"k\":%lld,\"n\":%lld,\"tile_n\":64,\"tile_k\":%lld,"
                          "\"available_cores\":%u,\"core_limit\":%u,\"block_dim\":%u,\"n_tiles\":%lld,"
                          "\"system_workspace_bytes\":%zu}\n",
+                 DFLASH_GROUP_QUANT_DEQUANT_MODE == 1 ? "batched" : "legacy",
                  static_cast<long long>(k), static_cast<long long>(n), static_cast<long long>(tileK),
                  availableCores, coreLimit, blockDim, static_cast<long long>(n / kTileN),
                  context->GetWorkspaceSizes(1)[0]);

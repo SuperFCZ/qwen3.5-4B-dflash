@@ -101,12 +101,18 @@ inline double Milliseconds(Clock::time_point begin, Clock::time_point end)
 
 struct Timing {
     int warmup = 0, repetitions = 0;
+    bool continuous = false, collectPrepare = true;
     std::vector<double> execute, prepare;
     void Write(std::ostream &out) const
     {
         out << std::setprecision(9) << ",\"timing\":{\"status\":\""
             << (repetitions ? "MEASURED" : "NOT_RUN")
+            << "\",\"protocol\":\"" << (continuous ? "continuous-v1" : "checked-v1")
             << "\",\"scope\":\"isolated host launch plus stream synchronization; transfers/checks excluded\","
+               "\"per_timed_call_readback\":" << (continuous ? "false" : "true")
+            << ",\"per_timed_call_poison\":" << (continuous ? "false" : "true")
+            << ",\"correctness_before_calls\":2,\"correctness_after_calls\":" << (continuous ? 1 : 0)
+            << ",\"timed_tail_checked\":" << (continuous ? "true" : "false") << ","
                "\"warmup\":" << warmup << ",\"repetitions\":" << repetitions;
         auto series = [&](const char *name, const std::vector<double> &values) {
             out << ",\"" << name << "\":{\"samples_ms\":[";
@@ -126,4 +132,43 @@ struct Timing {
         out << "},\"process_peak_device_memory\":\"NOT_MEASURED\"";
     }
 };
+
+// Bracket uninterrupted warmup/measurement with the same guard/input/output
+// checks as correctness runs. No readback, poison or file writes occur between
+// continuous samples. Both runners use this scheduler to keep boundaries equal.
+template <typename Prepare, typename Execute, typename Poison, typename Verify>
+void RunMeasuredCalls(Timing &timing, Prepare prepare, Execute execute, Poison poison, Verify verify)
+{
+    timing.prepare.reserve(timing.repetitions);
+    timing.execute.reserve(timing.repetitions);
+    auto call = [&](bool measured) {
+        const auto begin = Clock::now();
+        prepare();
+        const auto prepared = Clock::now();
+        execute();
+        const auto completed = Clock::now();
+        if (measured) {
+            if (timing.collectPrepare) timing.prepare.push_back(Milliseconds(begin, prepared));
+            timing.execute.push_back(Milliseconds(prepared, completed));
+        }
+    };
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        poison(repeat);
+        call(false);
+        verify("actual-" + std::to_string(repeat) + ".bin");
+    }
+    for (int repeat = 0; repeat < timing.warmup + timing.repetitions; ++repeat) {
+        if (!timing.continuous) poison(repeat + 2);
+        call(repeat >= timing.warmup);
+        if (!timing.continuous) verify("");
+    }
+    if (timing.continuous) {
+        verify("benchmark-last.bin");
+        // A fresh poisoned call after measurement also detects unwritten
+        // output that might have been masked by a previous valid timed result.
+        poison(1);
+        call(false);
+        verify("postcheck.bin");
+    }
+}
 }  // namespace draft_quant_test
