@@ -8,6 +8,12 @@ device_id=${DEVICE_ID:-0}
 suite=${DFLASH_SUITE:-a1}
 core_limit=${DFLASH_CORE_LIMIT:-0}
 dequant_mode=${DFLASH_DEQUANT_MODE:-batched}
+pipeline_mode=${DFLASH_PIPELINE_MODE:-serial}
+if [[ "$pipeline_mode" != serial && "$pipeline_mode" != prefetch ]] || \
+   [[ "$pipeline_mode" == prefetch && "$dequant_mode" != batched ]]; then
+    echo "DFLASH_PIPELINE_MODE must be serial or prefetch; prefetch requires batched dequantization" >&2
+    exit 1
+fi
 if [[ "$dequant_mode" != legacy && "$dequant_mode" != batched ]]; then
     echo "DFLASH_DEQUANT_MODE must be legacy or batched" >&2
     exit 1
@@ -16,11 +22,15 @@ if [[ ! "$core_limit" =~ ^(0|[1-9][0-9]{0,4})$ ]] || (( core_limit > 65535 )); t
     echo "DFLASH_CORE_LIMIT must be 0..65535 (0=auto, 1=single-core control)" >&2
     exit 1
 fi
-if [[ "$suite" != a1 && "$suite" != tiny && "$suite" != a2 && "$suite" != a3 && "$suite" != a31 ]]; then
-    echo "DFLASH_SUITE must be a1, tiny, a2, a3 or a31" >&2
+if [[ "$suite" != a1 && "$suite" != tiny && "$suite" != a2 && "$suite" != a3 && "$suite" != a31 && "$suite" != a32 ]]; then
+    echo "DFLASH_SUITE must be a1, tiny, a2, a3, a31 or a32" >&2
     exit 1
 fi
-if [[ "$suite" == a2 || "$suite" == a3 || "$suite" == a31 ]]; then
+if [[ "$suite" == a32 && "$dequant_mode" != batched ]]; then
+    echo "A3.2 requires DFLASH_DEQUANT_MODE=batched for both variants" >&2
+    exit 1
+fi
+if [[ "$suite" == a2 || "$suite" == a3 || "$suite" == a31 || "$suite" == a32 ]]; then
     if [[ ! -f "${A2_BUNDLE:-}" || ! -f "${A2_NATIVE_OM_MANIFEST:-}" ]]; then
         echo "$suite needs A2_BUNDLE=.../manifest.json and A2_NATIVE_OM_MANIFEST=.../native-om.json; see A2.md/A3.md" >&2
         exit 1
@@ -62,6 +72,7 @@ echo "Build: $build_root"
 echo "Evidence: $run_root"
 echo "A3 N-tile scheduling; build core cap: $core_limit (0=auto)"
 echo "Dequantization build mode: $dequant_mode"
+echo "Pipeline build mode: $pipeline_mode (prefetch targets down + streamed A1 only)"
 git -C "$here" rev-parse HEAD > "$run_root/source-commit.txt"
 phase=path_preflight
 "$python_bin" "$here/test/opp_preflight.py" --root "$build_root" --report "$run_root/path-preflight.json"
@@ -78,6 +89,7 @@ cp "$here/op_host/d_flash_group_quant_linear.cpp" \
 cp "$here/op_kernel/d_flash_group_quant_linear.cpp" "$op_project/op_kernel/"
 phase=configure_core_limit
 "$python_bin" "$here/test/a3_launch.py" --core-limit "$core_limit" --dequant-mode "$dequant_mode" \
+    --pipeline-mode "$pipeline_mode" \
     --header "$op_project/op_host/d_flash_group_quant_linear_build_config.h" \
     --kernel-header "$op_project/op_kernel/d_flash_group_quant_linear_build_config.h" \
     --report "$run_root/build-config.json"
@@ -115,16 +127,25 @@ phase=build_runner
 cmake -S "$here/test" -B "$build_root/test" -DCANN_ROOT="$cann_root" -DASCEND_OPP_PATH="$install_dir"
 cmake --build "$build_root/test" --parallel
 phase=correctness_suite
-if [[ "$suite" == a3 || "$suite" == a31 ]]; then
+if [[ "$suite" == a3 || "$suite" == a31 || "$suite" == a32 ]]; then
     timing_protocol=checked-v1
-    if [[ "$suite" == a31 ]]; then timing_protocol=continuous-v1; fi
+    stage=A3
+    default_warmup=3
+    default_repetitions=10
+    if [[ "$suite" == a31 ]]; then timing_protocol=continuous-v1; stage=A3.1; fi
+    if [[ "$suite" == a32 ]]; then
+        timing_protocol=continuous-v1
+        stage=A3.2
+        default_warmup=5
+        default_repetitions=30
+    fi
     "$python_bin" "$here/test/run_a3.py" --output-dir "$data_dir" \
         --build-config "$run_root/build-config.json" \
-        --timing-protocol "$timing_protocol" \
+        --timing-protocol "$timing_protocol" --stage "$stage" \
         --runner "$build_root/test/dflash_group_quant_linear_test" \
         --om-runner "$build_root/test/dflash_native_om_test" --device-id "$device_id" \
         --bundle "$A2_BUNDLE" --native-om-manifest "$A2_NATIVE_OM_MANIFEST" \
-        --warmup "${A2_WARMUP:-3}" --repetitions "${A2_REPETITIONS:-10}"
+        --warmup "${A2_WARMUP:-$default_warmup}" --repetitions "${A2_REPETITIONS:-$default_repetitions}"
 elif [[ "$suite" == a2 ]]; then
     "$python_bin" "$here/test/run_a2.py" --output-dir "$data_dir" \
         --runner "$build_root/test/dflash_group_quant_linear_test" \
@@ -136,7 +157,7 @@ else
         --runner "$build_root/test/dflash_group_quant_linear_test" --device-id "$device_id" --suite "$suite"
 fi
 echo "Summary: $data_dir/suite.json"
-if [[ "$suite" == a2 || "$suite" == a3 || "$suite" == a31 ]]; then
+if [[ "$suite" == a2 || "$suite" == a3 || "$suite" == a31 || "$suite" == a32 ]]; then
     echo "Isolated native OM parity/timing recorded; full Draft and decode performance remain NOT_RUN."
 else
     echo "Native OM / full Draft / performance remain NOT_RUN."

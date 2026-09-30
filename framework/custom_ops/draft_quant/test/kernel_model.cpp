@@ -30,6 +30,9 @@ static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_
                                                 : row % (k / 128);
             const uint32_t pos = group * 128 + ((pattern == 3 ? row : row / (k / 128)) % 2 ? 127 : 0);
             x[row * k + pos] = static_cast<half>((row % 2 ? -1.0f : 1.0f) / 128);
+        } else if (pattern == 4) {
+            for (uint32_t g = 0; g < k / 128; ++g)
+                x[row * k + g * 128 + (row % 2 ? 127 : 0)] = static_cast<half>((g % 2 ? -1.0f : 1.0f) / 128);
         } else if (pattern == 1) {
             for (uint32_t i = 0; i < k; ++i) x[row * k + i] = static_cast<half>((i + row) % 3 ? 1.0f / 128 : -1.0f / 128);
         } else {
@@ -86,12 +89,20 @@ static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_
             d_flash_group_quant_linear(x.data(), nz.data(), scales.data(), cpuOutputBase, nullptr, &tiling);
             uint32_t owned = 0;
             for (uint32_t tile = 0; tile < n / 64; ++tile) owned += tile % blocks == cpuBlockIdx;
-            assert(cpuMetrics.ubBytes == (owned ? draft_quant_contract::UserUbBytes(k) + tiling.matmulUbBytes : 0));
+            // Independent of the production selector: this fixture only runs
+            // whitelisted shapes; prefetch excludes whole-K256 and gate/up.
+            const bool prefetch = DFLASH_GROUP_QUANT_PIPELINE_MODE == 1 && k != 256 && k != 2560;
+            const uint64_t userUb = prefetch ? 33024 : (k == 256 ? 49408 : 24704);
+            assert(cpuMetrics.ubBytes == (owned ? userUb + tiling.matmulUbBytes : 0));
             assert(cpuMetrics.iterations == owned * (k / tileK));
             assert(cpuMetrics.partials == owned * (k / tileK - 1));
             assert(cpuMetrics.outputs == owned && cpuMetrics.stores == owned * m * 64);
             assert(cpuMetrics.ends == (owned ? 1U : 0U));
             const auto chunks = owned * (k / tileK);
+            assert(cpuMetrics.copies == chunks * (tileK / 32 + tileK / 128));
+            assert(cpuMetrics.eventAllocations == (owned && prefetch ? 2U : 0U));
+            assert(cpuMetrics.libraryWithPendingSignals == (prefetch ? owned * (k / tileK - 1) : 0));
+            assert(cpuMetrics.castsWithPendingDma == (prefetch ? owned * (k / tileK - 1) * (tileK / 32) : 0));
 #if DFLASH_GROUP_QUANT_DEQUANT_MODE == 1
             assert(cpuMetrics.castCalls == chunks * (tileK / 32));
             assert(cpuMetrics.mulsCalls == chunks * (tileK / 128) * 64);
@@ -117,8 +128,31 @@ int main()
     for (uint32_t k : {256U, 512U, 1024U})
         for (uint32_t n : {64U, 128U, 256U})
             for (int pattern = 0; pattern < 3; ++pattern) Check(k, n, pattern, {1, 2, 3, 8});
-    Check(2560, 19456, 3, {1, 3, 8});
-    Check(9728, 2560, 3, {1, 3, 8});
+    Check(2560, 19456, 3, {1, 3, 7, 8});
+    Check(9728, 2560, 3, {1, 3, 7, 8});
+    Check(9728, 2560, 4, {7});
+    Check(9728, 2560, 2, {7});
+#if DFLASH_GROUP_QUANT_PIPELINE_MODE == 1
+    // The abort path must consume outstanding lookahead signals before release,
+    // including a failure at the first, middle and last group. TPipe's model
+    // destructor rejects event leaks and unfinished consumers.
+    for (int failure : {0, 1, 3}) {
+        std::vector<half> x(16 * 512), s(4 * 64, static_cast<half>(1));
+        std::vector<int8_t> q(64 * 512);
+        std::vector<half> output(16 * 64, static_cast<half>(-17));
+        CpuTiling tiling{512, 64, 128, 65536, {64, 512, 16, 64, 128}};
+        cpuMetrics = {};
+        cpuBlockIdx = 0;
+        cpuBlockNum = 1;
+        matmul::cpuFailIteration = failure;
+        d_flash_group_quant_linear(x.data(), q.data(), s.data(), output.data(), nullptr, &tiling);
+        assert(cpuMetrics.outputs == 0 && cpuMetrics.ends == 1);
+        assert(cpuMetrics.iterations == static_cast<uint32_t>(failure));
+        for (auto value : output) assert(Bits(value) == Bits(static_cast<half>(-17)));
+    }
+    matmul::cpuFailIteration = -1;
+#endif
     std::cout << "CPU kernel model: mode=" << DFLASH_GROUP_QUANT_DEQUANT_MODE
-              << "; 114 single/multi-core runs, every output has one owner; NPU NOT_RUN\n";
+              << "; pipeline=" << DFLASH_GROUP_QUANT_PIPELINE_MODE
+              << "; 118 single/multi-core runs, every output has one owner; NPU NOT_RUN\n";
 }

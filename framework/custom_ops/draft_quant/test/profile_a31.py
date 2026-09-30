@@ -19,7 +19,7 @@ def prepare(source, output):
             len(command) != 9 or command[-1] != "--continuous" or Path(command[2]).resolve() != source or
             int(command[1]) != execution["device_id"] or
             tuple(map(int, command[3:6])) != tuple(execution[d] for d in ("m", "k", "n"))):
-        raise ValueError("select a completed A3.1 real/<case>/custom directory")
+        raise ValueError("select a completed A3.1/A3.2 continuous-v1 real/<case>/custom directory")
     runner = Path(command[0]).resolve()
     real = json.loads((source.parent.parent / "suite.json").read_text())
     identity = real["runners"]["custom"]

@@ -51,16 +51,18 @@ def load_run(path, mode):
     return report, real, real_path.parent
 
 
-def compatible_runs(single, multi, *, allow_dequant_change=False):
+def compatible_runs(single, multi, *, allow_dequant_change=False, allow_pipeline_change=False):
     for key in ("bundle_sha256", "native_om_manifest_sha256", "device_id"):
         if single.get(key) is None or single.get(key) != multi.get(key):
             raise ValueError(f"single/multi runs must use the same {key}")
     if not single["build"].get("source_sha256") or single["build"]["source_sha256"] != multi["build"].get("source_sha256"):
-        raise ValueError("control/candidate must use the same host/kernel/runner source; only the build core cap differs")
+        raise ValueError("control/candidate must use the same host/kernel/runner source; only the tested build switch may differ")
     if single.get("timing_protocol", "checked-v1") != multi.get("timing_protocol", "checked-v1"):
         raise ValueError("timing protocols differ; rerun both implementations with the same measurement boundaries")
     if not allow_dequant_change and single["build"].get("dequant_mode", "legacy") != multi["build"].get("dequant_mode", "legacy"):
         raise ValueError("single/multi-core comparisons require the same dequantization mode")
+    if not allow_pipeline_change and single["build"].get("pipeline_mode", "serial") != multi["build"].get("pipeline_mode", "serial"):
+        raise ValueError("comparisons require the same pipeline mode")
 
 
 def timings(execution):

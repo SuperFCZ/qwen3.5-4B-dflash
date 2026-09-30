@@ -126,10 +126,12 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
         return ge::GRAPH_FAILED;
     }
     const int64_t tileK = draft_quant_contract::KTile(k);
-    const uint64_t codesBytes = kTileN * tileK;
-    const uint64_t scaleBytes = (tileK / kGroup) * kTileN * 2;
+    const bool prefetch = DFLASH_GROUP_QUANT_PREFETCH(k, n);
+    const uint32_t rawBanks = prefetch ? 2U : 1U;
+    const uint64_t codesBytes = kTileN * tileK * rawBanks;
+    const uint64_t scaleBytes = (tileK / kGroup) * kTileN * 2 * rawBanks;
     const uint64_t weightBytes = kTileN * tileK * 2;
-    const uint64_t userUbBytes = draft_quant_contract::UserUbBytes(k);
+    const uint64_t userUbBytes = draft_quant_contract::UserUbBytes(k, rawBanks);
     uint64_t ubBytes = 0;
     platform.GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubBytes);
     if (ubBytes <= userUbBytes) return ge::GRAPH_FAILED;
@@ -216,12 +218,18 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     // Machine-readable launch evidence. The ACLNN executor owns the opaque
     // tiling buffer; the test coordinator verifies this record against shape
     // and build identity instead of guessing the kernel's launch dimensions.
-    std::fprintf(stdout, "DFLASH_GROUP_QUANT_LAUNCH {\"version\":2,\"policy\":\"n-tile-cyclic-v1\","
+    std::fprintf(stdout, "DFLASH_GROUP_QUANT_LAUNCH {\"version\":3,\"policy\":\"n-tile-cyclic-v1\","
                          "\"dequant_mode\":\"%s\","
+                         "\"pipeline_mode\":\"%s\",\"selected_pipeline\":\"%s\","
+                         "\"raw_banks\":%u,\"user_ub_bytes\":%llu,\"matmul_ub_bytes\":%llu,"
                          "\"m\":16,\"k\":%lld,\"n\":%lld,\"tile_n\":64,\"tile_k\":%lld,"
                          "\"available_cores\":%u,\"core_limit\":%u,\"block_dim\":%u,\"n_tiles\":%lld,"
                          "\"system_workspace_bytes\":%zu}\n",
                  DFLASH_GROUP_QUANT_DEQUANT_MODE == 1 ? "batched" : "legacy",
+                 DFLASH_GROUP_QUANT_PIPELINE_MODE == 1 ? "prefetch" : "serial",
+                 prefetch ? "raw-prefetch-v1" : "serial-v1", rawBanks,
+                 static_cast<unsigned long long>(userUbBytes),
+                 static_cast<unsigned long long>(matmulUbBytes),
                  static_cast<long long>(k), static_cast<long long>(n), static_cast<long long>(tileK),
                  availableCores, coreLimit, blockDim, static_cast<long long>(n / kTileN),
                  context->GetWorkspaceSizes(1)[0]);

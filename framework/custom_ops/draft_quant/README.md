@@ -8,6 +8,8 @@
 命令见 **[A3.md](A3.md)**；A3 多核版本已由用户确认通过。当前 A3.1 优化批量反量化并增加
 连续计时，运行入口与新 A/B 要求见 **[A3_1.md](A3_1.md)**。用户已反馈 A3.1 的实测计时和
 profiling 结果，阶段总结、比较口径与 evidence 清单见 **[A3_RESULTS.md](A3_RESULTS.md)**。
+下一轮 **[A3_2.md](A3_2.md)** 提供 down raw-input 预取候选及 serial/prefetch A/B；
+候选仍待服务器验证，默认保留 A3.1 serial。
 完整 Draft / Decode 性能仍为 `NOT_RUN`。
 
 原版 tiny `(M,K,N)=(16,256,64)` 已由用户在服务器确认全 PASS，包括修正 scale 视图后的
@@ -54,10 +56,13 @@ host 同时兼容 GE 的逻辑 origin ND 描述与 ACLNN 的物理 origin NZ 描
 N/64 个 N tile 在 A1 为 1/2/4 个，在真实 gate/up 为 304 个、down 为 40 个。
 A3 默认启动 `min(可用 AI Core 数, N tile 数)` 个核；核 b 处理 `b, b+B, b+2B, ...`。
 每个 tile 独占 16×64 的输出，完整归约所有 K。每核的 UB、MatMul 和累加器互相独立。
-本版不做 split-K、预取、双缓冲或 tile 参数调整；`DFLASH_CORE_LIMIT=1` 构建单核对照。
+上表为默认 serial 的缓冲配置；`DFLASH_CORE_LIMIT=1` 构建单核对照。A3.2 显式启用 prefetch
+时，为 down / A1 K512/1024 双缓冲 q/scale，用户 UB 增为 33,024 B；gate/up 和 K256
+保持 serial。不做 split-K 或 tile 参数调整。
 
 - **搬入：**按全局 NZ 的 K32 plane 读取当前 64 列，plane 间距使用全局 N；
-  scale 使用 `(global_group * N + n_begin)` 寻址。只搬当前 K tile 的 q/scale。
+  scale 使用 `(global_group * N + n_begin)` 寻址。serial 只搬当前 K tile 的 q/scale；
+  prefetch 可提前一组搬入另一 bank，生命周期见 [A3_2.md](A3_2.md)。
 - **反量化：**signed INT8→FP16，再按各 group 的 FP16 scale 相乘，得到片上的
   ND `[64,tileK]` 权重。权重服务全部 16 行，不写回 GM。
 - **K=256：**保留已验证的 `IterateAll()` 整段 K 路径，仅增加 N tile 地址偏移。
@@ -205,8 +210,9 @@ Python 测试仅依赖标准库，覆盖九种形状的布局、scale 位型、�
 和形状身份。另用本地 C++17 编译器（kernel 模型需支持 `_Float16`）测试共享 host 契约，以及在 CPU API 模型下执行实际
 kernel 源码的 27 组索引/累加案例，检查缓冲边界、输入只读、全局 stride、调用次序和结果。
 CPU 模型还执行两个真实 A2 尺寸的稀疏输入，覆盖所有 N tile、全局 stride 和最后一个
-K group。A3 共执行 114 次单核/多核模型运行，并逐元素验证唯一 owner 和只写一次。
-模型不模拟设备并发、流水、L1/L0 物理行为，也不验证 CANN 编译或硬件数值。
+K group。当前三个构建变体各执行 118 次、共 354 次单核/多核模型运行，并逐元素验证唯一
+owner 和只写一次。A3.2 新增延迟 DMA 与事件生命周期检查；模型不模拟真实设备并发时序、
+缓存或 L1/L0 物理行为，也不验证 CANN 编译或硬件数值。
 
 A1 结果只验收本页的合成形状。报告中原生 OM、真实模型投影、完整 Draft 和性能仍为
 `NOT_RUN`。A2 的独立验证入口见 [A2.md](A2.md)；后续还需 M32/M64/M80、custom 图接入以及

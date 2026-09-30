@@ -12,4 +12,14 @@
 #define DFLASH_GROUP_QUANT_DEQUANT_MODE 1U
 #endif
 
+// A3.2 is opt-in until the server correctness/performance gates pass.
+// 0 is the A3.1 serial control; 1 prefetches raw inputs for down and streamed
+// A1 shapes. Gate/up and the whole-K256 path keep the serial schedule.
+#ifndef DFLASH_GROUP_QUANT_PIPELINE_MODE
+#define DFLASH_GROUP_QUANT_PIPELINE_MODE 0U
+#endif
+#define DFLASH_GROUP_QUANT_PREFETCH(k, n) \
+    (DFLASH_GROUP_QUANT_PIPELINE_MODE == 1U && \
+     (((k) == 512U || (k) == 1024U) || ((k) == 9728U && (n) == 2560U)))
+
 #endif

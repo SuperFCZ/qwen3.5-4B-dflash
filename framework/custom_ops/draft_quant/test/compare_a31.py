@@ -29,13 +29,16 @@ def matched_variants(baseline, candidate):
             raise ValueError("recorded host variant differs from the requested comparison")
 
 
-def run(baseline_path, candidate_path, output):
+def compare_variants(baseline_path, candidate_path, output, *, stage, match, labels):
     if output.exists():
         raise FileExistsError("use a new comparison output path")
     baseline, before, before_root = load_run(baseline_path, "multi-core")
     candidate, after, after_root = load_run(candidate_path, "multi-core")
-    matched_variants(baseline, candidate)
-    result = {"status": "RUNNING", "scope": "A3.1 isolated continuous benchmark; PASS means numerical gates",
+    match(baseline, candidate)
+    before_label, after_label = labels
+    ratio_key = f"{before_label}_to_{after_label}_median_ratio"
+    result = {"status": "RUNNING", "scope": f"{stage} isolated continuous benchmark; PASS means numerical gates",
+              "baseline_summary": str(baseline_path), "candidate_summary": str(candidate_path),
               "baseline_summary_sha256": sha256(baseline_path), "candidate_summary_sha256": sha256(candidate_path),
               "timing_protocol": "continuous-v1", "full_draft_validation": "NOT_RUN", "decode_performance": "NOT_RUN",
               "cases": []}
@@ -62,18 +65,23 @@ def run(baseline_path, candidate_path, output):
         old, new = timings(a["executions"]["custom"]), timings(b["executions"]["custom"])
         native_before, native_after = timings(a["executions"]["native_om"]), timings(b["executions"]["native_om"])
         row = {"name": a["name"], "status": "PASS" if valid else "FAIL", "comparisons": differences,
-               "legacy": old, "batched": new, "native_before": native_before, "native_after": native_after,
-               "legacy_to_batched_median_ratio": old["median_ms"] / new["median_ms"],
-               "batched_to_native_median_ratio": new["median_ms"] / native_after["median_ms"],
-               "legacy_workspace_bytes": a["executions"]["custom"]["workspace_bytes"],
-               "batched_workspace_bytes": b["executions"]["custom"]["workspace_bytes"]}
+               before_label: old, after_label: new, "native_before": native_before, "native_after": native_after,
+               ratio_key: old["median_ms"] / new["median_ms"],
+               f"{after_label}_to_native_median_ratio": new["median_ms"] / native_after["median_ms"],
+               f"{before_label}_workspace_bytes": a["executions"]["custom"]["workspace_bytes"],
+               f"{after_label}_workspace_bytes": b["executions"]["custom"]["workspace_bytes"]}
         result["cases"].append(row)
-        print(f"{row['name']}: {row['status']} legacy={old['median_ms']:.3f} ms "
-              f"batched={new['median_ms']:.3f} ms native={native_after['median_ms']:.3f} ms "
-              f"legacy/batched={row['legacy_to_batched_median_ratio']:.2f}x", flush=True)
+        print(f"{row['name']}: {row['status']} {before_label}={old['median_ms']:.3f} ms "
+              f"{after_label}={new['median_ms']:.3f} ms native={native_after['median_ms']:.3f} ms "
+              f"{before_label}/{after_label}={row[ratio_key]:.2f}x", flush=True)
     result["status"] = "PASS" if all(c["status"] == "PASS" for c in result["cases"]) else "FAIL"
     write_json(output, result)
     return 0 if result["status"] == "PASS" else 1
+
+
+def run(baseline_path, candidate_path, output):
+    return compare_variants(baseline_path, candidate_path, output, stage="A3.1",
+                            match=matched_variants, labels=("legacy", "batched"))
 
 
 def main():

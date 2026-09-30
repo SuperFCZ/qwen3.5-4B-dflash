@@ -33,10 +33,13 @@ inline uint32_t LaunchBlockCount(int64_t n, uint32_t availableCores, uint32_t co
     return tiles < permitted ? static_cast<uint32_t>(tiles) : permitted;
 }
 
-inline uint64_t UserUbBytes(int64_t k)
+inline uint64_t UserUbBytes(int64_t k, uint32_t rawBanks = 1)
 {
     const uint64_t tileK = static_cast<uint64_t>(KTile(k));
-    return kColumnTile * tileK * 3 + (tileK / kGroupSize) * kColumnTile * 2;
+    // W16 remains single-buffered. Only raw INT8 codes and FP16 GN scales
+    // get a second bank in A3.2 (8320 additional bytes for K128).
+    return kColumnTile * tileK * (2 + rawBanks) +
+           (tileK / kGroupSize) * kColumnTile * 2 * rawBanks;
 }
 
 struct CubePlan {

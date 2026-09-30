@@ -4,6 +4,7 @@
 #include "kernel_operator.h"
 
 namespace matmul {
+inline int cpuFailIteration = -1;
 enum class CubeFormat { ND };
 template <AscendC::TPosition P, CubeFormat F, typename D, bool TRANS = false>
 struct MatmulType {};
@@ -16,12 +17,27 @@ public:
     void SetTensorA(AscendC::GlobalTensor<half> x) { x_ = x; ready_ = true; }
     void SetTensorB(AscendC::LocalTensor<half> w, bool transpose) {
         assert(transpose);
+        AscendC::BeforeMatmul(AscendC::Bytes(w.data, tiling_.singleN * tiling_.singleK * sizeof(half)));
+        // Library helpers fetch temporary IDs too. A prefetched raw tile's
+        // pending signals must be reserved even if PIPE_ALL completes its DMA.
+        if (AscendC::cpuSync.events[0][0].signalled) ++cpuMetrics.libraryWithPendingSignals;
+        const auto scalar = AscendC::cpuPipe->FetchEventID(AscendC::HardEvent::MTE2_S);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(scalar);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(scalar);
+        const auto vector = AscendC::cpuPipe->FetchEventID(AscendC::HardEvent::MTE2_V);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(vector);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(vector);
         w_ = w;
         ready_ = true;
     }
     bool Iterate(bool partial = false) {
         assert(ready_);
         ready_ = false;
+        if (cpuFailIteration == static_cast<int>(cpuMetrics.iterations)) {
+            // Fault injection only: let End release an aborted accumulation.
+            accumulatorLive_ = false;
+            return false;
+        }
         assert(tiling_.singleM == 16 && tiling_.singleN == 64);
         assert(w_.count == tiling_.singleN * tiling_.singleK);
         if (partial) {
@@ -79,4 +95,4 @@ private:
     bool ready_ = false, accumulatorLive_ = false;
 };
 }  // namespace matmul
-#define REGIST_MATMUL_OBJ(pipe, workspace, mm, tiling) mm.Init(tiling)
+#define REGIST_MATMUL_OBJ(pipe, workspace, mm, tiling) AscendC::cpuPipe = pipe; mm.Init(tiling)

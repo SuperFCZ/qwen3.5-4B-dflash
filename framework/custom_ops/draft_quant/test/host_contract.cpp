@@ -87,6 +87,8 @@ int main()
     }
     // Keep all restrictions on the receiver's passing K=512/1024 path.
     for (int64_t k : {512, 1024, 2560, 9728}) {
+        assert(draft_quant_contract::UserUbBytes(k, 2) == 33024);
+        assert(draft_quant_contract::UserUbBytes(k, 2) - draft_quant_contract::UserUbBytes(k) == 8320);
         assert(draft_quant_contract::IsCompatibleCubePlan(k, {16, 64, 128, 16, 64, 128}));
         assert(!draft_quant_contract::IsCompatibleCubePlan(k, {16, 64, 128, 16, 64, 256}));
         assert(!draft_quant_contract::IsCompatibleCubePlan(k, {16, 64, 128, 16, 64, 64}));
