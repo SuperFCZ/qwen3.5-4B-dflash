@@ -1,14 +1,16 @@
-# DFlashGroupQuantLinear：A1 分块正确性与 A2 真实投影
+# DFlashGroupQuantLinear：A1/A2 正确性与 A3 按 N 多核执行
 
 目标为 Ascend 310P3 / CANN 9.0.0。A1 固定 M=16、group_size=128，支持
 **K=256/512/1024 × N=64/128/256，共九种形状**。实现、注册、构建及测试都在本目录，
 不修改 Qwen/DFlash 模型、导出或运行主流程。A2 新增真实 gate/up/down 的两个固定形状；
 真实数据采集、原生 OM 编译与运行命令见 **[A2.md](A2.md)**。
+用户已确认 A2 全部通过。当前 A3 在相同 tile 上按 N 分配多个核，构建、回归及单核对照
+命令见 **[A3.md](A3.md)**；A3 设备验收尚待服务器执行。
 
 原版 tiny `(M,K,N)=(16,256,64)` 已由用户在服务器确认全 PASS，包括修正 scale 视图后的
 native eager 比较。2026-09-29 用户服务器反馈 **`PASS: 9 a1 workloads`**，证据目录为
 `.runs/a1-3Sxqrl3r/data/suite.json`。A1 已通过其合成数据验收；rounding probe 中 CPU 的
-1 bit 差异是诊断项，custom 与 native eager 仍逐位一致。**A2 尚待服务器编译/运行。**
+1 bit 差异是诊断项，custom 与 native eager 仍逐位一致。A2 十组真实投影也已由用户确认通过。
 本机没有 NPU；CPU 测试不能替代设备或原生 OM 验收，也不提供性能成绩。
 
 ## 接口与范围
@@ -46,9 +48,10 @@ host 同时兼容 GE 的逻辑 origin ND 描述与 ACLNN 的物理 origin NZ 描
 | 2560（gate/up） | 64 | 128 | 20 | 24,704 |
 | 9728（down） | 64 | 128 | 76 | 24,704 |
 
-一个核顺序处理 N/64 个 N tile：A1 为 1/2/4 个，A2 gate/up 为 304 个、down 为 40 个。
-每个 tile 独占 16×64 的输出，完整归约所有 K。
-这一阶段不做多核分工、预取、双缓冲或性能调优。
+N/64 个 N tile 在 A1 为 1/2/4 个，在真实 gate/up 为 304 个、down 为 40 个。
+A3 默认启动 `min(可用 AI Core 数, N tile 数)` 个核；核 b 处理 `b, b+B, b+2B, ...`。
+每个 tile 独占 16×64 的输出，完整归约所有 K。每核的 UB、MatMul 和累加器互相独立。
+本版不做 split-K、预取、双缓冲或 tile 参数调整；`DFLASH_CORE_LIMIT=1` 构建单核对照。
 
 - **搬入：**按全局 NZ 的 K32 plane 读取当前 64 列，plane 间距使用全局 N；
   scale 使用 `(global_group * N + n_begin)` 寻址。只搬当前 K tile 的 q/scale。
@@ -92,7 +95,7 @@ SetTensorA/B 重启迭代位置，`Iterate(true)` 复用已有累加器。
 | L0C | `4*baseM*baseN*dbL0C` B；跨当前 N tile 的全部 K 保留 |
 | GM workspace | Host 查询 MatMul library workspace，ACLNN 返回最终字节数 |
 
-所有用户 UB 缓冲均按 32 B 对齐。Host 打印形状、tile 数、计划缓冲容量、转换临时区信息及
+所有用户 UB 缓冲均按 32 B 对齐，上表的片上容量是每核容量。Host 打印形状、tile 数、计划缓冲容量、转换临时区信息及
 workspace；这些不是实测带宽。测试 allocator 使用 512 B 前后哨兵，保留设备指针对齐。
 
 ## 服务器构建与运行
@@ -111,6 +114,9 @@ bash framework/custom_ops/draft_quant/run_server.sh
 ```bash
 DFLASH_SUITE=tiny bash framework/custom_ops/draft_quant/run_server.sh
 ```
+
+当前各 suite 默认使用 A3 多核调度。`DFLASH_SUITE=a3` 会同时跑 A1 和真实 A2 数据，
+并强制检查 host launch 记录；需要已有 `A2_BUNDLE` / `A2_NATIVE_OM_MANIFEST`，详见 [A3.md](A3.md)。
 
 脚本执行 msopgen、覆盖手写源码、构建、安装独立 OPP、构建 runner，再运行 A1 suite。
 本次 tiling 数据结构和 runner 都有更新，**须重新构建 OPP 与 runner**，不要混用旧安装包。
@@ -194,7 +200,8 @@ Python 测试仅依赖标准库，覆盖九种形状的布局、scale 位型、�
 和形状身份。另用本地 C++17 编译器（kernel 模型需支持 `_Float16`）测试共享 host 契约，以及在 CPU API 模型下执行实际
 kernel 源码的 27 组索引/累加案例，检查缓冲边界、输入只读、全局 stride、调用次序和结果。
 CPU 模型还执行两个真实 A2 尺寸的稀疏输入，覆盖所有 N tile、全局 stride 和最后一个
-K group。模型不模拟设备流水、L1/L0 物理行为，也不验证 CANN 编译或硬件数值。
+K group。A3 共执行 114 次单核/多核模型运行，并逐元素验证唯一 owner 和只写一次。
+模型不模拟设备并发、流水、L1/L0 物理行为，也不验证 CANN 编译或硬件数值。
 
 A1 结果只验收本页的合成形状。报告中原生 OM、真实模型投影、完整 Draft 和性能仍为
 `NOT_RUN`。A2 的独立验证入口见 [A2.md](A2.md)；后续还需 M32/M64/M80、custom 图接入以及

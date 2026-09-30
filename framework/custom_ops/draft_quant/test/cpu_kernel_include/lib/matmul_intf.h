@@ -57,6 +57,12 @@ public:
             for (uint32_t n = 0; n < tiling_.singleN; ++n) {
                 const auto index = m * tiling_.orgN + n;
                 assert(index < y.count);
+                const auto globalIndex = static_cast<size_t>(y.data + index - cpuOutputBase);
+                assert(globalIndex < cpuOutputWrites.size());
+                // Independently derive the sole owner from the global column.
+                assert((globalIndex % tiling_.orgN / 64) % cpuBlockNum == cpuBlockIdx);
+                assert(cpuOutputWrites[globalIndex]++ == 0);
+                cpuOutputOwners[globalIndex] = cpuBlockIdx;
                 y.data[index] = static_cast<half>(accumulator_[m * tiling_.singleN + n]);
                 ++cpuMetrics.stores;
             }

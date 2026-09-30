@@ -25,6 +25,14 @@ inline int64_t KTile(int64_t k)
     return k == 256 ? 256 : kGroupSize;
 }
 
+inline uint32_t LaunchBlockCount(int64_t n, uint32_t availableCores, uint32_t coreLimit = 0)
+{
+    if (n <= 0 || n % kColumnTile != 0 || availableCores == 0) return 0;
+    const uint64_t tiles = static_cast<uint64_t>(n / kColumnTile);
+    const uint32_t permitted = coreLimit != 0 && coreLimit < availableCores ? coreLimit : availableCores;
+    return tiles < permitted ? static_cast<uint32_t>(tiles) : permitted;
+}
+
 inline uint64_t UserUbBytes(int64_t k)
 {
     const uint64_t tileK = static_cast<uint64_t>(KTile(k));

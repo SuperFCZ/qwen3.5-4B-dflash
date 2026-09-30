@@ -27,10 +27,16 @@ struct CpuMetrics {
     uint32_t iterations = 0, partials = 0, outputs = 0, stores = 0, ends = 0;
 };
 inline CpuMetrics cpuMetrics;
+inline uint32_t cpuBlockIdx = 0, cpuBlockNum = 1;
+inline half *cpuOutputBase = nullptr;
+inline std::vector<uint32_t> cpuOutputWrites;
+inline std::vector<int64_t> cpuOutputOwners;
 #define GET_TILING_DATA(name, addr) const auto &name = *static_cast<const CpuTiling *>(addr)
 inline void *GetSysWorkSpacePtr() { return nullptr; }
 
 namespace AscendC {
+inline int64_t GetBlockIdx() { return cpuBlockIdx; }
+inline int64_t GetBlockNum() { return cpuBlockNum; }
 enum class TPosition { GM, VECIN, VECOUT, VECCALC };
 enum class RoundMode { CAST_NONE };
 enum class HardEvent { MTE2_S, MTE2_V };

@@ -12,7 +12,7 @@ static uint16_t Bits(half value)
     return bits;
 }
 
-static void Check(uint32_t k, uint32_t n, int pattern)
+static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_t> &launches)
 {
     constexpr uint32_t m = 16;
     const uint32_t tileK = static_cast<uint32_t>(draft_quant_contract::KTile(k));
@@ -56,16 +56,8 @@ static void Check(uint32_t k, uint32_t n, int pattern)
                     nz.push_back(q[(n1 * 16 + n0) * k + k1 * 32 + k0]);
     const auto savedX = x, savedScale = scales;
     const auto savedNz = nz;
-    std::vector<half> output(m * n + 2, static_cast<half>(-17));
     CpuTiling tiling{k, n, tileK, 65536, {n, k, m, 64, tileK}};
-    cpuMetrics = {};
-    d_flash_group_quant_linear(x.data(), nz.data(), scales.data(), output.data() + 1, nullptr, &tiling);
-    assert(Bits(output.front()) == Bits(static_cast<half>(-17)) && Bits(output.back()) == Bits(static_cast<half>(-17)));
-    assert(x == savedX && scales == savedScale && nz == savedNz);
-    assert(cpuMetrics.ubBytes == draft_quant_contract::UserUbBytes(k) + tiling.matmulUbBytes);
-    assert(cpuMetrics.iterations == (n / 64) * (k / tileK));
-    assert(cpuMetrics.partials == (n / 64) * (k / tileK - 1));
-    assert(cpuMetrics.outputs == n / 64 && cpuMetrics.stores == m * n && cpuMetrics.ends == 1);
+    std::vector<uint16_t> expected(m * n);
     for (uint32_t row = 0; row < m; ++row) {
         std::vector<uint32_t> nonzero;
         for (uint32_t i = 0; i < k; ++i) if (x[row * k + i] != 0) nonzero.push_back(i);
@@ -76,7 +68,36 @@ static void Check(uint32_t k, uint32_t n, int pattern)
                                                 static_cast<float>(scales[(i / 128) * n + c]));
                 sum += static_cast<double>(x[row * k + i]) * static_cast<double>(w);
             }
-            assert(Bits(output[1 + row * n + c]) == Bits(static_cast<half>(sum)));
+            expected[row * n + c] = Bits(static_cast<half>(sum));
+        }
+    }
+    for (uint32_t blocks : launches) {
+        std::vector<half> output(m * n + 2, static_cast<half>(-17));
+        cpuOutputBase = output.data() + 1;
+        cpuOutputWrites.assign(m * n, 0);
+        cpuOutputOwners.assign(m * n, -1);
+        cpuBlockNum = blocks;
+        // Run larger launches in reverse order to expose accidental shared
+        // state/dependence on another owner. This is a CPU ownership model,
+        // not a simulation of hardware concurrency or Cube synchronization.
+        for (uint32_t visit = 0; visit < blocks; ++visit) {
+            cpuBlockIdx = blocks == 1 ? visit : blocks - 1 - visit;
+            cpuMetrics = {};
+            d_flash_group_quant_linear(x.data(), nz.data(), scales.data(), cpuOutputBase, nullptr, &tiling);
+            uint32_t owned = 0;
+            for (uint32_t tile = 0; tile < n / 64; ++tile) owned += tile % blocks == cpuBlockIdx;
+            assert(cpuMetrics.ubBytes == (owned ? draft_quant_contract::UserUbBytes(k) + tiling.matmulUbBytes : 0));
+            assert(cpuMetrics.iterations == owned * (k / tileK));
+            assert(cpuMetrics.partials == owned * (k / tileK - 1));
+            assert(cpuMetrics.outputs == owned && cpuMetrics.stores == owned * m * 64);
+            assert(cpuMetrics.ends == (owned ? 1U : 0U));
+        }
+        assert(Bits(output.front()) == Bits(static_cast<half>(-17)) && Bits(output.back()) == Bits(static_cast<half>(-17)));
+        assert(x == savedX && scales == savedScale && nz == savedNz);
+        for (uint32_t index = 0; index < m * n; ++index) {
+            assert(cpuOutputWrites[index] == 1);
+            assert(cpuOutputOwners[index] == static_cast<int64_t>((index % n / 64) % blocks));
+            assert(Bits(output[1 + index]) == expected[index]);
         }
     }
 }
@@ -85,8 +106,8 @@ int main()
 {
     for (uint32_t k : {256U, 512U, 1024U})
         for (uint32_t n : {64U, 128U, 256U})
-            for (int pattern = 0; pattern < 3; ++pattern) Check(k, n, pattern);
-    Check(2560, 19456, 3);
-    Check(9728, 2560, 3);
-    std::cout << "CPU kernel model: 27 A1 + 2 full-shape sparse A2 cases passed; NPU NOT_RUN\n";
+            for (int pattern = 0; pattern < 3; ++pattern) Check(k, n, pattern, {1, 2, 3, 8});
+    Check(2560, 19456, 3, {1, 3, 8});
+    Check(9728, 2560, 3, {1, 3, 8});
+    std::cout << "CPU kernel model: 114 single/multi-core runs, every output has one owner; NPU NOT_RUN\n";
 }

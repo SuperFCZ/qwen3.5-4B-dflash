@@ -6,13 +6,18 @@ cann_root=${CANN_ROOT:-${ASCEND_HOME_PATH:-/usr/local/Ascend/ascend-toolkit/late
 python_bin=${MODEL_PYTHON:-python3}
 device_id=${DEVICE_ID:-0}
 suite=${DFLASH_SUITE:-a1}
-if [[ "$suite" != a1 && "$suite" != tiny && "$suite" != a2 ]]; then
-    echo "DFLASH_SUITE must be a1, tiny or a2" >&2
+core_limit=${DFLASH_CORE_LIMIT:-0}
+if [[ ! "$core_limit" =~ ^(0|[1-9][0-9]{0,4})$ ]] || (( core_limit > 65535 )); then
+    echo "DFLASH_CORE_LIMIT must be 0..65535 (0=auto, 1=single-core control)" >&2
     exit 1
 fi
-if [[ "$suite" == a2 ]]; then
+if [[ "$suite" != a1 && "$suite" != tiny && "$suite" != a2 && "$suite" != a3 ]]; then
+    echo "DFLASH_SUITE must be a1, tiny, a2 or a3" >&2
+    exit 1
+fi
+if [[ "$suite" == a2 || "$suite" == a3 ]]; then
     if [[ ! -f "${A2_BUNDLE:-}" || ! -f "${A2_NATIVE_OM_MANIFEST:-}" ]]; then
-        echo "A2 needs A2_BUNDLE=.../manifest.json and A2_NATIVE_OM_MANIFEST=.../native-om.json; see A2.md" >&2
+        echo "$suite needs A2_BUNDLE=.../manifest.json and A2_NATIVE_OM_MANIFEST=.../native-om.json; see A2.md/A3.md" >&2
         exit 1
     fi
 fi
@@ -50,6 +55,7 @@ trap 'status=$?; if (( status != 0 )); then echo "FAIL during $phase (exit $stat
 echo "Target: Ascend310P3 / CANN 9.0.0; using $cann_root"
 echo "Build: $build_root"
 echo "Evidence: $run_root"
+echo "A3 N-tile scheduling; build core cap: $core_limit (0=auto)"
 git -C "$here" rev-parse HEAD > "$run_root/source-commit.txt"
 phase=path_preflight
 "$python_bin" "$here/test/opp_preflight.py" --root "$build_root" --report "$run_root/path-preflight.json"
@@ -64,6 +70,10 @@ cp "$here/op_host/d_flash_group_quant_linear.cpp" \
    "$here/op_host/d_flash_group_quant_linear_tiling.h" \
    "$here/op_host/d_flash_group_quant_linear_contract.h" "$op_project/op_host/"
 cp "$here/op_kernel/d_flash_group_quant_linear.cpp" "$op_project/op_kernel/"
+phase=configure_core_limit
+"$python_bin" "$here/test/a3_launch.py" --core-limit "$core_limit" \
+    --header "$op_project/op_host/d_flash_group_quant_linear_build_config.h" \
+    --report "$run_root/build-config.json"
 phase=build
 (
     cd "$op_project"
@@ -98,7 +108,14 @@ phase=build_runner
 cmake -S "$here/test" -B "$build_root/test" -DCANN_ROOT="$cann_root" -DASCEND_OPP_PATH="$install_dir"
 cmake --build "$build_root/test" --parallel
 phase=correctness_suite
-if [[ "$suite" == a2 ]]; then
+if [[ "$suite" == a3 ]]; then
+    "$python_bin" "$here/test/run_a3.py" --output-dir "$data_dir" \
+        --build-config "$run_root/build-config.json" \
+        --runner "$build_root/test/dflash_group_quant_linear_test" \
+        --om-runner "$build_root/test/dflash_native_om_test" --device-id "$device_id" \
+        --bundle "$A2_BUNDLE" --native-om-manifest "$A2_NATIVE_OM_MANIFEST" \
+        --warmup "${A2_WARMUP:-3}" --repetitions "${A2_REPETITIONS:-10}"
+elif [[ "$suite" == a2 ]]; then
     "$python_bin" "$here/test/run_a2.py" --output-dir "$data_dir" \
         --runner "$build_root/test/dflash_group_quant_linear_test" \
         --om-runner "$build_root/test/dflash_native_om_test" --device-id "$device_id" \
@@ -109,8 +126,8 @@ else
         --runner "$build_root/test/dflash_group_quant_linear_test" --device-id "$device_id" --suite "$suite"
 fi
 echo "Summary: $data_dir/suite.json"
-if [[ "$suite" == a2 ]]; then
-    echo "A2 isolated native OM parity/timing recorded; full Draft and decode performance remain NOT_RUN."
+if [[ "$suite" == a2 || "$suite" == a3 ]]; then
+    echo "Isolated native OM parity/timing recorded; full Draft and decode performance remain NOT_RUN."
 else
     echo "Native OM / full Draft / performance remain NOT_RUN."
 fi

@@ -3,6 +3,7 @@
 #include <limits>
 
 #include "d_flash_group_quant_linear_contract.h"
+#include "d_flash_group_quant_linear_build_config.h"
 #include "d_flash_group_quant_linear_tiling.h"
 #include "register/op_def_registry.h"
 #include "tiling/platform/platform_ascendc.h"
@@ -114,6 +115,16 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     }
 
     auto platform = platform_ascendc::PlatformAscendC(context->GetPlatformInfo());
+    // Ascend310P is a coupled Cube/Vector architecture. Each launched AI Core
+    // owns complete N64 tiles, using the same per-core MatmulApiTiling as A2.
+    const uint32_t availableCores = platform.GetCoreNum();
+    const uint32_t coreLimit = DFLASH_GROUP_QUANT_CORE_LIMIT;
+    const uint32_t blockDim = draft_quant_contract::LaunchBlockCount(n, availableCores, coreLimit);
+    if (blockDim == 0) {
+        std::fprintf(stderr, "DFlashGroupQuantLinear: no usable AI Core for N=%lld, available=%u\n",
+                     static_cast<long long>(n), availableCores);
+        return ge::GRAPH_FAILED;
+    }
     const int64_t tileK = draft_quant_contract::KTile(k);
     const uint64_t codesBytes = kTileN * tileK;
     const uint64_t scaleBytes = (tileK / kGroup) * kTileN * 2;
@@ -174,7 +185,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     tiling.set_tileK(tileK);
     tiling.set_matmulUbBytes(matmulUbBytes);
     context->SetTilingKey(0);
-    context->SetBlockDim(1);
+    context->SetBlockDim(blockDim);
     if (context->GetRawTilingData()->GetCapacity() < tiling.GetDataSize()) return ge::GRAPH_FAILED;
     tiling.SaveToBuffer(context->GetRawTilingData()->GetData(),
                         context->GetRawTilingData()->GetCapacity());
@@ -185,7 +196,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     const int64_t cTileBytes = static_cast<int64_t>(cube.get_baseM()) * cube.get_baseN() * 4;
     // Account using real tile sizes/depths, not TCubeTiling's reserved share*
     // fields. These are planned API buffers, not measured device traffic.
-    std::fprintf(stdout, "DFlashGroupQuantLinear A1: M=16 K=%lld N=%lld tileN=64 tileK=%lld "
+    std::fprintf(stdout, "DFlashGroupQuantLinear A3: M=16 K=%lld N=%lld tileN=64 tileK=%lld "
                          "Ntiles=%lld Ktiles=%lld; UB codes=%llu scales=%llu W16=%llu "
                          "MatMul=%llu bytes; base M/N/K=%d/%d/%d; "
                          "planned L1/L0A/L0B/L0C=%lld/%lld/%lld/%lld bytes; "
@@ -201,6 +212,16 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
                  static_cast<long long>(aTileBytes * cube.get_dbL0A()),
                  static_cast<long long>(bTileBytes * cube.get_dbL0B()),
                  static_cast<long long>(cTileBytes * cube.get_dbL0C()), cube.get_transLength(),
+                 context->GetWorkspaceSizes(1)[0]);
+    // Machine-readable launch evidence. The ACLNN executor owns the opaque
+    // tiling buffer; the test coordinator verifies this record against shape
+    // and build identity instead of guessing the kernel's launch dimensions.
+    std::fprintf(stdout, "DFLASH_GROUP_QUANT_LAUNCH {\"version\":1,\"policy\":\"n-tile-cyclic-v1\","
+                         "\"m\":16,\"k\":%lld,\"n\":%lld,\"tile_n\":64,\"tile_k\":%lld,"
+                         "\"available_cores\":%u,\"core_limit\":%u,\"block_dim\":%u,\"n_tiles\":%lld,"
+                         "\"system_workspace_bytes\":%zu}\n",
+                 static_cast<long long>(k), static_cast<long long>(n), static_cast<long long>(tileK),
+                 availableCores, coreLimit, blockDim, static_cast<long long>(n / kTileN),
                  context->GetWorkspaceSizes(1)[0]);
     return ge::GRAPH_SUCCESS;
 }

@@ -22,6 +22,30 @@ bool Accepted(const Shape &origin, const Shape &storage, Format originFormat, Fo
 
 int main()
 {
+    assert(draft_quant_contract::LaunchBlockCount(64, 8) == 1);
+    assert(draft_quant_contract::LaunchBlockCount(128, 8) == 2);
+    assert(draft_quant_contract::LaunchBlockCount(256, 8) == 4);
+    assert(draft_quant_contract::LaunchBlockCount(19456, 8) == 8);
+    assert(draft_quant_contract::LaunchBlockCount(2560, 8) == 8);
+    assert(draft_quant_contract::LaunchBlockCount(19456, 8, 1) == 1);
+    assert(draft_quant_contract::LaunchBlockCount(19456, 8, 3) == 3);
+    assert(draft_quant_contract::LaunchBlockCount(19456, 8, 64) == 8);
+    assert(draft_quant_contract::LaunchBlockCount(19456, 512) == 304);
+    assert(draft_quant_contract::LaunchBlockCount(2560, 64) == 40);
+    assert(draft_quant_contract::LaunchBlockCount(2560, 0) == 0);
+    for (int64_t n : {-64, 0, 65}) assert(draft_quant_contract::LaunchBlockCount(n, 8) == 0);
+    for (int64_t n : {64, 128, 256, 2560, 19456}) {
+        for (uint32_t cores : {1U, 2U, 3U, 6U, 8U, 32U, 512U}) {
+            for (uint32_t cap : {0U, 1U, 3U, 8U, 64U}) {
+                const auto count = draft_quant_contract::LaunchBlockCount(n, cores, cap);
+                assert(count > 0 && count <= cores && count <= static_cast<uint64_t>(n / 64));
+                assert(cap == 0 || count <= cap);
+                std::vector<uint32_t> owned(count, 0);
+                for (uint32_t tile = 0; tile < static_cast<uint32_t>(n / 64); ++tile) ++owned[tile % count];
+                for (auto tiles : owned) assert(tiles > 0 && (tiles == owned[0] || tiles + 1 == owned[0]));
+            }
+        }
+    }
     for (int64_t k : {256, 512, 1024}) {
         for (int64_t n : {64, 128, 256}) {
             assert(draft_quant_contract::IsSupportedShape(16, k, n));

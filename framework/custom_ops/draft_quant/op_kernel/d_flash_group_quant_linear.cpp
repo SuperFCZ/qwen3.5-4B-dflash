@@ -23,6 +23,10 @@ extern "C" __global__ __aicore__ void d_flash_group_quant_linear(
     const uint32_t globalK = tilingData.globalK;
     const uint32_t globalN = tilingData.globalN;
     const uint32_t tileK = tilingData.tileK;
+    const uint32_t nTiles = globalN / kTileN;
+    const uint32_t blockIdx = static_cast<uint32_t>(AscendC::GetBlockIdx());
+    const uint32_t blockNum = static_cast<uint32_t>(AscendC::GetBlockNum());
+    if (blockNum == 0 || blockIdx >= blockNum || blockIdx >= nTiles) return;
     AscendC::TPipe pipe;
     Matmul<AType, BType, CType, BiasType> mm;
     REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tilingData.cubeTilingData);
@@ -46,9 +50,11 @@ extern "C" __global__ __aicore__ void d_flash_group_quant_linear(
     auto sLocal = scaleBuf.Get<half>((tileK / kGroup) * kTileN);
     auto wLocal = weightBuf.Get<half>(kTileN * tileK);
 
-    // One core visits disjoint N tiles serially. Each owner completes ALL K
-    // groups before writing Y. Correctness first: no overlap, atomics or split-K.
-    for (uint32_t nBegin = 0; nBegin < globalN; nBegin += kTileN) {
+    // Core b owns tiles b, b + blockNum, ... . Every output element has one
+    // owner, and that owner completes the unchanged full-K reduction. UB/L0C
+    // and the Matmul instance are private to the core; there is no split-K.
+    for (uint32_t nTile = blockIdx; nTile < nTiles; nTile += blockNum) {
+        const uint32_t nBegin = nTile * kTileN;
         for (uint32_t kBegin = 0; kBegin < globalK; kBegin += tileK) {
             // NZ's K32 planes have globalN/16 channel blocks. A 64-column
             // slice is contiguous within a plane, but successive planes are not.
