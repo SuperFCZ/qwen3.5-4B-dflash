@@ -11,12 +11,20 @@ constexpr int64_t kRows = 16;
 constexpr int64_t kGroupSize = 128;
 constexpr int64_t kColumnTile = 64;
 
+inline bool IsSupportedRows(int64_t m)
+{
+    return m == 16 || m == 32 || m == 64 || m == 80;
+}
+
 inline bool IsSupportedShape(int64_t m, int64_t k, int64_t n)
 {
-    const bool a1 = (k == 256 || k == 512 || k == 1024) &&
+    const bool synthetic = IsSupportedRows(m) && (k == 256 || k == 512 || k == 1024) &&
                     (n == 64 || n == 128 || n == 256);
-    const bool a2 = (k == 2560 && n == 19456) || (k == 9728 && n == 2560);
-    return m == kRows && (a1 || a2);
+    const bool m16 = m == 16 && ((k == 2560 && (n == 19456 || n == 4096)) ||
+                                ((k == 9728 || k == 4096) && n == 2560));
+    const bool kv = (m == 32 || m == 80) && k == 2560 && n == 2048;
+    const bool fc = (m == 16 || m == 64) && k == 12800 && n == 2560;
+    return synthetic || m16 || kv || fc;
 }
 
 inline int64_t KTile(int64_t k)
@@ -47,16 +55,18 @@ struct CubePlan {
     int64_t baseM, baseN, baseK;
 };
 
-inline bool IsCompatibleCubePlan(int64_t globalK, const CubePlan &plan)
+inline bool IsCompatibleCubePlan(int64_t globalK, const CubePlan &plan, int64_t m = kRows)
 {
-    // A2 only permits its two complete (K,N) pairs. The Cube itself still
-    // sees a 64-column local tile; that is not a new global workload.
+    // Global (M,K,N) pairs are validated separately. The Cube sees a local
+    // 64-column tile, covering all M rows and the current K group.
     if (globalK != 256 && globalK != 512 && globalK != 1024 &&
-        globalK != 2560 && globalK != 9728) return false;
+        globalK != 2560 && globalK != 9728 && globalK != 4096 && globalK != 12800) return false;
+    if (!IsSupportedRows(m)) return false;
     const int64_t tileK = KTile(globalK);
-    // The owner and the local B allocation always describe exactly 16x64xtileK.
-    if (plan.singleM != kRows || plan.singleN != kColumnTile || plan.singleK != tileK ||
-        plan.baseM != kRows || plan.baseN != kColumnTile) return false;
+    // One output block covers ALL M rows. This reuses each raw/dequantized B
+    // tile without an outer M loop or separate per-M-block FP16 partial sums.
+    if (plan.singleM != m || plan.singleN != kColumnTile || plan.singleK != tileK ||
+        plan.baseM != m || plan.baseN != kColumnTile) return false;
 
     if (tileK == globalK) {
         // IterateAll owns the entire K reduction. CANN's final Cube baseK can
@@ -82,10 +92,10 @@ bool IsShape(const Shape *shape, std::initializer_list<int64_t> dims)
 template <typename Shape, typename Format>
 bool IsNzWeightDescriptor(const Shape *origin, const Shape *storage,
                           Format originFormat, Format storageFormat,
-                          Format nd, Format nz, int64_t n, int64_t k)
+                          Format nd, Format nz, int64_t n, int64_t k, int64_t m = kRows)
 {
     // Both transports must describe the exact physical INT8 NZ allocation.
-    if (!IsSupportedShape(kRows, k, n)) return false;
+    if (!IsSupportedShape(m, k, n)) return false;
     if (storageFormat != nz || !IsShape(storage, {k / 32, n / 16, 16, 32})) return false;
     // GE carries logical [N,K] separately from the physical NZ storage.
     const bool geLogical = originFormat == nd && IsShape(origin, {n, k});

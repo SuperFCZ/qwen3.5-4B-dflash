@@ -22,6 +22,7 @@ NZ_SHAPE = (8, 4, 16, 32)
 REPETITIONS = 2
 ABI = "dflash-group-quant-linear-tiny-v1"
 A1_ABI = "dflash-group-quant-linear-a1-v1"
+A4_ABI = "dflash-group-quant-linear-a4-synthetic-v1"
 NATIVE_POLICY = "production-ng-backed-scale-view-v1"
 REPO = Path(__file__).resolve().parents[4]
 
@@ -56,6 +57,24 @@ class Workload:
 
 TINY = Workload()
 A1_WORKLOADS = tuple(Workload(k=k, n=n) for k in (256, 512, 1024) for n in (64, 128, 256))
+
+
+@dataclass(frozen=True)
+class RowWorkload(Workload):
+    m: int = 32
+
+    def __post_init__(self):
+        if (any(type(v) is not int for v in (self.m, self.k, self.n)) or
+                self.m not in (32, 64, 80) or self.k not in (256, 512, 1024) or self.n not in (64, 128, 256)):
+            raise ValueError("A4 synthetic requires M=32/64/80, K=256/512/1024, N=64/128/256")
+
+
+A4_WORKLOADS = A1_WORKLOADS + tuple(RowWorkload(m=m, k=k, n=n) for m in (32, 64, 80)
+                                  for k in (256, 512, 1024) for n in (64, 128, 256))
+
+
+def workload_abi(shape):
+    return A4_ABI if shape.m != 16 else (ABI if shape == TINY else A1_ABI)
 
 
 def half(value):
@@ -156,6 +175,13 @@ def cases(shape=TINY):
     for m, k in enumerate(positions):
         basis[m * shape.k + k] = (-1 if m % 2 else 1) / 128
     yield "group_nz_boundaries", half_bytes(basis), q, scales, True
+    if shape.m != 16:
+        # Every row is nonzero, including the second/fifth M16 block and the
+        # last row. Distinguish row stride, stale tails and an accidental M16 cap.
+        rows = [0.0] * (shape.m * shape.k)
+        for row in range(shape.m):
+            rows[row * shape.k + (row * 31 + row // 16 * 128) % shape.k] = (1 + row % 5) / 128
+        yield "m_block_boundaries", half_bytes(rows), q, scales, True
 
     for seed in (391, 817):
         rng = random.Random(seed)
@@ -214,10 +240,10 @@ def write_json(path, value):
 
 def prepare(root, shape=TINY):
     root.mkdir(parents=True, exist_ok=False)
-    manifest = {"abi": ABI if shape == TINY else A1_ABI,
+    manifest = {"abi": workload_abi(shape),
                 "m": shape.m, "k": shape.k, "n": shape.n, "group_size": GROUP,
                 "layout": "nz_int8_v1", "w_origin": [shape.n, shape.k], "w_storage": list(shape.nz_shape),
-                "tile": [16, 64, shape.tile_k], "n_tiles": shape.n // 64,
+                "tile": [shape.m, 64, shape.tile_k], "n_tiles": shape.n // 64,
                 "k_tiles": shape.k // shape.tile_k, "accumulation": "cube-l0c-fp32",
                 "scale_layout": "GN", "repetitions": REPETITIONS, "cases": []}
     for name, x, q, scales, exact in cases(shape):
@@ -238,10 +264,11 @@ def prepare(root, shape=TINY):
 
 
 def workload_from_manifest(manifest):
-    shape = Workload(manifest.get("m"), manifest.get("k"), manifest.get("n"))
-    if manifest.get("abi") != (ABI if shape == TINY else A1_ABI):
+    cls = RowWorkload if manifest.get("abi") == A4_ABI else Workload
+    shape = cls(manifest.get("m"), manifest.get("k"), manifest.get("n"))
+    if manifest.get("abi") != workload_abi(shape):
         raise ValueError("unsupported workload ABI")
-    if shape != TINY and (manifest.get("tile") != [16, 64, shape.tile_k] or
+    if shape != TINY and (manifest.get("tile") != [shape.m, 64, shape.tile_k] or
                           manifest.get("n_tiles") != shape.n // 64 or
                           manifest.get("k_tiles") != shape.k // shape.tile_k or
                           manifest.get("accumulation") != "cube-l0c-fp32"):
@@ -395,8 +422,8 @@ def check(root):
                          "inspect native-eager.json before diagnosing the custom kernel")
     if shape != TINY and native_report.get("mkn") != [shape.m, shape.k, shape.n]:
         raise ValueError("native workload identity differs")
-    report = {"abi": manifest["abi"], "status": "PASS", "scope": "synthetic A1 ACLNN correctness only",
-              "mkn": [shape.m, shape.k, shape.n], "tile": [16, 64, shape.tile_k],
+    report = {"abi": manifest["abi"], "status": "PASS", "scope": "synthetic ACLNN correctness only",
+              "mkn": [shape.m, shape.k, shape.n], "tile": [shape.m, 64, shape.tile_k],
               "reference_policy": NATIVE_POLICY,
               "native_om_parity": "NOT_RUN", "full_draft_validation": "NOT_RUN", "performance": "NOT_RUN",
               "numerical_gate": "bitwise FP16; atol=0 rtol=0; nonfinite fails", "cases": []}
@@ -408,6 +435,8 @@ def check(root):
                     "repetitions": REPETITIONS, "device_id": native_report["environment"]["device_id"]}
         if shape != TINY:
             required.update(m=shape.m, k=shape.k, n=shape.n, tile_n=64, tile_k=shape.tile_k)
+        if shape.m != 16:
+            required.update(tile_m=shape.m, weight_reuse_rows=shape.m)
         if any(execution.get(k) != v for k, v in required.items()):
             raise ValueError(f"invalid candidate execution evidence: {case['name']}")
         outputs = []

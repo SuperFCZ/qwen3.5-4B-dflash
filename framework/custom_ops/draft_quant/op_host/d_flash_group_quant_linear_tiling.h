@@ -6,6 +6,7 @@
 
 namespace optiling {
 BEGIN_TILING_DATA_DEF(DFlashGroupQuantLinearTilingData)
+TILING_DATA_FIELD_DEF(uint32_t, globalM);
 TILING_DATA_FIELD_DEF(uint32_t, globalK);
 TILING_DATA_FIELD_DEF(uint32_t, globalN);
 TILING_DATA_FIELD_DEF(uint32_t, tileK);

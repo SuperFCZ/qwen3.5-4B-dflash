@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export/compile ten static native WeightQuant OMs from an A2 real-data bundle."""
+"""Export static native WeightQuant OMs from a hash-bound A2 or A4 real-data bundle."""
 from __future__ import annotations
 
 import argparse
@@ -10,15 +10,17 @@ from pathlib import Path
 import shutil
 import sys
 
-from a2_common import (ABI, REPO, case_shape, checked_file, load_bundle, record, sha256,
-                       validate_layout, validate_native_graph, write_json)
+from a2_common import (REPO, case_shape, checked_file, load_bundle, record, sha256,
+                       validate_layout, validate_native_graph, write_json, scope_identity)
 
 sys.path[:0] = [str(REPO / "framework/python"), str(REPO)]
 
 
 def export(args):
+    scope = getattr(args, "scope", "a2")
+    abi, _ = scope_identity(scope)
     if os.environ.get("ASCEND310P_SIMULATION_ONLY") == "1":
-        raise ValueError("A2 export requires the real CANN/TorchAir environment")
+        raise ValueError(f"{scope.upper()} export requires the real CANN/TorchAir environment")
     import numpy as np
     import torch
     import torch_npu
@@ -30,7 +32,7 @@ def export(args):
     from qwen35_dflash.ascend310p.weight_prepack import PREPACK_POLICY
 
     bundle_path = args.bundle.resolve()
-    bundle = load_bundle(bundle_path)
+    bundle = load_bundle(bundle_path, scope)
     root = require_run_output(args.output_dir)
     root.mkdir(parents=True, exist_ok=False)
     device = f"npu:{args.device_id}"
@@ -39,7 +41,7 @@ def export(args):
         raise ValueError("A2 native export requires Ascend 310P")
     require_weight_quant_matmul()
     atc = resolve_atc_executable(args.atc)
-    report = {"abi": ABI, "status": "RUNNING", "bundle_sha256": sha256(bundle_path),
+    report = {"abi": abi, "context_rows": bundle.get("context_rows"), "status": "RUNNING", "bundle_sha256": sha256(bundle_path),
               "bundle": str(bundle_path), "soc_version": "Ascend310P3", "cases": [],
               "scope": "static native WeightQuant OMs with identical real offline-NZ weights/scales",
               "native_om_execution": "NOT_RUN", "full_draft_validation": "NOT_RUN",
@@ -63,9 +65,9 @@ def export(args):
         report["cases"].append(entry)
         model = x = q = scales = spec = None
         try:
-            print(f"A2 native export: {case['name']}", flush=True)
-            validate_layout(bundle_path.parent, case)
-            m, k, n = case_shape(case)
+            print(f"{scope.upper()} native export: {case['name']}", flush=True)
+            validate_layout(bundle_path.parent, case, scope)
+            m, k, n = case_shape(case, scope)
             directory = root / case["name"]
             cache = directory / "prepack"
             cache.mkdir(parents=True)
@@ -96,16 +98,16 @@ def export(args):
                                     "draft_weight_storage": PREPACK_POLICY, "draft_quantization": "w8a16",
                                     "draft_weight_prepack_manifest": str(cache / "manifest.json"),
                                     "tensor_abi": {"inputs": [{"name": "x", "dtype": "float16", "shape": [m, k]}]},
-                                    "a2_case": case["name"], "a2_bundle_sha256": report["bundle_sha256"],
+                                    f"{scope}_case": case["name"], f"{scope}_bundle_sha256": report["bundle_sha256"],
                                     "synthetic_prepack": False})
             entry["phase"] = "export"
             air = export_air_bundle(lambda _: (spec,), {}, directory / "artifacts")
-            validate_native_graph(air["graphs"][0], case, report["bundle_sha256"])
+            validate_native_graph(air["graphs"][0], case, report["bundle_sha256"], scope)
             entry["phase"] = "atc"
             compiled = compile_air_bundle(air["manifest_path"], atc_bin=atc, soc_version="Ascend310P3",
                                           extra_args=["--precision_mode=must_keep_origin_dtype", "--deterministic=0"])
             graph = compiled["graphs"][0]
-            validate_native_graph(graph, case, report["bundle_sha256"])
+            validate_native_graph(graph, case, report["bundle_sha256"], scope)
             om_path = checked_file(Path(compiled["manifest_path"]).parent, graph["om"])
             entry.update(status="PASS", phase="complete", om=record(om_path, root),
                          deployment=record(Path(compiled["manifest_path"]), root),
@@ -121,7 +123,7 @@ def export(args):
             torch.npu.empty_cache()
             write_json(report_path, report)
     # Reject a changing data bundle, even if every compiler returned success.
-    load_bundle(bundle_path)
+    load_bundle(bundle_path, scope)
     report["status"] = ("PASS" if sha256(bundle_path) == report["bundle_sha256"] and
                          all(c["status"] == "PASS" for c in report["cases"]) else "FAIL")
     write_json(report_path, report)
@@ -131,6 +133,7 @@ def export(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scope", choices=("a2", "a4"), default="a2")
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True, help="new directory below AI_RUN_DIR")
     parser.add_argument("--atc", default="atc")

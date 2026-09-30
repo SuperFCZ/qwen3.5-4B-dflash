@@ -58,7 +58,7 @@ int main()
             assert(draft_quant_contract::UserUbBytes(k) == (k == 256 ? 49408 : 24704));
         }
     }
-    assert(!draft_quant_contract::IsSupportedShape(32, 256, 64));
+    assert(!draft_quant_contract::IsSupportedShape(48, 256, 64));
     assert(!draft_quant_contract::IsSupportedShape(16, 384, 64));
     assert(!draft_quant_contract::IsSupportedShape(16, 512, 80));
     assert(!draft_quant_contract::IsSupportedShape(16, -256, 64));
@@ -76,6 +76,29 @@ int main()
     assert(!draft_quant_contract::IsSupportedShape(16, 2560, 2560));
     assert(!draft_quant_contract::IsSupportedShape(16, 9728, 19456));
     assert(!draft_quant_contract::IsSupportedShape(16, 2560, 64));
+    for (int64_t m : {16, 32, 64, 80}) {
+        for (int64_t k : {256, 512, 1024}) {
+            for (int64_t n : {64, 128, 256}) {
+                assert(draft_quant_contract::IsSupportedShape(m, k, n));
+                const auto tileK = draft_quant_contract::KTile(k);
+                assert(draft_quant_contract::IsCompatibleCubePlan(k, {m, 64, tileK, m, 64, 128}, m));
+            }
+        }
+    }
+    for (const auto &shape : {std::vector<int64_t>{16, 2560, 4096}, {16, 4096, 2560},
+                              {32, 2560, 2048}, {80, 2560, 2048}, {16, 12800, 2560}, {64, 12800, 2560}}) {
+        const auto m = shape[0], k = shape[1], n = shape[2];
+        assert(draft_quant_contract::IsSupportedShape(m, k, n));
+        assert(draft_quant_contract::IsCompatibleCubePlan(k, {m, 64, 128, m, 64, 128}, m));
+        assert(!draft_quant_contract::IsCompatibleCubePlan(k, {m, 64, 128, m / 2, 64, 128}, m));
+        const Shape logical{{n, k}}, physical{{k / 32, n / 16, 16, 32}};
+        assert(draft_quant_contract::IsNzWeightDescriptor(&logical, &physical,
+            Format::ND, Format::NZ, Format::ND, Format::NZ, n, k, m));
+        assert(draft_quant_contract::UserUbBytes(k) == 24704); // independent of M
+    }
+    for (const auto &shape : {std::vector<int64_t>{16, 2560, 2048}, {64, 2560, 2048},
+                              {32, 12800, 2560}, {80, 12800, 2560}, {32, 2560, 19456}, {64, 4096, 2560}})
+        assert(!draft_quant_contract::IsSupportedShape(shape[0], shape[1], shape[2]));
 
     // Regression: K=256 uses IterateAll, so a returned baseK=256 is valid.
     // Neither the dequantization group nor the caller's buffer size changes.

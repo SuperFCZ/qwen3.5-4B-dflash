@@ -8,18 +8,21 @@ from pathlib import Path
 import subprocess
 from types import SimpleNamespace
 
-from a2_common import (ABI, CASE_NAMES, case_shape, checked_file, load_bundle, record,
-                       sha256, validate_execution, validate_layout, validate_native_graph, write_json)
+from a2_common import (case_shape, checked_file, load_bundle, record,
+                       sha256, validate_execution, validate_layout, validate_native_graph, write_json, scope_identity)
 from reference import compare
 
 
-def validate_om_manifest(path, bundle_path, bundle):
+def validate_om_manifest(path, bundle_path, bundle, scope="a2"):
+    abi, case_names = scope_identity(scope)
     report = json.loads(path.read_text())
-    if (report.get("abi") != ABI or report.get("status") != "PASS" or
+    if (report.get("abi") != abi or report.get("status") != "PASS" or
             report.get("bundle_sha256") != sha256(bundle_path) or
             report.get("soc_version") != "Ascend310P3" or
-            tuple(c.get("name") for c in report.get("cases", [])) != CASE_NAMES):
-        raise ValueError("native OM manifest does not match this complete A2 bundle")
+            tuple(c.get("name") for c in report.get("cases", [])) != case_names):
+        raise ValueError(f"native OM manifest does not match this complete {scope.upper()} bundle")
+    if scope == "a4" and report.get("context_rows") != bundle["context_rows"]:
+        raise ValueError("native OM manifest context gear differs")
     for case, compiled in zip(bundle["cases"], report["cases"]):
         if compiled.get("status") != "PASS" or compiled.get("input_hashes") != {
                 name: item["sha256"] for name, item in case["files"].items()}:
@@ -31,7 +34,7 @@ def validate_om_manifest(path, bundle_path, bundle):
         if deployment.get("status") != "PASS" or len(deployment.get("graphs", [])) != 1:
             raise ValueError("native deployment is incomplete")
         graph = deployment["graphs"][0]
-        validate_native_graph(graph, case, report["bundle_sha256"])
+        validate_native_graph(graph, case, report["bundle_sha256"], scope)
         if checked_file(deployment_path.parent, graph["om"]) != checked_file(path.parent, compiled["om"]):
             raise ValueError("native OM manifest points to a different deployment model")
         if (compiled.get("offline_weight", {}).get("sha256") != case["files"]["w_nz.bin"]["sha256"] or
@@ -40,11 +43,11 @@ def validate_om_manifest(path, bundle_path, bundle):
     return report
 
 
-def cpu_probe(root, case, actual):
+def cpu_probe(root, case, actual, scope="a2"):
     """Small full-K FP64 diagnostic; never a relaxed substitute for OM parity."""
     import numpy as np
-    m, k, n = case_shape(case)
-    rows = [0, 1, 7, m - 1]
+    m, k, n = case_shape(case, scope)
+    rows = sorted({0, 1, 7, m - 1} | {row for row in (15, 16, 31, 32, 63, 64) if row < m})
     columns = sorted({0, 15, 16, 63, 64, n // 2 - 1, n // 2, n - 1})
     def array(name, dtype, shape):
         return np.memmap(checked_file(root, case["files"][name]), mode="r", dtype=dtype, shape=shape)
@@ -74,24 +77,27 @@ def compare_outputs(custom, native, eager, shape):
     gate = ("custom_vs_native_om", "custom_repeat", "native_om_repeat")
     comparison["status"] = "PASS" if all(comparison[key]["bitwise_equal"] and comparison[key]["finite"]
                                             for key in gate) else "FAIL"
-    comparison["eager_policy"] = "diagnostic; native OM is the A2 numerical gate"
+    comparison["eager_policy"] = "diagnostic; same-input native OM is the numerical gate"
     return comparison
 
 
 def run(args):
+    scope = getattr(args, "scope", "a2")
+    abi, case_names = scope_identity(scope)
     timing_protocol = getattr(args, "timing_protocol", "checked-v1")
     if timing_protocol not in ("checked-v1", "continuous-v1"):
         raise ValueError("unsupported timing protocol")
     if not 3 <= args.warmup <= 100 or not 10 <= args.repetitions <= 1000 or args.device_id < 0:
         raise ValueError("need nonnegative device, warmup 3..100 and repetitions 10..1000")
     bundle_path, om_manifest = args.bundle.resolve(), args.native_om_manifest.resolve()
-    bundle = load_bundle(bundle_path)
-    native = validate_om_manifest(om_manifest, bundle_path, bundle)
+    bundle = load_bundle(bundle_path, scope)
+    native = validate_om_manifest(om_manifest, bundle_path, bundle, scope)
     runners = {"custom": args.runner.resolve(), "native_om": args.om_runner.resolve()}
     runner_hashes = {name: sha256(path) for name, path in runners.items()}
     root = args.output_dir.resolve()
     root.mkdir(parents=True, exist_ok=False)
-    report = {"abi": ABI, "status": "RUNNING", "scope": "10 real native-eager-captured M16 projections",
+    report = {"abi": abi, "status": "RUNNING", "scope": f"{len(case_names)} {scope.upper()} real native-eager-captured projections",
+              "context_rows": bundle.get("context_rows"),
               "bundle": str(bundle_path), "bundle_sha256": sha256(bundle_path),
               "native_om_manifest": str(om_manifest), "native_om_manifest_sha256": sha256(om_manifest),
               "runners": {name: {"path": str(path), "sha256": runner_hashes[name]} for name, path in runners.items()},
@@ -108,8 +114,8 @@ def run(args):
         directory = root / case["name"]
         directory.mkdir()
         try:
-            shape = case_shape(case)
-            validate_layout(bundle_path.parent, case)
+            shape = case_shape(case, scope)
+            validate_layout(bundle_path.parent, case, scope)
             om = checked_file(om_manifest.parent, compiled["om"])
             outputs, executions, bracket_outputs = {}, {}, {}
             # Alternate which implementation is run first across pairs.
@@ -135,6 +141,9 @@ def run(args):
                 validate_execution(execution, shape, args.device_id,
                                    "AscendCL ACLNN" if kind == "custom" else "AscendCL native OM",
                                    args.warmup, args.repetitions, timing_protocol)
+                if scope == "a4" and kind == "custom" and (
+                        execution.get("tile_m") != shape[0] or execution.get("weight_reuse_rows") != shape[0]):
+                    raise ValueError("A4 requires a current runner reporting full-M output/weight reuse")
                 executions[kind] = execution
                 outputs[kind] = [(dest / f"actual-{i}.bin").read_bytes() for i in range(2)]
                 if timing_protocol == "continuous-v1":
@@ -147,7 +156,7 @@ def run(args):
             row["phase"] = "comparison"
             eager = checked_file(bundle_path.parent, case["files"]["eager-0.bin"]).read_bytes()
             comparison = compare_outputs(outputs["custom"], outputs["native_om"], eager, shape)
-            comparison["cpu_sample"] = cpu_probe(bundle_path.parent, case, outputs["custom"][0])
+            comparison["cpu_sample"] = cpu_probe(bundle_path.parent, case, outputs["custom"][0], scope)
             write_json(directory / "comparison.json", comparison)
             # Recheck sources after execution so stale/changed files cannot pass.
             for item in case["files"].values():
@@ -173,12 +182,13 @@ def run(args):
                   native_om_parity="PASS" if passed else "FAIL_OR_INCOMPLETE",
                   isolated_timing="MEASURED" if all("executions" in r for r in report["cases"]) else "INCOMPLETE")
     write_json(summary, report)
-    print(f"{report['status']}: 10 A2 real projections; summary: {summary}\nFull Draft / decode performance NOT_RUN", flush=True)
+    print(f"{report['status']}: {len(case_names)} {scope.upper()} real projections; summary: {summary}\nFull Draft / decode performance NOT_RUN", flush=True)
     return 0 if passed else 1
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scope", choices=("a2", "a4"), default="a2")
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--native-om-manifest", type=Path, required=True)
     parser.add_argument("--runner", type=Path, required=True)

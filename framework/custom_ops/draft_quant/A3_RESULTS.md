@@ -1,9 +1,12 @@
-# DFlashGroupQuantLinear：A2 / A3 / A3.1 优化结果
+# DFlashGroupQuantLinear：A2 / A3 / A3.1 / A3.2 优化结果
 
 本页记录用户在 **Ascend 310P3 / CANN 9.0.0** 服务器上反馈的数值、独立投影计时和 msprof
 结果。A3 通过按 N64 tile 多核分工获得约 6.85×/6.56× 的单核→多核加速；A3.1 在相同
 `continuous-v1` 协议下，通过批量反量化再获得约 3.87× 的 legacy→batched 加速。
 gate/up 的 batched 耗时已略低于原生 WeightQuant OM，down 仍有约 24% 的耗时差距。
+后续 A3.2 用户反馈 down serial≈1.91 ms、prefetch≈1.79 ms、native≈1.54 ms。
+按这些近似数计算，prefetch 比 serial 耗时少约 6.3%，仍比 native 高约 16.2%。
+用户决定暂停此路径的进一步优化，进入 [A4 全投影形状覆盖](A4.md)。本轮反馈的证据边界见第 8 节。
 
 **完整 Draft / Decode 端到端性能仍为 `NOT_RUN`。本文的 isolated projection 加速比不能
 解释为模型整体加速，也不能据此宣称达到完整 Draft 的优化预算。**
@@ -246,7 +249,7 @@ profile 数据与未插桩 A/B 分目录保存；具体命令见 [A3.1 操作说
 
 上面是复核命令，不表示本地已经执行；`-recheck.json` 是新输出建议名称，不是本轮既有证据。
 
-## 7. 阶段结论与下一步
+## 7. A3.1 时的阶段结论与后续方向
 
 A3 解决了核间并行度问题；A3.1 显著降低了核内反量化碎片化和过多 barrier 的成本。在不
 改变量化数学、K 归约顺序和 FP16 舍入边界的前提下，gate/up 降至约 3.68 ms，耗时比本次
@@ -265,3 +268,23 @@ A3 解决了核间并行度问题；A3.1 显著降低了核内反量化碎片化
 | Isolated timing | A3 多核有效；A3.1 同协议 A/B 约 3.87×，gate/up 局部优于原生、down 仍慢 | 不能作为串联子图或完整图时间；不宣称已达性能预算 |
 | Profiling | batched 的 Cube/MTE 活动观测支持转向计算、搬运及重叠效率的分析 | 原始计数器口径、完整时间线/stall 数据待补；不能推出唯一瓶颈或保证下一轮收益 |
 | Full-model validation | **完整 Draft / Decode performance：`NOT_RUN`** | custom 接入后的候选/KV 轨迹、token/EOS/stop reason、C16/C64、峰值显存与端到端收益均需另测 |
+
+## 8. A3.2 用户计时反馈与阶段冻结
+
+用户随后提供的 down 独立调用近似结果为：
+
+| 路径 | 耗时 | 比较 |
+| --- | ---: | --- |
+| serial | ≈1.91 ms | 本轮串行对照 |
+| raw prefetch | ≈1.79 ms | serial/prefetch≈1.067×；耗时下降≈6.3% |
+| native OM | ≈1.54 ms | prefetch/native≈1.162×；custom 耗时仍高≈16.2% |
+
+这些数字按用户摘要保留，不补造逐层、p95、样本或置信区间。A3.2 的实现提交为 `345ccdd`，
+运行入口默认 `continuous-v1`、warmup=5、repetitions=30；本次实际配置及提交应以服务器
+原始报告核对。用户本轮未提供 `suite.json`、比较 JSON 或 profile 目录，也未贴完整数值门槛
+日志，因此本页仅记录**用户报告的 isolated timing**，不新增一份原始 correctness PASS 或
+profiling 结论，不宣称所有形状及完整模型已验证。
+
+按用户要求，暂停 down 性能调优，保留 serial/prefetch 两条路径与现有默认 serial。
+A4 只扩展 Q/O、FC M16/M64、KV M32/M80 的支持与独立原生 OM 验收；不继续修改反量化、
+预取调度或 down 的 tile 参数。完整 Draft / Decode 仍为 `NOT_RUN`。

@@ -65,7 +65,8 @@ def configure_build(header, report, limit, mode="batched", kernel_header=None, p
                HERE / "op_kernel/d_flash_group_quant_linear.cpp",
                HERE / "op_kernel/d_flash_group_quant_linear_build_config.h",
                HERE / "test/main.cpp", HERE / "test/native_om.cpp", HERE / "test/runner_common.h"]
-    write_json(report, {"abi": "dflash-group-quant-linear-build-v3", "policy": POLICY,
+    write_json(report, {"abi": "dflash-group-quant-linear-build-v4", "policy": POLICY,
+                        "tiling_abi": "full-m-v2", "launch_version": 4,
                         "pipeline_mode": pipeline_mode,
                         "dequant_mode": mode, "kernel_header": str(kernel_header) if kernel_header else None,
                         "core_limit": limit, "header": str(header), "header_sha256": sha256(header),
@@ -76,7 +77,7 @@ def configure_build(header, report, limit, mode="batched", kernel_header=None, p
 def load_build_config(path):
     path = Path(path).resolve()
     config = json.loads(path.read_text())
-    if (config.get("abi") not in tuple(f"dflash-group-quant-linear-build-v{i}" for i in (1, 2, 3)) or config.get("policy") != POLICY or
+    if (config.get("abi") not in tuple(f"dflash-group-quant-linear-build-v{i}" for i in (1, 2, 3, 4)) or config.get("policy") != POLICY or
             type(config.get("core_limit")) is not int or core_limit(config["core_limit"]) != config["core_limit"]):
         raise ValueError("invalid A3 build configuration")
     header = Path(config["header"])
@@ -91,7 +92,7 @@ def load_build_config(path):
             raise ValueError("host/kernel build headers differ")
     else:
         config["dequant_mode"] = "legacy"
-    if config["abi"].endswith("v3"):
+    if config["abi"].endswith(("v3", "v4")):
         mode = config.get("pipeline_mode")
         if (mode not in PIPELINE_MODES or
                 f"#define DFLASH_GROUP_QUANT_PIPELINE_MODE {PIPELINE_MODES[mode]}U" not in header.read_text() or
@@ -99,10 +100,12 @@ def load_build_config(path):
             raise ValueError("generated pipeline mode differs from build configuration")
     else:
         config["pipeline_mode"] = "serial"
+    if config["abi"].endswith("v4") and (config.get("tiling_abi") != "full-m-v2" or config.get("launch_version") != 4):
+        raise ValueError("A4 build requires the full-M tiling ABI and version 4 launch evidence")
     return config
 
 
-def launch_evidence(log, shape, limit, workspace_bytes, dequant_mode=None, pipeline_mode=None):
+def launch_evidence(log, shape, limit, workspace_bytes, dequant_mode=None, pipeline_mode=None, launch_version=None):
     m, k, n = shape
     records = [json.loads(line.partition(PREFIX)[2]) for line in Path(log).read_text().splitlines() if PREFIX in line]
     if not records:
@@ -110,15 +113,22 @@ def launch_evidence(log, shape, limit, workspace_bytes, dequant_mode=None, pipel
     first = records[0]
     if any(item != first for item in records):
         raise ValueError("host launch plan changed between repeated calls")
-    mode = first.get("dequant_mode") if first.get("version") in (2, 3) else "legacy"
-    if (first.get("version") not in (1, 2, 3) or mode not in DEQUANT_MODES or
+    version = first.get("version")
+    if launch_version is not None and version != launch_version:
+        raise ValueError("host launch version differs from the build; rebuild the isolated OPP")
+    if version == 4 and (first.get("tile_m") != m or first.get("weight_reuse_rows") != m):
+        raise ValueError("A4 requires a single full-M output tile and full-M weight reuse")
+    if m != 16 and version != 4:
+        raise ValueError("M32/64/80 requires version 4 full-M launch evidence")
+    mode = first.get("dequant_mode") if version in (2, 3, 4) else "legacy"
+    if (version not in (1, 2, 3, 4) or mode not in DEQUANT_MODES or
             (dequant_mode is not None and mode != dequant_mode)):
         raise ValueError("launch dequantization mode differs from the requested build")
-    pipeline = first.get("pipeline_mode") if first.get("version") == 3 else "serial"
-    if pipeline_mode is not None and (first.get("version") != 3 or pipeline != pipeline_mode):
-        raise ValueError("launch pipeline mode needs version 3 evidence matching the requested build")
+    pipeline = first.get("pipeline_mode") if version in (3, 4) else "serial"
+    if pipeline_mode is not None and (version not in (3, 4) or pipeline != pipeline_mode):
+        raise ValueError("launch pipeline mode needs version 3/4 evidence matching the requested build")
     plan = pipeline_plan(k, n, pipeline)
-    if first.get("version") == 3:
+    if version in (3, 4):
         if (any(first.get(key) != value for key, value in plan.items()) or
                 (pipeline == "prefetch" and mode != "batched")):
             raise ValueError("launch pipeline selection/buffers differ from the shape policy")

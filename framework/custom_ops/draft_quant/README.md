@@ -8,8 +8,9 @@
 命令见 **[A3.md](A3.md)**；A3 多核版本已由用户确认通过。当前 A3.1 优化批量反量化并增加
 连续计时，运行入口与新 A/B 要求见 **[A3_1.md](A3_1.md)**。用户已反馈 A3.1 的实测计时和
 profiling 结果，阶段总结、比较口径与 evidence 清单见 **[A3_RESULTS.md](A3_RESULTS.md)**。
-下一轮 **[A3_2.md](A3_2.md)** 提供 down raw-input 预取候选及 serial/prefetch A/B；
-候选仍待服务器验证，默认保留 A3.1 serial。
+**[A3_2.md](A3_2.md)** 提供 down 预取候选；用户反馈约 1.91→1.79 ms（native≈1.54 ms），
+并决定暂停继续调优，默认保留 A3.1 serial。当前 **[A4.md](A4.md)** 扩展 Q/O/KV/FC 和
+M16/32/64/80，提供 C16/C64 共 52 个真实 projection 的独立验收；A4 设备结果待运行。
 完整 Draft / Decode 性能仍为 `NOT_RUN`。
 
 原版 tiny `(M,K,N)=(16,256,64)` 已由用户在服务器确认全 PASS，包括修正 scale 视图后的
@@ -22,16 +23,16 @@ native eager 比较。2026-09-29 用户服务器反馈 **`PASS: 9 a1 workloads`*
 
 GE 类型仍为 `DFlashGroupQuantLinear`，ACLNN 调用签名不变：
 `aclnnDFlashGroupQuantLinearGetWorkspaceSize(x, w_nz, s, y, ...)`，随后执行
-`aclnnDFlashGroupQuantLinear(...)`。Host 从 X 和 S 读取 K/N，只接受 A1 的九种形状，
-以及 A2 的 `(K,N)=(2560,19456)/(9728,2560)`；
-不支持动态未知维度、M 的其他档位或不对齐尾块。
+`aclnnDFlashGroupQuantLinear(...)`。Host 从 X 和 S 读取 M/K/N，接受原 A1/A2，新增 A4 的
+Q/O、FC M16/M64、KV M32/M80 固定组合及 36 个合成形状，完整白名单见 [A4.md](A4.md)。
+不支持动态未知维度、白名单外的 M 档位或不对齐尾块。A4 内部 tiling ABI 新增 globalM，需完整重建隔离 OPP。
 
 | 张量 | 模型逻辑 / GE origin shape | 物理 shape | dtype / format |
 | --- | --- | --- | --- |
-| X | `[16,K]` | `[16,K]` | FP16 ND |
+| X | `[M,K]` | `[M,K]` | FP16 ND |
 | W_nz | `[N,K]` | `[K/32,N/16,16,32]` | signed INT8 FRACTAL_NZ |
 | S | `[K/128,N]` | `[K/128,N]` | FP16 ND，连续 GN |
-| Y | `[16,N]` | `[16,N]` | FP16 ND |
+| Y | `[M,N]` | `[M,N]` | FP16 ND |
 
 NZ 索引保持 `W_nz[k//32,n//16,n%16,k%32]=q[n,k]`，code 范围 [-128,127]，
 布局版本仍为 `nz_int8_v1`。所有支持的尺寸都已对齐，无 padding。
@@ -55,7 +56,8 @@ host 同时兼容 GE 的逻辑 origin ND 描述与 ACLNN 的物理 origin NZ 描
 
 N/64 个 N tile 在 A1 为 1/2/4 个，在真实 gate/up 为 304 个、down 为 40 个。
 A3 默认启动 `min(可用 AI Core 数, N tile 数)` 个核；核 b 处理 `b, b+B, b+2B, ...`。
-每个 tile 独占 16×64 的输出，完整归约所有 K。每核的 UB、MatMul 和累加器互相独立。
+每个 tile 独占 M×64 的输出，完整归约所有 K；同一权重 tile 服务全部 M 行。
+每核的 UB、MatMul 和累加器互相独立。
 上表为默认 serial 的缓冲配置；`DFLASH_CORE_LIMIT=1` 构建单核对照。A3.2 显式启用 prefetch
 时，为 down / A1 K512/1024 双缓冲 q/scale，用户 UB 增为 33,024 B；gate/up 和 K256
 保持 serial。不做 split-K 或 tile 参数调整。
@@ -64,7 +66,7 @@ A3 默认启动 `min(可用 AI Core 数, N tile 数)` 个核；核 b 处理 `b, 
   scale 使用 `(global_group * N + n_begin)` 寻址。serial 只搬当前 K tile 的 q/scale；
   prefetch 可提前一组搬入另一 bank，生命周期见 [A3_2.md](A3_2.md)。
 - **反量化：**signed INT8→FP16，再按各 group 的 FP16 scale 相乘，得到片上的
-  ND `[64,tileK]` 权重。权重服务全部 16 行，不写回 GM。
+  ND `[64,tileK]` 权重。权重服务全部 M 行，不写回 GM。
 - **K=256：**保留已验证的 `IterateAll()` 整段 K 路径，仅增加 N tile 地址偏移。
 - **K>256：**每个 tile 重新 `SetTensorA/SetTensorB`，第一次 `Iterate(false)`
   初始化 Cube 累加器，后续 `Iterate(true)` 累加至同一个 FP32 L0C。
@@ -73,8 +75,8 @@ A3 默认启动 `min(可用 AI Core 数, N tile 数)` 个核；核 b 处理 `b, 
   每次 Iterate 后等待所有流水，才能复用 UB；K tile 之间没有
   `GetTensorC()` 或 `End()`。下一个 N tile 重新初始化累加器，最后统一 `End()`。
 
-Host 固定 `baseM=singleCoreM=16`、`baseN=singleCoreN=64` 和 `singleCoreK=tileK`。
-`SetShape(16,64,tileK)` 与 `SetOrgShape(16,N,K,tileK)` 分别声明当前计算块、全局 A/C
+Host 固定 `baseM=singleCoreM=M`、`baseN=singleCoreN=64` 和 `singleCoreK=tileK`。
+`SetShape(M,64,tileK)` 与 `SetOrgShape(M,N,K,tileK)` 分别声明当前计算块、全局 A/C
 stride 和局部 B stride。baseK 按实际执行路径检查：K=256 的 `IterateAll()` 允许 SDK 返回
 不超过 256 的正数、16 对齐 baseK（包括 256）；K=512/1024 的 partial-sum 路径继续严格
 要求 baseK=128。量化 group_size=128 与 Cube 内部 baseK 是不同概念，两个 group 的 scale
@@ -210,10 +212,10 @@ Python 测试仅依赖标准库，覆盖九种形状的布局、scale 位型、�
 和形状身份。另用本地 C++17 编译器（kernel 模型需支持 `_Float16`）测试共享 host 契约，以及在 CPU API 模型下执行实际
 kernel 源码的 27 组索引/累加案例，检查缓冲边界、输入只读、全局 stride、调用次序和结果。
 CPU 模型还执行两个真实 A2 尺寸的稀疏输入，覆盖所有 N tile、全局 stride 和最后一个
-K group。当前三个构建变体各执行 118 次、共 354 次单核/多核模型运行，并逐元素验证唯一
+K group。当前三个构建变体各执行 298 次、共 894 次单核/多核模型运行，并逐元素验证唯一
 owner 和只写一次。A3.2 新增延迟 DMA 与事件生命周期检查；模型不模拟真实设备并发时序、
 缓存或 L1/L0 物理行为，也不验证 CANN 编译或硬件数值。
 
 A1 结果只验收本页的合成形状。报告中原生 OM、真实模型投影、完整 Draft 和性能仍为
-`NOT_RUN`。A2 的独立验证入口见 [A2.md](A2.md)；后续还需 M32/M64/M80、custom 图接入以及
+`NOT_RUN`。A2 的独立验证入口见 [A2.md](A2.md)，M32/M64/M80 的新验收见 [A4.md](A4.md)；后续还需 custom 图接入以及
 [OPTIMIZATION.md](../../../docs/OPTIMIZATION.md) 规定的同输入原生 OM 和完整模型验收。

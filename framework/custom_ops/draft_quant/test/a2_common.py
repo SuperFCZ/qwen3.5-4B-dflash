@@ -6,11 +6,18 @@ import json
 import math
 from pathlib import Path
 import re
+import a4_contract
 
 REPO = Path(__file__).resolve().parents[4]
 ABI = "dflash-group-quant-linear-a2-v1"
 SHAPES = {"gate_up": (16, 2560, 19456), "down": (16, 9728, 2560)}
 CASE_NAMES = tuple(f"layer-{layer}-{kind}" for layer in range(5) for kind in SHAPES)
+
+
+def scope_identity(scope):
+    if scope == "a2": return ABI, CASE_NAMES
+    if scope == "a4": return a4_contract.ABI, a4_contract.CASE_NAMES
+    raise ValueError("projection scope must be a2 or a4")
 
 
 def sha256(path):
@@ -45,7 +52,9 @@ def checked_file(root, item, size=None):
     return path
 
 
-def case_shape(case):
+def case_shape(case, scope="a2"):
+    scope_identity(scope)
+    if scope == "a4": return a4_contract.case_shape(case)
     shape = SHAPES.get(case.get("projection"))
     if (shape is None or type(case.get("layer")) is not int or not 0 <= case["layer"] < 5 or
             case.get("name") != f"layer-{case['layer']}-{case['projection']}" or
@@ -55,18 +64,25 @@ def case_shape(case):
     return shape
 
 
-def load_bundle(path):
+def load_bundle(path, scope="a2"):
     path = Path(path).resolve()
     bundle = json.loads(path.read_text())
-    if (bundle.get("abi") != ABI or bundle.get("status") != "PASS" or
+    abi, names = scope_identity(scope)
+    if (bundle.get("abi") != abi or bundle.get("status") != "PASS" or
             bundle.get("capture_runtime") != "native NPU DraftGraph replay" or
             bundle.get("cpu_fallback") is not False or bundle.get("capture_repeat_equal") is not True or
             bundle.get("checkpoint", {}).get("variant") != "w8a16" or
             bundle.get("checkpoint", {}).get("status") != "PASS" or
-            tuple(c.get("name") for c in bundle.get("cases", [])) != CASE_NAMES):
-        raise ValueError("A2 requires a completed real W8 replay with all five gate/up and down pairs")
+            tuple(c.get("name") for c in bundle.get("cases", [])) != names):
+        raise ValueError(f"{scope.upper()} requires a completed real W8 replay with the complete projection inventory")
+    if scope == "a4":
+        rows = bundle.get("context_rows")
+        a4_contract.cases(rows)
+        if (bundle.get("source", {}).get("context_rows") != rows or
+                any(c.get("context_rows") != rows for c in bundle["cases"])):
+            raise ValueError("A4 capture context gear differs from frozen replay/cases")
     for case in bundle["cases"]:
-        m, k, n = case_shape(case)
+        m, k, n = case_shape(case, scope)
         sizes = {"x.bin": m * k * 2, "q_nk.bin": n * k, "w_nz.bin": n * k,
                  "s_gn.bin": n * (k // 128) * 2, "eager-0.bin": m * n * 2, "eager-1.bin": m * n * 2}
         if set(case["files"]) != set(sizes):
@@ -78,10 +94,10 @@ def load_bundle(path):
     return bundle
 
 
-def validate_layout(root, case):
+def validate_layout(root, case, scope="a2"):
     """Use array views instead of millions of Python integers for real weights."""
     import numpy as np
-    m, k, n = case_shape(case)
+    m, k, n = case_shape(case, scope)
     def array(name, dtype, shape):
         return np.memmap(checked_file(root, case["files"][name]), mode="r", dtype=dtype, shape=shape)
     q = array("q_nk.bin", "i1", (n, k))
@@ -127,15 +143,15 @@ def replay_context_rows(valid, storage_rows, declared_rows):
     return rows
 
 
-def validate_native_graph(graph, case, bundle_hash):
+def validate_native_graph(graph, case, bundle_hash, scope="a2"):
     """Bind the exporter's actual NZ Const audit to the captured weight bytes."""
-    m, k, n = case_shape(case)
+    m, k, n = case_shape(case, scope)
     metadata = graph.get("metadata", {})
     layout = graph.get("runtime_input_abi", {}).get("weight_quant_layout", {})
     prepack = layout.get("prepack", {})
     if (graph.get("name") != "weight_quant_reference" or graph.get("input_names") != ["x"] or
-            graph.get("output_names") != ["y"] or metadata.get("a2_case") != case["name"] or
-            metadata.get("a2_bundle_sha256") != bundle_hash or
+            graph.get("output_names") != ["y"] or metadata.get(f"{scope}_case") != case["name"] or
+            metadata.get(f"{scope}_bundle_sha256") != bundle_hash or
             metadata.get("tensor_abi", {}).get("inputs") != [{"name": "x", "dtype": "float16", "shape": [m, k]}] or
             layout.get("status") != "PASS" or layout.get("node_count") != 1 or
             prepack.get("status") != "PASS" or prepack.get("node_count") != 1 or

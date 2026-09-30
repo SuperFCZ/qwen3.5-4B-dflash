@@ -94,7 +94,7 @@ int main(int argc, char **argv)
         const int64_t kK = argc >= 6 ? ParseDimension(argv[4]) : 256;
         const int64_t kN = argc >= 6 ? ParseDimension(argv[5]) : 64;
         if (!draft_quant_contract::IsSupportedShape(kM, kK, kN)) {
-            throw std::runtime_error("unsupported A1/A2 shape");
+            throw std::runtime_error("unsupported A1/A2/A4 M/K/N tuple");
         }
         Timing timing;
         if (argc == 9 && std::string(argv[8]) != "--continuous") throw std::runtime_error("unknown timing option");
@@ -162,6 +162,7 @@ int main(int argc, char **argv)
                   "\"input_readonly\":true,\"guards_intact\":true,\"repetitions\":" << kRepetitions <<
                   ",\"m\":" << kM << ",\"k\":" << kK << ",\"n\":" << kN <<
                   ",\"tile_n\":64,\"tile_k\":" << draft_quant_contract::KTile(kK) <<
+                  ",\"tile_m\":" << kM << ",\"weight_reuse_rows\":" << kM <<
                   ",\"device_id\":" << r.deviceId << ",\"workspace_bytes\":" << peakWorkspace
                   << ",\"tracked_device_allocation_bytes\":"
                   << (x.size() + w.size() + s.size() + kM * kN * 2 + peakWorkspace +

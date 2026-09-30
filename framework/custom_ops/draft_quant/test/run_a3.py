@@ -13,7 +13,7 @@ import run_a2
 import run_suite
 
 
-def collect_launches(a1_root, real_root, limit, dequant_mode=None, pipeline_mode=None):
+def collect_launches(a1_root, real_root, limit, dequant_mode=None, pipeline_mode=None, launch_version=None):
     a1 = json.loads((a1_root / "suite.json").read_text())
     real = json.loads((real_root / "suite.json").read_text())
     if a1.get("status") != "PASS" or real.get("status") != "PASS":
@@ -25,14 +25,14 @@ def collect_launches(a1_root, real_root, limit, dequant_mode=None, pipeline_mode
         for case in workload["custom_cases"]:
             directory = a1_root / workload["name"] / case["name"]
             execution = json.loads((directory / "execution.json").read_text())
-            plan = launch_evidence(directory / "runner.log", workload["mkn"], limit, execution["workspace_bytes"], dequant_mode, pipeline_mode)
+            plan = launch_evidence(directory / "runner.log", workload["mkn"], limit, execution["workspace_bytes"], dequant_mode, pipeline_mode, launch_version)
             evidence["a1"].append({"name": workload["name"] + "/" + case["name"], "launch": plan})
     if len(evidence["a1"]) != 81:
         raise ValueError("A3 requires all 81 A1 cases")
     for case in real["cases"]:
         execution = case["executions"]["custom"]
         plan = launch_evidence(real_root / case["name"] / "custom/runner.log",
-                               [execution[d] for d in ("m", "k", "n")], limit, execution["workspace_bytes"], dequant_mode, pipeline_mode)
+                               [execution[d] for d in ("m", "k", "n")], limit, execution["workspace_bytes"], dequant_mode, pipeline_mode, launch_version)
         if limit != 1 and plan["block_dim"] < 2:
             raise ValueError("A3 multi-core acceptance requires at least two cores on every real projection")
         native = case["executions"]["native_om"]
@@ -74,8 +74,8 @@ def run(args):
             report["checks"][name] = {"status": "FAIL", "error": f"{type(error).__name__}: {error}"}
         write_json(summary, report)
     try:
-        expected_pipeline = config["pipeline_mode"] if config["abi"].endswith("v3") else None
-        launches, real = collect_launches(root / "a1", root / "real", limit, config["dequant_mode"], expected_pipeline)
+        expected_pipeline = config["pipeline_mode"] if config["abi"].endswith(("v3", "v4")) else None
+        launches, real = collect_launches(root / "a1", root / "real", limit, config["dequant_mode"], expected_pipeline, config.get("launch_version"))
         load_build_config(args.build_config)
         if sha256(args.build_config) != report["build_config_sha256"]:
             raise ValueError("build configuration changed during execution")

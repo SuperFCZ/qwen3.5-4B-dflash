@@ -22,12 +22,12 @@ if [[ ! "$core_limit" =~ ^(0|[1-9][0-9]{0,4})$ ]] || (( core_limit > 65535 )); t
     echo "DFLASH_CORE_LIMIT must be 0..65535 (0=auto, 1=single-core control)" >&2
     exit 1
 fi
-if [[ "$suite" != a1 && "$suite" != tiny && "$suite" != a2 && "$suite" != a3 && "$suite" != a31 && "$suite" != a32 ]]; then
-    echo "DFLASH_SUITE must be a1, tiny, a2, a3, a31 or a32" >&2
+if [[ "$suite" != a1 && "$suite" != tiny && "$suite" != a2 && "$suite" != a3 && "$suite" != a31 && "$suite" != a32 && "$suite" != a4 ]]; then
+    echo "DFLASH_SUITE must be a1, tiny, a2, a3, a31, a32 or a4" >&2
     exit 1
 fi
-if [[ "$suite" == a32 && "$dequant_mode" != batched ]]; then
-    echo "A3.2 requires DFLASH_DEQUANT_MODE=batched for both variants" >&2
+if [[ ( "$suite" == a32 || "$suite" == a4 ) && "$dequant_mode" != batched ]]; then
+    echo "$suite requires DFLASH_DEQUANT_MODE=batched" >&2
     exit 1
 fi
 if [[ "$suite" == a2 || "$suite" == a3 || "$suite" == a31 || "$suite" == a32 ]]; then
@@ -35,6 +35,15 @@ if [[ "$suite" == a2 || "$suite" == a3 || "$suite" == a31 || "$suite" == a32 ]];
         echo "$suite needs A2_BUNDLE=.../manifest.json and A2_NATIVE_OM_MANIFEST=.../native-om.json; see A2.md/A3.md" >&2
         exit 1
     fi
+fi
+
+if [[ "$suite" == a4 ]]; then
+    for name in A4_C16_BUNDLE A4_C64_BUNDLE A4_C16_NATIVE_OM_MANIFEST A4_C64_NATIVE_OM_MANIFEST; do
+        if [[ ! -f "${!name:-}" ]]; then
+            echo "a4 requires $name pointing to the corresponding C16/C64 capture or native OM manifest; see A4.md" >&2
+            exit 1
+        fi
+    done
 fi
 
 if [[ -f "$cann_root/set_env.sh" ]]; then
@@ -127,7 +136,16 @@ phase=build_runner
 cmake -S "$here/test" -B "$build_root/test" -DCANN_ROOT="$cann_root" -DASCEND_OPP_PATH="$install_dir"
 cmake --build "$build_root/test" --parallel
 phase=correctness_suite
-if [[ "$suite" == a3 || "$suite" == a31 || "$suite" == a32 ]]; then
+if [[ "$suite" == a4 ]]; then
+    "$python_bin" "$here/test/run_a4.py" --output-dir "$data_dir" \
+        --build-config "$run_root/build-config.json" \
+        --runner "$build_root/test/dflash_group_quant_linear_test" \
+        --om-runner "$build_root/test/dflash_native_om_test" --device-id "$device_id" \
+        --c16-bundle "$A4_C16_BUNDLE" --c64-bundle "$A4_C64_BUNDLE" \
+        --c16-native-om-manifest "$A4_C16_NATIVE_OM_MANIFEST" \
+        --c64-native-om-manifest "$A4_C64_NATIVE_OM_MANIFEST" \
+        --warmup "${A2_WARMUP:-5}" --repetitions "${A2_REPETITIONS:-30}"
+elif [[ "$suite" == a3 || "$suite" == a31 || "$suite" == a32 ]]; then
     timing_protocol=checked-v1
     stage=A3
     default_warmup=3
@@ -157,7 +175,7 @@ else
         --runner "$build_root/test/dflash_group_quant_linear_test" --device-id "$device_id" --suite "$suite"
 fi
 echo "Summary: $data_dir/suite.json"
-if [[ "$suite" == a2 || "$suite" == a3 || "$suite" == a31 || "$suite" == a32 ]]; then
+if [[ "$suite" == a2 || "$suite" == a3 || "$suite" == a31 || "$suite" == a32 || "$suite" == a4 ]]; then
     echo "Isolated native OM parity/timing recorded; full Draft and decode performance remain NOT_RUN."
 else
     echo "Native OM / full Draft / performance remain NOT_RUN."

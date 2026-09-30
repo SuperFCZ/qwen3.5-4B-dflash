@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture five real M16 gate/up + down pairs during a frozen native Draft replay.
+"""Capture A2 gate/up+down or A4 all projections during a frozen native Draft replay.
 
 This imports the production model without editing it. The replay stops after
 the last down projection, so no Target decoder or vocabulary head is loaded.
@@ -14,15 +14,16 @@ import os
 from pathlib import Path
 import sys
 
-from a2_common import (ABI, CASE_NAMES, REPO, SHAPES, record, replay_context_rows,
-                       sha256, snapshot_contract, write_json)
+from a2_common import (REPO, SHAPES, record, replay_context_rows,
+                       sha256, snapshot_contract, write_json, scope_identity)
+import a4_contract
 
 sys.path[:0] = [str(REPO / "framework/python"), str(REPO)]
 
 
 def require_draft_row_update(torch_module):
     """Check the production overload's registration; replay tests NPU execution."""
-    message = ("A2 capture requires callable torch.ops.npu.npu_scatter_nd_update.default "
+    message = ("Draft capture requires callable torch.ops.npu.npu_scatter_nd_update.default "
                "for the production functional whole-row cache update. Load the receiver "
                "torch_npu extension that registers this operator; no fallback is used.")
     try:
@@ -122,8 +123,10 @@ def embedding_rows(directory, key, ids, config):
 
 
 def capture(args):
+    scope = getattr(args, "scope", "a2")
+    abi, case_names = scope_identity(scope)
     if os.environ.get("ASCEND310P_SIMULATION_ONLY") == "1":
-        raise ValueError("A2 capture requires a real NPU")
+        raise ValueError(f"{scope.upper()} capture requires a real NPU")
     import torch
     import torch_npu
     from models.dflash_v1.draft_quantization import load_quantized_draft
@@ -135,7 +138,7 @@ def capture(args):
 
     root = require_run_output(args.output_dir)
     root.mkdir(parents=True, exist_ok=False)
-    manifest = {"abi": ABI, "status": "RUNNING", "capture_runtime": "native NPU DraftGraph replay",
+    manifest = {"abi": abi, "status": "RUNNING", "capture_runtime": "native NPU DraftGraph replay",
                 "cpu_fallback": False, "capture_repeat_equal": False, "cases": [],
                 "native_om_parity": "NOT_RUN", "full_draft_validation": "NOT_RUN"}
     write_json(root / "manifest.json", manifest)
@@ -154,6 +157,9 @@ def capture(args):
         if (config.hidden_size, config.intermediate_size, config.num_hidden_layers, config.block_size) != (2560, 9728, 5, 16):
             raise ValueError("A2 requires the pinned five-layer W8 Draft")
         names, arrays, layers, source = frozen_inputs(args.replay_report, config, args.feature_layers)
+        if scope == "a4" and (getattr(args, "context_rows", None) not in (16, 64) or
+                              args.context_rows != source["context_rows"]):
+            raise ValueError("A4 --context-rows must match the actual frozen replay gear; no padding/replacement")
         rows, embedding_source = embedding_rows(args.target_dir, args.embedding_key,
                                                  [source["anchor"], config.mask_token_id], config)
 
@@ -171,11 +177,13 @@ def capture(args):
         graph = DraftGraph(draft, FrozenEmbedding(), torch.nn.Identity(),
                            row_update=row_update, consume_source=True, feature_layers=layers).eval()
         manifest.update(checkpoint=draft.draft_quantization_audit, source=source,
+                        context_rows=source["context_rows"],
                         embedding=embedding_source,
                         environment={"torch": str(torch.__version__), "torch_npu": str(torch_npu.__version__),
                                      "device_id": args.device_id, "device_name": device_name},
                         sources={str(p.relative_to(REPO)): sha256(p) for p in (
-                            Path(__file__), REPO / "models/dflash_v1/draft_quantization.py",
+                            Path(__file__), Path(__file__).with_name("a4_contract.py"),
+                            Path(__file__).with_name("a2_common.py"), REPO / "models/dflash_v1/draft_quantization.py",
                             REPO / "models/dflash_v1/weight_quant_matmul.py",
                             REPO / "framework/python/qwen35_dflash/ascend310p/incremental.py")})
         inputs = tuple(torch.from_numpy(a.copy()).to(device) for a in arrays)
@@ -190,13 +198,15 @@ def capture(args):
             tensor.detach().cpu().contiguous().numpy().tofile(path)
             case["files"][name] = record(path, root)
 
-        def hook_for(layer, kind):
-            m, k, n = SHAPES[kind]
-            case = {"name": f"layer-{layer}-{kind}", "layer": layer, "projection": kind,
-                    "m": m, "k": k, "n": n, "group_size": 128, "layout": "nz_int8_v1", "files": {}}
+        def hook_for(descriptor):
+            case = dict(descriptor, files={})
+            m, k, n = (case[d] for d in ("m", "k", "n"))
             manifest["cases"].append(case)
 
             def hook(module, values, result):
+                if (tuple(values[0].shape) not in ((m, k), (1, m, k)) or
+                        tuple(result.shape) not in ((m, n), (1, m, n))):
+                    raise ValueError(f"captured projection row/feature shape differs: {case['name']}")
                 x = values[0].detach().reshape(m, k).contiguous()
                 y = result.detach().reshape(m, n).contiguous()
                 if x.dtype != torch.float16 or y.dtype != torch.float16 or not torch.isfinite(x).all().item() or not torch.isfinite(y).all().item():
@@ -217,13 +227,21 @@ def capture(args):
                 if current_repeat and case["files"]["eager-0.bin"]["sha256"] != case["files"]["eager-1.bin"]["sha256"]:
                     raise ValueError(f"native eager repeat drift: {case['name']}")
                 seen.append(case["name"])
-                if layer == 4 and kind == "down":
+                if case["name"] == "layer-4-down":
                     raise CaptureComplete()
             return hook
 
-        for layer, module in enumerate(graph.layers):
-            handles.append(module.gate_up_linear.register_forward_hook(hook_for(layer, "gate_up")))
-            handles.append(module.down_proj.register_forward_hook(hook_for(layer, "down")))
+        if scope == "a4":
+            targets = a4_contract.capture_targets(graph, source["context_rows"])
+        else:
+            targets = []
+            for layer, module in enumerate(graph.layers):
+                for kind, projection in (("gate_up", module.gate_up_linear), ("down", module.down_proj)):
+                    m, k, n = SHAPES[kind]
+                    targets.append((projection, dict(name=f"layer-{layer}-{kind}", layer=layer, projection=kind,
+                        m=m, k=k, n=n, group_size=128, layout="nz_int8_v1")))
+        for module, descriptor in targets:
+            handles.append(module.register_forward_hook(hook_for(descriptor)))
         with torch.inference_mode():
             for current_repeat in range(2):
                 seen.clear()
@@ -232,7 +250,7 @@ def capture(args):
                 except CaptureComplete:
                     pass
                 torch.npu.synchronize()
-                if tuple(seen) != CASE_NAMES:
+                if tuple(seen) != case_names:
                     raise ValueError("incomplete or repeated projection capture")
                 for name, value in zip(names, inputs):
                     if hashlib.sha256(value.cpu().contiguous().numpy().tobytes()).hexdigest() != source["replay_input_sha256"][name]:
@@ -245,11 +263,13 @@ def capture(args):
         for handle in handles:
             handle.remove()
         write_json(root / "manifest.json", manifest)
-    print(f"Captured 10 real projections: {root / 'manifest.json'}; OM/custom validation NOT_RUN", flush=True)
+    print(f"Captured {len(case_names)} {scope.upper()} real projections: {root / 'manifest.json'}; OM/custom validation NOT_RUN", flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scope", choices=("a2", "a4"), default="a2")
+    parser.add_argument("--context-rows", type=int, choices=(16, 64), help="required frozen gear for A4")
     parser.add_argument("--draft-dir", type=Path, required=True)
     parser.add_argument("--target-dir", type=Path, required=True, help="original Target checkpoint containing embeddings")
     parser.add_argument("--embedding-key", default="model.language_model.embed_tokens.weight")

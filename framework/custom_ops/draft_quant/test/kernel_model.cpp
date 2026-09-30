@@ -12,9 +12,9 @@ static uint16_t Bits(half value)
     return bits;
 }
 
-static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_t> &launches)
+static uint32_t runs = 0;
+static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_t> &launches, uint32_t m = 16)
 {
-    constexpr uint32_t m = 16;
     const uint32_t tileK = static_cast<uint32_t>(draft_quant_contract::KTile(k));
     std::vector<half> x(m * k), scales((k / 128) * n);
     std::vector<int8_t> q(n * k), nz;
@@ -26,7 +26,7 @@ static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_
     }
     for (uint32_t row = 0; row < m; ++row) {
         if (pattern == 0 || pattern == 3) {
-            const uint32_t group = pattern == 3 ? (row == 15 ? k / 128 - 1 : row * (k / 128) / 16)
+            const uint32_t group = pattern == 3 ? (row == m - 1 ? k / 128 - 1 : row * (k / 128) / m)
                                                 : row % (k / 128);
             const uint32_t pos = group * 128 + ((pattern == 3 ? row : row / (k / 128)) % 2 ? 127 : 0);
             x[row * k + pos] = static_cast<half>((row % 2 ? -1.0f : 1.0f) / 128);
@@ -59,7 +59,7 @@ static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_
                     nz.push_back(q[(n1 * 16 + n0) * k + k1 * 32 + k0]);
     const auto savedX = x, savedScale = scales;
     const auto savedNz = nz;
-    CpuTiling tiling{k, n, tileK, 65536, {n, k, m, 64, tileK}};
+    CpuTiling tiling{m, k, n, tileK, 65536, {n, k, m, 64, tileK}};
     std::vector<uint16_t> expected(m * n);
     for (uint32_t row = 0; row < m; ++row) {
         std::vector<uint32_t> nonzero;
@@ -75,6 +75,7 @@ static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_
         }
     }
     for (uint32_t blocks : launches) {
+        ++runs;
         std::vector<half> output(m * n + 2, static_cast<half>(-17));
         cpuOutputBase = output.data() + 1;
         cpuOutputWrites.assign(m * n, 0);
@@ -91,7 +92,7 @@ static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_
             for (uint32_t tile = 0; tile < n / 64; ++tile) owned += tile % blocks == cpuBlockIdx;
             // Independent of the production selector: this fixture only runs
             // whitelisted shapes; prefetch excludes whole-K256 and gate/up.
-            const bool prefetch = DFLASH_GROUP_QUANT_PIPELINE_MODE == 1 && k != 256 && k != 2560;
+            const bool prefetch = DFLASH_GROUP_QUANT_PIPELINE_MODE == 1 && (k == 512 || k == 1024 || k == 9728);
             const uint64_t userUb = prefetch ? 33024 : (k == 256 ? 49408 : 24704);
             assert(cpuMetrics.ubBytes == (owned ? userUb + tiling.matmulUbBytes : 0));
             assert(cpuMetrics.iterations == owned * (k / tileK));
@@ -132,6 +133,16 @@ int main()
     Check(9728, 2560, 3, {1, 3, 7, 8});
     Check(9728, 2560, 4, {7});
     Check(9728, 2560, 2, {7});
+    for (uint32_t m : {32U, 64U, 80U})
+        for (uint32_t k : {256U, 512U, 1024U})
+            for (uint32_t n : {64U, 128U, 256U})
+                for (int pattern = 0; pattern < 3; ++pattern) Check(k, n, pattern, {1, 7}, m);
+    // All newly supported real shapes, including last M rows and K groups.
+    for (const auto &shape : {std::array<uint32_t, 3>{16, 2560, 4096}, {16, 4096, 2560},
+                              {32, 2560, 2048}, {80, 2560, 2048}, {16, 12800, 2560}, {64, 12800, 2560}}) {
+        Check(shape[1], shape[2], 3, {1, 7}, shape[0]);
+        Check(shape[1], shape[2], 4, {7}, shape[0]);
+    }
 #if DFLASH_GROUP_QUANT_PIPELINE_MODE == 1
     // The abort path must consume outstanding lookahead signals before release,
     // including a failure at the first, middle and last group. TPipe's model
@@ -140,7 +151,7 @@ int main()
         std::vector<half> x(16 * 512), s(4 * 64, static_cast<half>(1));
         std::vector<int8_t> q(64 * 512);
         std::vector<half> output(16 * 64, static_cast<half>(-17));
-        CpuTiling tiling{512, 64, 128, 65536, {64, 512, 16, 64, 128}};
+        CpuTiling tiling{16, 512, 64, 128, 65536, {64, 512, 16, 64, 128}};
         cpuMetrics = {};
         cpuBlockIdx = 0;
         cpuBlockNum = 1;
@@ -154,5 +165,5 @@ int main()
 #endif
     std::cout << "CPU kernel model: mode=" << DFLASH_GROUP_QUANT_DEQUANT_MODE
               << "; pipeline=" << DFLASH_GROUP_QUANT_PIPELINE_MODE
-              << "; 118 single/multi-core runs, every output has one owner; NPU NOT_RUN\n";
+              << "; " << runs << " single/multi-core runs, every output has one owner; NPU NOT_RUN\n";
 }

@@ -1,4 +1,4 @@
-// Isolated static M16 native WeightQuant OM reference; no model-runtime edits.
+// Isolated static native WeightQuant OM reference; no model-runtime edits.
 #include "runner_common.h"
 #include "../op_host/d_flash_group_quant_linear_contract.h"
 #include <iostream>

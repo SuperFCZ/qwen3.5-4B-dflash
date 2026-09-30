@@ -10,7 +10,6 @@ static_assert(DFLASH_GROUP_QUANT_PIPELINE_MODE == 0U || DFLASH_GROUP_QUANT_DEQUA
 using namespace matmul;
 
 namespace {
-constexpr uint32_t kM = 16;
 constexpr uint32_t kTileN = 64;
 constexpr uint32_t kGroup = 128;
 constexpr uint32_t kNzK0 = 32;
@@ -44,6 +43,7 @@ extern "C" __global__ __aicore__ void d_flash_group_quant_linear(
     GM_ADDR x, GM_ADDR w_nz, GM_ADDR s, GM_ADDR y, GM_ADDR workspace, GM_ADDR tiling)
 {
     GET_TILING_DATA(tilingData, tiling);
+    const uint32_t globalM = tilingData.globalM;
     const uint32_t globalK = tilingData.globalK;
     const uint32_t globalN = tilingData.globalN;
     const uint32_t tileK = tilingData.tileK;
@@ -68,10 +68,10 @@ extern "C" __global__ __aicore__ void d_flash_group_quant_linear(
 
     AscendC::GlobalTensor<half> xGm, sGm, yGm;
     AscendC::GlobalTensor<int8_t> qGm;
-    xGm.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(x), kM * globalK);
+    xGm.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(x), globalM * globalK);
     qGm.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t *>(w_nz), globalN * globalK);
     sGm.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(s), (globalK / kGroup) * globalN);
-    yGm.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(y), kM * globalN);
+    yGm.SetGlobalBuffer(reinterpret_cast<__gm__ half *>(y), globalM * globalN);
     auto qBanks = codesBuf.Get<int8_t>(rawBanks * kTileN * tileK);
     auto sBanks = scaleBuf.Get<half>(rawBanks * (tileK / kGroup) * kTileN);
     auto wLocal = weightBuf.Get<half>(kTileN * tileK);

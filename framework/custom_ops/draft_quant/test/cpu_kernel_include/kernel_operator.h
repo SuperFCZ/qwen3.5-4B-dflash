@@ -22,7 +22,7 @@ struct CpuCubeTiling {
     uint32_t orgN, orgKa, singleM, singleN, singleK;
 };
 struct CpuTiling {
-    uint32_t globalK, globalN, tileK;
+    uint32_t globalM, globalK, globalN, tileK;
     uint64_t matmulUbBytes;
     CpuCubeTiling cubeTilingData;
 };

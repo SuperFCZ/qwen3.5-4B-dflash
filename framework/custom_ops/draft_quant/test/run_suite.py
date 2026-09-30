@@ -10,11 +10,11 @@ import reference as ref
 
 
 def run(root, runner, device_id, suite):
-    shapes = ref.A1_WORKLOADS if suite == "a1" else (ref.TINY,)
+    shapes = {"a1": ref.A1_WORKLOADS, "tiny": (ref.TINY,), "a4": ref.A4_WORKLOADS}[suite]
     root.mkdir(parents=True, exist_ok=False)
     report_path = root / "suite.json"
     report = {"schema_version": 1, "suite": suite, "status": "RUNNING",
-              "scope": "synthetic N/K tiling correctness; no model integration",
+              "scope": "synthetic M/N/K tiling correctness; no model integration",
               "device_id": device_id, "cpu_fallback": False,
               "native_om_parity": "NOT_RUN", "performance": "NOT_RUN", "full_draft_validation": "NOT_RUN",
               "workloads": [{"name": s.name, "mkn": [s.m, s.k, s.n], "status": "NOT_RUN"} for s in shapes]}
@@ -67,7 +67,7 @@ def main():
     cli.add_argument("--output-dir", type=Path, required=True)
     cli.add_argument("--runner", type=Path, required=True)
     cli.add_argument("--device-id", type=int, default=0)
-    cli.add_argument("--suite", choices=("a1", "tiny"), default="a1")
+    cli.add_argument("--suite", choices=("a1", "tiny", "a4"), default="a1")
     args = cli.parse_args()
     if not args.runner.is_file(): cli.error("ACLNN runner does not exist")
     if args.device_id < 0: cli.error("device-id must be nonnegative")

@@ -38,7 +38,7 @@ public:
             accumulatorLive_ = false;
             return false;
         }
-        assert(tiling_.singleM == 16 && tiling_.singleN == 64);
+        assert((tiling_.singleM == 16 || tiling_.singleM == 32 || tiling_.singleM == 64 || tiling_.singleM == 80) && tiling_.singleN == 64);
         assert(w_.count == tiling_.singleN * tiling_.singleK);
         if (partial) {
             assert(accumulatorLive_);

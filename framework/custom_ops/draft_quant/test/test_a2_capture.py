@@ -99,6 +99,22 @@ class CaptureRowUpdateTests(unittest.TestCase):
             self.assertEqual(manifest["status"], "FAIL")
             self.assertIn("npu_scatter_nd_update.default", manifest["error"])
 
+    def test_a4_reuses_production_row_update_and_requires_actual_frozen_gear(self):
+        operation = Mock()
+        for actual in (16, 64):
+            with self.capture_environment(operation) as (args, _, graph, frozen, _, layers):
+                args.scope, args.context_rows = "a4", 64
+                frozen.return_value = ([], [], layers, {"anchor": 7, "context_rows": actual})
+                if actual == 64:
+                    with self.assertRaises(CaptureStopped): a2_capture.capture(args)
+                    self.assertIs(graph.call_args.kwargs["row_update"], operation)
+                    self.assertIs(graph.call_args.kwargs["feature_layers"], layers)
+                else:
+                    with self.assertRaisesRegex(ValueError, "actual frozen replay gear"):
+                        a2_capture.capture(args)
+                    graph.assert_not_called()
+                operation.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
