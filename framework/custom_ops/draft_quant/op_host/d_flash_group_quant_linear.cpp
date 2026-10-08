@@ -131,7 +131,9 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     const uint64_t codesBytes = kTileN * tileK * rawBanks;
     const uint64_t scaleBytes = (tileK / kGroup) * kTileN * 2 * rawBanks;
     const uint64_t weightBytes = kTileN * tileK * 2;
-    const uint64_t userUbBytes = draft_quant_contract::UserUbBytes(k, rawBanks);
+    const bool stageA = DFLASH_GROUP_QUANT_STAGE_A(m, k, n);
+    const uint64_t aStageBytes = stageA ? m * tileK * 2 : 0;
+    const uint64_t userUbBytes = draft_quant_contract::UserUbBytes(k, rawBanks) + aStageBytes;
     uint64_t ubBytes = 0;
     platform.GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubBytes);
     if (ubBytes <= userUbBytes) return ge::GRAPH_FAILED;
@@ -141,7 +143,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     }
 
     matmul_tiling::MatmulApiTiling cubeTiling(platform);
-    cubeTiling.SetAType(matmul_tiling::TPosition::GM, matmul_tiling::CubeFormat::ND,
+    cubeTiling.SetAType(stageA ? matmul_tiling::TPosition::VECOUT : matmul_tiling::TPosition::GM, matmul_tiling::CubeFormat::ND,
                         matmul_tiling::DataType::DT_FLOAT16);
     cubeTiling.SetBType(matmul_tiling::TPosition::VECOUT, matmul_tiling::CubeFormat::ND,
                         matmul_tiling::DataType::DT_FLOAT16, true);
@@ -151,9 +153,10 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
                            matmul_tiling::DataType::DT_FLOAT);
     cubeTiling.SetBias(false);
     cubeTiling.SetShape(m, kTileN, tileK);
-    // A uses the full input row stride; C uses the full output row stride.
+    // Baseline A uses the full GM row stride. A4.1 local A is compact [80,128].
+    // C always uses the full output row stride.
     // B is a local [64,tileK] tensor, so its row stride is tileK, not global K.
-    cubeTiling.SetOrgShape(m, n, k, tileK);
+    cubeTiling.SetOrgShape(m, n, stageA ? tileK : k, tileK);
     cubeTiling.SetFixSplit(m, kTileN, kGroup);
     cubeTiling.SetBufferSpace(-1, -1, static_cast<int32_t>(matmulUbBytes));
 
@@ -219,7 +222,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     // Machine-readable launch evidence. The ACLNN executor owns the opaque
     // tiling buffer; the test coordinator verifies this record against shape
     // and build identity instead of guessing the kernel's launch dimensions.
-    std::fprintf(stdout, "DFLASH_GROUP_QUANT_LAUNCH {\"version\":4,\"policy\":\"n-tile-cyclic-v1\","
+    std::fprintf(stdout, "DFLASH_GROUP_QUANT_LAUNCH {\"version\":5,\"policy\":\"n-tile-cyclic-v1\","
                          "\"dequant_mode\":\"%s\","
                          "\"pipeline_mode\":\"%s\",\"selected_pipeline\":\"%s\","
                          "\"tile_m\":%lld,\"weight_reuse_rows\":%lld,\"raw_banks\":%u,\"user_ub_bytes\":%llu,\"matmul_ub_bytes\":%llu,"
@@ -235,6 +238,19 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
                  static_cast<long long>(m), static_cast<long long>(k), static_cast<long long>(n), static_cast<long long>(tileK),
                  availableCores, coreLimit, blockDim, static_cast<long long>(n / kTileN),
                  context->GetWorkspaceSizes(1)[0]);
+    // Planned resources and source strides, not measured HBM traffic.
+    std::fprintf(stdout, "DFLASH_GROUP_QUANT_CUBE {\"version\":1,\"kv_m80_mode\":\"%s\","
+                         "\"a_source\":\"%s\",\"a_stage_bytes\":%llu,\"a_row_stride\":%lld,"
+                         "\"base_m\":%d,\"base_n\":%d,\"base_k\":%d,"
+                         "\"depth_a1\":%d,\"depth_b1\":%d,\"step_m\":%d,\"step_n\":%d,"
+                         "\"step_ka\":%d,\"step_kb\":%d,\"db_l0a\":%d,\"db_l0b\":%d,\"db_l0c\":%d,"
+                         "\"trans_length\":%d,\"weight_dequantizations_per_n_tile\":%lld}\n",
+                 DFLASH_GROUP_QUANT_KV_M80_MODE == 1 ? "a-ub" : "baseline",
+                 stageA ? "VECOUT" : "GM", static_cast<unsigned long long>(aStageBytes),
+                 static_cast<long long>(stageA ? tileK : k), cube.get_baseM(), cube.get_baseN(), cube.get_baseK(),
+                 cube.get_depthA1(), cube.get_depthB1(), cube.get_stepM(), cube.get_stepN(),
+                 cube.get_stepKa(), cube.get_stepKb(), cube.get_dbL0A(), cube.get_dbL0B(), cube.get_dbL0C(),
+                 cube.get_transLength(), static_cast<long long>(k / tileK));
     return ge::GRAPH_SUCCESS;
 }
 }  // namespace optiling

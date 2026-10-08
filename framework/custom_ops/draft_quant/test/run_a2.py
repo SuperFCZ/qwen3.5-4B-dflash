@@ -92,11 +92,17 @@ def run(args):
     bundle_path, om_manifest = args.bundle.resolve(), args.native_om_manifest.resolve()
     bundle = load_bundle(bundle_path, scope)
     native = validate_om_manifest(om_manifest, bundle_path, bundle, scope)
+    selection = getattr(args, "case_filter", None)
+    if selection is not None and (not selection or len(set(selection)) != len(selection) or
+                                  any(name not in case_names for name in selection)):
+        raise ValueError("invalid explicit projection subset")
+    selected_names = tuple(name for name in case_names if selection is None or name in selection)
     runners = {"custom": args.runner.resolve(), "native_om": args.om_runner.resolve()}
     runner_hashes = {name: sha256(path) for name, path in runners.items()}
     root = args.output_dir.resolve()
     root.mkdir(parents=True, exist_ok=False)
-    report = {"abi": abi, "status": "RUNNING", "scope": f"{len(case_names)} {scope.upper()} real native-eager-captured projections",
+    report = {"abi": abi, "status": "RUNNING", "scope": f"{len(selected_names)}/{len(case_names)} {scope.upper()} real native-eager-captured projections",
+              "selection": "FULL" if selection is None else "SUBSET", "selected_cases": list(selected_names),
               "context_rows": bundle.get("context_rows"),
               "bundle": str(bundle_path), "bundle_sha256": sha256(bundle_path),
               "native_om_manifest": str(om_manifest), "native_om_manifest_sha256": sha256(om_manifest),
@@ -109,6 +115,8 @@ def run(args):
     summary = root / "suite.json"
     write_json(summary, report)
     for index, (case, compiled) in enumerate(zip(bundle["cases"], native["cases"])):
+        if case["name"] not in selected_names:
+            continue
         row = {"name": case["name"], "status": "RUNNING", "phase": "inputs"}
         report["cases"].append(row)
         directory = root / case["name"]
@@ -182,7 +190,7 @@ def run(args):
                   native_om_parity="PASS" if passed else "FAIL_OR_INCOMPLETE",
                   isolated_timing="MEASURED" if all("executions" in r for r in report["cases"]) else "INCOMPLETE")
     write_json(summary, report)
-    print(f"{report['status']}: {len(case_names)} {scope.upper()} real projections; summary: {summary}\nFull Draft / decode performance NOT_RUN", flush=True)
+    print(f"{report['status']}: {len(selected_names)}/{len(case_names)} {scope.upper()} real projections ({report['selection']}); summary: {summary}\nFull Draft / decode performance NOT_RUN", flush=True)
     return 0 if passed else 1
 
 

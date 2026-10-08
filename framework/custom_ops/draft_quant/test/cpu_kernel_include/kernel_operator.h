@@ -8,6 +8,7 @@
 #include <deque>
 #include <map>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #define __aicore__
@@ -31,6 +32,8 @@ struct CpuMetrics {
     uint32_t iterations = 0, partials = 0, outputs = 0, stores = 0, ends = 0;
     uint32_t castCalls = 0, mulsCalls = 0, vectorBarriers = 0;
     uint32_t copies = 0, castsWithPendingDma = 0, eventAllocations = 0, libraryWithPendingSignals = 0;
+    uint32_t aStageCalls = 0;
+    uint64_t aStageBytes = 0;
 };
 inline CpuMetrics cpuMetrics;
 inline uint32_t cpuBlockIdx = 0, cpuBlockNum = 1;
@@ -41,6 +44,8 @@ inline std::vector<int64_t> cpuOutputOwners;
 inline void *GetSysWorkSpacePtr() { return nullptr; }
 
 namespace AscendC {
+template <bool C, typename T, typename F> using Conditional = std::conditional<C, T, F>;
+struct DataCopyParams { uint16_t blockCount, blockLen, srcStride, dstStride; };
 inline int64_t GetBlockIdx() { return cpuBlockIdx; }
 inline int64_t GetBlockNum() { return cpuBlockNum; }
 enum class TPosition { GM, VECIN, VECOUT, VECCALC };
@@ -204,12 +209,24 @@ template <typename T> void DataCopy(Tensor<T> dst, Tensor<T> src, uint32_t count
     assert(count <= dst.count && count <= src.count);
     assert(count * sizeof(T) % 32 == 0);
     const auto target = Bytes(dst.data, count * sizeof(T));
+    for (auto range : cpuSync.cubeReads) Require(!Overlaps(target, range), "A reused while Cube consumer is live");
     for (auto range : cpuSync.vectorAccesses) Require(!Overlaps(target, range), "raw bank reused before vector completion");
     for (const auto &task : cpuSync.pending) Require(!Overlaps(target, task.target), "overlapping pending DMA writes");
     Dma task{target, src.data, ++cpuSync.dmaIssued};
     cpuSync.pending.push_back(task);
     cpuSync.writes[target.begin] = task;
     ++cpuMetrics.copies;
+}
+template <typename T> void DataCopy(Tensor<T> dst, Tensor<T> src, const DataCopyParams &params) {
+    static_assert(sizeof(T) == 2);
+    assert(params.blockCount == 80 && params.blockLen == 8 && params.srcStride == 152 && params.dstStride == 0);
+    const auto count = params.blockLen * 32 / sizeof(T);
+    for (uint32_t row = 0; row < params.blockCount; ++row)
+        DataCopy(dst[row * (params.blockLen + params.dstStride) * 32 / sizeof(T)],
+                 src[row * (params.blockLen + params.srcStride) * 32 / sizeof(T)], count);
+    cpuMetrics.copies -= params.blockCount; // raw q/scale counter stays separate
+    ++cpuMetrics.aStageCalls;
+    cpuMetrics.aStageBytes += params.blockCount * params.blockLen * 32;
 }
 template <typename D, typename S> void Cast(Tensor<D> dst, Tensor<S> src, RoundMode, uint32_t count) {
     ++cpuMetrics.castCalls;

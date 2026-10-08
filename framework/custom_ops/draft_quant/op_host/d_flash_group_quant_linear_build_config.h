@@ -22,4 +22,11 @@
     (DFLASH_GROUP_QUANT_PIPELINE_MODE == 1U && \
      (((k) == 512U || (k) == 1024U) || ((k) == 9728U && (n) == 2560U)))
 
+// A4.1: 0 preserves A4; 1 stages only KV M80's current FP16 A tile in UB.
+#ifndef DFLASH_GROUP_QUANT_KV_M80_MODE
+#define DFLASH_GROUP_QUANT_KV_M80_MODE 0U
+#endif
+#define DFLASH_GROUP_QUANT_STAGE_A(m, k, n) \
+    (DFLASH_GROUP_QUANT_KV_M80_MODE == 1U && (m) == 80U && (k) == 2560U && (n) == 2048U)
+
 #endif

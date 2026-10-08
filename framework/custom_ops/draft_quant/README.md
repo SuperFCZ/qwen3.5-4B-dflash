@@ -10,7 +10,9 @@
 profiling 结果，阶段总结、比较口径与 evidence 清单见 **[A3_RESULTS.md](A3_RESULTS.md)**。
 **[A3_2.md](A3_2.md)** 提供 down 预取候选；用户反馈约 1.91→1.79 ms（native≈1.54 ms），
 并决定暂停继续调优，默认保留 A3.1 serial。当前 **[A4.md](A4.md)** 扩展 Q/O/KV/FC 和
-M16/32/64/80，提供 C16/C64 共 52 个真实 projection 的独立验收；A4 设备结果待运行。
+M16/32/64/80，提供 C16/C64 共 52 个真实 projection 的独立验收；用户已确认 A4 完整通过，
+证据目录 `.runs/a4-ziy26oQK`。当前 [A4_1.md](A4_1.md) 提供仅 KV M80 的 A-UB 搬运候选，
+显式开关 `DFLASH_KV_M80_MODE=baseline|a-ub`，默认 baseline；候选性能尚待设备验证。
 完整 Draft / Decode 性能仍为 `NOT_RUN`。
 
 原版 tiny `(M,K,N)=(16,256,64)` 已由用户在服务器确认全 PASS，包括修正 scale 视图后的
@@ -212,7 +214,7 @@ Python 测试仅依赖标准库，覆盖九种形状的布局、scale 位型、�
 和形状身份。另用本地 C++17 编译器（kernel 模型需支持 `_Float16`）测试共享 host 契约，以及在 CPU API 模型下执行实际
 kernel 源码的 27 组索引/累加案例，检查缓冲边界、输入只读、全局 stride、调用次序和结果。
 CPU 模型还执行两个真实 A2 尺寸的稀疏输入，覆盖所有 N tile、全局 stride 和最后一个
-K group。当前三个构建变体各执行 298 次、共 894 次单核/多核模型运行，并逐元素验证唯一
+K group。当前五个构建变体各执行 299 次、共 1495 次单核/多核模型运行，并逐元素验证唯一
 owner 和只写一次。A3.2 新增延迟 DMA 与事件生命周期检查；模型不模拟真实设备并发时序、
 缓存或 L1/L0 物理行为，也不验证 CANN 编译或硬件数值。
 

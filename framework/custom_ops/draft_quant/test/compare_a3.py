@@ -52,6 +52,8 @@ def load_run(path, mode):
 
 
 def compatible_runs(single, multi, *, allow_dequant_change=False, allow_pipeline_change=False):
+    if single["build"].get("kv_m80_mode", "baseline") != multi["build"].get("kv_m80_mode", "baseline"):
+        raise ValueError("A3 comparisons require the same KV M80 build mode")
     for key in ("bundle_sha256", "native_om_manifest_sha256", "device_id"):
         if single.get(key) is None or single.get(key) != multi.get(key):
             raise ValueError(f"single/multi runs must use the same {key}")

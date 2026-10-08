@@ -1,13 +1,36 @@
 #!/usr/bin/env python3
 """Profile one already-validated custom case in a new evidence directory."""
 import argparse
+import csv
 import json
 from pathlib import Path
 import shlex
 import shutil
 import subprocess
 
-from a2_common import checked_file, sha256, write_json
+from a2_common import checked_file, record, sha256, write_json
+
+
+def collect_pipe_counters(root):
+    """Preserve original profiler column names/units; never invent absent metrics."""
+    def normalized(text):
+        return "".join(c.lower() for c in text if c.isalnum())
+    files, rows = [], []
+    for path in sorted((root / "profiler").rglob("*.csv")):
+        item = record(path, root)
+        files.append(item)
+        with path.open(encoding="utf-8-sig", newline="") as stream:
+            for number, row in enumerate(csv.DictReader(stream), 2):
+                names = [value for key,value in row.items() if key and normalized(key) in
+                         ("opname","optype","kernelname","taskname") and isinstance(value,str)]
+                if not any("dflashgroupquantlinear" in normalized(name) for name in names):
+                    continue
+                fields = {key:value for key,value in row.items() if key and isinstance(value,str) and value and
+                          any(word in normalized(key) for word in ("mte1","mte2","mte3","duration","cube","mac"))}
+                if fields: rows.append(dict(file=item["path"], line=number, fields=fields))
+    return dict(status="RAW_COLUMNS_FOUND" if rows else "NOT_FOUND", csv_files=files, rows=rows,
+                mte2_available=any("mte2" in normalized(key) for row in rows for key in row["fields"]),
+                interpretation="original strings/units; ratios are not assumed to divide Task Duration; not unprofiled timing")
 
 
 def prepare(source, output):
@@ -78,7 +101,8 @@ def main():
                 for name in ("actual-0.bin", "actual-1.bin", "benchmark-last.bin", "postcheck.bin")):
             raise ValueError("profiled output differs from the accepted unprofiled case")
         report.update(status="COMMAND_COMPLETED", numerical_match=True,
-                      metrics="PipeUtilization requested; inspect profiler artifacts for available device counters")
+                      metrics="PipeUtilization requested; inspect profiler artifacts for available device counters",
+                      pipe_counters=collect_pipe_counters(root))
     except Exception as error:
         report.update(status="FAIL", error=f"{type(error).__name__}: {error}")
         raise

@@ -7,14 +7,22 @@ namespace matmul {
 inline int cpuFailIteration = -1;
 enum class CubeFormat { ND };
 template <AscendC::TPosition P, CubeFormat F, typename D, bool TRANS = false>
-struct MatmulType {};
+struct MatmulType { static constexpr auto position = P; };
 
 template <typename A, typename B, typename C, typename Bias>
 class Matmul {
 public:
     void Init(const CpuCubeTiling *tiling) { tiling_ = *tiling; }
     void SetLocalWorkspace(AscendC::LocalTensor<uint8_t>) {}
-    void SetTensorA(AscendC::GlobalTensor<half> x) { x_ = x; ready_ = true; }
+    void SetTensorA(AscendC::GlobalTensor<half> x) {
+        x_ = x; ready_ = true;
+        if constexpr (A::position != AscendC::TPosition::GM) {
+            assert(tiling_.singleM == 80 && tiling_.orgKa == 128);
+            const auto range = AscendC::Bytes(x.data, tiling_.singleM * tiling_.singleK * sizeof(half));
+            AscendC::CheckReadable(range, true);
+            AscendC::cpuSync.cubeReads.push_back(range);
+        }
+    }
     void SetTensorB(AscendC::LocalTensor<half> w, bool transpose) {
         assert(transpose);
         AscendC::BeforeMatmul(AscendC::Bytes(w.data, tiling_.singleN * tiling_.singleK * sizeof(half)));

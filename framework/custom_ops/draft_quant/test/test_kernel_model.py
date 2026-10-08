@@ -17,10 +17,11 @@ class KernelModelTests(unittest.TestCase):
             command = [compiler, "-std=c++17", "-O2", "-ffp-contract=off", "-Wall", "-Wextra", "-Werror",
                        "-Wno-unused-parameter", "-I", str(here / "cpu_kernel_include"),
                        str(here / "kernel_model.cpp"), "-o", str(binary)]
-            for mode, pipeline in ((0, 0), (1, 0), (1, 1)):
-                with self.subTest(dequant_mode=mode, pipeline_mode=pipeline):
+            for mode, pipeline, kv in ((0, 0, 0), (1, 0, 0), (1, 1, 0), (1, 0, 1), (1, 1, 1)):
+                with self.subTest(dequant_mode=mode, pipeline_mode=pipeline, kv_m80_mode=kv):
                     compiled = subprocess.run(command + [f"-DDFLASH_GROUP_QUANT_DEQUANT_MODE={mode}",
-                                                        f"-DDFLASH_GROUP_QUANT_PIPELINE_MODE={pipeline}"], capture_output=True, text=True)
+                                                        f"-DDFLASH_GROUP_QUANT_PIPELINE_MODE={pipeline}",
+                                                        f"-DDFLASH_GROUP_QUANT_KV_M80_MODE={kv}"], capture_output=True, text=True)
                     self.assertEqual(compiled.returncode, 0, compiled.stdout + compiled.stderr)
                     executed = subprocess.run([str(binary)], capture_output=True, text=True)
                     self.assertEqual(executed.returncode, 0, executed.stdout + executed.stderr)

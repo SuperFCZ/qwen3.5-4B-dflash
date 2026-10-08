@@ -15,7 +15,7 @@ def matched_variants(baseline, candidate):
     compatible_runs(baseline, candidate, allow_pipeline_change=True)
     for report, mode in ((baseline, "serial"), (candidate, "prefetch")):
         if (report.get("stage") != "A3.2" or report.get("timing_protocol") != "continuous-v1" or
-                report["build"].get("abi") not in ("dflash-group-quant-linear-build-v3", "dflash-group-quant-linear-build-v4") or
+                report["build"].get("abi") not in ("dflash-group-quant-linear-build-v3", "dflash-group-quant-linear-build-v4", "dflash-group-quant-linear-build-v5") or
                 report["build"].get("dequant_mode") != "batched" or
                 report["build"].get("pipeline_mode") != mode):
             raise ValueError("need fresh A3.2 batched serial baseline / prefetch candidate with continuous-v1")
@@ -24,7 +24,7 @@ def matched_variants(baseline, candidate):
         for row in report["launches"]["real"]:
             launch = row["launch"]
             plan = pipeline_plan(launch["k"], launch["n"], mode)
-            if (launch.get("version") not in (3, 4) or launch.get("dequant_mode") != "batched" or
+            if (launch.get("version") not in (3, 4, 5) or launch.get("dequant_mode") != "batched" or
                     any(launch.get(key) != value for key, value in plan.items())):
                 raise ValueError("recorded host pipeline/buffer policy differs from the build")
     if baseline["build"]["core_limit"] != candidate["build"]["core_limit"]:

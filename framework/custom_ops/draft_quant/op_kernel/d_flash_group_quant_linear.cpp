@@ -4,6 +4,7 @@
 
 static_assert(DFLASH_GROUP_QUANT_DEQUANT_MODE <= 1U, "unsupported dequantization mode");
 static_assert(DFLASH_GROUP_QUANT_PIPELINE_MODE <= 1U, "unsupported pipeline mode");
+static_assert(DFLASH_GROUP_QUANT_KV_M80_MODE <= 1U, "unsupported KV M80 mode");
 static_assert(DFLASH_GROUP_QUANT_PIPELINE_MODE == 0U || DFLASH_GROUP_QUANT_DEQUANT_MODE == 1U,
               "raw prefetch requires batched dequantization");
 
@@ -39,10 +40,10 @@ using BType = MatmulType<AscendC::TPosition::VECOUT, CubeFormat::ND, half, true>
 using CType = MatmulType<AscendC::TPosition::GM, CubeFormat::ND, half>;
 using BiasType = MatmulType<AscendC::TPosition::GM, CubeFormat::ND, float>;
 
-extern "C" __global__ __aicore__ void d_flash_group_quant_linear(
-    GM_ADDR x, GM_ADDR w_nz, GM_ADDR s, GM_ADDR y, GM_ADDR workspace, GM_ADDR tiling)
+template <bool StageA, typename TilingData>
+__aicore__ inline void RunGroupQuantLinear(
+    GM_ADDR x, GM_ADDR w_nz, GM_ADDR s, GM_ADDR y, GM_ADDR workspace, TilingData &tilingData)
 {
-    GET_TILING_DATA(tilingData, tiling);
     const uint32_t globalM = tilingData.globalM;
     const uint32_t globalK = tilingData.globalK;
     const uint32_t globalN = tilingData.globalN;
@@ -54,15 +55,19 @@ extern "C" __global__ __aicore__ void d_flash_group_quant_linear(
     const uint32_t blockNum = static_cast<uint32_t>(AscendC::GetBlockNum());
     if (blockNum == 0 || blockIdx >= blockNum || blockIdx >= nTiles) return;
     AscendC::TPipe pipe;
-    Matmul<AType, BType, CType, BiasType> mm;
+    using LocalAType = MatmulType<AscendC::TPosition::VECOUT, CubeFormat::ND, half>;
+    using SelectedAType = typename AscendC::Conditional<StageA, LocalAType, AType>::type;
+    Matmul<SelectedAType, BType, CType, BiasType> mm;
     REGIST_MATMUL_OBJ(&pipe, GetSysWorkSpacePtr(), mm, &tilingData.cubeTilingData);
 
     AscendC::TBuf<AscendC::TPosition::VECIN> codesBuf, scaleBuf;
     AscendC::TBuf<AscendC::TPosition::VECOUT> weightBuf;
+    AscendC::TBuf<AscendC::TPosition::VECOUT> aStageBuf;
     AscendC::TBuf<> matmulUb;
     pipe.InitBuffer(codesBuf, rawBanks * kTileN * tileK * sizeof(int8_t));
     pipe.InitBuffer(scaleBuf, rawBanks * (tileK / kGroup) * kTileN * sizeof(half));
     pipe.InitBuffer(weightBuf, kTileN * tileK * sizeof(half));
+    if constexpr (StageA) pipe.InitBuffer(aStageBuf, globalM * tileK * sizeof(half));
     pipe.InitBuffer(matmulUb, tilingData.matmulUbBytes);
     mm.SetLocalWorkspace(matmulUb.Get<uint8_t>(tilingData.matmulUbBytes));
 
@@ -112,6 +117,16 @@ extern "C" __global__ __aicore__ void d_flash_group_quant_linear(
                 }
             } else {
                 CopyRawTile(qLocal, sLocal, qGm, sGm, globalN, tileK, nBegin, kBegin);
+                if constexpr (StageA) {
+                    // KV M80 only: one 2-D GM->UB instruction, 80 rows of
+                    // 256 contiguous bytes; skip 4864 bytes between GM rows.
+                    // The existing MTE2 waits/PIPE_ALL below complete this copy
+                    // before Matmul's UB->L1 consumer; no new overlap is assumed.
+                    const AscendC::DataCopyParams copyA{
+                        static_cast<uint16_t>(globalM), static_cast<uint16_t>(tileK * sizeof(half) / 32),
+                        static_cast<uint16_t>((globalK - tileK) * sizeof(half) / 32), 0};
+                    AscendC::DataCopy(aStageBuf.Get<half>(globalM * tileK), xGm[kBegin], copyA);
+                }
                 // Retain the A3.1 serial dependency sequence for the control,
                 // gate/up and whole-K256 shapes.
                 const auto scalarReady = pipe.FetchEventID(AscendC::HardEvent::MTE2_S);
@@ -173,7 +188,8 @@ extern "C" __global__ __aicore__ void d_flash_group_quant_linear(
             } else {
                 AscendC::PipeBarrier<PIPE_ALL>();
             }
-            mm.SetTensorA(xGm[kBegin]);
+            if constexpr (StageA) mm.SetTensorA(aStageBuf.Get<half>(globalM * tileK));
+            else mm.SetTensorA(xGm[kBegin]);
             mm.SetTensorB(wLocal, true);
             if (tileK == globalK) {
                 // K=256 retains the verified whole-K MatMul path.
@@ -192,6 +208,7 @@ extern "C" __global__ __aicore__ void d_flash_group_quant_linear(
                         pipe.ReleaseEventID<AscendC::HardEvent::MTE2_S>(inputScalar);
                         pipe.ReleaseEventID<AscendC::HardEvent::MTE2_V>(inputVector);
                     }
+                    if constexpr (StageA) AscendC::PipeBarrier<PIPE_ALL>();
                     mm.End();
                     return;  // Remaining poisoned outputs make the test fail.
                 }
@@ -210,4 +227,17 @@ extern "C" __global__ __aicore__ void d_flash_group_quant_linear(
         pipe.ReleaseEventID<AscendC::HardEvent::MTE2_V>(inputVector);
     }
     mm.End();
+}
+
+extern "C" __global__ __aicore__ void d_flash_group_quant_linear(
+    GM_ADDR x, GM_ADDR w_nz, GM_ADDR s, GM_ADDR y, GM_ADDR workspace, GM_ADDR tiling)
+{
+    GET_TILING_DATA(tilingData, tiling);
+#if DFLASH_GROUP_QUANT_KV_M80_MODE == 1
+    if (DFLASH_GROUP_QUANT_STAGE_A(tilingData.globalM, tilingData.globalK, tilingData.globalN)) {
+        RunGroupQuantLinear<true>(x, w_nz, s, y, workspace, tilingData);
+        return;
+    }
+#endif
+    RunGroupQuantLinear<false>(x, w_nz, s, y, workspace, tilingData);
 }

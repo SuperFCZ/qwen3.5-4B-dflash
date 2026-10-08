@@ -59,7 +59,8 @@ static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_
                     nz.push_back(q[(n1 * 16 + n0) * k + k1 * 32 + k0]);
     const auto savedX = x, savedScale = scales;
     const auto savedNz = nz;
-    CpuTiling tiling{m, k, n, tileK, 65536, {n, k, m, 64, tileK}};
+    const bool stageA = DFLASH_GROUP_QUANT_KV_M80_MODE == 1 && m == 80 && k == 2560 && n == 2048;
+    CpuTiling tiling{m, k, n, tileK, 65536, {n, stageA ? tileK : k, m, 64, tileK}};
     std::vector<uint16_t> expected(m * n);
     for (uint32_t row = 0; row < m; ++row) {
         std::vector<uint32_t> nonzero;
@@ -94,12 +95,14 @@ static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_
             // whitelisted shapes; prefetch excludes whole-K256 and gate/up.
             const bool prefetch = DFLASH_GROUP_QUANT_PIPELINE_MODE == 1 && (k == 512 || k == 1024 || k == 9728);
             const uint64_t userUb = prefetch ? 33024 : (k == 256 ? 49408 : 24704);
-            assert(cpuMetrics.ubBytes == (owned ? userUb + tiling.matmulUbBytes : 0));
+            assert(cpuMetrics.ubBytes == (owned ? userUb + tiling.matmulUbBytes + (stageA ? 20480 : 0) : 0));
             assert(cpuMetrics.iterations == owned * (k / tileK));
             assert(cpuMetrics.partials == owned * (k / tileK - 1));
             assert(cpuMetrics.outputs == owned && cpuMetrics.stores == owned * m * 64);
             assert(cpuMetrics.ends == (owned ? 1U : 0U));
             const auto chunks = owned * (k / tileK);
+            assert(cpuMetrics.aStageCalls == (stageA ? chunks : 0));
+            assert(cpuMetrics.aStageBytes == (stageA ? chunks * 20480ULL : 0));
             assert(cpuMetrics.copies == chunks * (tileK / 32 + tileK / 128));
             assert(cpuMetrics.eventAllocations == (owned && prefetch ? 2U : 0U));
             assert(cpuMetrics.libraryWithPendingSignals == (prefetch ? owned * (k / tileK - 1) : 0));
@@ -133,6 +136,7 @@ int main()
     Check(9728, 2560, 3, {1, 3, 7, 8});
     Check(9728, 2560, 4, {7});
     Check(9728, 2560, 2, {7});
+    Check(2560, 2048, 2, {7}, 80); // A4.1 target: no FP16 partial sums across K
     for (uint32_t m : {32U, 64U, 80U})
         for (uint32_t k : {256U, 512U, 1024U})
             for (uint32_t n : {64U, 128U, 256U})
@@ -159,6 +163,21 @@ int main()
         d_flash_group_quant_linear(x.data(), q.data(), s.data(), output.data(), nullptr, &tiling);
         assert(cpuMetrics.outputs == 0 && cpuMetrics.ends == 1);
         assert(cpuMetrics.iterations == static_cast<uint32_t>(failure));
+        for (auto value : output) assert(Bits(value) == Bits(static_cast<half>(-17)));
+    }
+    matmul::cpuFailIteration = -1;
+#endif
+#if DFLASH_GROUP_QUANT_KV_M80_MODE == 1
+    for (int failure : {0, 10, 19}) {
+        std::vector<half> x(80 * 2560), s(20 * 2048, static_cast<half>(1));
+        std::vector<int8_t> q(2048 * 2560);
+        std::vector<half> output(80 * 2048, static_cast<half>(-17));
+        CpuTiling tiling{80,2560,2048,128,65536,{2048,128,80,64,128}};
+        cpuMetrics = {}; cpuBlockIdx = 0; cpuBlockNum = 1;
+        matmul::cpuFailIteration = failure;
+        d_flash_group_quant_linear(x.data(),q.data(),s.data(),output.data(),nullptr,&tiling);
+        assert(cpuMetrics.outputs == 0 && cpuMetrics.ends == 1);
+        assert(cpuMetrics.aStageCalls == static_cast<uint32_t>(failure + 1));
         for (auto value : output) assert(Bits(value) == Bits(static_cast<half>(-17)));
     }
     matmul::cpuFailIteration = -1;
