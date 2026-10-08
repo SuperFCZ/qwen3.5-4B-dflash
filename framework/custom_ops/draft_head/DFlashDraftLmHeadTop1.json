@@ -1,0 +1,86 @@
+[
+  {
+    "op": "DFlashDraftLmHeadTop1",
+    "input_desc": [
+      {
+        "name": "hidden",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float16"
+        ]
+      },
+      {
+        "name": "weight",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float16"
+        ]
+      }
+    ],
+    "output_desc": [
+      {
+        "name": "token_id",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "int64"
+        ]
+      }
+    ]
+  },
+  {
+    "op": "DFlashDraftLmHeadTop1Audit",
+    "input_desc": [
+      {
+        "name": "hidden",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float16"
+        ]
+      },
+      {
+        "name": "weight",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float16"
+        ]
+      }
+    ],
+    "output_desc": [
+      {
+        "name": "token_id",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "int64"
+        ]
+      },
+      {
+        "name": "logits",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float16"
+        ]
+      }
+    ]
+  }
+]

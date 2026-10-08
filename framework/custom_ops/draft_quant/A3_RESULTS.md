@@ -288,3 +288,11 @@ profiling 结论，不宣称所有形状及完整模型已验证。
 按用户要求，暂停 down 性能调优，保留 serial/prefetch 两条路径与现有默认 serial。
 A4 只扩展 Q/O、FC M16/M64、KV M32/M80 的支持与独立原生 OM 验收；不继续修改反量化、
 预取调度或 down 的 tile 参数。完整 Draft / Decode 仍为 `NOT_RUN`。
+
+## 9. A4.1 KV M80 用户验收结果
+
+用户确认 Ascend310P3 上全部 correctness 和完整 A4 回归通过。最新 KV M80 未插桩时延约
+3.1 ms→1.27 ms（约 2.45×），msprof MTE2 time 约 2340 μs→650 μs（减少约 72%）。
+baseline/a-ub 两条可切换路径保留，默认未自动改变。此处记录的是用户反馈，实际运行的
+suite/比较/profile 路径、p95 与逐次样本待补；不补造新的原始 PASS JSON。
+实现与原始调查见 [A4_1.md](A4_1.md)。完整 Draft/Decode 性能仍为 `NOT_RUN`。

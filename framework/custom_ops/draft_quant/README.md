@@ -12,8 +12,11 @@ profiling 结果，阶段总结、比较口径与 evidence 清单见 **[A3_RESUL
 并决定暂停继续调优，默认保留 A3.1 serial。当前 **[A4.md](A4.md)** 扩展 Q/O/KV/FC 和
 M16/32/64/80，提供 C16/C64 共 52 个真实 projection 的独立验收；用户已确认 A4 完整通过，
 证据目录 `.runs/a4-ziy26oQK`。当前 [A4_1.md](A4_1.md) 提供仅 KV M80 的 A-UB 搬运候选，
-显式开关 `DFLASH_KV_M80_MODE=baseline|a-ub`，默认 baseline；候选性能尚待设备验证。
+显式开关 `DFLASH_KV_M80_MODE=baseline|a-ub`，默认 baseline。用户已确认 A4.1 全部正确性/A4
+回归通过，KV M80 约 3.1→1.27 ms（2.45×），MTE2 约 2340→650 μs；原始路径待补录。
 完整 Draft / Decode 性能仍为 `NOT_RUN`。
+下一阶段 C 的独立基础版见 [draft_head/README.md](../draft_head/README.md)，新算子 NPU 验收
+为 `NOT_RUN`；单 gate/up 图接入目前仅有 [opt-in 设计](GATE_UP_OPT_IN.md)。
 
 原版 tiny `(M,K,N)=(16,256,64)` 已由用户在服务器确认全 PASS，包括修正 scale 视图后的
 native eager 比较。2026-09-29 用户服务器反馈 **`PASS: 9 a1 workloads`**，证据目录为
