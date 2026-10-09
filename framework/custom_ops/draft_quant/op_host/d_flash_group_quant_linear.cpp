@@ -133,9 +133,16 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     const uint64_t weightBytes = kTileN * tileK * 2;
     const bool stageA = DFLASH_GROUP_QUANT_STAGE_A(m, k, n);
     const uint64_t aStageBytes = stageA ? m * tileK * 2 : 0;
-    const uint64_t userUbBytes = draft_quant_contract::UserUbBytes(k, rawBanks) + aStageBytes;
+    const bool broadcast = DFLASH_GROUP_QUANT_BROADCAST(m, k, n);
+    const uint64_t broadcastBytes = broadcast ? DFLASH_GROUP_QUANT_BROADCAST_BYTES : 0;
+    const uint64_t broadcastReservedBytes = broadcast ? DFLASH_GROUP_QUANT_BROADCAST_RESERVED_BYTES : 0;
+    const uint64_t userUbBytes = draft_quant_contract::UserUbBytes(k, rawBanks) + aStageBytes + broadcastBytes + broadcastReservedBytes;
     uint64_t ubBytes = 0;
     platform.GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubBytes);
+    if (broadcast && ubBytes != 256 * 1024) {
+        std::fprintf(stderr, "A5 broadcast requires the CANN 9.0 dav_m200 256 KiB UB layout\n");
+        return ge::GRAPH_FAILED;
+    }
     if (ubBytes <= userUbBytes) return ge::GRAPH_FAILED;
     const uint64_t matmulUbBytes = (ubBytes - userUbBytes) / 32 * 32;
     if (matmulUbBytes > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
@@ -238,6 +245,11 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
                  static_cast<long long>(m), static_cast<long long>(k), static_cast<long long>(n), static_cast<long long>(tileK),
                  availableCores, coreLimit, blockDim, static_cast<long long>(n / kTileN),
                  context->GetWorkspaceSizes(1)[0]);
+    std::fprintf(stdout, "DFLASH_GROUP_QUANT_SCALE {\"version\":1,\"scale_mode\":\"%s\","
+                         "\"selected_scale\":\"%s\",\"broadcast_bytes\":%llu,\"sdk_reserved_bytes\":%llu}\n",
+                 DFLASH_GROUP_QUANT_SCALE_MODE == 1 ? "broadcast" : "scalar",
+                 broadcast ? "brcb-mul-v1" : "scalar-muls-v1",
+                 static_cast<unsigned long long>(broadcastBytes), static_cast<unsigned long long>(broadcastReservedBytes));
     // Planned resources and source strides, not measured HBM traffic.
     std::fprintf(stdout, "DFLASH_GROUP_QUANT_CUBE {\"version\":1,\"kv_m80_mode\":\"%s\","
                          "\"a_source\":\"%s\",\"a_stage_bytes\":%llu,\"a_row_stride\":%lld,"

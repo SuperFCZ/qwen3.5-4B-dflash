@@ -26,7 +26,7 @@ def collect_pipe_counters(root):
                 if not any("dflashgroupquantlinear" in normalized(name) for name in names):
                     continue
                 fields = {key:value for key,value in row.items() if key and isinstance(value,str) and value and
-                          any(word in normalized(key) for word in ("mte1","mte2","mte3","duration","cube","mac"))}
+                          any(word in normalized(key) for word in ("mte1","mte2","mte3","duration","cube","mac","vec","scalar"))}
                 if fields: rows.append(dict(file=item["path"], line=number, fields=fields))
     return dict(status="RAW_COLUMNS_FOUND" if rows else "NOT_FOUND", csv_files=files, rows=rows,
                 mte2_available=any("mte2" in normalized(key) for row in rows for key in row["fields"]),

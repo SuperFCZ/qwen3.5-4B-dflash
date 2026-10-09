@@ -95,7 +95,8 @@ static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_
             // whitelisted shapes; prefetch excludes whole-K256 and gate/up.
             const bool prefetch = DFLASH_GROUP_QUANT_PIPELINE_MODE == 1 && (k == 512 || k == 1024 || k == 9728);
             const uint64_t userUb = prefetch ? 33024 : (k == 256 ? 49408 : 24704);
-            assert(cpuMetrics.ubBytes == (owned ? userUb + tiling.matmulUbBytes + (stageA ? 20480 : 0) : 0));
+            const bool broadcast = DFLASH_GROUP_QUANT_SCALE_MODE == 1 && !(m==80 && k==2560 && n==2048);
+            assert(cpuMetrics.ubBytes == (owned ? userUb + tiling.matmulUbBytes + (stageA ? 20480 : 0) + (broadcast ? 2304 : 0) : 0));
             assert(cpuMetrics.iterations == owned * (k / tileK));
             assert(cpuMetrics.partials == owned * (k / tileK - 1));
             assert(cpuMetrics.outputs == owned && cpuMetrics.stores == owned * m * 64);
@@ -109,8 +110,10 @@ static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_
             assert(cpuMetrics.castsWithPendingDma == (prefetch ? owned * (k / tileK - 1) * (tileK / 32) : 0));
 #if DFLASH_GROUP_QUANT_DEQUANT_MODE == 1
             assert(cpuMetrics.castCalls == chunks * (tileK / 32));
-            assert(cpuMetrics.mulsCalls == chunks * (tileK / 128) * 64);
-            assert(cpuMetrics.vectorBarriers == chunks * 2);
+            assert(cpuMetrics.mulsCalls == (broadcast ? 0 : chunks * (tileK / 128) * 64));
+            assert(cpuMetrics.brcbCalls == (broadcast ? chunks * (tileK / 128) : 0));
+            assert(cpuMetrics.mulCalls == cpuMetrics.brcbCalls);
+            assert(cpuMetrics.vectorBarriers == chunks * (broadcast ? 2 + 2 * (tileK / 128) : 2) + (broadcast && owned ? 1 : 0));
 #else
             assert(cpuMetrics.castCalls == chunks * (tileK / 32) * 64);
             assert(cpuMetrics.mulsCalls == cpuMetrics.castCalls);

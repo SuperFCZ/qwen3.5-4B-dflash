@@ -15,7 +15,9 @@ M16/32/64/80，提供 C16/C64 共 52 个真实 projection 的独立验收；用�
 显式开关 `DFLASH_KV_M80_MODE=baseline|a-ub`，默认 baseline。用户已确认 A4.1 全部正确性/A4
 回归通过，KV M80 约 3.1→1.27 ms（2.45×），MTE2 约 2340→650 μs；原始路径待补录。
 完整 Draft / Decode 性能仍为 `NOT_RUN`。
-下一阶段 C 的独立基础版见 [draft_head/README.md](../draft_head/README.md)，新算子 NPU 验收
+当前进入 [A5.0 scale broadcast 配对实验](A5_0.md)，优先优化真实 26 投影，Head 和其他新算子暂停。
+A5 独立开关默认关闭，NPU correctness/performance/profiling 为 `NOT_RUN`。
+C 的已有独立基础版见 [draft_head/README.md](../draft_head/README.md)，新算子 NPU 验收
 为 `NOT_RUN`；单 gate/up 图接入目前仅有 [opt-in 设计](GATE_UP_OPT_IN.md)。
 
 原版 tiny `(M,K,N)=(16,256,64)` 已由用户在服务器确认全 PASS，包括修正 scale 视图后的

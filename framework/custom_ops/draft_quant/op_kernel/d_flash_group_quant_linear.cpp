@@ -5,6 +5,9 @@
 static_assert(DFLASH_GROUP_QUANT_DEQUANT_MODE <= 1U, "unsupported dequantization mode");
 static_assert(DFLASH_GROUP_QUANT_PIPELINE_MODE <= 1U, "unsupported pipeline mode");
 static_assert(DFLASH_GROUP_QUANT_KV_M80_MODE <= 1U, "unsupported KV M80 mode");
+static_assert(DFLASH_GROUP_QUANT_SCALE_MODE <= 1U, "unsupported scale mode");
+static_assert(DFLASH_GROUP_QUANT_SCALE_MODE == 0U || DFLASH_GROUP_QUANT_DEQUANT_MODE == 1U,
+              "broadcast requires batched casts");
 static_assert(DFLASH_GROUP_QUANT_PIPELINE_MODE == 0U || DFLASH_GROUP_QUANT_DEQUANT_MODE == 1U,
               "raw prefetch requires batched dequantization");
 
@@ -49,6 +52,7 @@ __aicore__ inline void RunGroupQuantLinear(
     const uint32_t globalN = tilingData.globalN;
     const uint32_t tileK = tilingData.tileK;
     const bool prefetch = DFLASH_GROUP_QUANT_PREFETCH(globalK, globalN);
+    const bool broadcast = !StageA && DFLASH_GROUP_QUANT_BROADCAST(globalM, globalK, globalN);
     const uint32_t rawBanks = prefetch ? 2U : 1U;
     const uint32_t nTiles = globalN / kTileN;
     const uint32_t blockIdx = static_cast<uint32_t>(AscendC::GetBlockIdx());
@@ -63,11 +67,13 @@ __aicore__ inline void RunGroupQuantLinear(
     AscendC::TBuf<AscendC::TPosition::VECIN> codesBuf, scaleBuf;
     AscendC::TBuf<AscendC::TPosition::VECOUT> weightBuf;
     AscendC::TBuf<AscendC::TPosition::VECOUT> aStageBuf;
+    AscendC::TBuf<AscendC::TPosition::VECCALC> broadcastBuf;
     AscendC::TBuf<> matmulUb;
     pipe.InitBuffer(codesBuf, rawBanks * kTileN * tileK * sizeof(int8_t));
     pipe.InitBuffer(scaleBuf, rawBanks * (tileK / kGroup) * kTileN * sizeof(half));
     pipe.InitBuffer(weightBuf, kTileN * tileK * sizeof(half));
     if constexpr (StageA) pipe.InitBuffer(aStageBuf, globalM * tileK * sizeof(half));
+    if (broadcast) pipe.InitBuffer(broadcastBuf, DFLASH_GROUP_QUANT_BROADCAST_BYTES);
     pipe.InitBuffer(matmulUb, tilingData.matmulUbBytes);
     mm.SetLocalWorkspace(matmulUb.Get<uint8_t>(tilingData.matmulUbBytes));
 
@@ -80,6 +86,13 @@ __aicore__ inline void RunGroupQuantLinear(
     auto qBanks = codesBuf.Get<int8_t>(rawBanks * kTileN * tileK);
     auto sBanks = scaleBuf.Get<half>(rawBanks * (tileK / kGroup) * kTileN);
     auto wLocal = weightBuf.Get<half>(kTileN * tileK);
+#if DFLASH_GROUP_QUANT_SCALE_MODE == 1
+    if (broadcast) {
+        AscendC::Duplicate(broadcastBuf.Get<half>(DFLASH_GROUP_QUANT_BROADCAST_BYTES / 2),
+            static_cast<half>(0), DFLASH_GROUP_QUANT_BROADCAST_BYTES / 2);
+        AscendC::PipeBarrier<PIPE_V>();
+    }
+#endif
 
     // These signals can remain outstanding across Matmul, whose internal
     // copies also Fetch MTE2_S/MTE2_V IDs. Reserve them in the shared TPipe.
@@ -153,6 +166,24 @@ __aicore__ inline void RunGroupQuantLinear(
             // N/group slices, preserving the original FP16 multiplication.
             AscendC::PipeBarrier<PIPE_V>();
             for (uint32_t group = 0; group < tileK / kGroup; ++group) {
+#if DFLASH_GROUP_QUANT_SCALE_MODE == 1
+                if (broadcast) {
+                    auto expanded = broadcastBuf.Get<half>(DFLASH_GROUP_QUANT_BROADCAST_BYTES / 2);
+                    // Eight repeats: 64 FP16 scales -> 64 identical-value 32B blocks.
+                    // dstBlkStride=1 selects dav_m200's Vector implementation.
+                    AscendC::Brcb(expanded, sLocal[group * kTileN], 8, {1, 8});
+                    AscendC::PipeBarrier<PIPE_V>();
+                    const AscendC::BinaryRepeatParams mulParams{1, 1, 0,
+                        static_cast<uint8_t>(tileK / 16), static_cast<uint8_t>(tileK / 16), 1};
+                    // One repeat per N row; src1 block stride zero reuses the
+                    // row's scale block for all eight K16 blocks. No FP32 scale.
+                    AscendC::Mul(wLocal[group * kGroup], wLocal[group * kGroup], expanded,
+                        static_cast<uint64_t>(kGroup), static_cast<uint8_t>(kTileN), mulParams);
+                    // Protect expanded before next group / next K tile uses it.
+                    AscendC::PipeBarrier<PIPE_V>();
+                    continue;
+                }
+#endif
                 for (uint32_t n = 0; n < kTileN; ++n) {
                     const half scale = sLocal.GetValue(group * kTileN + n);
                     const uint32_t dst = n * tileK + group * kGroup;

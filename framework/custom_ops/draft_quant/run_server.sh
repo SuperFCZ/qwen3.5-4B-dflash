@@ -9,6 +9,13 @@ suite=${DFLASH_SUITE:-a1}
 core_limit=${DFLASH_CORE_LIMIT:-0}
 dequant_mode=${DFLASH_DEQUANT_MODE:-batched}
 pipeline_mode=${DFLASH_PIPELINE_MODE:-serial}
+scale_mode=${DFLASH_SCALE_MODE:-scalar}
+if [[ "$scale_mode" != scalar && "$scale_mode" != broadcast ]]; then
+    echo "DFLASH_SCALE_MODE must be scalar or broadcast" >&2; exit 1
+fi
+if [[ "$scale_mode" == broadcast && ( "$dequant_mode" != batched || "$suite" != a4 ) ]]; then
+    echo "A5 broadcast requires batched dequantization and the full a4 suite" >&2; exit 1
+fi
 kv_m80_mode=${DFLASH_KV_M80_MODE:-baseline}
 if [[ "$kv_m80_mode" != baseline && "$kv_m80_mode" != a-ub ]]; then
     echo "DFLASH_KV_M80_MODE must be baseline or a-ub" >&2
@@ -90,6 +97,7 @@ echo "Target: Ascend310P3 / CANN 9.0.0; using $cann_root"
 echo "Build: $build_root"
 echo "Evidence: $run_root"
 echo "A3 N-tile scheduling; build core cap: $core_limit (0=auto)"
+echo "Scale build mode: $scale_mode"
 echo "Dequantization build mode: $dequant_mode"
 echo "KV M80 build mode: $kv_m80_mode"
 echo "Pipeline build mode: $pipeline_mode (prefetch targets down + streamed A1 only)"
@@ -109,7 +117,7 @@ cp "$here/op_host/d_flash_group_quant_linear.cpp" \
 cp "$here/op_kernel/d_flash_group_quant_linear.cpp" "$op_project/op_kernel/"
 phase=configure_core_limit
 "$python_bin" "$here/test/a3_launch.py" --core-limit "$core_limit" --dequant-mode "$dequant_mode" \
-    --pipeline-mode "$pipeline_mode" --kv-m80-mode "$kv_m80_mode" \
+    --pipeline-mode "$pipeline_mode" --kv-m80-mode "$kv_m80_mode" --scale-mode "$scale_mode" \
     --header "$op_project/op_host/d_flash_group_quant_linear_build_config.h" \
     --kernel-header "$op_project/op_kernel/d_flash_group_quant_linear_build_config.h" \
     --report "$run_root/build-config.json"
@@ -187,6 +195,9 @@ elif [[ "$suite" == a2 ]]; then
 else
     "$python_bin" "$here/test/run_suite.py" --output-dir "$data_dir" \
         --runner "$build_root/test/dflash_group_quant_linear_test" --device-id "$device_id" --suite "$suite"
+fi
+if [[ -n "${DFLASH_SUMMARY_POINTER:-}" ]]; then
+    (set -o noclobber; printf '%s\n' "$data_dir/suite.json" > "$DFLASH_SUMMARY_POINTER")
 fi
 echo "Summary: $data_dir/suite.json"
 if [[ "$suite" == a2 || "$suite" == a3 || "$suite" == a31 || "$suite" == a32 || "$suite" == a4 || "$suite" == a41 ]]; then

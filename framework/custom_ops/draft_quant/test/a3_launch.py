@@ -14,6 +14,8 @@ PREFIX = "DFLASH_GROUP_QUANT_LAUNCH "
 DEQUANT_MODES = {"legacy": 0, "batched": 1}
 PIPELINE_MODES = {"serial": 0, "prefetch": 1}
 KV_M80_MODES = {"baseline": 0, "a-ub": 1}
+SCALE_MODES = {"scalar": 0, "broadcast": 1}
+SCALE_PREFIX = "DFLASH_GROUP_QUANT_SCALE "
 CUBE_PREFIX = "DFLASH_GROUP_QUANT_CUBE "
 
 
@@ -26,6 +28,13 @@ def pipeline_plan(k, n, mode):
             "raw_banks": banks, "user_ub_bytes": 64 * tile_k * (2 + banks) + tile_k // 128 * 64 * 2 * banks}
 
 
+def scale_plan(shape, mode):
+    if mode not in SCALE_MODES: raise ValueError("unknown scale mode")
+    enabled = mode == "broadcast" and tuple(shape) != (80, 2560, 2048)
+    return dict(version=1, scale_mode=mode, selected_scale="brcb-mul-v1" if enabled else "scalar-muls-v1",
+                broadcast_bytes=2304 if enabled else 0, sdk_reserved_bytes=8192 if enabled else 0)
+
+
 def core_limit(value):
     result = int(value)
     if str(result) != str(value) or not 0 <= result <= 65535:
@@ -33,7 +42,7 @@ def core_limit(value):
     return result
 
 
-def configure_build(header, report, limit, mode="batched", kernel_header=None, pipeline_mode="serial", kv_m80_mode="baseline"):
+def configure_build(header, report, limit, mode="batched", kernel_header=None, pipeline_mode="serial", kv_m80_mode="baseline", scale_mode="scalar"):
     limit = core_limit(limit)
     header, report = Path(header).resolve(), Path(report).resolve()
     if header == CONFIG.resolve():
@@ -63,6 +72,12 @@ def configure_build(header, report, limit, mode="batched", kernel_header=None, p
         raise ValueError("unexpected KV M80 declaration")
     configured = configured.replace("#define DFLASH_GROUP_QUANT_KV_M80_MODE 0U",
                                     f"#define DFLASH_GROUP_QUANT_KV_M80_MODE {KV_M80_MODES[kv_m80_mode]}U")
+    if scale_mode not in SCALE_MODES or (scale_mode == "broadcast" and mode != "batched"):
+        raise ValueError("scale mode must be scalar or broadcast; broadcast requires batched")
+    if original.count("#define DFLASH_GROUP_QUANT_SCALE_MODE 0U") != 1:
+        raise ValueError("unexpected tracked scale-mode declaration")
+    configured = configured.replace("#define DFLASH_GROUP_QUANT_SCALE_MODE 0U",
+                                    f"#define DFLASH_GROUP_QUANT_SCALE_MODE {SCALE_MODES[scale_mode]}U")
     header.write_text(configured)
     if kernel_header is not None:
         kernel_header = Path(kernel_header).resolve()
@@ -73,9 +88,9 @@ def configure_build(header, report, limit, mode="batched", kernel_header=None, p
                HERE / "op_kernel/d_flash_group_quant_linear.cpp",
                HERE / "op_kernel/d_flash_group_quant_linear_build_config.h",
                HERE / "test/main.cpp", HERE / "test/native_om.cpp", HERE / "test/runner_common.h"]
-    sources += [HERE / "test" / name for name in ("a3_launch.py", "run_a2.py", "run_a4.py", "run_a41.py", "a4_contract.py")]
+    sources += [HERE / "test" / name for name in ("a3_launch.py", "run_a2.py", "run_a4.py", "run_a41.py", "a4_contract.py", "compare_a5.py", "run_a5.py", "profile_a31.py")]
     write_json(report, {"abi": "dflash-group-quant-linear-build-v5", "policy": POLICY,
-                        "kv_m80_mode": kv_m80_mode,
+                        "kv_m80_mode": kv_m80_mode, "scale_mode": scale_mode,
                         "tiling_abi": "full-m-v2", "launch_version": 5,
                         "pipeline_mode": pipeline_mode,
                         "dequant_mode": mode, "kernel_header": str(kernel_header) if kernel_header else None,
@@ -119,10 +134,15 @@ def load_build_config(path):
             raise ValueError("generated KV M80 mode/launch version differs from build configuration")
     else:
         config["kv_m80_mode"] = "baseline"
+    if "scale_mode" in config:
+        mode = config["scale_mode"]
+        if (mode not in SCALE_MODES or (mode == "broadcast" and config["dequant_mode"] != "batched") or
+                f"#define DFLASH_GROUP_QUANT_SCALE_MODE {SCALE_MODES[mode]}U" not in header.read_text()):
+            raise ValueError("generated scale mode differs from build configuration")
     return config
 
 
-def launch_evidence(log, shape, limit, workspace_bytes, dequant_mode=None, pipeline_mode=None, launch_version=None, kv_m80_mode=None):
+def launch_evidence(log, shape, limit, workspace_bytes, dequant_mode=None, pipeline_mode=None, launch_version=None, kv_m80_mode=None, scale_mode=None):
     m, k, n = shape
     records = [json.loads(line.partition(PREFIX)[2]) for line in Path(log).read_text().splitlines() if PREFIX in line]
     if not records:
@@ -170,6 +190,13 @@ def launch_evidence(log, shape, limit, workspace_bytes, dequant_mode=None, pipel
         first = dict(first, cube=cube)
     elif kv_m80_mode not in (None, "baseline"):
         raise ValueError("KV M80 candidate requires version 5 evidence")
+    if scale_mode is not None:
+        records = [json.loads(line.partition(SCALE_PREFIX)[2]) for line in Path(log).read_text().splitlines() if SCALE_PREFIX in line]
+        selected = scale_plan(shape, scale_mode)
+        if not records or any(item != selected for item in records):
+            raise ValueError("scale broadcast plan differs from build/shape policy")
+        plan["user_ub_bytes"] += selected["broadcast_bytes"] + selected["sdk_reserved_bytes"]
+        first = dict(first, scale=selected)
     if version in (3, 4, 5):
         if (any(first.get(key) != value for key, value in plan.items()) or
                 (pipeline == "prefetch" and mode != "batched")):
@@ -205,11 +232,12 @@ def main():
     parser.add_argument("--dequant-mode", choices=tuple(DEQUANT_MODES), default="batched")
     parser.add_argument("--pipeline-mode", choices=tuple(PIPELINE_MODES), default="serial")
     parser.add_argument("--kv-m80-mode", choices=tuple(KV_M80_MODES), default="baseline")
+    parser.add_argument("--scale-mode", choices=tuple(SCALE_MODES), default="scalar")
     parser.add_argument("--kernel-header", type=Path)
     parser.add_argument("--header", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
-    configure_build(args.header, args.report, args.core_limit, args.dequant_mode, args.kernel_header, args.pipeline_mode, args.kv_m80_mode)
+    configure_build(args.header, args.report, args.core_limit, args.dequant_mode, args.kernel_header, args.pipeline_mode, args.kv_m80_mode, args.scale_mode)
 
 
 if __name__ == "__main__":

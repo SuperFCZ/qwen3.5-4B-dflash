@@ -31,6 +31,7 @@ struct CpuMetrics {
     uint64_t ubBytes = 0;
     uint32_t iterations = 0, partials = 0, outputs = 0, stores = 0, ends = 0;
     uint32_t castCalls = 0, mulsCalls = 0, vectorBarriers = 0;
+    uint32_t brcbCalls = 0, mulCalls = 0;
     uint32_t copies = 0, castsWithPendingDma = 0, eventAllocations = 0, libraryWithPendingSignals = 0;
     uint32_t aStageCalls = 0;
     uint64_t aStageBytes = 0;
@@ -56,6 +57,8 @@ struct UnaryRepeatParams {
     uint16_t dstBlkStride, srcBlkStride;
     uint8_t dstRepStride, srcRepStride;
 };
+struct BrcbRepeatParams { uint16_t dstBlkStride, dstRepStride; };
+struct BinaryRepeatParams { uint8_t dstBlkStride, src0BlkStride, src1BlkStride, dstRepStride, src0RepStride, src1RepStride; };
 
 // Deliberately defer MTE2 writes. This is a dependency/lifetime checker, not
 // a model of Ascend scheduling, cache coherence, bandwidth or execution time.
@@ -259,6 +262,34 @@ inline void Muls(Tensor<half> dst, Tensor<half> src, half scale, uint32_t count)
     VectorAccess(Bytes(dst.data, count * sizeof(half)), Bytes(src.data, count * sizeof(half)));
     for (uint32_t i = 0; i < count; ++i) {
         dst.data[i] = static_cast<half>(static_cast<float>(src.data[i]) * static_cast<float>(scale));
+    }
+}
+inline void Duplicate(Tensor<half> dst, half value, uint32_t count) {
+    assert(count <= dst.count);
+    VectorAccess(Bytes(dst.data,count*2),Bytes(dst.data,0));
+    for(uint32_t i=0;i<count;++i) dst.data[i]=value;
+}
+inline void Brcb(Tensor<half> dst, Tensor<half> src, uint8_t repeats, BrcbRepeatParams params) {
+    ++cpuMetrics.brcbCalls;
+    assert(repeats==8 && params.dstBlkStride==1 && params.dstRepStride==8);
+    // Include dav_m200's read/restore tail in the lifetime/bounds model.
+    assert(dst.count>=1152 && src.count>=64);
+    VectorAccess(Bytes(dst.data,2304),Bytes(src.data,128));
+    for(uint32_t row=0;row<64;++row)
+        for(uint32_t lane=0;lane<16;++lane) dst.data[row*16+lane]=src.data[row];
+    // The SDK's internal 24 PIPE_V barriers are not simulated/counted here.
+}
+inline void Mul(Tensor<half> dst, Tensor<half> x, Tensor<half> scale,
+                uint64_t mask, uint8_t repeats, BinaryRepeatParams p) {
+    ++cpuMetrics.mulCalls;
+    assert(mask==128 && repeats==64 && p.dstBlkStride==1 && p.src0BlkStride==1 && p.src1BlkStride==0);
+    for(uint32_t row=0;row<repeats;++row) {
+        const auto d=row*p.dstRepStride*16, a=row*p.src0RepStride*16, b=row*p.src1RepStride*16;
+        assert(d+mask<=dst.count && a+mask<=x.count && b+16<=scale.count);
+        VectorAccess(Bytes(dst.data+d,mask*2),Bytes(x.data+a,mask*2));
+        CheckReadable(Bytes(scale.data+b,32),false);
+        for(uint32_t lane=0;lane<mask;++lane)
+            dst.data[d+lane]=static_cast<half>(static_cast<float>(x.data[a+lane])*static_cast<float>(scale.data[b+lane%16]));
     }
 }
 }  // namespace AscendC

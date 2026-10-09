@@ -28,7 +28,7 @@ def collect_launches(root, config):
                 execution.get("tile_m") != shape[0] or execution.get("weight_reuse_rows") != shape[0]):
             raise ValueError("A4 runner must report full-M output/weight reuse")
         return launch_evidence(directory / "runner.log", shape, config["core_limit"], execution["workspace_bytes"],
-                               config["dequant_mode"], config["pipeline_mode"], config.get("launch_version", 4), config.get("kv_m80_mode", "baseline"))
+                               config["dequant_mode"], config["pipeline_mode"], config.get("launch_version", 4), config.get("kv_m80_mode", "baseline"), config.get("scale_mode"))
 
     for shape, workload in zip(reference.A4_WORKLOADS, synthetic["workloads"]):
         names = tuple(c[0] for c in reference.cases(shape))

@@ -29,4 +29,17 @@
 #define DFLASH_GROUP_QUANT_STAGE_A(m, k, n) \
     (DFLASH_GROUP_QUANT_KV_M80_MODE == 1U && (m) == 80U && (k) == 2560U && (n) == 2048U)
 
+// A5.0 independent opt-in; keep the validated KV M80 dequant/A-UB path.
+// 0 = existing scalar scale + Muls; 1 = Brcb block broadcast + strided Mul.
+#ifndef DFLASH_GROUP_QUANT_SCALE_MODE
+#define DFLASH_GROUP_QUANT_SCALE_MODE 0U
+#endif
+#define DFLASH_GROUP_QUANT_BROADCAST(m, k, n) \
+    (DFLASH_GROUP_QUANT_SCALE_MODE == 1U && !((m) == 80U && (k) == 2560U && (n) == 2048U))
+// dav_m200 Brcb reads/restores an extra 128 half elements after its output.
+#define DFLASH_GROUP_QUANT_BROADCAST_BYTES 2304U
+// CANN 9.0 dav_m200 Brcb uses fixed temporary UB starting at 248 KiB.
+// Host leaves the entire final 8 KiB unallocated by TPipe/Matmul.
+#define DFLASH_GROUP_QUANT_BROADCAST_RESERVED_BYTES 8192U
+
 #endif
