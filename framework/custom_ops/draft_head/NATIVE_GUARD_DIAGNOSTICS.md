@@ -1,13 +1,26 @@
-# Native Top1 输出 Guard 定位
+# Native Top1 输出 Guard 定位与物理对齐修复
 
 2026-10-09 用户报告：30 个 native OM 已导出，native logits 可执行；native-top1
 仅 M=4/8/12 PASS，其余 M=1..15 在 `device buffer guard overwritten` 失败。
-**实际损坏缓冲区、设备写回边界以及修复后的 NPU 回归尚待确认。** 本次为定位补丁，
-不调整任何缓冲区容量，不修改 Custom Head 算法或数值门槛。
+`acfc07d` 增加具名 Guard 与分配尺寸诊断，没有改变分配大小。
+随后用户回传了 Ascend310P3 / CANN 9.0 的 NPU 定位结果：
+
+| 检查 | M1 | M4 |
+| --- | --- | --- |
+| logical / model-reported / physical | 8 / 8 / 8 B | 32 / 32 / 32 B |
+| 首次执行前 Guard | 全部完整 | 完整 |
+| 首次执行后 | 仅 y suffix 损坏 24 B，data offset 8..31 | 全部完整 |
+| x / w / workspace / modelWeights | 完整 | 完整 |
+| 数值比较 | Guard 阶段失败 | PASS |
+
+这是用户提供的实际设备证据，不是 CPU 模拟结果；原始诊断目录路径未提供，后续补录，
+不编造证据路径。它确认了本次 Native Top1 小输出的 32B 写回边界问题。
+**本修复的 CANN 编译、Native-only NPU 全套回归、正式 Custom Head 验收仍为 `NOT_RUN`。**
+未修改 Custom Head Kernel、native OM 或数学。
 
 ## 已确认的源码事实
 
-`test/runner.cpp` 原实现先为 Top1 分配 `M*8` 字节，再读取
+`test/runner.cpp` 在 `acfc07d` 中先为 Top1 分配 `M*8` 字节，再读取
 `aclmdlGetOutputSizeByIndex(desc,0)`；若其返回值更大，重新按返回值分配。
 输出 shape/dtype 必须仍为 INT64 `[M]`，返回大小小于逻辑长度会失败。
 Guard 在 payload 前后各 512 B，尾部从 `data + payload_bytes` 开始。
@@ -17,9 +30,9 @@ Guard 在 payload 前后各 512 B，尾部从 `data + payload_bytes` 开始。
 说明返回模型输出的字节数；这份 API 说明本身不能证明本机 CANN 9.0/310P 的 native
 Top1 一定按 32 B 写回，也不能代替本次故障的实际 Guard 证据。
 
-若模型报告值等于 `M*8`，而实际末次写回覆盖至 `ceil(M*8/32)*32`，则只有 M 为 4
-的倍数时不会触碰原尾哨兵。这与现象相符，但目前只是候选解释。
-CPU 回归模拟该写回可以复现此规律，**不是 NPU 证实**。
+模型报告值等于 `M*8`，写回至 `ceil(M*8/32)*32` 时，只有 M 为 4 的倍数不会触碰
+原尾哨兵。M1 的设备诊断已直接观察到 8..31 B 被覆盖。CPU 回归保留原始分配的失败
+模式，并验证修复后逻辑长度和物理边界分离；不能用它替代修复后的 NPU 全形状复测。
 
 ## 新的证据
 
@@ -28,6 +41,8 @@ CPU 回归模拟该写回可以复现此规律，**不是 NPU 证实**。
 - `m`、`top1_logical_bytes=M*8`、当前模式的 `logical_output_bytes`。
 - `model_reported_output_bytes`：实际 API 返回值；Custom 模式为 null。
 - `physical_payload_bytes`：runner 实际为 y 保留的 payload 容量，也是 dataset buffer 大小。
+- `dataset_output_buffer_bytes`：传给 `aclCreateDataBuffer` 的容量；native 为物理 payload，
+  Custom ACLNN 不使用此 dataset，记录 null。
 - `allocation_request_bytes`：传给 `aclrtMalloc` 的总大小，含两侧 512 B Guard。
   不声称知道 allocator 内部额外分配的页空间。
 - `suffix_data_offset`：尾部 Guard 相对于 y.data 的位置。
@@ -58,13 +73,13 @@ git pull --ff-only
 old_head_run=framework/custom_ops/draft_head/.runs/head-替换为原失败目录
 export HEAD_CAPTURE="$(cat "$old_head_run/capture-path.txt")"
 export HEAD_NATIVE_MANIFEST="$(cat "$old_head_run/native-path.txt")"
-test -f "$HEAD_CAPTURE" && test -f "$HEAD_NATIVE_MANIFEST"
+test -f "$HEAD_CAPTURE" && test -f "$HEAD_NATIVE_MANIFEST" && \
 HEAD_NATIVE_ONLY=1 HEAD_WARMUP=5 HEAD_REPETITIONS=30 \
   bash framework/custom_ops/draft_head/run_server.sh
 ```
 
-不要删除或重新导出 capture/native。仍遍历全部 M 和完整用例，原有 Guard 失败仍会
-使该用例 FAIL；这个定位版本**不承诺消除原故障**。
+不要删除或重新导出 capture/native。仍遍历全部 M 和完整用例，任何物理 Guard、输入只读、
+repeat/permutation 或数值差异都会使该用例 FAIL；修复的实际效果以这次 NPU 回归为准。
 优先查看新目录中的：
 
 ```bash
@@ -75,17 +90,43 @@ cat "$new_head_run/data/real-c16-m04/native-top1/output-allocation.json"
 cat "$new_head_run/data/real-c16-m04/native-top1/runner.log"
 ```
 
-## 确认后才实施的最小修复
+## 最小修复与验收边界
 
-先确认首次执行前所有 Guard 完整，执行后只有 y 的 suffix 损坏，且 M1/M2/M3 的
-损坏位置与各自逻辑尾部到 32 B 边界相符；同时核对模型实际报告大小。
-如果 workspace/modelWeights、prefix 或更远位置损坏，按真实区域继续定位，不套用输出对齐解释。
+`test/output_buffer.h` 定义 runner 使用的大小计算和逻辑读取：
 
-只有上述 NPU 证据支持输出物理写回对齐后，才修改 native-top1 的物理容量计算：
-逻辑输出保持 `M*8`，物理 payload 覆盖已确认的写回范围且不小于模型报告值；Guard
-放在物理 payload 的两端，dataset 声明容量与之相同。输出文件、repeat/permutation
-和数值比较仍只有逻辑 M 个 INT64，不比较 padding，不以 padding 当成有效 token。
-随后必须重跑 M1..15 native-only 全套；任何 Guard 或数值差异继续失败。
+```text
+logical_bytes = M * 8
+physical_payload_bytes = align_up(max(logical_bytes, model_reported_bytes), 32)
+dataset_output_buffer_bytes = physical_payload_bytes
+allocation_request_bytes = physical_payload_bytes + 2 * 512
+```
+
+物理补齐只应用于 `native-top1`；native-logits 继续按模型报告大小分配，Custom 的分配
+与 kernel 不改。保持模型 INT64 `[M]` 校验及 `reported >= logical` 的原有 ABI 检查；
+新增大小溢出检查。Guard 的位置为 `[data-512,data)` 和 `[data+physical,data+physical+512)`。
+padding 允许被写入，物理 payload 后的任何 Guard 字节变化仍失败。
+
+按照 [aclCreateDataBuffer 的参数定义](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/80RC3alpha003/apiref/appdevgapi/aclcppdevg_03_1431.html)，
+size 描述内存字节容量；因此 dataset 传物理 payload，不传带 Guard 的总分配大小。
+逻辑 shape/dtype 继续从原 OM 检查，没有构造新的 tensor shape 或修改模型描述。
+CANN 9.0 实际接收此容量的运行结果仍需本轮 NPU 回归确认；不存在失败后自动降级、
+跳过形状或放宽检查的路径。
+
+回读直接以 `logical_bytes` 为 D2H 长度，输出文件、repeat/permutation 和 bitwise 比较
+只得到 M 个 INT64。padding 不回读、不参与比较，也不视为 token。具名 Guard 诊断完整保留。
+预期 M1 的新报告为 logical=8、reported=8、physical=32、dataset=32、allocation=1056 B，
+尾哨兵从 offset 32 开始；M4 则仍为 logical=reported=physical=dataset=32。
+
+只有 Native-only **41 个完整用例、M1..15 全部 PASS** 后，才能进入正式 Custom Head
+NPU 验收。沿用相同 `HEAD_CAPTURE` / `HEAD_NATIVE_MANIFEST`，再执行：
+
+```bash
+# 前置条件：本修复的 Native-only suite.json.status == PASS。
+HEAD_NATIVE_ONLY=0 HEAD_WARMUP=5 HEAD_REPETITIONS=30 \
+  bash framework/custom_ops/draft_head/run_server.sh
+```
+
+现在不执行或宣称该阶段通过，完整 Draft/Decode 也仍为 `NOT_RUN`。
 
 ## 本地回归
 
@@ -96,4 +137,7 @@ python -B -m unittest discover -s framework/custom_ops/draft_quant/test -p 'test
 
 `guard_model.cpp` 通过 CPU ACL 内存桩调用真实 shared Guard 代码，逐个破坏前后各 512
 个位置，检查名称、偏移、期望/实际值、聚合多个损坏缓冲区；模拟 M1..15 的精确和
-32B 写回，确认原始越界仍被拒绝。其结果不替代 CANN 编译、NPU 或 full-model 验收。
+32B 写回，确认原始越界仍被拒绝。新增 M1..15 的修复后边界：模型报告等于/大于逻辑
+大小、不同 padding 内容、精确逻辑 D2H 长度与文件内容、逻辑 ID 改变仍不相等、物理
+payload 后多写一字节仍失败、非法回读长度与分配溢出被拒绝。
+其结果不替代 CANN 编译、NPU 或 full-model 验收。

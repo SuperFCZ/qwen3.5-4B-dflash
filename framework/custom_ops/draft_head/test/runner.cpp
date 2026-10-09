@@ -1,5 +1,6 @@
 // Standalone ACLNN / native OM head runner. No host numerical fallback.
 #include "../../draft_quant/test/runner_common.h"
+#include "output_buffer.h"
 #include "../op_host/head_contract.h"
 #include <iostream>
 #ifndef HEAD_NATIVE_ONLY
@@ -73,9 +74,12 @@ void Native(Session& r,const char* path,int m,bool wantLogits) {
     if(!sawX || !sawW || !(wantLogits?Dims(dims,{m,kN}):Dims(dims,{m})) ||
        aclmdlGetOutputDataType(r.desc,0)!=(wantLogits?ACL_FLOAT16:ACL_INT64) || required<r.y.bytes)
         throw std::runtime_error("native output ABI differs");
-    // Preserve the reported allocation for diagnostics. Do not add speculative
-    // padding before identifying the corrupted buffer and observed boundary.
-    if(required!=r.y.bytes) r.y.Allocate(required);
+    // NPU evidence: M1's native INT64 output writes bytes 8..31 beyond the
+    // reported 8 bytes. Pad ONLY native Top1; keep the OM's [M]/INT64 ABI.
+    const size_t physicalBytes=wantLogits?required:draft_head_test::NativeTop1PayloadBytes(size_t(m)*8,required);
+    if(physicalBytes!=r.y.bytes) r.y.Allocate(physicalBytes);
+    // aclDataBuffer describes storage capacity, independently of model shape.
+    // Add advertises precisely the physical payload, excluding both guards.
     r.Add(r.outputs,r.y);
 }
 #ifndef HEAD_NATIVE_ONLY
@@ -141,6 +145,9 @@ int main(int argc,char** argv) {
             <<",\"model_reported_output_bytes\":";
         if(native) allocationReport<<r.nativeOutputBytes; else allocationReport<<"null";
         allocationReport<<",\"physical_payload_bytes\":"<<r.y.bytes
+            <<",\"dataset_output_buffer_bytes\":";
+        if(native) allocationReport<<r.y.bytes; else allocationReport<<"null";
+        allocationReport
             <<",\"allocation_request_bytes\":"<<r.y.bytes+2*kGuard
             <<",\"guard_bytes_each\":"<<kGuard<<",\"suffix_data_offset\":"<<r.y.bytes<<"}\n";
         allocationReport.close();
@@ -148,6 +155,7 @@ int main(int argc,char** argv) {
         std::cerr<<"output_allocation M="<<m<<" logical_output_bytes="<<logicalBytes
                  <<" physical_payload_bytes="<<r.y.bytes<<" allocation_request_bytes="<<r.y.bytes+2*kGuard
                  <<" suffix_data_offset="<<r.y.bytes<<'\n';
+        if(native) std::cerr<<"dataset_output_buffer_bytes="<<r.y.bytes<<'\n';
         r.CheckGuards("after_setup");
         std::vector<uint8_t> first,firstLogits;
         auto prepare=[&]() {
@@ -179,7 +187,7 @@ int main(int argc,char** argv) {
         auto verify=[&](const std::string& name) {
             r.CheckGuards(name.empty()?"verify":name);
             Readonly(r.x,x); Readonly(r.w,w);
-            auto out=r.y.CopyOut(); out.resize(logicalBytes); if(first.empty()) first=out;
+            auto out=draft_head_test::ReadLogicalOutput(r.y,logicalBytes); if(first.empty()) first=out;
             if(first!=out) throw std::runtime_error("output repeat drift");
             if(!name.empty()) WriteBytes(dir+"/"+name,out);
             if(audit) {
@@ -201,7 +209,7 @@ int main(int argc,char** argv) {
             const auto alternate=permute(x); r.x.CopyIn(alternate); poison(0); prepare(); execute();
             r.CheckGuards("permuted.bin");
             Readonly(r.x,alternate); Readonly(r.w,w);
-            auto out=r.y.CopyOut(); out.resize(logicalBytes);
+            auto out=draft_head_test::ReadLogicalOutput(r.y,logicalBytes);
             if(out!=permute(first)) throw std::runtime_error("changed-request row permutation failed");
             WriteBytes(dir+"/permuted.bin",out);
             if(audit) {

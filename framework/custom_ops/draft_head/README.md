@@ -1,8 +1,9 @@
 # C：DFlashDraftLmHeadTop1 正确性基础版
 
-Native Top1 的 M 非 4 倍数 Guard 失败正在定位：见
+Native Top1 的 M 非 4 倍数 Guard 失败已通过 NPU 定位为输出尾部 32B 写回问题：见
 [具名 Guard、分配尺寸与复用产物复测说明](NATIVE_GUARD_DIAGNOSTICS.md)。
-当前定位补丁保留原分配大小，尚未确认设备写回边界，不能宣称对齐修复已通过。
+已仅补齐 Native Top1 物理 payload；修复后 Native-only NPU 回归仍为 `NOT_RUN`，
+必须全部通过后再进入正式 Custom Head NPU 验收。
 
 目标 Ascend310P3 / CANN 9.0.0，遵循 [OPTIMIZATION.md 的 C 契约](../../../docs/OPTIMIZATION.md)。
 **当前 CANN build/package/install、NPU 数值、native benchmark、性能、生产图接入及完整
