@@ -6,8 +6,11 @@
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
+#include <initializer_list>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 #include "acl/acl.h"
 
@@ -77,20 +80,75 @@ struct GuardedBuffer {
         return host;
     }
 
-    void CheckGuards() const
+    // Inspect both complete guards, even when the prefix is corrupt. Offsets
+    // identify the observed changed bytes, not an inferred DMA write extent.
+    bool InspectGuards(const std::string &name, std::ostream &out) const
     {
-        if (allocation == nullptr) return;
+        if (allocation == nullptr) {
+            out << "guard buffer=" << name << " status=UNALLOCATED\n";
+            return true;
+        }
         std::vector<uint8_t> before(kGuard), after(kGuard);
         Check(aclrtMemcpy(before.data(), kGuard, allocation, kGuard, ACL_MEMCPY_DEVICE_TO_HOST), "read prefix");
         Check(aclrtMemcpy(after.data(), kGuard, static_cast<uint8_t *>(data) + bytes,
                           kGuard, ACL_MEMCPY_DEVICE_TO_HOST), "read suffix");
-        const auto intact = [](uint8_t value) { return value == kCanary; };
-        if (!std::all_of(before.begin(), before.end(), intact) ||
-            !std::all_of(after.begin(), after.end(), intact)) {
-            throw std::runtime_error("device buffer guard overwritten");
-        }
+        bool intact = true;
+        auto inspect = [&](const char *side, const std::vector<uint8_t> &guard, bool prefix) {
+            size_t first = kGuard, last = 0, changed = 0;
+            for (size_t i = 0; i < guard.size(); ++i) {
+                if (guard[i] != kCanary) {
+                    if (!changed) first = i;
+                    last = i; ++changed;
+                }
+            }
+            out << "guard buffer=" << name << " side=" << side
+                << " payload_bytes=" << bytes << " allocation_request_bytes=" << bytes + 2 * kGuard
+                << " guard_bytes=" << kGuard << " expected=0xa5 status=" << (changed ? "CORRUPT" : "INTACT")
+                << " changed_bytes=" << changed;
+            if (changed) {
+                intact = false;
+                out << " first_changed_guard_offset=" << first << " last_changed_guard_offset=" << last
+                    << " first_changed_data_offset=";
+                if (prefix) out << '-' << kGuard - first;
+                else out << bytes + first;
+                out << " last_changed_data_offset=";
+                if (prefix) out << '-' << kGuard - last;
+                else out << bytes + last;
+                // Use a separate stream so callers' numeric formatting survives.
+                std::ostringstream value;
+                value << std::hex << std::setfill('0') << std::setw(2) << unsigned(guard[first]);
+                out << " first_actual=0x" << value.str();
+            }
+            out << '\n';
+        };
+        inspect("prefix", before, true);
+        inspect("suffix", after, false);
+        return intact;
+    }
+
+    void CheckGuards(const std::string &name = "unnamed") const
+    {
+        std::ostringstream detail;
+        if (!InspectGuards(name, detail))
+            throw std::runtime_error("device buffer guard overwritten\n" + detail.str());
     }
 };
+
+// Report every buffer before failing, so one damaged allocation cannot hide a
+// second one. No caller may use a false result to continue numerical acceptance.
+inline void CheckNamedGuards(
+    std::initializer_list<std::pair<const char *, const GuardedBuffer *>> buffers, std::ostream &out)
+{
+    std::string corrupt;
+    for (const auto &entry : buffers) {
+        if (!entry.second->InspectGuards(entry.first, out)) {
+            if (!corrupt.empty()) corrupt += ',';
+            corrupt += entry.first;
+        }
+    }
+    out.flush();
+    if (!corrupt.empty()) throw std::runtime_error("device buffer guard overwritten: " + corrupt);
+}
 
 
 using Clock = std::chrono::steady_clock;

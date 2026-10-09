@@ -14,6 +14,19 @@ from build_config import configure,load
 
 
 class HeadTests(unittest.TestCase):
+    def test_named_guards_all_bytes_and_hypothetical_32b_store(self):
+        compiler=shutil.which('c++')
+        if not compiler: self.skipTest('C++ compiler required')
+        with tempfile.TemporaryDirectory() as directory:
+            binary=Path(directory)/'guard-model'
+            result=subprocess.run([compiler,'-std=c++17','-Wall','-Wextra','-Werror',
+                '-I',str(REPO/'framework/runtime/cpp/tests/fake_acl'),
+                str(HERE/'test/guard_model.cpp'),'-o',str(binary)],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            result=subprocess.run([str(binary)],capture_output=True,text=True,timeout=30)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            self.assertIn('actual NPU buffer/write boundary NOT_RUN',result.stdout)
+
     def test_kernel_full_vocabulary_and_partition_reduction_model(self):
         compiler=shutil.which('c++')
         if not compiler: self.skipTest('C++17/_Float16 required')

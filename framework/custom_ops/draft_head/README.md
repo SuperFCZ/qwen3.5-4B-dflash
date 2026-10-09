@@ -1,5 +1,9 @@
 # C：DFlashDraftLmHeadTop1 正确性基础版
 
+Native Top1 的 M 非 4 倍数 Guard 失败正在定位：见
+[具名 Guard、分配尺寸与复用产物复测说明](NATIVE_GUARD_DIAGNOSTICS.md)。
+当前定位补丁保留原分配大小，尚未确认设备写回边界，不能宣称对齐修复已通过。
+
 目标 Ascend310P3 / CANN 9.0.0，遵循 [OPTIMIZATION.md 的 C 契约](../../../docs/OPTIMIZATION.md)。
 **当前 CANN build/package/install、NPU 数值、native benchmark、性能、生产图接入及完整
 Draft/Decode 均为 `NOT_RUN`。** 本地 CPU 模型/声明桩通过不能替代设备验收。

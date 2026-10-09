@@ -16,6 +16,7 @@ struct Session {
     aclmdlDesc* desc=nullptr; aclmdlDataset *inputs=nullptr,*outputs=nullptr;
     std::vector<aclDataBuffer*> buffers;
     GuardedBuffer x,w,y,logits,workspace,modelWeights;
+    size_t nativeOutputBytes=0;
 #ifndef HEAD_NATIVE_ONLY
     aclTensor *xd=nullptr,*wd=nullptr,*yd=nullptr,*ld=nullptr;
 #endif
@@ -35,6 +36,11 @@ struct Session {
         auto* b=aclCreateDataBuffer(memory.data,memory.bytes);
         if(!b) throw std::runtime_error("aclCreateDataBuffer failed");
         buffers.push_back(b); Check(aclmdlAddDatasetBuffer(set,b),"aclmdlAddDatasetBuffer");
+    }
+    void CheckGuards(const std::string& phase) const {
+        std::cerr<<"guard_check phase="<<phase<<'\n';
+        CheckNamedGuards({{"x",&x},{"w",&w},{"y",&y},{"logits",&logits},
+                          {"workspace",&workspace},{"modelWeights",&modelWeights}},std::cerr);
     }
 };
 bool Dims(const aclmdlIODims& s,std::initializer_list<int64_t> expected) {
@@ -61,11 +67,14 @@ void Native(Session& r,const char* path,int m,bool wantLogits) {
     }
     aclmdlIODims dims{}; Check(aclmdlGetOutputDims(r.desc,0,&dims),"native output dims");
     const size_t required=aclmdlGetOutputSizeByIndex(r.desc,0);
+    r.nativeOutputBytes=required;
+    std::cerr<<"native_output M="<<m<<" top1_logical_bytes="<<m*8
+             <<" logical_output_bytes="<<r.y.bytes<<" aclmdlGetOutputSizeByIndex="<<required<<'\n';
     if(!sawX || !sawW || !(wantLogits?Dims(dims,{m,kN}):Dims(dims,{m})) ||
        aclmdlGetOutputDataType(r.desc,0)!=(wantLogits?ACL_FLOAT16:ACL_INT64) || required<r.y.bytes)
         throw std::runtime_error("native output ABI differs");
-    // ACL may reserve aligned bytes for a short INT64 output. Compare only
-    // logical ND elements; keep guards outside the required model allocation.
+    // Preserve the reported allocation for diagnostics. Do not add speculative
+    // padding before identifying the corrupted buffer and observed boundary.
     if(required!=r.y.bytes) r.y.Allocate(required);
     r.Add(r.outputs,r.y);
 }
@@ -125,6 +134,21 @@ int main(int argc,char** argv) {
 #endif
         uint64_t workspaceBytes=r.workspace.bytes;
         const size_t logicalBytes=wantLogits?uint64_t(m)*kN*2:m*8;
+        // Separate metadata survives execution.json being marked FAIL later.
+        std::ofstream allocationReport(dir+"/output-allocation.json");
+        allocationReport<<"{\"mode\":\""<<mode<<"\",\"m\":"<<m
+            <<",\"top1_logical_bytes\":"<<m*8<<",\"logical_output_bytes\":"<<logicalBytes
+            <<",\"model_reported_output_bytes\":";
+        if(native) allocationReport<<r.nativeOutputBytes; else allocationReport<<"null";
+        allocationReport<<",\"physical_payload_bytes\":"<<r.y.bytes
+            <<",\"allocation_request_bytes\":"<<r.y.bytes+2*kGuard
+            <<",\"guard_bytes_each\":"<<kGuard<<",\"suffix_data_offset\":"<<r.y.bytes<<"}\n";
+        allocationReport.close();
+        if(!allocationReport) throw std::runtime_error("output allocation report write failed");
+        std::cerr<<"output_allocation M="<<m<<" logical_output_bytes="<<logicalBytes
+                 <<" physical_payload_bytes="<<r.y.bytes<<" allocation_request_bytes="<<r.y.bytes+2*kGuard
+                 <<" suffix_data_offset="<<r.y.bytes<<'\n';
+        r.CheckGuards("after_setup");
         std::vector<uint8_t> first,firstLogits;
         auto prepare=[&]() {
 #ifndef HEAD_NATIVE_ONLY
@@ -138,7 +162,9 @@ int main(int argc,char** argv) {
             }
 #endif
         };
+        bool firstExecution=true;
         auto execute=[&]() {
+            if(firstExecution) { r.CheckGuards("before_first_execute"); firstExecution=false; }
             if(native) Check(aclmdlExecuteAsync(r.model,r.inputs,r.outputs,r.stream),"native Head OM");
 #ifndef HEAD_NATIVE_ONLY
             else Check(audit?aclnnDFlashDraftLmHeadTop1Audit(r.workspace.data,workspaceBytes,executor,r.stream):
@@ -151,7 +177,7 @@ int main(int argc,char** argv) {
             if(audit) Check(aclrtMemset(r.logits.data,r.logits.bytes,repeat%2?0xff:0x7f,r.logits.bytes),"logit poison");
         };
         auto verify=[&](const std::string& name) {
-            for(auto* b:{&r.x,&r.w,&r.y,&r.logits,&r.workspace,&r.modelWeights}) b->CheckGuards();
+            r.CheckGuards(name.empty()?"verify":name);
             Readonly(r.x,x); Readonly(r.w,w);
             auto out=r.y.CopyOut(); out.resize(logicalBytes); if(first.empty()) first=out;
             if(first!=out) throw std::runtime_error("output repeat drift");
@@ -173,7 +199,7 @@ int main(int argc,char** argv) {
                 return out;
             };
             const auto alternate=permute(x); r.x.CopyIn(alternate); poison(0); prepare(); execute();
-            for(auto* b:{&r.x,&r.w,&r.y,&r.logits,&r.workspace,&r.modelWeights}) b->CheckGuards();
+            r.CheckGuards("permuted.bin");
             Readonly(r.x,alternate); Readonly(r.w,w);
             auto out=r.y.CopyOut(); out.resize(logicalBytes);
             if(out!=permute(first)) throw std::runtime_error("changed-request row permutation failed");
