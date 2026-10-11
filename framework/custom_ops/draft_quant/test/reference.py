@@ -408,9 +408,12 @@ def native(root, device_id):
     return report["status"] == "PASS"
 
 
-def check(root):
+def check(root, expected_tile_k=None):
     manifest = load_cases(root)
     shape = workload_from_manifest(manifest)
+    tile_k = shape.tile_k if expected_tile_k is None else expected_tile_k
+    if tile_k not in (128,256) or shape.k % tile_k:
+        raise ValueError("invalid configured synthetic K tile")
     native_report = json.loads((root / "native-eager.json").read_text())
     if native_report.get("reference_policy") != NATIVE_POLICY:
         raise ValueError("stale native reference: rerun native with the production NG-backed scale view")
@@ -423,7 +426,7 @@ def check(root):
     if shape != TINY and native_report.get("mkn") != [shape.m, shape.k, shape.n]:
         raise ValueError("native workload identity differs")
     report = {"abi": manifest["abi"], "status": "PASS", "scope": "synthetic ACLNN correctness only",
-              "mkn": [shape.m, shape.k, shape.n], "tile": [shape.m, 64, shape.tile_k],
+              "mkn": [shape.m, shape.k, shape.n], "tile": [shape.m, 64, tile_k],
               "reference_policy": NATIVE_POLICY,
               "native_om_parity": "NOT_RUN", "full_draft_validation": "NOT_RUN", "performance": "NOT_RUN",
               "numerical_gate": "bitwise FP16; atol=0 rtol=0; nonfinite fails", "cases": []}
@@ -434,7 +437,7 @@ def check(root):
                     "cpu_fallback": False, "input_readonly": True, "guards_intact": True,
                     "repetitions": REPETITIONS, "device_id": native_report["environment"]["device_id"]}
         if shape != TINY:
-            required.update(m=shape.m, k=shape.k, n=shape.n, tile_n=64, tile_k=shape.tile_k)
+            required.update(m=shape.m, k=shape.k, n=shape.n, tile_n=64, tile_k=tile_k)
         if shape.m != 16:
             required.update(tile_m=shape.m, weight_reuse_rows=shape.m)
         if any(execution.get(k) != v for k, v in required.items()):

@@ -27,10 +27,12 @@ inline bool IsSupportedShape(int64_t m, int64_t k, int64_t n)
     return synthetic || m16 || kv || fc;
 }
 
-inline int64_t KTile(int64_t k)
+inline int64_t KTile(int64_t k, int64_t m = kRows, int64_t n = 0, int64_t requested = 128)
 {
-    // Retain the proven whole-K path at K=256. Larger K streams one group.
-    return k == 256 ? 256 : kGroupSize;
+    if (requested != 128 && requested != 256) return 0;
+    if (m == 80 && k == 2560 && n == 2048) return 128;
+    // The original K=256 whole-K IterateAll path is unchanged in both builds.
+    return k == 256 ? 256 : requested;
 }
 
 inline uint32_t LaunchBlockCount(int64_t n, uint32_t availableCores, uint32_t coreLimit = 0)
@@ -41,9 +43,9 @@ inline uint32_t LaunchBlockCount(int64_t n, uint32_t availableCores, uint32_t co
     return tiles < permitted ? static_cast<uint32_t>(tiles) : permitted;
 }
 
-inline uint64_t UserUbBytes(int64_t k, uint32_t rawBanks = 1)
+inline uint64_t UserUbBytes(int64_t k, uint32_t rawBanks = 1, int64_t selectedTileK = 0)
 {
-    const uint64_t tileK = static_cast<uint64_t>(KTile(k));
+    const uint64_t tileK = static_cast<uint64_t>(selectedTileK ? selectedTileK : KTile(k));
     // W16 remains single-buffered. Only raw INT8 codes and FP16 GN scales
     // get a second bank in A3.2 (8320 additional bytes for K128).
     return kColumnTile * tileK * (2 + rawBanks) +
@@ -55,14 +57,15 @@ struct CubePlan {
     int64_t baseM, baseN, baseK;
 };
 
-inline bool IsCompatibleCubePlan(int64_t globalK, const CubePlan &plan, int64_t m = kRows)
+inline bool IsCompatibleCubePlan(int64_t globalK, const CubePlan &plan, int64_t m = kRows, int64_t selectedTileK = 0)
 {
     // Global (M,K,N) pairs are validated separately. The Cube sees a local
     // 64-column tile, covering all M rows and the current K group.
     if (globalK != 256 && globalK != 512 && globalK != 1024 &&
         globalK != 2560 && globalK != 9728 && globalK != 4096 && globalK != 12800) return false;
     if (!IsSupportedRows(m)) return false;
-    const int64_t tileK = KTile(globalK);
+    const int64_t tileK = selectedTileK ? selectedTileK : KTile(globalK);
+    if ((tileK != 128 && tileK != 256) || globalK % tileK != 0) return false;
     // One output block covers ALL M rows. This reuses each raw/dequantized B
     // tile without an outer M loop or separate per-M-block FP16 partial sums.
     if (plan.singleM != m || plan.singleN != kColumnTile || plan.singleK != tileK ||
@@ -74,8 +77,9 @@ inline bool IsCompatibleCubePlan(int64_t globalK, const CubePlan &plan, int64_t 
         // Quantization groups were already applied while building FP16 B.
         return plan.baseK > 0 && plan.baseK <= tileK && plan.baseK % 16 == 0;
     }
-    // Keep the already-validated streamed partial-sum contract unchanged.
-    return plan.baseK == kGroupSize;
+    // A streamed call has exactly ONE K base block. Never accept a different
+    // baseK merely because it divides singleCoreK. K128 remains strict too.
+    return plan.baseK == tileK;
 }
 
 template <typename Shape>

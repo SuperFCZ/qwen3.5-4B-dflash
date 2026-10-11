@@ -28,7 +28,7 @@ def collect_launches(root, config):
                 execution.get("tile_m") != shape[0] or execution.get("weight_reuse_rows") != shape[0]):
             raise ValueError("A4 runner must report full-M output/weight reuse")
         return launch_evidence(directory / "runner.log", shape, config["core_limit"], execution["workspace_bytes"],
-                               config["dequant_mode"], config["pipeline_mode"], config.get("launch_version", 4), config.get("kv_m80_mode", "baseline"), config.get("scale_mode"))
+                               config["dequant_mode"], config["pipeline_mode"], config.get("launch_version", 4), config.get("kv_m80_mode", "baseline"), config.get("scale_mode"), config.get("k_tile"))
 
     for shape, workload in zip(reference.A4_WORKLOADS, synthetic["workloads"]):
         names = tuple(c[0] for c in reference.cases(shape))
@@ -92,10 +92,11 @@ def run(args):
     for name in ("synthetic", "c16", "c64"):
         try:
             if name == "synthetic":
-                passed = run_suite.run(root / name, args.runner.resolve(), args.device_id, "a4")
+                passed = run_suite.run(root / name, args.runner.resolve(), args.device_id, "a4", config.get("k_tile",128))
             else:
                 real_args = SimpleNamespace(**vars(args))
                 real_args.output_dir, real_args.scope, real_args.timing_protocol = root / name, "a4", "continuous-v1"
+                real_args.k_tile = config.get("k_tile",128)
                 real_args.bundle = getattr(args, f"{name}_bundle")
                 real_args.native_om_manifest = getattr(args, f"{name}_native_om_manifest")
                 passed = run_a2.run(real_args) == 0

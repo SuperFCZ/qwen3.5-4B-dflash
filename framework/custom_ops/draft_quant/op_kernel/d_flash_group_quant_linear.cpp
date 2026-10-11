@@ -2,6 +2,7 @@
 #include "lib/matmul_intf.h"
 #include "d_flash_group_quant_linear_build_config.h"
 
+static_assert(DFLASH_GROUP_QUANT_K_TILE == 128U || DFLASH_GROUP_QUANT_K_TILE == 256U, "unsupported K tile");
 static_assert(DFLASH_GROUP_QUANT_DEQUANT_MODE <= 1U, "unsupported dequantization mode");
 static_assert(DFLASH_GROUP_QUANT_PIPELINE_MODE <= 1U, "unsupported pipeline mode");
 static_assert(DFLASH_GROUP_QUANT_KV_M80_MODE <= 1U, "unsupported KV M80 mode");

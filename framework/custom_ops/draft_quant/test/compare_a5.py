@@ -8,21 +8,21 @@ from types import SimpleNamespace
 import a4_contract
 import reference
 from a2_common import checked_file, sha256, validate_execution, write_json
-from a3_launch import launch_evidence, load_build_config
+from a3_launch import launch_evidence, load_build_config, selected_k_tile
 from compare_a3 import timings
 
 
-def load(path, mode):
+def load(path, mode, k_tile=128, config_path=None):
     report = json.loads(path.read_text())
     if (report.get('abi') != 'dflash-group-quant-linear-a4-suite-v1' or report.get('status') != 'PASS' or
         report.get('timing_protocol') != 'continuous-v1' or
         set(report.get('checks', {})) != {'paired_gears','synthetic','c16','c64','launches'} or
         any(c.get('status') != 'PASS' for c in report['checks'].values())):
         raise ValueError('A5 requires complete passing A4 regression in BOTH builds')
-    config_path = path.parent.parent / 'build-config.json'
+    config_path = config_path or path.parent.parent / 'build-config.json'
     config = load_build_config(config_path)
     if (report.get('build') != config or sha256(config_path) != report.get('build_config_sha256') or
-        config.get('scale_mode') != mode or config.get('dequant_mode') != 'batched' or
+        config.get('scale_mode') != mode or config.get('k_tile',128) != k_tile or config.get('dequant_mode') != 'batched' or
         config.get('kv_m80_mode') != 'a-ub' or config.get('launch_version') != 5):
         raise ValueError('need explicit scalar/broadcast paired builds retaining KV M80 a-ub')
     synthetic = json.loads(checked_file(path.parent,report['checks']['synthetic']['summary']).read_text())
@@ -51,7 +51,9 @@ def load(path, mode):
     return report,scopes
 
 
-def compatible(a,b):
+def compatible(a,b,allow_k_change=False):
+    if not allow_k_change and a["build"].get("k_tile",128)!=b["build"].get("k_tile",128):
+        raise ValueError("K tile differs in scale-only experiment")
     for key in ('device_id','timing_protocol','inputs'):
         if a.get(key) is None or a[key]!=b.get(key): raise ValueError(f'paired inputs differ: {key}')
     for key in ('source_sha256','core_limit','dequant_mode','pipeline_mode','kv_m80_mode','tiling_abi','launch_version'):
@@ -59,9 +61,12 @@ def compatible(a,b):
             raise ValueError(f'paired build differs: {key}')
 
 
-def match_plans(a,b,shape):
-    for key in ('m','k','n','tile_m','tile_n','tile_k','weight_reuse_rows','block_dim','available_cores','raw_banks','selected_pipeline'):
+def match_plans(a,b,shape,allow_k_change=False):
+    for key in ('m','k','n','tile_m','tile_n','weight_reuse_rows','block_dim','available_cores','raw_banks','selected_pipeline'):
         if a[key]!=b[key]: raise ValueError(f'non-scale launch policy changed: {key}')
+    if not allow_k_change and a['tile_k']!=b['tile_k']: raise ValueError('unexpected K tile change')
+    if allow_k_change and (a['tile_k'],b['tile_k']) != (selected_k_tile(shape,128),selected_k_tile(shape,256)):
+        raise ValueError('K128/K256 pair differs from shape policy')
     if a['user_ub_bytes']+a['matmul_ub_bytes'] != b['user_ub_bytes']+b['matmul_ub_bytes']:
         raise ValueError('total UB budget changed')
     if tuple(shape)==(80,2560,2048):
@@ -70,7 +75,7 @@ def match_plans(a,b,shape):
         if b['scale']['selected_scale']!='scalar-muls-v1': raise ValueError('KV M80 scale path changed')
 
 
-def projection(old,new,aroot,broot,shape,a,b):
+def projection(old,new,aroot,broot,shape,a,b,allow_k_change=False):
     if old.get('status')!='PASS' or new.get('status')!='PASS': raise ValueError('failed projection')
     protocol=old['executions']['custom']['timing']
     expected=checked_file(aroot,old['outputs']['native_om'][0]).read_bytes()
@@ -80,15 +85,15 @@ def projection(old,new,aroot,broot,shape,a,b):
             execution=case['executions'][kind]
             validate_execution(execution,shape,report['device_id'],
                 'AscendCL ACLNN' if kind=='custom' else 'AscendCL native OM',
-                protocol['warmup'],protocol['repetitions'],'continuous-v1')
+                protocol['warmup'],protocol['repetitions'],'continuous-v1',selected_k_tile(shape,report['build'].get('k_tile',128)))
             outputs,bracket=case['outputs'][kind],case.get('bracket_outputs',{}).get(kind,[])
             if len(outputs)!=2 or len(bracket)!=2: raise ValueError('missing repeat/tail/postcheck evidence')
             for item in outputs+bracket:
                 comparisons.append(reference.compare(expected,checked_file(root,item).read_bytes(),SimpleNamespace(m=shape[0],n=shape[2])))
         cfg=report['build']
         plans.append(launch_evidence(root/case['name']/'custom/runner.log',shape,cfg['core_limit'],
-            case['executions']['custom']['workspace_bytes'],cfg['dequant_mode'],cfg['pipeline_mode'],5,cfg['kv_m80_mode'],cfg['scale_mode']))
-    match_plans(*plans,shape)
+            case['executions']['custom']['workspace_bytes'],cfg['dequant_mode'],cfg['pipeline_mode'],5,cfg['kv_m80_mode'],cfg['scale_mode'],cfg.get('k_tile')))
+    match_plans(*plans,shape,allow_k_change)
     before,after=timings(old['executions']['custom']),timings(new['executions']['custom'])
     native_before,native_after=timings(old['executions']['native_om']),timings(new['executions']['native_om'])
     return dict(name=old['name'],shape=list(shape),status='PASS' if all(c['finite'] and c['bitwise_equal'] and c['max_ulp']==0 for c in comparisons) else 'FAIL',
@@ -115,10 +120,14 @@ def totals(rows):
         interpretation='sum of 26 isolated projection medians/p95s; NOT median/p95 of a sequential Draft call or end-to-end timing')
 
 
-def run(baseline,candidate,output):
+def run(baseline,candidate,output,experiment="scale",config_paths=(None,None)):
     if output.exists(): raise FileExistsError('use a new comparison file')
-    a,left=load(baseline,'scalar'); b,right=load(candidate,'broadcast'); compatible(a,b)
-    result=dict(abi='dflash-a5-comparison-v1',status='RUNNING',full_a4_regression='PASS',
+    if experiment not in ("scale","k-tile"): raise ValueError("unknown paired experiment")
+    k_experiment=experiment=="k-tile"
+    a,left=load(baseline,'broadcast' if k_experiment else 'scalar',128,config_paths[0])
+    b,right=load(candidate,'broadcast',256 if k_experiment else 128,config_paths[1])
+    compatible(a,b,k_experiment)
+    result=dict(experiment=experiment,abi='dflash-a5-comparison-v1',status='RUNNING',full_a4_regression='PASS',
         baseline=dict(path=str(baseline),sha256=sha256(baseline)),candidate=dict(path=str(candidate),sha256=sha256(candidate)),
         scope='PASS is numerical only; isolated continuous-v1',adoption='NOT_DECIDED',
         full_draft_validation='NOT_RUN',decode_performance='NOT_RUN',cases=[],totals={})
@@ -128,7 +137,7 @@ def run(baseline,candidate,output):
             if old.get(key) is None or old[key]!=new.get(key): raise ValueError('paired projection inputs differ')
         rows=[]
         for expected,x,y in zip(a4_contract.cases(gear),old['cases'],new['cases']):
-            row=projection(x,y,aroot,broot,a4_contract.case_shape(expected),a,b)
+            row=projection(x,y,aroot,broot,a4_contract.case_shape(expected),a,b,k_experiment)
             rows.append(row); result['cases'].append(dict(gear=label,**row))
             print(f"{label}/{row['name']}: {row['status']} median {row['baseline']['median_ms']:.4f}->{row['candidate']['median_ms']:.4f} ms; "
                   f"p95 {row['baseline']['p95_ms']:.4f}->{row['candidate']['p95_ms']:.4f}; native {row['native_after']['median_ms']:.4f}",flush=True)

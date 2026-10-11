@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 from types import SimpleNamespace
 
+from a3_launch import selected_k_tile
 from a2_common import (case_shape, checked_file, load_bundle, record,
                        sha256, validate_execution, validate_layout, validate_native_graph, write_json, scope_identity)
 from reference import compare
@@ -148,7 +149,7 @@ def run(args):
                 execution = json.loads((dest / "execution.json").read_text())
                 validate_execution(execution, shape, args.device_id,
                                    "AscendCL ACLNN" if kind == "custom" else "AscendCL native OM",
-                                   args.warmup, args.repetitions, timing_protocol)
+                                   args.warmup, args.repetitions, timing_protocol, selected_k_tile(shape,getattr(args,"k_tile",128)))
                 if scope == "a4" and kind == "custom" and (
                         execution.get("tile_m") != shape[0] or execution.get("weight_reuse_rows") != shape[0]):
                     raise ValueError("A4 requires a current runner reporting full-M output/weight reuse")

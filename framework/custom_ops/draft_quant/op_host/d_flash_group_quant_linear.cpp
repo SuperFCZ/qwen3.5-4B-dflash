@@ -125,7 +125,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
                      static_cast<long long>(n), availableCores);
         return ge::GRAPH_FAILED;
     }
-    const int64_t tileK = draft_quant_contract::KTile(k);
+    const int64_t tileK = draft_quant_contract::KTile(k, m, n, DFLASH_GROUP_QUANT_K_TILE);
     const bool prefetch = DFLASH_GROUP_QUANT_PREFETCH(k, n);
     const uint32_t rawBanks = prefetch ? 2U : 1U;
     const uint64_t codesBytes = kTileN * tileK * rawBanks;
@@ -136,7 +136,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     const bool broadcast = DFLASH_GROUP_QUANT_BROADCAST(m, k, n);
     const uint64_t broadcastBytes = broadcast ? DFLASH_GROUP_QUANT_BROADCAST_BYTES : 0;
     const uint64_t broadcastReservedBytes = broadcast ? DFLASH_GROUP_QUANT_BROADCAST_RESERVED_BYTES : 0;
-    const uint64_t userUbBytes = draft_quant_contract::UserUbBytes(k, rawBanks) + aStageBytes + broadcastBytes + broadcastReservedBytes;
+    const uint64_t userUbBytes = draft_quant_contract::UserUbBytes(k, rawBanks, tileK) + aStageBytes + broadcastBytes + broadcastReservedBytes;
     uint64_t ubBytes = 0;
     platform.GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubBytes);
     if (broadcast && ubBytes != 256 * 1024) {
@@ -164,7 +164,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     // C always uses the full output row stride.
     // B is a local [64,tileK] tensor, so its row stride is tileK, not global K.
     cubeTiling.SetOrgShape(m, n, stageA ? tileK : k, tileK);
-    cubeTiling.SetFixSplit(m, kTileN, kGroup);
+    cubeTiling.SetFixSplit(m, kTileN, tileK == k ? kGroup : tileK);
     cubeTiling.SetBufferSpace(-1, -1, static_cast<int32_t>(matmulUbBytes));
 
     DFlashGroupQuantLinearTilingData tiling;
@@ -179,7 +179,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
     const draft_quant_contract::CubePlan plan{
         cube.get_singleCoreM(), cube.get_singleCoreN(), cube.get_singleCoreK(),
         cube.get_baseM(), cube.get_baseN(), cube.get_baseK()};
-    if (!draft_quant_contract::IsCompatibleCubePlan(k, plan, m)) {
+    if (!draft_quant_contract::IsCompatibleCubePlan(k, plan, m, tileK)) {
         std::fprintf(stderr, "DFlashGroupQuantLinear: incompatible %s tiling for K=%lld N=%lld; "
                              "singleCore M/N/K actual=%lld/%lld/%lld expected=%lld/64/%lld; "
                              "base M/N/K actual=%lld/%lld/%lld; expected M/N=%lld/64, baseK %s\n",
@@ -189,7 +189,29 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
                      static_cast<long long>(plan.singleK), static_cast<long long>(m), static_cast<long long>(tileK),
                      static_cast<long long>(plan.baseM), static_cast<long long>(plan.baseN),
                      static_cast<long long>(plan.baseK), static_cast<long long>(m),
-                     tileK == k ? "must be positive, 16-aligned and <=256" : "must equal 128");
+                     tileK == k ? "must be positive, 16-aligned and <=256" : (tileK == 256 ? "must equal 256" : "must equal 128"));
+        return ge::GRAPH_FAILED;
+    }
+    const uint64_t aTileBytes = static_cast<uint64_t>(cube.get_baseM()) * cube.get_baseK() * 2;
+    const uint64_t bTileBytes = static_cast<uint64_t>(cube.get_baseN()) * cube.get_baseK() * 2;
+    const uint64_t cTileBytes = static_cast<uint64_t>(cube.get_baseM()) * cube.get_baseN() * 4;
+    uint64_t l1Capacity=0, l0aCapacity=0, l0bCapacity=0, l0cCapacity=0;
+    platform.GetCoreMemSize(platform_ascendc::CoreMemType::L1, l1Capacity);
+    platform.GetCoreMemSize(platform_ascendc::CoreMemType::L0_A, l0aCapacity);
+    platform.GetCoreMemSize(platform_ascendc::CoreMemType::L0_B, l0bCapacity);
+    platform.GetCoreMemSize(platform_ascendc::CoreMemType::L0_C, l0cCapacity);
+    const uint64_t l1Used=aTileBytes*cube.get_depthA1()+bTileBytes*cube.get_depthB1();
+    const uint64_t l0aUsed=aTileBytes*cube.get_dbL0A(), l0bUsed=bTileBytes*cube.get_dbL0B();
+    const uint64_t l0cUsed=cTileBytes*cube.get_dbL0C();
+    if (tileK==256 && k!=256 &&
+        (cube.get_depthA1()<1 || cube.get_depthB1()<1 || cube.get_dbL0A()<1 || cube.get_dbL0B()<1 || cube.get_dbL0C()<1 ||
+         l1Used>l1Capacity || l0aUsed>l0aCapacity || l0bUsed>l0bCapacity || l0cUsed>l0cCapacity)) {
+        std::fprintf(stderr, "A5.1 K256 Matmul resource plan invalid; used/capacity bytes "
+                            "L1=%llu/%llu L0A=%llu/%llu L0B=%llu/%llu L0C=%llu/%llu\n",
+            static_cast<unsigned long long>(l1Used), static_cast<unsigned long long>(l1Capacity),
+            static_cast<unsigned long long>(l0aUsed), static_cast<unsigned long long>(l0aCapacity),
+            static_cast<unsigned long long>(l0bUsed), static_cast<unsigned long long>(l0bCapacity),
+            static_cast<unsigned long long>(l0cUsed), static_cast<unsigned long long>(l0cCapacity));
         return ge::GRAPH_FAILED;
     }
     tiling.set_globalM(m);
@@ -204,9 +226,6 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
                         context->GetRawTilingData()->GetCapacity());
     context->GetRawTilingData()->SetDataSize(tiling.GetDataSize());
     context->GetWorkspaceSizes(1)[0] = static_cast<size_t>(platform.GetLibApiWorkSpaceSize());
-    const int64_t aTileBytes = static_cast<int64_t>(cube.get_baseM()) * cube.get_baseK() * 2;
-    const int64_t bTileBytes = static_cast<int64_t>(cube.get_baseN()) * cube.get_baseK() * 2;
-    const int64_t cTileBytes = static_cast<int64_t>(cube.get_baseM()) * cube.get_baseN() * 4;
     // Account using real tile sizes/depths, not TCubeTiling's reserved share*
     // fields. These are planned API buffers, not measured device traffic.
     std::fprintf(stdout, "DFlashGroupQuantLinear A4: M=%lld K=%lld N=%lld tileN=64 tileK=%lld "
@@ -250,6 +269,14 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
                  DFLASH_GROUP_QUANT_SCALE_MODE == 1 ? "broadcast" : "scalar",
                  broadcast ? "brcb-mul-v1" : "scalar-muls-v1",
                  static_cast<unsigned long long>(broadcastBytes), static_cast<unsigned long long>(broadcastReservedBytes));
+    std::fprintf(stdout, "DFLASH_GROUP_QUANT_K_TILE {\"version\":1,\"requested_k_tile\":%u,\"selected_k_tile\":%lld,"
+                         "\"l1_bytes\":%llu,\"l1_capacity\":%llu,\"l0a_bytes\":%llu,\"l0a_capacity\":%llu,"
+                         "\"l0b_bytes\":%llu,\"l0b_capacity\":%llu,\"l0c_bytes\":%llu,\"l0c_capacity\":%llu}\n",
+                 DFLASH_GROUP_QUANT_K_TILE, static_cast<long long>(tileK),
+                 static_cast<unsigned long long>(l1Used), static_cast<unsigned long long>(l1Capacity),
+                 static_cast<unsigned long long>(l0aUsed), static_cast<unsigned long long>(l0aCapacity),
+                 static_cast<unsigned long long>(l0bUsed), static_cast<unsigned long long>(l0bCapacity),
+                 static_cast<unsigned long long>(l0cUsed), static_cast<unsigned long long>(l0cCapacity));
     // Planned resources and source strides, not measured HBM traffic.
     std::fprintf(stdout, "DFLASH_GROUP_QUANT_CUBE {\"version\":1,\"kv_m80_mode\":\"%s\","
                          "\"a_source\":\"%s\",\"a_stage_bytes\":%llu,\"a_row_stride\":%lld,"

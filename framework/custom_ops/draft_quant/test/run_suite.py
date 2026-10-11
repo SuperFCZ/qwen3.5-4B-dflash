@@ -7,9 +7,10 @@ import sys
 import traceback
 
 import reference as ref
+from a3_launch import selected_k_tile
 
 
-def run(root, runner, device_id, suite):
+def run(root, runner, device_id, suite, k_tile=128):
     shapes = {"a1": ref.A1_WORKLOADS, "tiny": (ref.TINY,), "a4": ref.A4_WORKLOADS}[suite]
     root.mkdir(parents=True, exist_ok=False)
     report_path = root / "suite.json"
@@ -47,7 +48,7 @@ def run(root, runner, device_id, suite):
             result["native_command"] = native_command
             subprocess.run(native_command, check=True)
             result["phase"] = "compare"
-            passed = ref.check(directory)
+            passed = ref.check(directory, selected_k_tile((shape.m,shape.k,shape.n),k_tile)) if k_tile != 128 else ref.check(directory)
             result.update(status="PASS" if passed else "FAIL", phase="complete",
                           comparison=str(directory / "comparison.json"))
         except Exception as error:

@@ -165,7 +165,7 @@ def validate_native_graph(graph, case, bundle_hash, scope="a2"):
         raise ValueError("exported native NZ Const differs from the captured checkpoint codes")
 
 
-def validate_execution(report, shape, device, runtime, warmup, repetitions, timing_protocol=None):
+def validate_execution(report, shape, device, runtime, warmup, repetitions, timing_protocol=None, expected_tile_k=128):
     if (report.get("status") != "PASS" or report.get("runtime") != runtime or
             report.get("cpu_fallback") is not False or report.get("input_readonly") is not True or
             report.get("guards_intact") is not True or report.get("repetitions") != 2 or
@@ -174,7 +174,7 @@ def validate_execution(report, shape, device, runtime, warmup, repetitions, timi
     if runtime == "AscendCL native OM" and report.get("io_validated") is not True:
         raise ValueError("native OM IO was not validated")
     if runtime == "AscendCL ACLNN" and (report.get("op") != "DFlashGroupQuantLinear" or
-                                        report.get("tile_n") != 64 or report.get("tile_k") != 128):
+                                        report.get("tile_n") != 64 or report.get("tile_k") != expected_tile_k):
         raise ValueError("custom execution contract differs")
     timing = report.get("timing", {})
     if timing_protocol is not None and timing.get("protocol", "checked-v1") != timing_protocol:

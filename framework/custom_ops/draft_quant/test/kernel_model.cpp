@@ -15,7 +15,7 @@ static uint16_t Bits(half value)
 static uint32_t runs = 0;
 static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_t> &launches, uint32_t m = 16)
 {
-    const uint32_t tileK = static_cast<uint32_t>(draft_quant_contract::KTile(k));
+    const uint32_t tileK = static_cast<uint32_t>(draft_quant_contract::KTile(k,m,n,DFLASH_GROUP_QUANT_K_TILE));
     std::vector<half> x(m * k), scales((k / 128) * n);
     std::vector<int8_t> q(n * k), nz;
     for (uint32_t c = 0; c < n; ++c) {
@@ -94,7 +94,7 @@ static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_
             // Independent of the production selector: this fixture only runs
             // whitelisted shapes; prefetch excludes whole-K256 and gate/up.
             const bool prefetch = DFLASH_GROUP_QUANT_PIPELINE_MODE == 1 && (k == 512 || k == 1024 || k == 9728);
-            const uint64_t userUb = prefetch ? 33024 : (k == 256 ? 49408 : 24704);
+            const uint64_t userUb = 64 * tileK * (prefetch ? 4 : 3) + (tileK/128)*64*2*(prefetch ? 2 : 1);
             const bool broadcast = DFLASH_GROUP_QUANT_SCALE_MODE == 1 && !(m==80 && k==2560 && n==2048);
             assert(cpuMetrics.ubBytes == (owned ? userUb + tiling.matmulUbBytes + (stageA ? 20480 : 0) + (broadcast ? 2304 : 0) : 0));
             assert(cpuMetrics.iterations == owned * (k / tileK));
@@ -154,11 +154,11 @@ int main()
     // The abort path must consume outstanding lookahead signals before release,
     // including a failure at the first, middle and last group. TPipe's model
     // destructor rejects event leaks and unfinished consumers.
-    for (int failure : {0, 1, 3}) {
+    for (int failure : {0, 1, DFLASH_GROUP_QUANT_K_TILE == 256 ? 1 : 3}) {
         std::vector<half> x(16 * 512), s(4 * 64, static_cast<half>(1));
         std::vector<int8_t> q(64 * 512);
         std::vector<half> output(16 * 64, static_cast<half>(-17));
-        CpuTiling tiling{16, 512, 64, 128, 65536, {64, 512, 16, 64, 128}};
+        CpuTiling tiling{16, 512, 64, DFLASH_GROUP_QUANT_K_TILE, 65536, {64, 512, 16, 64, DFLASH_GROUP_QUANT_K_TILE}};
         cpuMetrics = {};
         cpuBlockIdx = 0;
         cpuBlockNum = 1;

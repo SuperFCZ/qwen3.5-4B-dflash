@@ -9,11 +9,14 @@ suite=${DFLASH_SUITE:-a1}
 core_limit=${DFLASH_CORE_LIMIT:-0}
 dequant_mode=${DFLASH_DEQUANT_MODE:-batched}
 pipeline_mode=${DFLASH_PIPELINE_MODE:-serial}
+k_tile=${DFLASH_K_TILE:-128}
+if [[ "$k_tile" != 128 && "$k_tile" != 256 ]]; then echo 'DFLASH_K_TILE must be 128 or 256' >&2; exit 1; fi
+if [[ "$k_tile" == 256 && "$suite" != a51 ]]; then echo 'K256 requires the staged a51 suite' >&2; exit 1; fi
 scale_mode=${DFLASH_SCALE_MODE:-scalar}
 if [[ "$scale_mode" != scalar && "$scale_mode" != broadcast ]]; then
     echo "DFLASH_SCALE_MODE must be scalar or broadcast" >&2; exit 1
 fi
-if [[ "$scale_mode" == broadcast && ( "$dequant_mode" != batched || "$suite" != a4 ) ]]; then
+if [[ "$scale_mode" == broadcast && ( "$dequant_mode" != batched || ( "$suite" != a4 && "$suite" != a51 ) ) ]]; then
     echo "A5 broadcast requires batched dequantization and the full a4 suite" >&2; exit 1
 fi
 kv_m80_mode=${DFLASH_KV_M80_MODE:-baseline}
@@ -39,11 +42,11 @@ if [[ ! "$core_limit" =~ ^(0|[1-9][0-9]{0,4})$ ]] || (( core_limit > 65535 )); t
     echo "DFLASH_CORE_LIMIT must be 0..65535 (0=auto, 1=single-core control)" >&2
     exit 1
 fi
-if [[ "$suite" != a1 && "$suite" != tiny && "$suite" != a2 && "$suite" != a3 && "$suite" != a31 && "$suite" != a32 && "$suite" != a4 && "$suite" != a41 ]]; then
+if [[ "$suite" != a1 && "$suite" != tiny && "$suite" != a2 && "$suite" != a3 && "$suite" != a31 && "$suite" != a32 && "$suite" != a4 && "$suite" != a41 && "$suite" != a51 ]]; then
     echo "DFLASH_SUITE must be a1, tiny, a2, a3, a31, a32, a4 or a41" >&2
     exit 1
 fi
-if [[ ( "$suite" == a32 || "$suite" == a4 || "$suite" == a41 ) && "$dequant_mode" != batched ]]; then
+if [[ ( "$suite" == a32 || "$suite" == a4 || "$suite" == a41 || "$suite" == a51 ) && "$dequant_mode" != batched ]]; then
     echo "$suite requires DFLASH_DEQUANT_MODE=batched" >&2
     exit 1
 fi
@@ -54,7 +57,7 @@ if [[ "$suite" == a2 || "$suite" == a3 || "$suite" == a31 || "$suite" == a32 ]];
     fi
 fi
 
-if [[ "$suite" == a4 || "$suite" == a41 ]]; then
+if [[ "$suite" == a4 || "$suite" == a41 || "$suite" == a51 ]]; then
     for name in A4_C16_BUNDLE A4_C64_BUNDLE A4_C16_NATIVE_OM_MANIFEST A4_C64_NATIVE_OM_MANIFEST; do
         if [[ ! -f "${!name:-}" ]]; then
             echo "a4 requires $name pointing to the corresponding C16/C64 capture or native OM manifest; see A4.md" >&2
@@ -117,7 +120,7 @@ cp "$here/op_host/d_flash_group_quant_linear.cpp" \
 cp "$here/op_kernel/d_flash_group_quant_linear.cpp" "$op_project/op_kernel/"
 phase=configure_core_limit
 "$python_bin" "$here/test/a3_launch.py" --core-limit "$core_limit" --dequant-mode "$dequant_mode" \
-    --pipeline-mode "$pipeline_mode" --kv-m80-mode "$kv_m80_mode" --scale-mode "$scale_mode" \
+    --pipeline-mode "$pipeline_mode" --kv-m80-mode "$kv_m80_mode" --scale-mode "$scale_mode" --k-tile "$k_tile" \
     --header "$op_project/op_host/d_flash_group_quant_linear_build_config.h" \
     --kernel-header "$op_project/op_kernel/d_flash_group_quant_linear_build_config.h" \
     --report "$run_root/build-config.json"
@@ -152,13 +155,14 @@ phase=installed_opp_preflight
 "$python_bin" "$here/test/opp_preflight.py" --install-root "$install_dir" --report "$run_root/opp-preflight.json"
 export LD_LIBRARY_PATH="$vendor_api/lib:${LD_LIBRARY_PATH:-}"
 phase=build_runner
-cmake -S "$here/test" -B "$build_root/test" -DCANN_ROOT="$cann_root" -DASCEND_OPP_PATH="$install_dir"
+cmake -S "$here/test" -B "$build_root/test" -DCANN_ROOT="$cann_root" -DASCEND_OPP_PATH="$install_dir" -DDFLASH_K_TILE="$k_tile"
 cmake --build "$build_root/test" --parallel
 phase=correctness_suite
-if [[ "$suite" == a4 || "$suite" == a41 ]]; then
+if [[ "$suite" == a4 || "$suite" == a41 || "$suite" == a51 ]]; then
     coordinator=run_a4.py
     extra_args=()
     if [[ "$suite" == a41 ]]; then coordinator=run_a41.py; extra_args=(--stop-after "$stop_after"); fi
+    if [[ "$suite" == a51 ]]; then coordinator=run_a51.py; fi
     "$python_bin" "$here/test/$coordinator" "${extra_args[@]}" --output-dir "$data_dir" \
         --build-config "$run_root/build-config.json" \
         --runner "$build_root/test/dflash_group_quant_linear_test" \
@@ -200,7 +204,7 @@ if [[ -n "${DFLASH_SUMMARY_POINTER:-}" ]]; then
     (set -o noclobber; printf '%s\n' "$data_dir/suite.json" > "$DFLASH_SUMMARY_POINTER")
 fi
 echo "Summary: $data_dir/suite.json"
-if [[ "$suite" == a2 || "$suite" == a3 || "$suite" == a31 || "$suite" == a32 || "$suite" == a4 || "$suite" == a41 ]]; then
+if [[ "$suite" == a2 || "$suite" == a3 || "$suite" == a31 || "$suite" == a32 || "$suite" == a4 || "$suite" == a41 || "$suite" == a51 ]]; then
     echo "Isolated native OM parity/timing recorded; full Draft and decode performance remain NOT_RUN."
 else
     echo "Native OM / full Draft / performance remain NOT_RUN."

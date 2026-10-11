@@ -16,7 +16,9 @@ M16/32/64/80，提供 C16/C64 共 52 个真实 projection 的独立验收；用�
 回归通过，KV M80 约 3.1→1.27 ms（2.45×），MTE2 约 2340→650 μs；原始路径待补录。
 完整 Draft / Decode 性能仍为 `NOT_RUN`。
 当前进入 [A5.0 scale broadcast 配对实验](A5_0.md)，优先优化真实 26 投影，Head 和其他新算子暂停。
-A5 独立开关默认关闭，NPU correctness/performance/profiling 为 `NOT_RUN`。
+A5.0 的真实 NPU 完整 A4 A/B 和 paired correctness 已 PASS；C16/C64 26 投影合计
+分别为 Broadcast 31.778/36.221 ms，gate/up profiling 已完成，完整 104 次 profiling 仍 NOT_RUN。
+[A5.1](A5_1.md) 开始独立 K128/K256 实验，KV M80 固定 A-UB/K128；A5.1 NPU 为 NOT_RUN。
 C 的已有独立基础版见 [draft_head/README.md](../draft_head/README.md)，新算子 NPU 验收
 为 `NOT_RUN`；单 gate/up 图接入目前仅有 [opt-in 设计](GATE_UP_OPT_IN.md)。
 

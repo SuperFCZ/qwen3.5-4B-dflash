@@ -31,7 +31,7 @@ def run(args):
         for mode in modes:
             pointer=root/f'{mode}-summary.txt'
             env=dict(os.environ,MODEL_PYTHON=sys.executable,DFLASH_SUITE='a4',DFLASH_DEQUANT_MODE='batched',
-                DFLASH_SCALE_MODE=mode,DFLASH_KV_M80_MODE='a-ub',DFLASH_PIPELINE_MODE=args.pipeline,
+                DFLASH_SCALE_MODE=mode,DFLASH_K_TILE='128',DFLASH_KV_M80_MODE='a-ub',DFLASH_PIPELINE_MODE=args.pipeline,
                 A2_WARMUP=str(args.warmup),A2_REPETITIONS=str(args.repetitions),DFLASH_SUMMARY_POINTER=str(pointer))
             command=['bash',str(HERE/'run_server.sh')]
             report['phase']=mode; write_json(summary,report)

@@ -15,17 +15,24 @@ DEQUANT_MODES = {"legacy": 0, "batched": 1}
 PIPELINE_MODES = {"serial": 0, "prefetch": 1}
 KV_M80_MODES = {"baseline": 0, "a-ub": 1}
 SCALE_MODES = {"scalar": 0, "broadcast": 1}
+K_PREFIX = "DFLASH_GROUP_QUANT_K_TILE "
 SCALE_PREFIX = "DFLASH_GROUP_QUANT_SCALE "
 CUBE_PREFIX = "DFLASH_GROUP_QUANT_CUBE "
 
 
-def pipeline_plan(k, n, mode):
+def pipeline_plan(k, n, mode, selected_tile_k=None):
     if mode not in PIPELINE_MODES:
         raise ValueError("pipeline mode must be serial or prefetch")
     enabled = mode == "prefetch" and (k in (512, 1024) or (k, n) == (9728, 2560))
-    banks, tile_k = (2 if enabled else 1), (256 if k == 256 else 128)
+    banks, tile_k = (2 if enabled else 1), (selected_tile_k if selected_tile_k is not None else (256 if k == 256 else 128))
     return {"pipeline_mode": mode, "selected_pipeline": "raw-prefetch-v1" if enabled else "serial-v1",
             "raw_banks": banks, "user_ub_bytes": 64 * tile_k * (2 + banks) + tile_k // 128 * 64 * 2 * banks}
+
+
+def selected_k_tile(shape, requested=128):
+    if type(requested) is not int or requested not in (128,256): raise ValueError("K tile must be 128 or 256")
+    m,k,n=shape
+    return 128 if (m,k,n)==(80,2560,2048) else (256 if k==256 else requested)
 
 
 def scale_plan(shape, mode):
@@ -42,7 +49,7 @@ def core_limit(value):
     return result
 
 
-def configure_build(header, report, limit, mode="batched", kernel_header=None, pipeline_mode="serial", kv_m80_mode="baseline", scale_mode="scalar"):
+def configure_build(header, report, limit, mode="batched", kernel_header=None, pipeline_mode="serial", kv_m80_mode="baseline", scale_mode="scalar", k_tile=128):
     limit = core_limit(limit)
     header, report = Path(header).resolve(), Path(report).resolve()
     if header == CONFIG.resolve():
@@ -78,6 +85,8 @@ def configure_build(header, report, limit, mode="batched", kernel_header=None, p
         raise ValueError("unexpected tracked scale-mode declaration")
     configured = configured.replace("#define DFLASH_GROUP_QUANT_SCALE_MODE 0U",
                                     f"#define DFLASH_GROUP_QUANT_SCALE_MODE {SCALE_MODES[scale_mode]}U")
+    selected_k_tile((16,512,64),k_tile)
+    configured = configured.replace("#define DFLASH_GROUP_QUANT_K_TILE 128U", f"#define DFLASH_GROUP_QUANT_K_TILE {k_tile}U")
     header.write_text(configured)
     if kernel_header is not None:
         kernel_header = Path(kernel_header).resolve()
@@ -88,9 +97,9 @@ def configure_build(header, report, limit, mode="batched", kernel_header=None, p
                HERE / "op_kernel/d_flash_group_quant_linear.cpp",
                HERE / "op_kernel/d_flash_group_quant_linear_build_config.h",
                HERE / "test/main.cpp", HERE / "test/native_om.cpp", HERE / "test/runner_common.h"]
-    sources += [HERE / "test" / name for name in ("a3_launch.py", "run_a2.py", "run_a4.py", "run_a41.py", "a4_contract.py", "compare_a5.py", "run_a5.py", "profile_a31.py")]
+    sources += [HERE / "test" / name for name in ("a3_launch.py", "run_a2.py", "run_a4.py", "run_a41.py", "a4_contract.py", "compare_a5.py", "run_a5.py", "profile_a31.py", "run_a51.py", "run_a51_pair.py", "compare_a51.py", "run_suite.py", "reference.py", "a2_common.py")]
     write_json(report, {"abi": "dflash-group-quant-linear-build-v5", "policy": POLICY,
-                        "kv_m80_mode": kv_m80_mode, "scale_mode": scale_mode,
+                        "kv_m80_mode": kv_m80_mode, "scale_mode": scale_mode, "k_tile": k_tile,
                         "tiling_abi": "full-m-v2", "launch_version": 5,
                         "pipeline_mode": pipeline_mode,
                         "dequant_mode": mode, "kernel_header": str(kernel_header) if kernel_header else None,
@@ -139,10 +148,14 @@ def load_build_config(path):
         if (mode not in SCALE_MODES or (mode == "broadcast" and config["dequant_mode"] != "batched") or
                 f"#define DFLASH_GROUP_QUANT_SCALE_MODE {SCALE_MODES[mode]}U" not in header.read_text()):
             raise ValueError("generated scale mode differs from build configuration")
+    if "k_tile" in config:
+        selected_k_tile((16,512,64),config["k_tile"])
+        if f"#define DFLASH_GROUP_QUANT_K_TILE {config['k_tile']}U" not in header.read_text():
+            raise ValueError("generated K tile differs from build configuration")
     return config
 
 
-def launch_evidence(log, shape, limit, workspace_bytes, dequant_mode=None, pipeline_mode=None, launch_version=None, kv_m80_mode=None, scale_mode=None):
+def launch_evidence(log, shape, limit, workspace_bytes, dequant_mode=None, pipeline_mode=None, launch_version=None, kv_m80_mode=None, scale_mode=None, k_tile=None):
     m, k, n = shape
     records = [json.loads(line.partition(PREFIX)[2]) for line in Path(log).read_text().splitlines() if PREFIX in line]
     if not records:
@@ -164,7 +177,8 @@ def launch_evidence(log, shape, limit, workspace_bytes, dequant_mode=None, pipel
     pipeline = first.get("pipeline_mode") if version in (3, 4, 5) else "serial"
     if pipeline_mode is not None and (version not in (3, 4, 5) or pipeline != pipeline_mode):
         raise ValueError("launch pipeline mode needs version 3/4/5 evidence matching the requested build")
-    plan = pipeline_plan(k, n, pipeline)
+    tile_k = selected_k_tile(shape, 128 if k_tile is None else k_tile)
+    plan = pipeline_plan(k, n, pipeline, tile_k)
     if version == 5:
         cubes = [json.loads(line.partition(CUBE_PREFIX)[2]) for line in Path(log).read_text().splitlines() if CUBE_PREFIX in line]
         if not cubes or any(item != cubes[0] for item in cubes):
@@ -177,11 +191,11 @@ def launch_evidence(log, shape, limit, workspace_bytes, dequant_mode=None, pipel
         extra = m * 128 * 2 if staged else 0
         expected_cube = dict(version=1, a_source="VECOUT" if staged else "GM", a_stage_bytes=extra,
                              a_row_stride=128 if staged else k, base_m=m, base_n=64,
-                             weight_dequantizations_per_n_tile=k // (256 if k == 256 else 128))
+                             weight_dequantizations_per_n_tile=k // tile_k)
         if any(cube.get(key) != value for key, value in expected_cube.items()):
             raise ValueError("A source/stride/full-M reuse differs from shape policy")
         if (type(cube.get("base_k")) is not int or cube["base_k"] <= 0 or cube["base_k"] % 16 or
-                cube["base_k"] > (256 if k == 256 else 128) or (k != 256 and cube["base_k"] != 128)):
+                cube["base_k"] > tile_k or (k != 256 and cube["base_k"] != tile_k)):
             raise ValueError("invalid Cube K reduction plan")
         for key in ("depth_a1", "depth_b1", "step_m", "step_n", "step_ka", "step_kb", "db_l0a", "db_l0b", "db_l0c", "trans_length"):
             if type(cube.get(key)) is not int or cube[key] < 0:
@@ -190,6 +204,17 @@ def launch_evidence(log, shape, limit, workspace_bytes, dequant_mode=None, pipel
         first = dict(first, cube=cube)
     elif kv_m80_mode not in (None, "baseline"):
         raise ValueError("KV M80 candidate requires version 5 evidence")
+    if k_tile is not None:
+        records = [json.loads(line.partition(K_PREFIX)[2]) for line in Path(log).read_text().splitlines() if K_PREFIX in line]
+        if not records or any(item != records[0] for item in records) or any(records[0].get(key)!=value for key,value in
+            dict(version=1,requested_k_tile=k_tile,selected_k_tile=tile_k).items()):
+            raise ValueError("K tile evidence differs from build/shape policy")
+        if tile_k==256 and k!=256:
+            for memory in ("l1","l0a","l0b","l0c"):
+                used,capacity=records[0].get(memory+"_bytes"),records[0].get(memory+"_capacity")
+                if type(used) is not int or type(capacity) is not int or not 0<used<=capacity:
+                    raise ValueError("K256 resource exceeds hardware capacity")
+        first = dict(first, k_tiling=records[0])
     if scale_mode is not None:
         records = [json.loads(line.partition(SCALE_PREFIX)[2]) for line in Path(log).read_text().splitlines() if SCALE_PREFIX in line]
         selected = scale_plan(shape, scale_mode)
@@ -205,7 +230,7 @@ def launch_evidence(log, shape, limit, workspace_bytes, dequant_mode=None, pipel
                 first["matmul_ub_bytes"] <= 0 or first["matmul_ub_bytes"] % 32):
             raise ValueError("invalid Matmul UB budget")
     expected = {"policy": POLICY, "m": m, "k": k, "n": n,
-                "tile_n": 64, "tile_k": 256 if k == 256 else 128, "n_tiles": n // 64, "core_limit": limit}
+                "tile_n": 64, "tile_k": tile_k, "n_tiles": n // 64, "core_limit": limit}
     if any(first.get(key) != value for key, value in expected.items()):
         raise ValueError("launch shape/tile/core-limit differs from the requested build")
     for key in ("available_cores", "block_dim", "system_workspace_bytes"):
@@ -232,12 +257,13 @@ def main():
     parser.add_argument("--dequant-mode", choices=tuple(DEQUANT_MODES), default="batched")
     parser.add_argument("--pipeline-mode", choices=tuple(PIPELINE_MODES), default="serial")
     parser.add_argument("--kv-m80-mode", choices=tuple(KV_M80_MODES), default="baseline")
+    parser.add_argument("--k-tile",type=int,choices=(128,256),default=128)
     parser.add_argument("--scale-mode", choices=tuple(SCALE_MODES), default="scalar")
     parser.add_argument("--kernel-header", type=Path)
     parser.add_argument("--header", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
-    configure_build(args.header, args.report, args.core_limit, args.dequant_mode, args.kernel_header, args.pipeline_mode, args.kv_m80_mode, args.scale_mode)
+    configure_build(args.header, args.report, args.core_limit, args.dequant_mode, args.kernel_header, args.pipeline_mode, args.kv_m80_mode, args.scale_mode, args.k_tile)
 
 
 if __name__ == "__main__":

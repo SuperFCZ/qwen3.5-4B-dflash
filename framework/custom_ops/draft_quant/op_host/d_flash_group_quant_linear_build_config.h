@@ -29,6 +29,11 @@
 #define DFLASH_GROUP_QUANT_STAGE_A(m, k, n) \
     (DFLASH_GROUP_QUANT_KV_M80_MODE == 1U && (m) == 80U && (k) == 2560U && (n) == 2048U)
 
+// A5.1 changes only the streamed K tile; K256 tiny and KV M80 are exceptions.
+#ifndef DFLASH_GROUP_QUANT_K_TILE
+#define DFLASH_GROUP_QUANT_K_TILE 128U
+#endif
+
 // A5.0 independent opt-in; keep the validated KV M80 dequant/A-UB path.
 // 0 = existing scalar scale + Muls; 1 = Brcb block broadcast + strided Mul.
 #ifndef DFLASH_GROUP_QUANT_SCALE_MODE

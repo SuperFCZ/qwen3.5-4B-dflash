@@ -100,6 +100,23 @@ int main()
                               {32, 12800, 2560}, {80, 12800, 2560}, {32, 2560, 19456}, {64, 4096, 2560}})
         assert(!draft_quant_contract::IsSupportedShape(shape[0], shape[1], shape[2]));
 
+    // A5.1: explicit K256 means one 256-wide Cube base block, not a relaxed
+    // divisor check accepting an unverified multi-base-K iterator schedule.
+    for (int64_t m : {16,32,64,80}) {
+        for (int64_t k : {512,1024,2560,9728,4096,12800}) {
+            assert(draft_quant_contract::IsCompatibleCubePlan(k,{m,64,256,m,64,256},m,256));
+            for (int64_t bad : {16,64,128,512})
+                assert(!draft_quant_contract::IsCompatibleCubePlan(k,{m,64,256,m,64,bad},m,256));
+            assert(!draft_quant_contract::IsCompatibleCubePlan(k,{m,64,128,m,64,256},m,256));
+            assert(!draft_quant_contract::IsCompatibleCubePlan(k,{m,64,256,m/2,64,256},m,256));
+        }
+    }
+    assert(draft_quant_contract::KTile(2560,80,2048,256)==128);
+    assert(draft_quant_contract::KTile(2560,32,2048,256)==256);
+    assert(draft_quant_contract::KTile(256,16,64,128)==256);
+    assert(draft_quant_contract::KTile(512,16,64,64)==0);
+    assert(draft_quant_contract::UserUbBytes(2560,1,256)==49408);
+    assert(draft_quant_contract::UserUbBytes(9728,2,256)==66048);
     // Regression: K=256 uses IterateAll, so a returned baseK=256 is valid.
     // Neither the dequantization group nor the caller's buffer size changes.
     for (int64_t baseK : {16, 32, 64, 128, 256}) {
