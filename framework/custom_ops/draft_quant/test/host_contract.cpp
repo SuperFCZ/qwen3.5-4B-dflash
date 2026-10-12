@@ -1,3 +1,4 @@
+#include <string>
 // CPU-only metadata regression. This does not compile or execute an Ascend op.
 #include <cassert>
 #include <vector>
@@ -111,6 +112,15 @@ int main()
             assert(!draft_quant_contract::IsCompatibleCubePlan(k,{m,64,256,m/2,64,256},m,256));
         }
     }
+    for (int64_t k : {512,1024}) for (int64_t n : {64,128,256}) {
+        assert(draft_quant_contract::KTile(k,80,n,256)==128);
+        assert(std::string(draft_quant_contract::KTileReason(k,80,n,256))=="m80-synthetic-k128");
+        assert(draft_quant_contract::IsCompatibleCubePlan(k,{80,64,128,80,64,128},80,128));
+        assert(!draft_quant_contract::IsCompatibleCubePlan(k,{80,64,256,80,64,128},80,256));
+        for (int64_t m : {16,32,64}) assert(draft_quant_contract::KTile(k,m,n,256)==256);
+    }
+    for (int64_t n : {64,128,256}) assert(draft_quant_contract::KTile(256,80,n,256)==256);
+    assert(draft_quant_contract::KTile(512,80,512,256)==256); // no broad M80 fallback
     assert(draft_quant_contract::KTile(2560,80,2048,256)==128);
     assert(draft_quant_contract::KTile(2560,32,2048,256)==256);
     assert(draft_quant_contract::KTile(256,16,64,128)==256);

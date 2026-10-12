@@ -15,6 +15,7 @@ DEQUANT_MODES = {"legacy": 0, "batched": 1}
 PIPELINE_MODES = {"serial": 0, "prefetch": 1}
 KV_M80_MODES = {"baseline": 0, "a-ub": 1}
 SCALE_MODES = {"scalar": 0, "broadcast": 1}
+K_TILE_POLICY = "m80-synthetic-k128-v1"
 K_PREFIX = "DFLASH_GROUP_QUANT_K_TILE "
 SCALE_PREFIX = "DFLASH_GROUP_QUANT_SCALE "
 CUBE_PREFIX = "DFLASH_GROUP_QUANT_CUBE "
@@ -32,7 +33,16 @@ def pipeline_plan(k, n, mode, selected_tile_k=None):
 def selected_k_tile(shape, requested=128):
     if type(requested) is not int or requested not in (128,256): raise ValueError("K tile must be 128 or 256")
     m,k,n=shape
+    if m==80 and k in (512,1024) and n in (64,128,256): return 128
     return 128 if (m,k,n)==(80,2560,2048) else (256 if k==256 else requested)
+
+
+def k_tile_reason(shape,requested):
+    m,k,n=shape
+    if (m,k,n)==(80,2560,2048): return "kv-m80-k128"
+    if k==256: return "whole-k256"
+    if requested==256 and m==80 and k in (512,1024) and n in (64,128,256): return "m80-synthetic-k128"
+    return "configured"
 
 
 def scale_plan(shape, mode):
@@ -97,9 +107,9 @@ def configure_build(header, report, limit, mode="batched", kernel_header=None, p
                HERE / "op_kernel/d_flash_group_quant_linear.cpp",
                HERE / "op_kernel/d_flash_group_quant_linear_build_config.h",
                HERE / "test/main.cpp", HERE / "test/native_om.cpp", HERE / "test/runner_common.h"]
-    sources += [HERE / "test" / name for name in ("a3_launch.py", "run_a2.py", "run_a4.py", "run_a41.py", "a4_contract.py", "compare_a5.py", "run_a5.py", "profile_a31.py", "run_a51.py", "run_a51_pair.py", "compare_a51.py", "run_suite.py", "reference.py", "a2_common.py")]
+    sources += [HERE / "test" / name for name in ("a3_launch.py", "run_a2.py", "run_a4.py", "run_a41.py", "a4_contract.py", "compare_a5.py", "run_a5.py", "profile_a31.py", "run_a51.py", "run_a51_pair.py", "compare_a51.py", "run_suite.py", "reference.py", "a2_common.py", "a51_fallback.py")]
     write_json(report, {"abi": "dflash-group-quant-linear-build-v5", "policy": POLICY,
-                        "kv_m80_mode": kv_m80_mode, "scale_mode": scale_mode, "k_tile": k_tile,
+                        "kv_m80_mode": kv_m80_mode, "scale_mode": scale_mode, "k_tile": k_tile, "k_tile_policy": K_TILE_POLICY,
                         "tiling_abi": "full-m-v2", "launch_version": 5,
                         "pipeline_mode": pipeline_mode,
                         "dequant_mode": mode, "kernel_header": str(kernel_header) if kernel_header else None,
@@ -152,10 +162,12 @@ def load_build_config(path):
         selected_k_tile((16,512,64),config["k_tile"])
         if f"#define DFLASH_GROUP_QUANT_K_TILE {config['k_tile']}U" not in header.read_text():
             raise ValueError("generated K tile differs from build configuration")
+    if config.get("k_tile_policy",K_TILE_POLICY)!=K_TILE_POLICY:
+        raise ValueError("unsupported K tile policy")
     return config
 
 
-def launch_evidence(log, shape, limit, workspace_bytes, dequant_mode=None, pipeline_mode=None, launch_version=None, kv_m80_mode=None, scale_mode=None, k_tile=None):
+def launch_evidence(log, shape, limit, workspace_bytes, dequant_mode=None, pipeline_mode=None, launch_version=None, kv_m80_mode=None, scale_mode=None, k_tile=None, k_tile_policy=None):
     m, k, n = shape
     records = [json.loads(line.partition(PREFIX)[2]) for line in Path(log).read_text().splitlines() if PREFIX in line]
     if not records:
@@ -209,6 +221,9 @@ def launch_evidence(log, shape, limit, workspace_bytes, dequant_mode=None, pipel
         if not records or any(item != records[0] for item in records) or any(records[0].get(key)!=value for key,value in
             dict(version=1,requested_k_tile=k_tile,selected_k_tile=tile_k).items()):
             raise ValueError("K tile evidence differs from build/shape policy")
+        if k_tile_policy is not None and (k_tile_policy!=K_TILE_POLICY or
+                records[0].get("selection_reason")!=k_tile_reason(shape,k_tile)):
+            raise ValueError("K tile selection reason differs from explicit shape fallback policy")
         if tile_k==256 and k!=256:
             for memory in ("l1","l0a","l0b","l0c"):
                 used,capacity=records[0].get(memory+"_bytes"),records[0].get(memory+"_capacity")

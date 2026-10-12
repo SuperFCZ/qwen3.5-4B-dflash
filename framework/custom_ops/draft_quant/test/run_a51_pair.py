@@ -40,7 +40,7 @@ def run(args):
             env=dict(base_env,MODEL_PYTHON=sys.executable,DFLASH_SUITE='a51',DFLASH_K_TILE=str(tile),
                 DFLASH_DEQUANT_MODE='batched',DFLASH_SCALE_MODE='broadcast',DFLASH_KV_M80_MODE='a-ub',
                 DFLASH_PIPELINE_MODE=args.pipeline,A2_WARMUP='5',A2_REPETITIONS='30',DFLASH_SUMMARY_POINTER=str(pointer))
-            print(f'A5.1 K{tile}: representative gates then full A4; log {root / ("k"+str(tile)+".log")}',flush=True)
+            print(f'A5.1 K{tile}: six-shape fallback gate, representative gates, then full A4; log {root / ("k"+str(tile)+".log")}',flush=True)
             with (root/f'k{tile}.log').open('w') as log:
                 subprocess.run(['bash',str(HERE/'run_server.sh')],env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
             path=Path(pointer.read_text().strip()); report['runs'][str(tile)]=dict(path=str(path),sha256=sha256(path))

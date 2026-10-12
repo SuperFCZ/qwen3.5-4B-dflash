@@ -54,6 +54,7 @@ def load(path, mode, k_tile=128, config_path=None):
 def compatible(a,b,allow_k_change=False):
     if not allow_k_change and a["build"].get("k_tile",128)!=b["build"].get("k_tile",128):
         raise ValueError("K tile differs in scale-only experiment")
+    if a["build"].get("k_tile_policy")!=b["build"].get("k_tile_policy"): raise ValueError("K tile policies differ")
     for key in ('device_id','timing_protocol','inputs'):
         if a.get(key) is None or a[key]!=b.get(key): raise ValueError(f'paired inputs differ: {key}')
     for key in ('source_sha256','core_limit','dequant_mode','pipeline_mode','kv_m80_mode','tiling_abi','launch_version'):
@@ -92,7 +93,7 @@ def projection(old,new,aroot,broot,shape,a,b,allow_k_change=False):
                 comparisons.append(reference.compare(expected,checked_file(root,item).read_bytes(),SimpleNamespace(m=shape[0],n=shape[2])))
         cfg=report['build']
         plans.append(launch_evidence(root/case['name']/'custom/runner.log',shape,cfg['core_limit'],
-            case['executions']['custom']['workspace_bytes'],cfg['dequant_mode'],cfg['pipeline_mode'],5,cfg['kv_m80_mode'],cfg['scale_mode'],cfg.get('k_tile')))
+            case['executions']['custom']['workspace_bytes'],cfg['dequant_mode'],cfg['pipeline_mode'],5,cfg['kv_m80_mode'],cfg['scale_mode'],cfg.get('k_tile'),cfg.get('k_tile_policy')))
     match_plans(*plans,shape,allow_k_change)
     before,after=timings(old['executions']['custom']),timings(new['executions']['custom'])
     native_before,native_after=timings(old['executions']['native_om']),timings(new['executions']['native_om'])

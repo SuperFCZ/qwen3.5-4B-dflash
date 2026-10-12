@@ -27,10 +27,24 @@ inline bool IsSupportedShape(int64_t m, int64_t k, int64_t n)
     return synthetic || m16 || kv || fc;
 }
 
+inline bool IsM80SyntheticFallback(int64_t m, int64_t k, int64_t n)
+{
+    return m == 80 && (k == 512 || k == 1024) && (n == 64 || n == 128 || n == 256);
+}
+
+inline const char *KTileReason(int64_t k, int64_t m, int64_t n, int64_t requested)
+{
+    if (m == 80 && k == 2560 && n == 2048) return "kv-m80-k128";
+    if (k == 256) return "whole-k256";
+    if (requested == 256 && IsM80SyntheticFallback(m,k,n)) return "m80-synthetic-k128";
+    return "configured";
+}
+
 inline int64_t KTile(int64_t k, int64_t m = kRows, int64_t n = 0, int64_t requested = 128)
 {
     if (requested != 128 && requested != 256) return 0;
     if (m == 80 && k == 2560 && n == 2048) return 128;
+    if (requested == 256 && IsM80SyntheticFallback(m,k,n)) return 128;
     // The original K=256 whole-K IterateAll path is unchanged in both builds.
     return k == 256 ? 256 : requested;
 }

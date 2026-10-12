@@ -11,9 +11,14 @@ from a3_launch import configure_build,load_build_config,selected_k_tile,pipeline
 from test_a5 import scale_launch
 from compare_a5 import match_plans,compatible
 from run_a51 import run,REPRESENTATIVES
+import a51_fallback
 from compare_a51 import check_protocol
 from run_a51_pair import run as pair_run
 from a2_common import sha256
+
+def passed_target(root,*args,**kwargs):
+    root.mkdir(); write_json(root/'suite.json',dict(status='PASS')); return True
+
 
 class A51Tests(unittest.TestCase):
     def test_exact_protocol_not_relaxed(self):
@@ -94,10 +99,10 @@ class A51Tests(unittest.TestCase):
             root=Path(directory); cfg=root/'b.json'
             configure_build(root/'h',cfg,0,'batched',root/'kh','prefetch','a-ub','broadcast',256)
             args=SimpleNamespace(build_config=cfg,output_dir=root/'run',warmup=5,repetitions=30,device_id=0,
-                c16_bundle=root/'16',c64_bundle=root/'64',c16_native_om_manifest=root/'n16',c64_native_om_manifest=root/'n64')
+                runner=root/'runner',c16_bundle=root/'16',c64_bundle=root/'64',c16_native_om_manifest=root/'n16',c64_native_om_manifest=root/'n64')
             def fail(child):
                 child.output_dir.mkdir(); write_json(child.output_dir/'suite.json',dict(status='FAIL')); return 1
-            with patch('run_a51.load_bundle'),patch('run_a51.a4_contract.paired_gears'),patch('run_a51.run_a2.run',side_effect=fail) as real,patch('run_a51.run_a4.run') as full:
+            with patch('run_a51.run_suite.run',side_effect=passed_target),patch('run_a51.a51_fallback.collect',return_value=[]),patch('run_a51.load_bundle'),patch('run_a51.a4_contract.paired_gears'),patch('run_a51.run_a2.run',side_effect=fail) as real,patch('run_a51.run_a4.run') as full:
                 self.assertEqual(run(args),1)
             self.assertEqual(real.call_count,1); full.assert_not_called()
             self.assertEqual(real.call_args.args[0].case_filter,REPRESENTATIVES)
@@ -108,14 +113,14 @@ class A51Tests(unittest.TestCase):
             root=Path(directory); cfg=root/'b.json'
             configure_build(root/'h',cfg,0,'batched',root/'kh','prefetch','a-ub','broadcast',256)
             args=SimpleNamespace(build_config=cfg,output_dir=root/'run',warmup=5,repetitions=30,device_id=0,
-                c16_bundle=root/'16',c64_bundle=root/'64',c16_native_om_manifest=root/'n16',c64_native_om_manifest=root/'n64')
+                runner=root/'runner',c16_bundle=root/'16',c64_bundle=root/'64',c16_native_om_manifest=root/'n16',c64_native_om_manifest=root/'n64')
             calls=[]
             def real(child):
                 calls.append(child.output_dir.name); child.output_dir.mkdir(); write_json(child.output_dir/'suite.json',dict(status='PASS')); return 0
             def full(child):
                 self.assertEqual(calls,['representative-c16','representative-c64'])
                 calls.append('full'); child.output_dir.mkdir(); write_json(child.output_dir/'suite.json',dict(status='PASS')); return 0
-            with patch('run_a51.load_bundle'),patch('run_a51.a4_contract.paired_gears'),patch('run_a51.run_a2.run',side_effect=real),patch('run_a51.collect',return_value=[]),patch('run_a51.run_a4.run',side_effect=full):
+            with patch('run_a51.run_suite.run',side_effect=passed_target),patch('run_a51.a51_fallback.collect',return_value=[]),patch('run_a51.load_bundle'),patch('run_a51.a4_contract.paired_gears'),patch('run_a51.run_a2.run',side_effect=real),patch('run_a51.collect',return_value=[]),patch('run_a51.run_a4.run',side_effect=full):
                 self.assertEqual(run(args),0)
             self.assertEqual(calls[-1],'full')
 

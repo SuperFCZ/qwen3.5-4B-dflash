@@ -269,10 +269,11 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
                  DFLASH_GROUP_QUANT_SCALE_MODE == 1 ? "broadcast" : "scalar",
                  broadcast ? "brcb-mul-v1" : "scalar-muls-v1",
                  static_cast<unsigned long long>(broadcastBytes), static_cast<unsigned long long>(broadcastReservedBytes));
-    std::fprintf(stdout, "DFLASH_GROUP_QUANT_K_TILE {\"version\":1,\"requested_k_tile\":%u,\"selected_k_tile\":%lld,"
+    std::fprintf(stdout, "DFLASH_GROUP_QUANT_K_TILE {\"version\":1,\"requested_k_tile\":%u,\"selected_k_tile\":%lld,\"selection_reason\":\"%s\","
                          "\"l1_bytes\":%llu,\"l1_capacity\":%llu,\"l0a_bytes\":%llu,\"l0a_capacity\":%llu,"
                          "\"l0b_bytes\":%llu,\"l0b_capacity\":%llu,\"l0c_bytes\":%llu,\"l0c_capacity\":%llu}\n",
                  DFLASH_GROUP_QUANT_K_TILE, static_cast<long long>(tileK),
+                 draft_quant_contract::KTileReason(k,m,n,DFLASH_GROUP_QUANT_K_TILE),
                  static_cast<unsigned long long>(l1Used), static_cast<unsigned long long>(l1Capacity),
                  static_cast<unsigned long long>(l0aUsed), static_cast<unsigned long long>(l0aCapacity),
                  static_cast<unsigned long long>(l0bUsed), static_cast<unsigned long long>(l0bCapacity),

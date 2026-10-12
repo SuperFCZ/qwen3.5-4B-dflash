@@ -163,6 +163,8 @@ int main(int argc, char **argv)
                   "\"input_readonly\":true,\"guards_intact\":true,\"repetitions\":" << kRepetitions <<
                   ",\"m\":" << kM << ",\"k\":" << kK << ",\"n\":" << kN <<
                   ",\"tile_n\":64,\"tile_k\":" << draft_quant_contract::KTile(kK, kM, kN, DFLASH_GROUP_QUANT_K_TILE) <<
+                  ",\"requested_k_tile\":" << DFLASH_GROUP_QUANT_K_TILE <<
+                  ",\"k_tile_selection_reason\":\"" << draft_quant_contract::KTileReason(kK,kM,kN,DFLASH_GROUP_QUANT_K_TILE) << "\"" <<
                   ",\"tile_m\":" << kM << ",\"weight_reuse_rows\":" << kM <<
                   ",\"device_id\":" << r.deviceId << ",\"workspace_bytes\":" << peakWorkspace
                   << ",\"tracked_device_allocation_bytes\":"

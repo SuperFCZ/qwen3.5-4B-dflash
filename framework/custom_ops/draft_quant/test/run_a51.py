@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A5.1: representative real projections first, then the full A4 gate."""
+"""A5.1: six fallback shapes, representative real projections, then full A4."""
 import argparse
 import json
 from pathlib import Path
@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import a4_contract
 import run_a2
 import run_a4
+import run_suite
+import a51_fallback
 from a2_common import load_bundle, record, sha256, write_json
 from a3_launch import load_build_config, launch_evidence
 
@@ -23,16 +25,17 @@ def collect(root,gear,config):
         shape=a4_contract.case_shape(next(c for c in a4_contract.cases(gear) if c['name']==case['name']))
         plans.append(launch_evidence(root/case['name']/'custom/runner.log',shape,config['core_limit'],
             case['executions']['custom']['workspace_bytes'],config['dequant_mode'],config['pipeline_mode'],5,
-            config['kv_m80_mode'],config['scale_mode'],config['k_tile']))
+            config['kv_m80_mode'],config['scale_mode'],config['k_tile'],config.get('k_tile_policy')))
     return plans
 
 
 def run(args):
     config=load_build_config(args.build_config)
-    if (config.get('k_tile') not in (128,256) or config.get('dequant_mode')!='batched' or
+    if (config.get('k_tile_policy')!=a51_fallback.K_TILE_POLICY or
+        config.get('k_tile') not in (128,256) or config.get('dequant_mode')!='batched' or
         config.get('kv_m80_mode')!='a-ub' or config.get('scale_mode') not in ('scalar','broadcast') or
         args.warmup!=5 or args.repetitions!=30):
-        raise ValueError('A5.1 requires batched, a-ub, explicit K tile, warmup=5/repetitions=30')
+        raise ValueError('A5.1 requires current fallback policy, batched, a-ub, explicit K tile, warmup=5/repetitions=30')
     root=args.output_dir.resolve(); root.mkdir(parents=True,exist_ok=False)
     report=dict(abi='dflash-a51-stage-v1',status='RUNNING',phase='preflight',build=config,
         build_config_path=str(args.build_config.resolve()),build_config_sha256=sha256(args.build_config),
@@ -41,6 +44,14 @@ def run(args):
     summary=root/'suite.json'; write_json(summary,report)
     try:
         a4_contract.paired_gears(load_bundle(args.c16_bundle,'a4'),load_bundle(args.c64_bundle,'a4'))
+        report['phase']='fallback-synthetic'; write_json(summary,report)
+        target=root/'fallback-synthetic'
+        passed=run_suite.run(target,args.runner.resolve(),args.device_id,'a4',config['k_tile'],
+                             shape_filter=a51_fallback.TARGET_NAMES,continuous=True)
+        report['checks']['fallback-synthetic']=dict(status='PASS' if passed else 'FAIL',summary=record(target/'suite.json',root))
+        if not passed: raise ValueError('six-shape fallback gate failed; representative/full A4 NOT_RUN')
+        report['launches']['fallback-synthetic']=a51_fallback.collect(target,config,args.device_id)
+        write_json(summary,report)
         for gear in (16,64):
             label=f'representative-c{gear}'; report['phase']=label
             child=SimpleNamespace(**vars(args)); child.output_dir=root/label

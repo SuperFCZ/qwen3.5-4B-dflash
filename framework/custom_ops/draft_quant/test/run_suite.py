@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run isolated ACLNN/native comparisons for all A1 shapes, without the model."""
 import argparse
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -8,14 +9,21 @@ import traceback
 
 import reference as ref
 from a3_launch import selected_k_tile
+from a2_common import validate_execution
 
 
-def run(root, runner, device_id, suite, k_tile=128):
+def run(root, runner, device_id, suite, k_tile=128, *, shape_filter=None, continuous=False):
     shapes = {"a1": ref.A1_WORKLOADS, "tiny": (ref.TINY,), "a4": ref.A4_WORKLOADS}[suite]
+    if shape_filter is not None:
+        if not shape_filter or len(set(shape_filter))!=len(shape_filter) or not set(shape_filter)<=set(s.name for s in shapes):
+            raise ValueError("invalid synthetic shape subset")
+        shapes=tuple(s for s in shapes if s.name in shape_filter)
     root.mkdir(parents=True, exist_ok=False)
     report_path = root / "suite.json"
     report = {"schema_version": 1, "suite": suite, "status": "RUNNING",
               "scope": "synthetic M/N/K tiling correctness; no model integration",
+              "selection": "FULL" if shape_filter is None else "SUBSET",
+              "requested_k_tile": k_tile, "timing_protocol": "continuous-v1" if continuous else "checked-v1",
               "device_id": device_id, "cpu_fallback": False,
               "native_om_parity": "NOT_RUN", "performance": "NOT_RUN", "full_draft_validation": "NOT_RUN",
               "workloads": [{"name": s.name, "mkn": [s.m, s.k, s.n], "status": "NOT_RUN"} for s in shapes]}
@@ -31,6 +39,7 @@ def run(root, runner, device_id, suite, k_tile=128):
             for case in manifest["cases"]:
                 case_dir = directory / case["name"]
                 command = [str(runner), str(device_id), str(case_dir), str(shape.m), str(shape.k), str(shape.n)]
+                if continuous: command += ["5","30","--continuous"]
                 log_path = case_dir / "runner.log"
                 print(f"custom {shape.name}/{case['name']}", flush=True)
                 with log_path.open("w") as log:
@@ -40,6 +49,13 @@ def run(root, runner, device_id, suite, k_tile=128):
                                                 "command": command, "log": str(log_path)})
                 if completed.returncode:
                     raise RuntimeError(f"ACLNN failed for {case['name']}; see {log_path}")
+                if continuous:
+                    execution=json.loads((case_dir/"execution.json").read_text())
+                    validate_execution(execution,(shape.m,shape.k,shape.n),device_id,"AscendCL ACLNN",5,30,
+                                       "continuous-v1",selected_k_tile((shape.m,shape.k,shape.n),k_tile))
+                    expected=(case_dir/"actual-0.bin").read_bytes()
+                    if any((case_dir/name).read_bytes()!=expected for name in ("benchmark-last.bin","postcheck.bin")):
+                        raise ValueError("synthetic timed-tail/postcheck differs")
             result["phase"] = "native_eager"
             # A separate process owns native NPU initialization/cleanup. The
             # custom runner resets the device, so don't retain torch NPU state.

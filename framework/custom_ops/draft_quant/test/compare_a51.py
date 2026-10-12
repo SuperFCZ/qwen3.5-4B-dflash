@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import a4_contract
+import a51_fallback
 from a2_common import checked_file,sha256,write_json
 from a3_launch import load_build_config
 from compare_a5 import run as compare_full,projection
@@ -24,9 +25,13 @@ def unwrap(path,k_tile):
         report.get('full_a4_regression')!='PASS' or report.get('build')!=config or config.get('k_tile')!=k_tile or
         config.get('scale_mode')!='broadcast' or config.get('kv_m80_mode')!='a-ub' or
         sha256(report['build_config_path'])!=report['build_config_sha256'] or
-        set(report.get('checks',{}))!={'representative-c16','representative-c64','full'} or
+        set(report.get('checks',{}))!={'fallback-synthetic','representative-c16','representative-c64','full'} or
         any(c.get('status')!='PASS' for c in report['checks'].values())):
-        raise ValueError('need complete paired A5.1 representative + full A4 PASS with Broadcast/A-UB')
+        raise ValueError('need current A5.1 six-shape + representative + full A4 PASS with Broadcast/A-UB')
+    fallback=checked_file(path.parent,report['checks']['fallback-synthetic']['summary'])
+    plans=a51_fallback.collect(fallback.parent,config,report['device_id'])
+    if report.get('launches',{}).get('fallback-synthetic')!=plans:
+        raise ValueError('stored fallback launch evidence differs from raw logs')
     full=checked_file(path.parent,report['checks']['full']['summary'])
     full_report=json.loads(full.read_text())
     if full_report['build']!=config: raise ValueError('full build differs from representative build')
@@ -63,6 +68,8 @@ def run(left,right,output):
         write_json(output,dict(status='FAIL',representatives=rows,full_pair='NOT_RUN')); return 1
     status=compare_full(af,bf,output,'k-tile',(Path(a['build_config_path']),Path(b['build_config_path'])))
     report=json.loads(output.read_text()); report['representatives']=rows
+    report['fallback_synthetic']='PASS'
+    report['fallback_launches']=[a['launches']['fallback-synthetic'],b['launches']['fallback-synthetic']]
     report['staged_runs']=[dict(path=str(p),sha256=sha256(p)) for p in (left,right)]
     write_json(output,report); return status
 
