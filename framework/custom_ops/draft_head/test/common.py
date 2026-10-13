@@ -50,13 +50,18 @@ def argmax_half(raw,m):
     return np.argmax(x,axis=1).astype('<i8').tobytes()
 
 
-def bits(expected,actual,width):
+def bits(expected,actual,width,shape=None):
     import numpy as np
     if len(expected)!=len(actual) or len(expected)%width: raise ValueError('output byte size differs')
     a=np.frombuffer(expected,dtype=f'<u{width}'); b=np.frombuffer(actual,dtype=f'<u{width}')
     mismatch=np.flatnonzero(a!=b)
     result=dict(equal=not len(mismatch),bit_mismatches=int(len(mismatch)),
-                first_index=int(mismatch[0]) if len(mismatch) else None)
+                first_index=int(mismatch[0]) if len(mismatch) else None,first_difference=None)
+    if shape is not None and int(np.prod(shape))!=len(a): raise ValueError('comparison shape differs from byte size')
+    if len(mismatch):
+        first=int(mismatch[0])
+        result['first_difference']=dict(index=list(map(int,np.unravel_index(first,shape))) if shape is not None else [first],
+            expected_bits=f'0x{int(a[first]):0{width*2}x}',actual_bits=f'0x{int(b[first]):0{width*2}x}')
     if width==2:
         nan=lambda x:((x&0x7c00)==0x7c00)&((x&0x3ff)!=0)
         finite_pair=~(nan(a)|nan(b))

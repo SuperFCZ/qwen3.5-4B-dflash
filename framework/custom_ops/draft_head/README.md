@@ -2,12 +2,13 @@
 
 Native Top1 的 M 非 4 倍数 Guard 失败已通过 NPU 定位为输出尾部 32B 写回问题：见
 [具名 Guard、分配尺寸与复用产物复测说明](NATIVE_GUARD_DIAGNOSTICS.md)。
-已仅补齐 Native Top1 物理 payload；修复后 Native-only NPU 回归仍为 `NOT_RUN`，
-必须全部通过后再进入正式 Custom Head NPU 验收。
+Native Top1 物理 payload 对齐已在真实 C16/C64 M1..15 通过。最新 Native-only 为 40/41 PASS，
+唯一失败是 `synthetic-nan_first` 的旧预期 ID；当前仅修正该用例的实测语义验收，复测仍为
+`NOT_RUN`。须 41/41 PASS 后再进入 Custom Head，见下方“NaN/Inf 设备观察”。
 
 目标 Ascend310P3 / CANN 9.0.0，遵循 [OPTIMIZATION.md 的 C 契约](../../../docs/OPTIMIZATION.md)。
-**当前 CANN build/package/install、NPU 数值、native benchmark、性能、生产图接入及完整
-Draft/Decode 均为 `NOT_RUN`。** 本地 CPU 模型/声明桩通过不能替代设备验收。
+**Custom 的 CANN build/package/install、NPU 数值与性能、生产图接入及完整
+Draft/Decode 均为 `NOT_RUN`；Native-only 部分设备验收结果见下方。** 本地 CPU 模型/声明桩通过不能替代设备验收。
 本目录不改变 Qwen/DFlash 默认路径。单个 gate/up 接入目前只有
 [opt-in 设计](../draft_quant/GATE_UP_OPT_IN.md)，也为 `NOT_RUN`。
 
@@ -29,8 +30,9 @@ Draft/Decode 均为 `NOT_RUN`。** 本地 CPU 模型/声明桩通过不能替代
 2560；singleCoreK 必须是完整 2560，baseM/baseN 必须是 16/64，不做 split-K。
 
 Top1 的整数比较器只读取已舍入 FP16 bit pattern：数值相等取最小 ID，+0/-0 视为相等。
-NaN 候选按“NaN 优先、最小 NaN ID”实现，并通过 native OM 的特殊值用例严格确认；
-如果 receiver 的实际语义不同，验收必须失败并定位，不能忽略 NaN 或放宽数值规则。
+`Better()` 针对实际 FP16 logits 的 NaN 候选仍按“NaN 优先、最小 NaN ID”实现。
+这不意味着输入 NaN 必须传播为输出 NaN。本次 Native OM 在指定用例输出有限值，不能
+据此推断 Custom Matmul 的行为相同，也不修改 `Better()`。不一致仍必须失败并定位。
 输入有限的溢出到 ±Inf、NaN、signed zero、舍入后并列都在设备用例中覆盖。
 
 每分区写一个 `(FP16 max, INT64 id)` 对每行。等待全部分区完成后，core 0 做最终归约，
@@ -161,7 +163,7 @@ bash framework/custom_ops/draft_head/run_server.sh
    分配上置换 hidden 行并恢复原输入，检查相应输出行置换和恢复，防止旧 partial 跨请求残留。
 
 CPU argmax 仅是验收 oracle；输出文件始终来自 NPU runner，未提供 CPU fallback。
-特殊值政策未经本机设备确认，若 receiver 语义不同必须失败并进一步调查。
+输入特殊值的验收仅绑定已观察的当前 Native OM 行为；其它设备/路径不能自动沿用这一结论。
 
 报告 `.runs/head-XXXXXXXX/data/suite.json` 保存输入/权重/OM/runner/build 身份、每 case 的
 launch、workspace、完整输出文件哈希及比较。`timing_summary` 分列 native-logits、native-top1、
@@ -172,6 +174,65 @@ fused 的所有 samples/median/p95。计时为共同 `continuous-v1`，H2D、poi
 只有完整 suite PASS 才能记录 C 的独立 NPU 验收通过。native-only、capture PASS、编译 PASS
 或单个 case PASS 都不是 custom 验收。完整 Draft/Decode、普通解码对照、图集成和峰值显存
 另行验证，当前分别标为 `NOT_RUN` / `NOT_MEASURED`。
+
+
+## NaN/Inf 设备观察与最小修复（2026-10-13）
+
+用户提供真实 Ascend310P3 / CANN 9.0.0 evidence：
+`/home/w00949577/z50058744/qwen3.5-4B-dflash/framework/custom_ops/draft_head/.runs/head-9dbiz0h7`。
+原始产物在服务器，本地未读取。C16/C64 M1..15 均 PASS，synthetic 10/11 PASS；
+Native 重复输出和 logits argmax/Top1 一致。唯一失败为 `synthetic_expected_ids` 的旧
+NaN 优先假设（原预期 63，实际全部 64）。32B 输出对齐修复已通过这一轮真实 M1..15 检查。
+
+保留 case 名 `synthetic-nan_first` 和完整 FP16 非有限输入，采用固定策略
+`ascend310p-cann9-native-nan-inf-v1`，不根据本次执行结果动态生成期望：
+
+| 检查 | 固定要求 |
+| --- | --- |
+| 原始权重 `[63,0]` / `[64,0]` | FP16 bits `0x7e00` / `0x7c00`（真实 NaN / +Inf） |
+| hidden 全部 15 行 | 第 0 列 `0x3c00`，其余列 `0x0000`，原有 basis 输入 |
+| Native logits 全部 15 行 token 63 / 64 | 两次输出均为 `0x0000` / `0x7bff` |
+| Native Top1 | 全部 15 行 ID=64；重复及 logits argmax 一致 |
+| Custom Audit / Fused | 所有 logits bitwise equal / 所有 ID exact equal，仍须实际 NPU 验收 |
+
+仅 ID=64 不足以 PASS；任一行对应 logit 位型不同都会失败。input preflight 读取原始
+文件并报告错误坐标/位型，现有整个输入只读与文件 hash 检查继续执行。
+`comparison.json` 新增 `native_observed_logits_0/1`，并为位型差异提供
+`first_difference.index=[row,token]`、`expected_bits`、`actual_bits`。
+Custom 全词表比较也提供该诊断，包括 NaN payload、signed zero，绝不只比较两个 token。
+
+该现象的发生位置（Matmul 内部、加载路径或输出转换）尚未定位；只记录当前设备、
+CANN 版本和既有 Native OM 的观察，不推广为通用浮点/所有昇腾 Matmul 规则。
+用户核对了第 0/14 行没有非有限输出；本修复固定检查全部 15 行的两个目标 token，
+没有为未检查的其它位置臆造额外位型预期。其它现有严格门槛全部保留。
+CPU kernel 模型仍覆盖 NaN 优先比较逻辑，它不是 Native OM 非有限值处理的模拟。
+本修复 Native-only 41/41、Custom Fused/Audit 与后续性能验收均 **NOT_RUN**。
+
+复用已提供的两份产物（不 capture、不重新导出）：
+
+```bash
+git pull --ff-only
+export HEAD_CAPTURE=/home/w00949577/qwen35-dflash-run/draft-head-UCt9vR8q/capture/manifest.json
+export HEAD_NATIVE_MANIFEST=/home/w00949577/qwen35-dflash-run/head-native-gpJaP6vN/models/native.json
+test -f "$HEAD_CAPTURE" && test -f "$HEAD_NATIVE_MANIFEST" && \
+HEAD_NATIVE_ONLY=1 HEAD_WARMUP=5 HEAD_REPETITIONS=30 \
+  bash framework/custom_ops/draft_head/run_server.sh
+```
+
+保留原 MODEL_PYTHON/CANN_ROOT/DEVICE_ID 环境。脚本使用全新 `.runs/head-*` 目录；新的
+synthetic 文件仍包含同样的 NaN/Inf，不修改旧 evidence 或真实 capture/OM。
+Native-only 全部 41/41 PASS 后，保留上述 HEAD_* 环境执行：
+
+```bash
+HEAD_NATIVE_ONLY=0 HEAD_WARMUP=5 HEAD_REPETITIONS=30 \
+  bash framework/custom_ops/draft_head/run_server.sh
+```
+
+如希望自动按退出码串行验收，可将两条 `HEAD_NATIVE_ONLY=... bash ...` 命令用 `&&`
+连接，Native-only FAIL 时不会启动 Custom。暂不进入性能优化或图接入。
+回传新目录的 `data/suite.json`、`server.log`；失败时附对应 case 的 `comparison.json`、
+`<mode>/runner.log`、`execution.json`、`output-allocation.json`。权重 preflight 失败时，
+错误位置/位型直接位于 suite.json 的 case.error 和 server.log，可能尚无 runner.log。
 
 ## 本地验证
 

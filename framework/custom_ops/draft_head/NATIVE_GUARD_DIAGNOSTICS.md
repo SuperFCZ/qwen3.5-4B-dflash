@@ -15,7 +15,10 @@
 
 这是用户提供的实际设备证据，不是 CPU 模拟结果；原始诊断目录路径未提供，后续补录，
 不编造证据路径。它确认了本次 Native Top1 小输出的 32B 写回边界问题。
-**本修复的 CANN 编译、Native-only NPU 全套回归、正式 Custom Head 验收仍为 `NOT_RUN`。**
+**更新：用户已在 Ascend310P3/CANN 9.0.0 验证 C16/C64 M1..15 全 PASS，确认本对齐修复通过。**
+证据目录为 `.runs/head-9dbiz0h7`（服务器仓库下）。Native-only 当前 40/41 PASS，唯一剩余
+失败是 synthetic-nan_first 的旧 ID 期望。其新的严格实测语义检查见 [README](README.md)。
+新的 Native-only 41/41 复测及正式 Custom Head 验收仍为 `NOT_RUN`。
 未修改 Custom Head Kernel、native OM 或数学。
 
 ## 已确认的源码事实
@@ -109,7 +112,7 @@ padding 允许被写入，物理 payload 后的任何 Guard 字节变化仍失�
 按照 [aclCreateDataBuffer 的参数定义](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/80RC3alpha003/apiref/appdevgapi/aclcppdevg_03_1431.html)，
 size 描述内存字节容量；因此 dataset 传物理 payload，不传带 Guard 的总分配大小。
 逻辑 shape/dtype 继续从原 OM 检查，没有构造新的 tensor shape 或修改模型描述。
-CANN 9.0 实际接收此容量的运行结果仍需本轮 NPU 回归确认；不存在失败后自动降级、
+CANN 9.0 实际接收此容量已由上述 M1..15 回归确认；不存在失败后自动降级、
 跳过形状或放宽检查的路径。
 
 回读直接以 `logical_bytes` 为 D2H 长度，输出文件、repeat/permutation 和 bitwise 比较

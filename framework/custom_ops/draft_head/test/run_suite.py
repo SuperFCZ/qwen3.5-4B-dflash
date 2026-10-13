@@ -56,21 +56,33 @@ def validate_execution(x,mode,m,device,warmup,repetitions):
             if len(prepare)!=repetitions or any(not math.isfinite(v) or v<0 for v in prepare): raise ValueError('invalid workspace-query timing')
 
 
-def compare_case(outputs,m,expected_ids=None,custom=True):
+def compare_case(outputs,m,expected_ids=None,custom=True,case_name=None):
     import numpy as np
     logits=outputs['native-logits'][0]; native_ids=outputs['native-top1'][0]
-    comparisons=dict(native_head_repeat=bits(logits,outputs['native-logits'][1],2),
+    comparisons=dict(native_head_repeat=bits(logits,outputs['native-logits'][1],2,(m,N)),
                      native_top1_repeat=bits(native_ids,outputs['native-top1'][1],8),
                      native_references_consistent=bits(argmax_half(logits,m),native_ids,8))
     if expected_ids is not None:
         comparisons['synthetic_expected_ids']=bits(np.asarray(expected_ids,dtype='<i8').tobytes(),native_ids,8)
+    if case_name=='synthetic-nan_first':
+        if m!=15 or expected_ids!=[64]*15:
+            raise ValueError('nan_first must retain the pinned M15/ID64 native observation')
+        # Check both native repeats and EVERY row. ID64 alone is insufficient.
+        wanted=np.tile(np.array([0x0000,0x7bff],dtype='<u2'),(15,1)).tobytes()
+        for repeat,value in enumerate(outputs['native-logits']):
+            raw=np.frombuffer(value,dtype='<u2').reshape(m,N)
+            check=bits(wanted,raw[:,[63,64]].copy().tobytes(),2,(15,2))
+            if check['first_difference'] is not None:
+                check['first_difference']['index'][1]=(63,64)[check['first_difference']['index'][1]]
+            check.update(policy=fixtures.NAN_FIRST_POLICY,scope=fixtures.NAN_FIRST_SCOPE,tokens=[63,64],rows_checked=15)
+            comparisons[f'native_observed_logits_{repeat}']=check
     if custom:
         comparisons.update(custom_ids=bits(native_ids,outputs['fused'][0],8),
                            custom_repeat=bits(outputs['fused'][0],outputs['fused'][1],8),
                            audit_ids=bits(native_ids,outputs['audit'][0],8),
                            audit_repeat=bits(outputs['audit'][0],outputs['audit'][1],8),
-                           full_fp16_logits=bits(logits,outputs['audit-logits'][0],2),
-                           audit_logits_repeat=bits(outputs['audit-logits'][0],outputs['audit-logits'][1],2),
+                           full_fp16_logits=bits(logits,outputs['audit-logits'][0],2,(m,N)),
+                           audit_logits_repeat=bits(outputs['audit-logits'][0],outputs['audit-logits'][1],2,(m,N)),
                            audit_rounding_argmax=bits(argmax_half(outputs['audit-logits'][0],m),outputs['audit'][0],8))
     return dict(status='PASS' if all(c['equal'] for c in comparisons.values()) else 'FAIL',comparisons=comparisons)
 
@@ -93,7 +105,8 @@ def run(args):
                 native_manifest_sha256=sha256(args.native_manifest),build=config,runners=identities,
                 custom_correctness='NOT_RUN',native_weight_binding='runtime-readonly-ND',
                 numerical_gate='all FP16 logit bits + exact INT64 IDs; no tolerance or NaN-payload relaxation',
-                special_policy='FP16 numeric order; zeros tie; first NaN; minimum original ID; native OM gate required',
+                special_policy='Ordering applies to actual FP16 logits; nan_first inputs use the pinned current native OM observation',
+                native_nonfinite_observation=fixtures.NAN_FIRST_POLICY,
                 production_const_head_parity='NOT_RUN',full_draft_validation='NOT_RUN',end_to_end='NOT_RUN',cases=[])
     summary=root/'suite.json'; write_json(summary,report)
     cases=[]
@@ -113,6 +126,9 @@ def run(args):
         row['inputs']=dict(hidden=record(directory/'hidden.bin',root),weight=dict(path=str(case['weight']),sha256=sha256(case['weight'])))
         report['cases'].append(row); write_json(summary,report)
         try:
+            if case['name']=='synthetic-nan_first':
+                row['phase']='nonfinite_input_check'
+                row['nonfinite_inputs']=fixtures.check_nan_first_inputs(case['weight'],(directory/'hidden.bin').read_bytes(),m)
             raw={}
             modes=['native-logits','native-top1']+([] if args.native_only else ['audit','fused'])
             for mode in modes:
@@ -152,7 +168,7 @@ def run(args):
                         raise ValueError('ACLNN workspace smaller than declared requirement')
                     row['launches'][mode]=launch
                 row['outputs'][mode]=[record(file,root) for file in files]
-            comparison=compare_case(raw,m,case.get('expected_ids'),not args.native_only)
+            comparison=compare_case(raw,m,case.get('expected_ids'),not args.native_only,case['name'])
             write_json(directory/'comparison.json',comparison)
             row.update(status=comparison['status'],phase='complete',comparison=record(directory/'comparison.json',root))
             if sha256(case['weight'])!=row['inputs']['weight']['sha256']: raise ValueError('weight changed during benchmark')

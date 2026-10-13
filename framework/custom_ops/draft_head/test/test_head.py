@@ -14,6 +14,76 @@ from build_config import configure,load
 
 
 class HeadTests(unittest.TestCase):
+    def test_nan_inf_raw_weights_and_all_hidden_rows_are_preserved(self):
+        import numpy as np
+        from fixtures import set_nan_first_weights,check_nan_first_inputs
+        # Same writer as fixtures.prepare, but avoid materializing a 1.27 GB
+        # CPU tensor. The input validator still requires the full file length.
+        weight=np.zeros((65,K),dtype='<f2'); set_nan_first_weights(weight)
+        self.assertEqual(int(weight.view('<u2')[63,0]),0x7e00)
+        self.assertEqual(int(weight.view('<u2')[64,0]),0x7c00)
+        self.assertTrue(np.isnan(weight[63,0])); self.assertTrue(np.isposinf(weight[64,0]))
+        hidden=np.zeros((15,K),dtype='<f2'); hidden[:,0]=1
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'head.bin'
+            with path.open('wb') as out:
+                out.truncate(WEIGHT_BYTES)
+                for token in (63,64):
+                    out.seek(token*K*2); out.write(weight[token,:1].tobytes())
+            self.assertEqual(check_nan_first_inputs(path,hidden.tobytes(),15)['status'],'PASS')
+            for token,bad in ((63,0x0000),(63,0x7e01),(64,0x7bff)):
+                with path.open('r+b') as out: out.seek(token*K*2); out.write(struct.pack('<H',bad))
+                with self.assertRaisesRegex(ValueError,f'weight\\[{token},0\\].*actual=0x{bad:04x}'):
+                    check_nan_first_inputs(path,hidden.tobytes(),15)
+                with path.open('r+b') as out: out.seek(token*K*2); out.write(weight[token,:1].tobytes())
+            hidden[14,1]=1
+            with self.assertRaisesRegex(ValueError,'14, 1'): check_nan_first_inputs(path,hidden.tobytes(),15)
+
+    def nan_first_outputs(self):
+        import numpy as np
+        logits=np.zeros((15,N),dtype='<u2'); logits[:,64]=0x7bff
+        ids=np.full(15,64,dtype='<i8').tobytes()
+        return logits,{'native-logits':[logits.tobytes()]*2,'native-top1':[ids]*2,
+                       'fused':[ids]*2,'audit':[ids]*2,'audit-logits':[logits.tobytes()]*2}
+
+    def test_nan_inf_native_observation_all_rows_both_repeats(self):
+        from run_suite import compare_case
+        logits,outputs=self.nan_first_outputs()
+        def check(value): return compare_case(value,15,[64]*15,False,'synthetic-nan_first')
+        self.assertEqual(check(outputs)['status'],'PASS')
+        for row in range(15):
+            for token,bad in ((63,0x8000),(63,0x3c00),(64,0x7bfe)):
+                changed=logits.copy(); changed[row,token]=bad
+                broken=copy.deepcopy(outputs); broken['native-logits']=[changed.tobytes()]*2
+                result=check(broken)
+                self.assertEqual(result['status'],'FAIL')
+                self.assertTrue(result['comparisons']['synthetic_expected_ids']['equal'])
+                self.assertTrue(result['comparisons']['native_references_consistent']['equal'])
+                for repeat in (0,1):
+                    diff=result['comparisons'][f'native_observed_logits_{repeat}']['first_difference']
+                    self.assertEqual(diff['index'],[row,token]); self.assertEqual(diff['actual_bits'],f'0x{bad:04x}')
+        changed=logits.copy(); changed[14,63]=0x7e00
+        broken=copy.deepcopy(outputs); broken['native-logits'][1]=changed.tobytes()
+        self.assertFalse(check(broken)['comparisons']['native_observed_logits_1']['equal'])
+        broken=copy.deepcopy(outputs); broken['native-top1']=[struct.pack('<15q',*([63]*15))]*2
+        self.assertFalse(check(broken)['comparisons']['synthetic_expected_ids']['equal'])
+        with self.assertRaises(ValueError): compare_case(outputs,15,[63]*15,False,'synthetic-nan_first')
+
+    def test_nan_inf_custom_logits_never_borrow_native_or_skip_nonfinite(self):
+        from run_suite import compare_case
+        logits,outputs=self.nan_first_outputs()
+        self.assertEqual(compare_case(outputs,15,[64]*15,True,'synthetic-nan_first')['status'],'PASS')
+        # Custom ID can remain correct, but any logit bit (including signed
+        # zero or NaN payload) must still fail and locate the full vocabulary.
+        for row,token,bad in ((7,63,0x7e00),(14,64,0x7c00),(3,1000,0x8000)):
+            changed=logits.copy(); changed[row,token]=bad
+            broken=copy.deepcopy(outputs); broken['audit-logits']=[changed.tobytes()]*2
+            result=compare_case(broken,15,[64]*15,True,'synthetic-nan_first')
+            self.assertEqual(result['status'],'FAIL'); self.assertTrue(result['comparisons']['custom_ids']['equal'])
+            diff=result['comparisons']['full_fp16_logits']['first_difference']
+            self.assertEqual(diff['index'],[row,token]); self.assertEqual(diff['actual_bits'],f'0x{bad:04x}')
+            self.assertEqual(diff['expected_bits'],f'0x{int(logits[row,token]):04x}')
+
     def test_named_guards_and_native_top1_logical_physical_boundaries(self):
         compiler=shutil.which('c++')
         if not compiler: self.skipTest('C++ compiler required')
