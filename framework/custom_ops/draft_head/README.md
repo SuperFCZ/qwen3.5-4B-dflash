@@ -6,10 +6,12 @@ Native Top1 对齐与 `synthetic-nan_first` 实测语义修复后，用户已确
 不再单独重复 Native-only，当前转入 Custom 的安装产物检查及严格 41-case 验收。
 
 目标 Ascend310P3 / CANN 9.0.0，遵循 [OPTIMIZATION.md 的 C 契约](../../../docs/OPTIMIZATION.md)。
-**用户已确认旧实现双算子编译、安装、执行成功，Custom 40/41 PASS；唯一失败为
-synthetic-overflow_inf 的 FP16 logits。** 已实现最终 FP32→FP16 Vector Cast 饱和转换修复，
-详见 [OVERFLOW_CONVERSION.md](OVERFLOW_CONVERSION.md)。**本修复的 CANN/NPU 41-case 验收仍为
-NOT_RUN**；完整图接入与 Draft/Decode 也未验证。
+**用户确认 `a4df66b` 的 FP32 GetTensorC + CAST_NONE 仍为 Custom 40/41 PASS；
+唯一失败是 synthetic-overflow_inf 的 FP16 logits，不能声称 Cast 已修复饱和。**
+本轮提供独立 FP32/Cast 硬件诊断和默认关闭的 Mins/Maxs 候选；见
+[OVERFLOW_CONVERSION.md](OVERFLOW_CONVERSION.md) 的一键诊断、严格阶段门槛及复用产物命令。
+**新诊断/候选的 CANN 编译、NPU 41-case 和 M15 性能均为 NOT_RUN**；完整图接入与
+Draft/Decode 也未验证。
 本地 CPU 模型/声明桩通过不能替代设备验收。
 本目录不改变 Qwen/DFlash 默认路径。单个 gate/up 接入目前只有
 [opt-in 设计](../draft_quant/GATE_UP_OPT_IN.md)，也为 `NOT_RUN`。
@@ -268,5 +270,5 @@ bash -n framework/custom_ops/draft_head/run_server.sh
 完整字节比较测试需要 numpy，kernel 模型需要支持 C++17/_Float16 的编译器；本轮使用已
 安装的 numpy 环境运行，没有把 skip 算作通过。CPU 模型执行正式/audit 实际 kernel body，
 使用 sparse 虚拟权重覆盖全部 248320 列、M1..15、1/3/7 分区、tie、最后 ID、K 尾部、
-FP16 舍入、负值、Inf/NaN、哨兵和故障核心；共 65 个正常运行加 1 个失败同步检查，并覆盖正负饱和与最大有限值附近的舍入边界。
+FP16 舍入、负值、Inf/NaN、哨兵和故障核心；每种转换配置共 66 个正常运行加 1 个失败同步检查，并覆盖正负饱和与最大有限值附近的舍入边界。
 它不模拟真实 Cube 累加、缓存或 CANN software SyncAll 的硬件时序。

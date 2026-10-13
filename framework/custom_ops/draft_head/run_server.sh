@@ -6,6 +6,15 @@ cann_root=${CANN_ROOT:-${ASCEND_HOME_PATH:-/usr/local/Ascend/ascend-toolkit/late
 device=${DEVICE_ID:-0}
 core_limit=${DFLASH_HEAD_CORE_LIMIT:-0}
 native_only=${HEAD_NATIVE_ONLY:-0}
+conversion=${HEAD_CONVERSION:-cast}
+diagnostics=${HEAD_DIAGNOSTICS:-0}
+[[ "$conversion" == cast || "$conversion" == minmax ]] || { echo 'HEAD_CONVERSION must be cast or minmax' >&2; exit 1; }
+[[ "$diagnostics" == 0 || "$diagnostics" == 1 ]] || { echo 'HEAD_DIAGNOSTICS must be 0 or 1' >&2; exit 1; }
+if [[ "$conversion" == minmax && "$diagnostics" != 1 ]]; then echo 'minmax requires HEAD_DIAGNOSTICS=1' >&2; exit 1; fi
+if [[ "$diagnostics" == 1 ]]; then
+  [[ "$native_only" == 0 ]] || { echo 'diagnostics require custom build' >&2; exit 1; }
+  : "${HEAD_CAPTURE:?Reuse existing capture}" "${HEAD_NATIVE_MANIFEST:?Reuse existing Native OM}"
+fi
 if [[ ! "$core_limit" =~ ^(0|[1-9][0-9]?)$ ]] || (( core_limit>64 )); then
   echo 'DFLASH_HEAD_CORE_LIMIT must be 0..64' >&2; exit 1
 fi
@@ -72,6 +81,11 @@ else
     -out "$project" \
     -op DFlashDraftLmHeadTop1Audit \
     -m 1
+  if [[ "$diagnostics" == 1 ]]; then
+    for op in DFlashHeadProbe DFlashCastProbe; do
+      msopgen gen -i "$here/test/probe/$op.json" -c ai_core-Ascend310P3 -lan cpp -out "$project" -op "$op" -m 1
+    done
+  fi
   phase=check_generated_project
   for op in d_flash_draft_lm_head_top1 d_flash_draft_lm_head_top1_audit; do
     for part in op_host op_kernel; do
@@ -88,8 +102,31 @@ else
   done
   cp "$project/CMakeLists.txt" "$run_root/generated-CMakeLists.txt"
   cp "$here"/op_host/*.cpp "$here"/op_host/*.h "$project/op_host/"
-  cp "$here"/op_kernel/*.cpp "$here/op_kernel/head_kernel.h" "$project/op_kernel/"
+  cp "$here"/op_kernel/*.cpp "$here"/op_kernel/*.h "$project/op_kernel/"
   cp "$here/op_host/head_contract.h" "$project/op_kernel/head_contract.h"
+  if [[ "$diagnostics" == 1 ]]; then
+    for op in d_flash_head_probe d_flash_cast_probe; do
+      cp "$here/test/probe/${op}_host.cpp" "$project/op_host/$op.cpp"
+      cp "$here/test/probe/${op}_kernel.cpp" "$project/op_kernel/$op.cpp"
+    done
+    cp "$here/test/probe/"*_tiling.h "$project/op_host/"
+    cp "$here/test/probe/vector_probe.h" "$project/op_kernel/"
+    cat >> "$project/op_host/CMakeLists.txt" <<'PROBE_CMAKE_CHECK'
+get_target_property(probe_sources cust_optiling SOURCES)
+foreach(probe_name d_flash_head_probe d_flash_cast_probe)
+  set(probe_found FALSE)
+  foreach(probe_source IN LISTS probe_sources)
+    get_filename_component(probe_basename "${probe_source}" NAME)
+    if(probe_basename STREQUAL "${probe_name}.cpp")
+      set(probe_found TRUE)
+    endif()
+  endforeach()
+  if(NOT probe_found)
+    message(FATAL_ERROR "Missing diagnostic Host source ${probe_name}")
+  endif()
+endforeach()
+PROBE_CMAKE_CHECK
+  fi
   # Check resolved CMake target sources, including aux_source_directory/globs.
   # Only the generated build copy is extended; preserve the original above.
   cat >> "$project/op_host/CMakeLists.txt" <<'HEAD_CMAKE_CHECK'
@@ -110,8 +147,11 @@ foreach(head_op d_flash_draft_lm_head_top1 d_flash_draft_lm_head_top1_audit)
   message(STATUS "Head CMake includes ${head_op}.cpp")
 endforeach()
 HEAD_CMAKE_CHECK
+  diagnostic_args=()
+  if [[ "$diagnostics" == 1 ]]; then diagnostic_args+=(--diagnostics); fi
   "$python_bin" "$here/test/build_config.py" --header "$project/op_host/head_config.h" \
-    --output "$run_root/build-config.json" --core-limit "$core_limit"
+    --output "$run_root/build-config.json" --core-limit "$core_limit" --conversion "$conversion" "${diagnostic_args[@]}"
+  cp "$project/op_host/head_config.h" "$project/op_kernel/head_config.h"
   phase=build
   (cd "$project"; bash build.sh)
   shopt -s nullglob
@@ -124,7 +164,7 @@ HEAD_CMAKE_CHECK
   set -u
   export LD_LIBRARY_PATH="$install/vendors/customize/op_api/lib:${LD_LIBRARY_PATH:-}"
   phase=installed_opp_preflight
-  "$python_bin" "$here/test/head_opp_preflight.py" --install-root "$install" --report "$run_root/opp-preflight.json"
+  "$python_bin" "$here/test/head_opp_preflight.py" --install-root "$install" --report "$run_root/opp-preflight.json" "${diagnostic_args[@]}"
   phase=check_aclnn_headers
   for header in aclnn_d_flash_draft_lm_head_top1.h aclnn_d_flash_draft_lm_head_top1_audit.h; do
     if [[ ! -s "$install/vendors/customize/op_api/include/$header" ]]; then
@@ -132,10 +172,26 @@ HEAD_CMAKE_CHECK
     fi
     echo "Installed ACLNN header verified: $header"
   done
+  if [[ "$diagnostics" == 1 ]]; then
+    for header in aclnn_d_flash_head_probe.h aclnn_d_flash_cast_probe.h; do
+      [[ -s "$install/vendors/customize/op_api/include/$header" ]] || { echo "Missing $header" >&2; exit 1; }
+    done
+  fi
   phase=build_custom_runner
-  cmake -S "$here/test" -B "$build_root/custom" -DCANN_ROOT="$cann_root" -DASCEND_OPP_PATH="$install"
+  cmake -S "$here/test" -B "$build_root/custom" -DCANN_ROOT="$cann_root" -DASCEND_OPP_PATH="$install" -DHEAD_DIAGNOSTICS="$diagnostics"
   cmake --build "$build_root/custom" --parallel
   extra+=(--runner "$build_root/custom/head_custom_test" --build-config "$run_root/build-config.json")
+fi
+if [[ "$diagnostics" == 1 ]]; then
+  phase=conversion_diagnostics
+  "$python_bin" "$here/test/conversion_probe.py" --runner "$build_root/custom/head_probe_test" \
+    --output-dir "$run_root/diagnostics" --device-id "$device" --cann-root "$cann_root" \
+    --build-config "$run_root/build-config.json" --timeout "${HEAD_TIMEOUT:-1800}"
+  phase=sensitive_subset
+  "$python_bin" "$here/test/run_suite.py" --capture "$capture" --native-manifest "$native" \
+    --native-runner "$build_root/native/head_native_test" --output-dir "$run_root/sensitive" --device-id "$device" \
+    --warmup "${HEAD_WARMUP:-5}" --repetitions "${HEAD_REPETITIONS:-30}" --timeout "${HEAD_TIMEOUT:-1800}" \
+    --cases synthetic-overflow_inf,synthetic-nan_first,synthetic-signed_zero_underflow,synthetic-rounded_tie,synthetic-rounded_up "${extra[@]}"
 fi
 phase=full_vocabulary_suite
 "$python_bin" "$here/test/run_suite.py" --capture "$capture" --native-manifest "$native" \

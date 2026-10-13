@@ -1,0 +1,89 @@
+[
+  {
+    "op": "DFlashHeadProbe",
+    "input_desc": [
+      {
+        "name": "hidden",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float16"
+        ]
+      },
+      {
+        "name": "weight",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float16"
+        ]
+      },
+      {
+        "name": "values",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float"
+        ]
+      }
+    ],
+    "output_desc": [
+      {
+        "name": "token_id",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "int64"
+        ]
+      },
+      {
+        "name": "logits",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float16"
+        ]
+      },
+      {
+        "name": "precast",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float"
+        ]
+      },
+      {
+        "name": "vector_fp32",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float"
+        ]
+      },
+      {
+        "name": "vector_fp16",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float16"
+        ]
+      }
+    ]
+  }
+]

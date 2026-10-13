@@ -3,6 +3,8 @@
 #include "lib/matmul_intf.h"
 #define DFLASH_HEAD_DEVICE 1
 #include "head_contract.h"
+#include "head_config.h"
+#include "head_conversion.h"
 
 using HeadA=matmul::MatmulType<AscendC::TPosition::VECOUT,CubeFormat::ND,half>;
 using HeadB=matmul::MatmulType<AscendC::TPosition::GM,CubeFormat::ND,half,true>;
@@ -14,9 +16,9 @@ __aicore__ inline void ScalarToMte3(AscendC::TPipe& pipe) {
     AscendC::SetFlag<AscendC::HardEvent::S_MTE3>(event);
     AscendC::WaitFlag<AscendC::HardEvent::S_MTE3>(event);
 }
-template<bool Audit, class Tiling>
+template<bool Audit, bool Probe=false, class Tiling>
 __aicore__ inline void RunHead(GM_ADDR hidden, GM_ADDR weight, GM_ADDR tokenId, GM_ADDR auditLogits,
-                              GM_ADDR workspace, Tiling& t) {
+                              GM_ADDR workspace, Tiling& t, GM_ADDR preCast=nullptr) {
     using namespace AscendC;
     using namespace head_contract;
     const uint32_t core=GetBlockIdx(), p=t.partitions, m=t.m;
@@ -44,6 +46,8 @@ __aicore__ inline void RunHead(GM_ADDR hidden, GM_ADDR weight, GM_ADDR tokenId, 
     xGm.SetGlobalBuffer(reinterpret_cast<__gm__ half*>(hidden),m*kK);
     wGm.SetGlobalBuffer(reinterpret_cast<__gm__ half*>(weight),uint64_t(kN)*kK);
     ids.SetGlobalBuffer(reinterpret_cast<__gm__ int64_t*>(tokenId),m);
+    GlobalTensor<float> rawGm;
+    if constexpr(Probe) rawGm.SetGlobalBuffer(reinterpret_cast<__gm__ float*>(preCast),2*16*kTileN);
     // msopgen operator projects pass USER workspace here; system space is
     // separate via GetSysWorkSpacePtr. Do not apply GetUserWorkspace twice.
     partialMax.SetGlobalBuffer(reinterpret_cast<__gm__ half*>(workspace+MaxOffset(p)),p*16);
@@ -63,12 +67,16 @@ __aicore__ inline void RunHead(GM_ADDR hidden, GM_ADDR weight, GM_ADDR tokenId, 
         mm.SetTensorA(x); mm.SetTensorB(wGm[uint64_t(begin)*kK],true);
         // One Iterate owns ALL K=2560; no split-K or intermediate FP16 sums.
         if(!mm.Iterate(false)) { healthy=false; break; }
-        // dav_m200's direct L0C->half UB copy can overflow to Inf. Keep the
-        // completed FP32 sum until the supported Vector CAST_NONE conversion
-        // (nearest-even, default saturation). Never patch rounded Inf/NaN bits.
-        mm.GetTensorC(c32,0,true); // compact FP32 ND [16,64], no rounding yet
+        // Preserve full-K FP32. CAST_NONE alone overflowed on real 310P3.
+        mm.GetTensorC(c32,0,true);
         PipeBarrier<PIPE_ALL>();
-        Cast(c,c32,RoundMode::CAST_NONE,16*kTileN); // the sole FP16 boundary
+        if constexpr(Probe) {
+            // Diagnostic output only: no added GM workspace or public Head ABI.
+            // Copy BEFORE any candidate mutation; finish DMA before UB reuse.
+            if(tile<2) { DataCopy(rawGm[tile*16*kTileN],c32,16*kTileN); PipeBarrier<PIPE_ALL>(); }
+        }
+        if constexpr(DFLASH_HEAD_SATURATION==1) HeadFiniteClamp(c32,16*kTileN);
+        Cast(c,c32,RoundMode::CAST_NONE,16*kTileN); // sole FP16 boundary
         PipeBarrier<PIPE_ALL>();
         const auto ready=pipe.FetchEventID(HardEvent::V_S);
         SetFlag<HardEvent::V_S>(ready); WaitFlag<HardEvent::V_S>(ready);

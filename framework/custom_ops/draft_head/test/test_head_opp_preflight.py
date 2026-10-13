@@ -45,6 +45,19 @@ class HeadOppPreflightTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'no installed d_flash_group_quant_linear'):
                 quant.check_install(root)
 
+    def test_diagnostic_build_requires_both_probe_pairs(self):
+        probes=('d_flash_head_probe','d_flash_cast_probe')
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'opp'; installed(root)
+            with self.assertRaisesRegex(ValueError,'d_flash_head_probe'): head.check_install(root,True)
+            first=installed(root,probes[:1])
+            with self.assertRaisesRegex(ValueError,'d_flash_cast_probe'): head.check_install(root,True)
+            installed(root,probes[1:])
+            self.assertEqual(len(head.check_install(root,True)['operators']),4)
+            first[0].with_suffix('.json').unlink()
+            with self.assertRaises((OSError,ValueError)): head.check_install(root,True)
+            self.assertEqual(len(head.check_install(root)['operators']),2)
+
     def test_either_missing_operator_is_rejected(self):
         for missing in head.OP_KERNELS:
             with self.subTest(missing=missing),tempfile.TemporaryDirectory() as directory:

@@ -11,11 +11,11 @@ from opp_preflight import check_root, check_binary_path
 OP_KERNELS=('d_flash_draft_lm_head_top1','d_flash_draft_lm_head_top1_audit')
 
 
-def check_install(root):
+def check_install(root,diagnostics=False):
     root=Path(root).absolute()
     check_root(root)
     operators=[]
-    for name in OP_KERNELS:
+    for name in OP_KERNELS+(('d_flash_head_probe','d_flash_cast_probe') if diagnostics else ()):
         directory=root/'vendors/customize/op_impl/ai_core/tbe/kernel/ascend310p'/name
         if not directory.is_dir(): raise ValueError(f'missing installed Head operator directory: {directory}')
         binaries=sorted(directory.glob('*.o'))
@@ -35,7 +35,7 @@ def check_install(root):
             records.append(dict(binary=str(binary),json=str(metadata),binary_bytes=len(data),json_bytes=len(raw_json),
                 binary_sha256=hashlib.sha256(data).hexdigest(),json_sha256=hashlib.sha256(raw_json).hexdigest()))
         operators.append(dict(name=name,directory=str(directory),kernels=records))
-    return dict(status='PASS',scope='both installed Head object/JSON paths and JSON parsing only',
+    return dict(status='PASS',scope='installed Head/probe object/JSON paths and JSON parsing only' if diagnostics else 'both installed Head object/JSON paths and JSON parsing only',
         install_root=str(root),operators=operators,npu_status='NOT_RUN')
 
 
@@ -43,10 +43,11 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--install-root',type=Path,required=True)
     parser.add_argument('--report',type=Path,required=True)
+    parser.add_argument('--diagnostics',action='store_true')
     args=parser.parse_args()
     try:
-        report=check_install(args.install_root)
-        print(f'PASS: both Head OPP object/JSON sets; NPU NOT_RUN; {args.install_root}',flush=True)
+        report=check_install(args.install_root,args.diagnostics)
+        print(f"PASS: {len(report['operators'])} Head/probe OPP object/JSON sets; NPU NOT_RUN; {args.install_root}",flush=True)
     except (OSError,ValueError) as error:
         report=dict(status='FAIL',scope='Head OPP filesystem preflight',install_root=str(args.install_root.absolute()),
                     npu_status='NOT_RUN',error=f'{type(error).__name__}: {error}')

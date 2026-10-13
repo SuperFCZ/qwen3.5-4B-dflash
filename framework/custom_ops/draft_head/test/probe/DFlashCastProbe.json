@@ -1,0 +1,39 @@
+[
+  {
+    "op": "DFlashCastProbe",
+    "input_desc": [
+      {
+        "name": "values",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float"
+        ]
+      }
+    ],
+    "output_desc": [
+      {
+        "name": "vector_fp32",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float"
+        ]
+      },
+      {
+        "name": "vector_fp16",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float16"
+        ]
+      }
+    ]
+  }
+]

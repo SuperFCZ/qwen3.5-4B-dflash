@@ -16,7 +16,7 @@
 #define __gm__
 using half=_Float16;
 using GM_ADDR=uint8_t*;
-constexpr int PIPE_ALL=0;
+constexpr int PIPE_ALL=0, PIPE_V=1;
 struct CpuCube { int singleM=16,singleN=64,singleK=2560; };
 struct CpuTiling { uint32_t m,partitions; uint64_t matmulUbBytes=65536; CpuCube cubeTilingData; };
 #define GET_TILING_DATA(name,addr) auto& name=*reinterpret_cast<CpuTiling*>(addr)
@@ -73,15 +73,18 @@ public:
 template<typename T> void Duplicate(LocalTensor<T> out,T value,uint32_t count) {
     assert(count<=out.count); std::fill(out.data,out.data+count,value);
 }
-// Abstract saturation/nearest-even conversion oracle. Not a CANN emulator or
-// evidence of on-device Cast/nonfinite behavior; the native 41-case gate stays.
-inline half ModelSaturatingHalf(float value) {
-    if(std::isnan(value)) return static_cast<half>(0);
-    return static_cast<half>(std::max(-65504.0f,std::min(65504.0f,value)));
+// CPU control model uses IEEE conversion (including overflow to Inf). This is
+// NOT a device emulator. Candidate Mins/Maxs below model the REQUIRED semantics;
+// independent NPU diagnostics must prove them, especially NaN and signed zero.
+inline void Mins(LocalTensor<float> dst,LocalTensor<float> src,float bound,uint32_t count) {
+    for(uint32_t i=0;i<count;++i) dst.data[i]=src.data[i]>bound?bound:src.data[i];
+}
+inline void Maxs(LocalTensor<float> dst,LocalTensor<float> src,float bound,uint32_t count) {
+    for(uint32_t i=0;i<count;++i) dst.data[i]=src.data[i]<bound?bound:src.data[i];
 }
 inline void Cast(LocalTensor<half> dst,LocalTensor<float> src,RoundMode mode,uint32_t count) {
     assert(mode==RoundMode::CAST_NONE && count<=dst.count && count<=src.count);
-    for(uint32_t i=0;i<count;++i) dst.data[i]=ModelSaturatingHalf(src.data[i]);
+    for(uint32_t i=0;i<count;++i) dst.data[i]=static_cast<half>(src.data[i]);
 }
 template<typename T> void DataCopy(LocalTensor<T> dst,GlobalTensor<T> src,uint32_t count) {
     assert(count<=dst.count && count<=src.count && count*sizeof(T)%32==0);

@@ -6,7 +6,7 @@
 #include <iostream>
 
 uint16_t Bits(half x) { uint16_t bits; std::memcpy(&bits,&x,2); return bits; }
-void Check(uint32_t m,uint32_t p,int pattern,bool audit,int fail=-1) {
+void Check(uint32_t m,uint32_t p,int pattern,bool audit,int fail=-1,bool probe=false) {
     CpuRun context; context.m=m; context.p=p; context.pattern=pattern; context.failCore=fail; run=&context;
     std::vector<half> h(m*2560); half virtualWeight=0;
     for(uint32_t row=0;row<m;++row) {
@@ -19,11 +19,15 @@ void Check(uint32_t m,uint32_t p,int pattern,bool audit,int fail=-1) {
     std::vector<uint16_t> diagnostic(audit?m*248320+2:2,0x3555);
     // Poisoned workspace reused across launches must not be an implicit zero contract.
     std::vector<uint64_t> workspace((head_contract::WorkspaceBytes(p)+128)/8,0xdeadbeefdeadbeefULL);
+    std::vector<float> raw(2*16*64+2,-12345.f);
     CpuTiling t{m,p,65536,{}};
     std::vector<std::thread> threads;
     for(uint32_t i=0;i<p;++i) threads.emplace_back([&,i]{
         core=p-1-i; // intentionally reverse launch order
-        if(audit) d_flash_draft_lm_head_top1_audit(reinterpret_cast<GM_ADDR>(h.data()),reinterpret_cast<GM_ADDR>(&virtualWeight),
+        if(probe) RunHead<true,true>(reinterpret_cast<GM_ADDR>(h.data()),reinterpret_cast<GM_ADDR>(&virtualWeight),
+            reinterpret_cast<GM_ADDR>(output.data()+1),reinterpret_cast<GM_ADDR>(diagnostic.data()+1),
+            reinterpret_cast<GM_ADDR>(workspace.data()+8),t,reinterpret_cast<GM_ADDR>(raw.data()+1));
+        else if(audit) d_flash_draft_lm_head_top1_audit(reinterpret_cast<GM_ADDR>(h.data()),reinterpret_cast<GM_ADDR>(&virtualWeight),
             reinterpret_cast<GM_ADDR>(output.data()+1),reinterpret_cast<GM_ADDR>(diagnostic.data()+1),
             reinterpret_cast<GM_ADDR>(workspace.data()+8),reinterpret_cast<GM_ADDR>(&t));
         else d_flash_draft_lm_head_top1(reinterpret_cast<GM_ADDR>(h.data()),reinterpret_cast<GM_ADDR>(&virtualWeight),
@@ -37,7 +41,7 @@ void Check(uint32_t m,uint32_t p,int pattern,bool audit,int fail=-1) {
     for(uint32_t r=0;r<m;++r) {
         int64_t expected=0;
         if(pattern==1) expected=64; if(pattern==2 || pattern==4) expected=248319;
-        if(pattern==3 || pattern==5) expected=63; if(pattern==6) expected=64; if(pattern==7) expected=r+1;
+        if(pattern==3 || pattern==5) expected=63; if(pattern==6) expected=63; if(pattern==7) expected=r+1;
         if(fail>=0) expected=-1;
         assert(output[r+1]==expected);
         if(audit && fail<0) for(uint32_t n=0;n<248320;++n) {
@@ -46,11 +50,19 @@ void Check(uint32_t m,uint32_t p,int pattern,bool audit,int fail=-1) {
             if(pattern==2 && n==248319) value=2;
             if(pattern==3 && (n==63 || n==64)) value=1; // larger FP32 value must round DOWN to a tie
             if(pattern==4) value=half(n==248319?-.5f:-1);
-            if(pattern==5 && (n==63 || n==64)) value=half(65504);
-            if(pattern==6 && n==64) value=half(65504);
-            if(pattern==8 && (n==63 || n==64)) value=half(-65504);
+            if(pattern==5 && (n==63 || n==64)) value=DFLASH_HEAD_SATURATION?half(65504):half(INFINITY);
+            if(pattern==6 && n==64) value=DFLASH_HEAD_SATURATION?half(65504):half(INFINITY);
+            if(pattern==8 && (n==63 || n==64)) value=DFLASH_HEAD_SATURATION?half(-65504):half(-INFINITY);
             if(pattern==7 && n==r+1) value=2;
+            if(pattern==6 && n==63) { assert((diagnostic[1+r*248320+n]&0x7fff)>0x7c00); continue; }
             assert(diagnostic[1+r*248320+n]==Bits(value));
+        }
+    }
+    if(probe) {
+        assert(raw.front()==-12345.f && raw.back()==-12345.f);
+        for(uint32_t r=0;r<m;++r) {
+            assert(raw[1+r*64+63]==131008.f);
+            assert(raw[1+16*64+r*64]==131008.f);
         }
     }
     assert(diagnostic.front()==0x3555 && diagnostic.back()==0x3555);
@@ -62,6 +74,7 @@ int main() {
         Check(15,p,pattern,true); Check(1,p,pattern,false);
     }
     Check(15,7,7,false,2);
+    Check(15,7,5,true,-1,true);
     Check(15,7,8,true); Check(1,3,8,false);
     // Ordering tests independent of Matmul: signed zero, NaNs, negative values.
     assert(head_contract::Better(0x8000,1,0,2));
@@ -80,13 +93,16 @@ int main() {
         {1.f/16777216,0x0001},{1.f/33554432,0x0000},{0.f,0x0000}};
     for(auto test:boundary) for(bool negative:{false,true}) {
         float input=negative?-test.first:test.first; half output=0;
+        if constexpr(DFLASH_HEAD_SATURATION) HeadFiniteClamp({&input,1},1);
         AscendC::Cast({&output,1},{&input,1},AscendC::RoundMode::CAST_NONE,1);
-        assert(Bits(output)==static_cast<uint16_t>(test.second|(negative?0x8000:0)));
+        auto expected=test.second;
+        if(!DFLASH_HEAD_SATURATION && test.first>=65520.f) expected=0x7c00;
+        assert(Bits(output)==static_cast<uint16_t>(expected|(negative?0x8000:0)));
     }
     for(uint32_t p:{1U,3U,7U,64U}) {
         assert(head_contract::IdOffset(p)==32*p && head_contract::SyncOffset(p)==160*p);
         assert(head_contract::WorkspaceBytes(p)==192*p); // GM workspace unchanged
         assert(head_contract::UserUbBytes(p)==16*2560*2+16*64*6+160+32*p);
     }
-    std::cout<<"CPU model: 65 full-vocabulary normal/audit runs + failed-core barrier + saturation boundary tests; NPU NOT_RUN\n";
+    std::cout<<"CPU model: 66 full-vocabulary normal/audit runs + failed-core barrier + saturation boundary tests; NPU NOT_RUN\n";
 }

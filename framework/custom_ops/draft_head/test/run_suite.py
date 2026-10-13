@@ -121,6 +121,13 @@ def run(args):
         cases.append(dict(name='synthetic-'+case['name'],m=case['m'],source=case['source'],expected_ids=case['expected_ids'],
                           hidden=checked_file(root/'synthetic',case['hidden']).read_bytes(),
                           weight=checked_file(root/'synthetic',case['weight'],WEIGHT_BYTES)))
+    selected=getattr(args,'cases',None)
+    if selected:
+        names=selected.split(',')
+        if len(set(names))!=len(names) or not set(names)<=set(c['name'] for c in cases): raise ValueError('unknown/duplicate subset')
+        cases=[c for c in cases if c['name'] in names]
+        report['scope']='sensitive subset ONLY; full 41-case acceptance NOT_RUN'
+    report['full_41_case_acceptance']='NOT_RUN'
     for case in cases:
         m=case['m']; directory=root/case['name']; directory.mkdir()
         (directory/'hidden.bin').write_bytes(case['hidden'])
@@ -165,7 +172,7 @@ def run(args):
                             raise ValueError('changed/restored audit logits differ')
                         files += [dest/'logits-permuted.bin',dest/'logits-restored.bin']
                 if mode in ('fused','audit'):
-                    launch=verify_launch(dest/'runner.log',m,mode=='audit',config['core_limit'])
+                    launch=verify_launch(dest/'runner.log',m,mode=='audit',config['core_limit'],config['conversion'])
                     if execution['workspace_bytes']<launch['system_workspace_bytes']+launch['user_workspace_bytes']:
                         raise ValueError('ACLNN workspace smaller than declared requirement')
                     row['launches'][mode]=launch
@@ -188,9 +195,10 @@ def run(args):
     if config is not None:
         try: unchanged=unchanged and build_config.load(args.build_config)==config
         except ValueError: unchanged=False
-    passed=unchanged and len(report['cases'])==41 and all(c['status']=='PASS' for c in report['cases'])
+    passed=unchanged and len(report['cases'])==(len(cases) if selected else 41) and all(c['status']=='PASS' for c in report['cases'])
     report.update(status='PASS' if passed else 'FAIL',sources_unchanged=unchanged,
                   custom_correctness='NOT_RUN' if args.native_only else ('PASS' if passed else 'FAIL'))
+    if not selected: report['full_41_case_acceptance']='PASS' if passed else 'FAIL'
     report['timing_summary']=[dict(name=c['name'],m=c['m'],source=c['source'],
         modes={mode:execution['timing']['execute_sync'] for mode,execution in c['executions'].items() if mode!='audit'})
         for c in report['cases'] if c['status']=='PASS']
@@ -201,6 +209,7 @@ def run(args):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('capture','native-manifest','native-runner','output-dir'): p.add_argument('--'+name,type=Path,required=True)
+    p.add_argument('--cases',help='comma-separated explicit subset; never counts as full acceptance')
     p.add_argument('--runner',type=Path); p.add_argument('--build-config',type=Path); p.add_argument('--native-only',action='store_true')
     p.add_argument('--device-id',type=int,default=0); p.add_argument('--warmup',type=int,default=5)
     p.add_argument('--repetitions',type=int,default=30); p.add_argument('--timeout',type=int,default=3600)

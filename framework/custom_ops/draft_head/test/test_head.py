@@ -155,13 +155,16 @@ class HeadTests(unittest.TestCase):
         compiler=shutil.which('c++')
         if not compiler: self.skipTest('C++17/_Float16 required')
         with tempfile.TemporaryDirectory() as directory:
-            binary=Path(directory)/'model'
-            result=subprocess.run([compiler,'-std=c++17','-O2','-pthread','-ffp-contract=off','-Wall','-Wextra','-Werror',
-                '-Wno-unused-parameter','-I',str(HERE/'test/cpu_include'),str(HERE/'test/kernel_model.cpp'),'-o',str(binary)],capture_output=True,text=True)
-            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-            result=subprocess.run([str(binary)],capture_output=True,text=True,timeout=120)
-            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-            self.assertIn('NPU NOT_RUN',result.stdout)
+            for conversion in ('cast','minmax'):
+                configure(Path(directory)/'head_config.h',Path(directory)/'build.json',0,conversion,True)
+                binary=Path(directory)/('model-'+conversion)
+                result=subprocess.run([compiler,'-std=c++17','-O2','-pthread','-ffp-contract=off','-Wall','-Wextra','-Werror',
+                    '-Wno-unused-parameter','-I',directory,'-I',str(HERE/'test/cpu_include'),
+                    str(HERE/'test/kernel_model.cpp'),'-o',str(binary)],capture_output=True,text=True)
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                result=subprocess.run([str(binary)],capture_output=True,text=True,timeout=120)
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                self.assertIn('NPU NOT_RUN',result.stdout)
 
     def test_build_config_does_not_modify_default_and_rejects_oversubscription_cap(self):
         original=(HERE/'op_host/head_config.h').read_bytes()
