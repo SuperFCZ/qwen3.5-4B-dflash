@@ -61,10 +61,55 @@ if [[ "$native_only" == 1 ]]; then
 else
   phase=msopgen
   project="$build_root/CustomOp"; install="$build_root/opp"
-  msopgen gen -i "$here/DFlashDraftLmHeadTop1.json" -c ai_core-Ascend310P3 -lan cpp -out "$project"
+  msopgen gen \
+    -i "$here/DFlashDraftLmHeadTop1.json" \
+    -c ai_core-Ascend310P3 -lan cpp \
+    -out "$project" \
+    -op DFlashDraftLmHeadTop1
+  msopgen gen \
+    -i "$here/DFlashDraftLmHeadTop1.json" \
+    -c ai_core-Ascend310P3 -lan cpp \
+    -out "$project" \
+    -op DFlashDraftLmHeadTop1Audit \
+    -m 1
+  phase=check_generated_project
+  for op in d_flash_draft_lm_head_top1 d_flash_draft_lm_head_top1_audit; do
+    for part in op_host op_kernel; do
+      if [[ ! -s "$project/$part/$op.cpp" ]]; then
+        echo "msopgen did not generate $part/$op.cpp" >&2; exit 1
+      fi
+    done
+  done
+  for part in op_host op_kernel; do
+    if [[ ! -s "$project/$part/CMakeLists.txt" ]]; then
+      echo "Generated $part/CMakeLists.txt missing" >&2; exit 1
+    fi
+    cp "$project/$part/CMakeLists.txt" "$run_root/generated-$part-CMakeLists.txt"
+  done
+  cp "$project/CMakeLists.txt" "$run_root/generated-CMakeLists.txt"
   cp "$here"/op_host/*.cpp "$here"/op_host/*.h "$project/op_host/"
   cp "$here"/op_kernel/*.cpp "$here/op_kernel/head_kernel.h" "$project/op_kernel/"
   cp "$here/op_host/head_contract.h" "$project/op_kernel/head_contract.h"
+  # Check resolved CMake target sources, including aux_source_directory/globs.
+  # Only the generated build copy is extended; preserve the original above.
+  cat >> "$project/op_host/CMakeLists.txt" <<'HEAD_CMAKE_CHECK'
+
+if(NOT TARGET cust_optiling)
+  message(FATAL_ERROR "Head project is missing the generated cust_optiling target")
+endif()
+get_target_property(head_tiling_sources cust_optiling SOURCES)
+set(head_tiling_names)
+foreach(head_source IN LISTS head_tiling_sources)
+  get_filename_component(head_name "${head_source}" NAME)
+  list(APPEND head_tiling_names "${head_name}")
+endforeach()
+foreach(head_op d_flash_draft_lm_head_top1 d_flash_draft_lm_head_top1_audit)
+  if(NOT "${head_op}.cpp" IN_LIST head_tiling_names)
+    message(FATAL_ERROR "Head CMake target does not include ${head_op}.cpp")
+  endif()
+  message(STATUS "Head CMake includes ${head_op}.cpp")
+endforeach()
+HEAD_CMAKE_CHECK
   "$python_bin" "$here/test/build_config.py" --header "$project/op_host/head_config.h" \
     --output "$run_root/build-config.json" --core-limit "$core_limit"
   phase=build
@@ -79,6 +124,13 @@ else
   set -u
   export LD_LIBRARY_PATH="$install/vendors/customize/op_api/lib:${LD_LIBRARY_PATH:-}"
   "$python_bin" "$here/../draft_quant/test/opp_preflight.py" --install-root "$install" --report "$run_root/opp-preflight.json"
+  phase=check_aclnn_headers
+  for header in aclnn_d_flash_draft_lm_head_top1.h aclnn_d_flash_draft_lm_head_top1_audit.h; do
+    if [[ ! -s "$install/vendors/customize/op_api/include/$header" ]]; then
+      echo "Installed ACLNN header missing or empty: $header" >&2; exit 1
+    fi
+    echo "Installed ACLNN header verified: $header"
+  done
   phase=build_custom_runner
   cmake -S "$here/test" -B "$build_root/custom" -DCANN_ROOT="$cann_root" -DASCEND_OPP_PATH="$install"
   cmake --build "$build_root/custom" --parallel
