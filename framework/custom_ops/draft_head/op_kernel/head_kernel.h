@@ -4,10 +4,10 @@
 #define DFLASH_HEAD_DEVICE 1
 #include "head_contract.h"
 
-using HeadA=matmul::MatmulType<AscendC::TPosition::VECOUT,matmul::CubeFormat::ND,half>;
-using HeadB=matmul::MatmulType<AscendC::TPosition::GM,matmul::CubeFormat::ND,half,true>;
-using HeadC=matmul::MatmulType<AscendC::TPosition::VECIN,matmul::CubeFormat::ND,half>;
-using HeadBias=matmul::MatmulType<AscendC::TPosition::GM,matmul::CubeFormat::ND,float>;
+using HeadA=matmul::MatmulType<AscendC::TPosition::VECOUT,CubeFormat::ND,half>;
+using HeadB=matmul::MatmulType<AscendC::TPosition::GM,CubeFormat::ND,half,true>;
+using HeadC=matmul::MatmulType<AscendC::TPosition::VECIN,CubeFormat::ND,half>;
+using HeadBias=matmul::MatmulType<AscendC::TPosition::GM,CubeFormat::ND,float>;
 
 __aicore__ inline void ScalarToMte3(AscendC::TPipe& pipe) {
     const auto event=pipe.FetchEventID(AscendC::HardEvent::S_MTE3);

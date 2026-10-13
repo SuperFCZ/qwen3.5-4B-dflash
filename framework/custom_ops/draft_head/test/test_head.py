@@ -14,6 +14,22 @@ from build_config import configure,load
 
 
 class HeadTests(unittest.TestCase):
+    def test_matmul_stub_rejects_the_reported_cubeformat_namespace_error(self):
+        compiler=shutil.which('c++')
+        if not compiler: self.skipTest('C++ compiler required')
+        with tempfile.TemporaryDirectory() as directory:
+            source=Path(directory)/'lookup.cpp'
+            for format_name,valid in (('CubeFormat::ND',True),('matmul::CubeFormat::ND',False)):
+                source.write_text('#include "lib/matmul_intf.h"\n'
+                    f'using A=matmul::MatmulType<AscendC::TPosition::VECOUT,{format_name},half>;\n')
+                result=subprocess.run([compiler,'-std=c++17','-fsyntax-only','-I',str(HERE/'test/cpu_include'),
+                    str(source)],capture_output=True,text=True)
+                if valid: self.assertEqual(result.returncode,0,result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode,0)
+                    self.assertIn('CubeFormat',result.stderr)
+                    self.assertIn('AscendC',result.stderr)
+
     def test_nan_inf_raw_weights_and_all_hidden_rows_are_preserved(self):
         import numpy as np
         from fixtures import set_nan_first_weights,check_nan_first_inputs

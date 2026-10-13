@@ -1,12 +1,27 @@
 #pragma once
 #include "kernel_operator.h"
 #include <limits>
-namespace matmul {
+// Match the reported CANN 9.0 lookup: matmul resolves to AscendC, while
+// CubeFormat is global. Do not mask invalid matmul::CubeFormat usage.
 enum class CubeFormat { ND };
-template<AscendC::TPosition P,CubeFormat F,typename T,bool Trans=false> struct MatmulType {};
+#define matmul AscendC
+namespace AscendC {
+template<TPosition P,CubeFormat F,typename TYPE,bool Trans=false> struct MatmulType {
+    static constexpr TPosition pos=P;
+    static constexpr CubeFormat format=F;
+    using T=TYPE;
+    static constexpr bool isTrans=Trans;
+};
 // Sparse virtual full-vocabulary weights avoid allocating a 1.27 GB CPU fixture.
 // Products are evaluated in FP32, then rounded to half ONLY in GetTensorC.
 template<class A,class B,class C,class Bias> class Matmul {
+    static_assert(A::pos==TPosition::VECOUT && B::pos==TPosition::GM &&
+                  C::pos==TPosition::VECIN && Bias::pos==TPosition::GM);
+    static_assert(A::format==CubeFormat::ND && B::format==CubeFormat::ND &&
+                  C::format==CubeFormat::ND && Bias::format==CubeFormat::ND);
+    static_assert(std::is_same_v<typename A::T,half> && std::is_same_v<typename B::T,half> &&
+                  std::is_same_v<typename C::T,half> && std::is_same_v<typename Bias::T,float>);
+    static_assert(!A::isTrans && B::isTrans && !C::isTrans && !Bias::isTrans);
     AscendC::LocalTensor<half> x;
     uint32_t column=0; bool live=false,checked=false;
 public:
