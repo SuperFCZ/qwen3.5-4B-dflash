@@ -6,8 +6,10 @@ Native Top1 对齐与 `synthetic-nan_first` 实测语义修复后，用户已确
 不再单独重复 Native-only，当前转入 Custom 的安装产物检查及严格 41-case 验收。
 
 目标 Ascend310P3 / CANN 9.0.0，遵循 [OPTIMIZATION.md 的 C 契约](../../../docs/OPTIMIZATION.md)。
-**用户已确认两个 Custom 算子的真实 CANN 编译、打包、隔离安装成功；
-Custom 完整 41-case NPU correctness、性能、图接入及完整 Draft/Decode 仍为 `NOT_RUN`。**
+**用户已确认旧实现双算子编译、安装、执行成功，Custom 40/41 PASS；唯一失败为
+synthetic-overflow_inf 的 FP16 logits。** 已实现最终 FP32→FP16 Vector Cast 饱和转换修复，
+详见 [OVERFLOW_CONVERSION.md](OVERFLOW_CONVERSION.md)。**本修复的 CANN/NPU 41-case 验收仍为
+NOT_RUN**；完整图接入与 Draft/Decode 也未验证。
 本地 CPU 模型/声明桩通过不能替代设备验收。
 本目录不改变 Qwen/DFlash 默认路径。单个 gate/up 接入目前只有
 [opt-in 设计](../draft_quant/GATE_UP_OPT_IN.md)，也为 `NOT_RUN`。
@@ -45,7 +47,8 @@ SUCCESS；随后误调用 A 的专用检查入口，因找不到 `d_flash_group_
 
 每核拥有 cyclic N64 tile（共 3880 个）。M 在私有 UB 补齐到 16，补齐行不会输出；每份
 权重 tile 复用全部实际 M 行。Matmul 使用完整 K=2560 的单输出块 Iterate，L0C 为 FP32，
-只在 `GetTensorC` 时输出 FP16 `[16,64]` tile，然后进行 Top1。不是逐 token 扫完整 head，
+GetTensorC 输出 FP32 `[16,64]` tile，再通过 310P 支持的 Vector Cast CAST_NONE 形成
+唯一的 FP16 输出边界，然后进行 Top1。不是逐 token 扫完整 head，
 也不对未舍入的 FP32 累加器求 argmax。SDK 可选择实际 baseK，必须正数、16 对齐且不超过
 2560；singleCoreK 必须是完整 2560，baseM/baseN 必须是 16/64，不做 split-K。
 
@@ -83,7 +86,7 @@ Host 设 `SetScheduleMode(1)`，核数不超过实际可用核数，避免多轮
 及 [dav_m200 实现](https://gitcode.com/cann/asc-devkit/blob/v9.0.0/impl/basic_api/dav_m200/kernel_operator_sync_impl.h)。
 跨核心时序/缓存仍需 NPU 验证，CPU 模型只验证“全部 partial 完成后再归约”的抽象依赖。
 
-每核显式用户 UB 为 X padded `[16,2560]` 81920 B、logit tile 2048 B、running max/ID
+每核显式用户 UB 为 X padded `[16,2560]` 81920 B、FP32 tile 4096 B、FP16 logit tile 2048 B、running max/ID
 32+128 B、sync UB `32*P` B，剩余空间给 Matmul。最终归约复用已经结束的 logit tile
 作为输入 partial scratch。INT64 `[M]` 用精确长度 scalar store 并清理对应 cache line，
 不按 32 B 向上写越界；M=1 和 15 都检查 guards。
@@ -265,5 +268,5 @@ bash -n framework/custom_ops/draft_head/run_server.sh
 完整字节比较测试需要 numpy，kernel 模型需要支持 C++17/_Float16 的编译器；本轮使用已
 安装的 numpy 环境运行，没有把 skip 算作通过。CPU 模型执行正式/audit 实际 kernel body，
 使用 sparse 虚拟权重覆盖全部 248320 列、M1..15、1/3/7 分区、tie、最后 ID、K 尾部、
-FP16 舍入、负值、Inf/NaN、哨兵和故障核心；共 63 个正常运行加 1 个失败同步检查。
+FP16 舍入、负值、Inf/NaN、哨兵和故障核心；共 65 个正常运行加 1 个失败同步检查，并覆盖正负饱和与最大有限值附近的舍入边界。
 它不模拟真实 Cube 累加、缓存或 CANN software SyncAll 的硬件时序。

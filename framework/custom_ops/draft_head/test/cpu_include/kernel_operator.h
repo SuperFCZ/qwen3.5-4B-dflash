@@ -5,6 +5,7 @@
 #include <array>
 #include <cassert>
 #include <condition_variable>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
@@ -36,6 +37,7 @@ namespace AscendC {
 enum class TPosition { GM,VECIN,VECOUT,VECCALC };
 enum class CacheLine { SINGLE_CACHE_LINE };
 enum class HardEvent { S_MTE3,V_S,MTE2_S };
+enum class RoundMode { CAST_NONE };
 inline uint32_t GetBlockIdx() { return core; }
 inline uint32_t GetBlockNum() { return run->p; }
 template<HardEvent E> void SetFlag(int) {}
@@ -70,6 +72,16 @@ public:
 };
 template<typename T> void Duplicate(LocalTensor<T> out,T value,uint32_t count) {
     assert(count<=out.count); std::fill(out.data,out.data+count,value);
+}
+// Abstract saturation/nearest-even conversion oracle. Not a CANN emulator or
+// evidence of on-device Cast/nonfinite behavior; the native 41-case gate stays.
+inline half ModelSaturatingHalf(float value) {
+    if(std::isnan(value)) return static_cast<half>(0);
+    return static_cast<half>(std::max(-65504.0f,std::min(65504.0f,value)));
+}
+inline void Cast(LocalTensor<half> dst,LocalTensor<float> src,RoundMode mode,uint32_t count) {
+    assert(mode==RoundMode::CAST_NONE && count<=dst.count && count<=src.count);
+    for(uint32_t i=0;i<count;++i) dst.data[i]=ModelSaturatingHalf(src.data[i]);
 }
 template<typename T> void DataCopy(LocalTensor<T> dst,GlobalTensor<T> src,uint32_t count) {
     assert(count<=dst.count && count<=src.count && count*sizeof(T)%32==0);

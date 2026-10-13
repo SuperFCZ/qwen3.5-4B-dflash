@@ -12,7 +12,7 @@ void Check(uint32_t m,uint32_t p,int pattern,bool audit,int fail=-1) {
     for(uint32_t row=0;row<m;++row) {
         if(pattern==7) h[row*2560+row]=1;
         else if(pattern==2) h[row*2560+2559]=1;
-        else { h[row*2560]=pattern==5?2:1; if(pattern==3) h[row*2560+1]=half(1.0f/2048); }
+        else { h[row*2560]=(pattern==5 || pattern==8)?2:1; if(pattern==3) h[row*2560+1]=half(1.0f/2048); }
     }
     const auto original=h; context.hidden=h.data(); context.weight=&virtualWeight;
     std::vector<int64_t> output(m+2,-77);
@@ -37,7 +37,7 @@ void Check(uint32_t m,uint32_t p,int pattern,bool audit,int fail=-1) {
     for(uint32_t r=0;r<m;++r) {
         int64_t expected=0;
         if(pattern==1) expected=64; if(pattern==2 || pattern==4) expected=248319;
-        if(pattern==3 || pattern==5 || pattern==6) expected=63; if(pattern==7) expected=r+1;
+        if(pattern==3 || pattern==5) expected=63; if(pattern==6) expected=64; if(pattern==7) expected=r+1;
         if(fail>=0) expected=-1;
         assert(output[r+1]==expected);
         if(audit && fail<0) for(uint32_t n=0;n<248320;++n) {
@@ -46,9 +46,9 @@ void Check(uint32_t m,uint32_t p,int pattern,bool audit,int fail=-1) {
             if(pattern==2 && n==248319) value=2;
             if(pattern==3 && (n==63 || n==64)) value=1; // larger FP32 value must round DOWN to a tie
             if(pattern==4) value=half(n==248319?-.5f:-1);
-            if(pattern==5 && (n==63 || n==64)) value=half(INFINITY);
-            if(pattern==6 && n==63) { assert((diagnostic[1+r*248320+n]&0x7fff)>0x7c00); continue; }
-            if(pattern==6 && n==64) value=half(INFINITY);
+            if(pattern==5 && (n==63 || n==64)) value=half(65504);
+            if(pattern==6 && n==64) value=half(65504);
+            if(pattern==8 && (n==63 || n==64)) value=half(-65504);
             if(pattern==7 && n==r+1) value=2;
             assert(diagnostic[1+r*248320+n]==Bits(value));
         }
@@ -62,6 +62,7 @@ int main() {
         Check(15,p,pattern,true); Check(1,p,pattern,false);
     }
     Check(15,7,7,false,2);
+    Check(15,7,8,true); Check(1,3,8,false);
     // Ordering tests independent of Matmul: signed zero, NaNs, negative values.
     assert(head_contract::Better(0x8000,1,0,2));
     assert(!head_contract::Better(0,2,0x8000,1));
@@ -69,5 +70,23 @@ int main() {
     assert(head_contract::Better(0x7e00,10,0x7c00,0));
     assert(!head_contract::Better(0x7e01,11,0x7e00,10));
     for(uint32_t m:{0U,16U,80U}) assert(!head_contract::Rows(m));
-    std::cout<<"CPU model: 63 full-vocabulary normal/audit runs + failed-core barrier test; NPU NOT_RUN\n";
+    // Independent expected bit patterns at and around the FP16 limit, both
+    // signs; include RNE ties, subnormals and zero sign. These are CPU oracles.
+    const std::pair<float,uint16_t> boundary[] = {
+        {65472.f,0x7bfe},{65488.f,0x7bfe},{65488.00390625f,0x7bff},
+        {65503.f,0x7bff},{65504.f,0x7bff},{65519.f,0x7bff},{65520.f,0x7bff},
+        {65536.f,0x7bff},{131008.f,0x7bff},
+        {1.f+1.f/2048,0x3c00},{1.f+3.f/2048,0x3c02},
+        {1.f/16777216,0x0001},{1.f/33554432,0x0000},{0.f,0x0000}};
+    for(auto test:boundary) for(bool negative:{false,true}) {
+        float input=negative?-test.first:test.first; half output=0;
+        AscendC::Cast({&output,1},{&input,1},AscendC::RoundMode::CAST_NONE,1);
+        assert(Bits(output)==static_cast<uint16_t>(test.second|(negative?0x8000:0)));
+    }
+    for(uint32_t p:{1U,3U,7U,64U}) {
+        assert(head_contract::IdOffset(p)==32*p && head_contract::SyncOffset(p)==160*p);
+        assert(head_contract::WorkspaceBytes(p)==192*p); // GM workspace unchanged
+        assert(head_contract::UserUbBytes(p)==16*2560*2+16*64*6+160+32*p);
+    }
+    std::cout<<"CPU model: 65 full-vocabulary normal/audit runs + failed-core barrier + saturation boundary tests; NPU NOT_RUN\n";
 }

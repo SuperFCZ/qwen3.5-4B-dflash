@@ -14,6 +14,42 @@ from build_config import configure,load
 
 
 class HeadTests(unittest.TestCase):
+    def test_observed_overflow_one_ulp_difference_is_still_failure(self):
+        import numpy as np
+        from run_suite import compare_case
+        logits=np.zeros((15,N),dtype='<u2'); logits[:,[63,64]]=0x7bff
+        ids=struct.pack('<15q',*([63]*15))
+        outputs={'native-logits':[logits.tobytes()]*2,'native-top1':[ids]*2,
+                 'fused':[ids]*2,'audit':[ids]*2,'audit-logits':[logits.tobytes()]*2}
+        def compare(): return compare_case(outputs,15,[63]*15,True,'synthetic-overflow_inf')
+        self.assertEqual(compare()['status'],'PASS')
+        old=logits.copy(); old[:,[63,64]]=0x7c00
+        outputs['audit-logits']=[old.tobytes()]*2
+        result=compare()
+        self.assertEqual(result['status'],'FAIL')
+        diff=result['comparisons']['full_fp16_logits']
+        self.assertEqual((diff['bit_mismatches'],diff['max_ulp']),(30,1))
+        self.assertEqual(diff['first_difference'],dict(index=[0,63],expected_bits='0x7bff',actual_bits='0x7c00'))
+        # Even both sides returning Inf with matching IDs must not rewrite the
+        # observed Native saturation expectation to force a pass.
+        outputs['native-logits']=[old.tobytes()]*2
+        self.assertEqual(compare()['status'],'FAIL')
+
+    def test_conversion_launch_reports_ub_cost_without_changing_gm_workspace(self):
+        from common import verify_launch
+        p=7; user=16*K*2+16*64*6+160+p*32
+        launch=dict(version=1,m=15,k=K,n=N,tile_n=64,padded_m=16,audit=True,core_limit=0,batchmode=1,
+            available_cores=p,partitions=p,user_workspace_bytes=192*p,system_workspace_bytes=2097152,
+            user_ub_bytes=user,matmul_ub_bytes=262144-user,base_k=128,single_k=K,
+            output_conversion='fp32-ub-cast-none-v1',fp32_tile_bytes=4096)
+        with tempfile.TemporaryDirectory() as directory:
+            log=Path(directory)/'runner.log'
+            log.write_text('DFLASH_HEAD_LAUNCH '+json.dumps(launch)+'\n')
+            self.assertEqual(verify_launch(log,15,True,0)['user_workspace_bytes'],1344)
+            launch['user_ub_bytes']-=4096
+            log.write_text('DFLASH_HEAD_LAUNCH '+json.dumps(launch)+'\n')
+            with self.assertRaisesRegex(ValueError,'UB accounting'): verify_launch(log,15,True,0)
+
     def test_matmul_stub_rejects_the_reported_cubeformat_namespace_error(self):
         compiler=shutil.which('c++')
         if not compiler: self.skipTest('C++ compiler required')

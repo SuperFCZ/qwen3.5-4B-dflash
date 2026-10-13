@@ -64,17 +64,19 @@ def compare_case(outputs,m,expected_ids=None,custom=True,case_name=None):
                      native_references_consistent=bits(argmax_half(logits,m),native_ids,8))
     if expected_ids is not None:
         comparisons['synthetic_expected_ids']=bits(np.asarray(expected_ids,dtype='<i8').tobytes(),native_ids,8)
-    if case_name=='synthetic-nan_first':
-        if m!=15 or expected_ids!=[64]*15:
-            raise ValueError('nan_first must retain the pinned M15/ID64 native observation')
-        # Check both native repeats and EVERY row. ID64 alone is insufficient.
-        wanted=np.tile(np.array([0x0000,0x7bff],dtype='<u2'),(15,1)).tobytes()
+    if case_name in ('synthetic-nan_first','synthetic-overflow_inf'):
+        nan_input=case_name=='synthetic-nan_first'
+        if m!=15 or expected_ids!=[64 if nan_input else 63]*15:
+            raise ValueError(f'{case_name} must retain the pinned M15 native observation')
+        # Check both repeats and EVERY row. Matching IDs alone is insufficient.
+        wanted=np.tile(np.array([0x0000 if nan_input else 0x7bff,0x7bff],dtype='<u2'),(15,1)).tobytes()
         for repeat,value in enumerate(outputs['native-logits']):
             raw=np.frombuffer(value,dtype='<u2').reshape(m,N)
             check=bits(wanted,raw[:,[63,64]].copy().tobytes(),2,(15,2))
             if check['first_difference'] is not None:
                 check['first_difference']['index'][1]=(63,64)[check['first_difference']['index'][1]]
-            check.update(policy=fixtures.NAN_FIRST_POLICY,scope=fixtures.NAN_FIRST_SCOPE,tokens=[63,64],rows_checked=15)
+            check.update(policy=fixtures.NAN_FIRST_POLICY if nan_input else 'ascend310p-cann9-native-positive-overflow-v1',
+                         scope=fixtures.NAN_FIRST_SCOPE,tokens=[63,64],rows_checked=15)
             comparisons[f'native_observed_logits_{repeat}']=check
     if custom:
         comparisons.update(custom_ids=bits(native_ids,outputs['fused'][0],8),

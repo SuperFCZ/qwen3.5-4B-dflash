@@ -76,11 +76,12 @@ def verify_launch(path,m,audit,cap):
     records=[json.loads(line.partition(prefix)[2]) for line in Path(path).read_text().splitlines() if prefix in line]
     if not records or any(r!=records[0] for r in records): raise ValueError('missing/inconsistent Head launch')
     x=records[0]
-    for key,value in dict(version=1,m=m,k=K,n=N,tile_n=64,padded_m=16,audit=audit,core_limit=cap,batchmode=1).items():
+    for key,value in dict(version=1,m=m,k=K,n=N,tile_n=64,padded_m=16,audit=audit,core_limit=cap,batchmode=1,
+                          output_conversion='fp32-ub-cast-none-v1',fp32_tile_bytes=4096).items():
         if x.get(key)!=value: raise ValueError(f'wrong Head launch: {key}')
     available=x['available_cores']; p=min(available,64,cap or available)
     if p<1 or x['partitions']!=p or x['user_workspace_bytes']!=p*192: raise ValueError('partition/workspace mismatch')
-    if x['user_ub_bytes']!=16*K*2+16*64*2+160+p*32 or x['matmul_ub_bytes']<=0:
+    if x['user_ub_bytes']!=16*K*2+16*64*(2+4)+160+p*32 or x['matmul_ub_bytes']<=0:
         raise ValueError('Head UB accounting mismatch')
     if x.get('single_k')!=K or type(x.get('base_k')) is not int or not 0<x['base_k']<=K or x['base_k']%16:
         raise ValueError('incomplete K reduction plan')

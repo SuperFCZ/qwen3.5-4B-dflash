@@ -43,7 +43,7 @@ template<class T, bool Audit> ge::graphStatus Tiling(gert::TilingContext* c) {
     matmul_tiling::MatmulApiTiling mm(platform);
     mm.SetAType(matmul_tiling::TPosition::VECOUT,matmul_tiling::CubeFormat::ND,matmul_tiling::DataType::DT_FLOAT16);
     mm.SetBType(matmul_tiling::TPosition::GM,matmul_tiling::CubeFormat::ND,matmul_tiling::DataType::DT_FLOAT16,true);
-    mm.SetCType(matmul_tiling::TPosition::VECIN,matmul_tiling::CubeFormat::ND,matmul_tiling::DataType::DT_FLOAT16);
+    mm.SetCType(matmul_tiling::TPosition::VECIN,matmul_tiling::CubeFormat::ND,matmul_tiling::DataType::DT_FLOAT);
     mm.SetBiasType(matmul_tiling::TPosition::GM,matmul_tiling::CubeFormat::ND,matmul_tiling::DataType::DT_FLOAT);
     mm.SetBias(false);
     mm.SetShape(16,64,kK); mm.SetOrgShape(16,64,kK,kK); mm.SetFixSplit(16,64,128);
@@ -67,7 +67,8 @@ template<class T, bool Audit> ge::graphStatus Tiling(gert::TilingContext* c) {
     std::fprintf(stdout,"DFLASH_HEAD_LAUNCH {\"version\":1,\"m\":%lld,\"k\":2560,\"n\":248320,"
         "\"tile_n\":64,\"padded_m\":16,\"partitions\":%u,\"available_cores\":%u,\"core_limit\":%u,"
         "\"audit\":%s,\"user_workspace_bytes\":%llu,\"system_workspace_bytes\":%llu,"
-        "\"user_ub_bytes\":%llu,\"matmul_ub_bytes\":%llu,\"base_k\":%d,\"single_k\":2560,\"batchmode\":1}\n",
+        "\"user_ub_bytes\":%llu,\"matmul_ub_bytes\":%llu,\"base_k\":%d,\"single_k\":2560,\"batchmode\":1,"
+        "\"output_conversion\":\"fp32-ub-cast-none-v1\",\"fp32_tile_bytes\":4096}\n",
         static_cast<long long>(m),p,platform.GetCoreNum(),DFLASH_HEAD_CORE_LIMIT,Audit?"true":"false",
         static_cast<unsigned long long>(WorkspaceBytes(p)),static_cast<unsigned long long>(system),
         static_cast<unsigned long long>(UserUbBytes(p)),static_cast<unsigned long long>(mmUb),cube.get_baseK());

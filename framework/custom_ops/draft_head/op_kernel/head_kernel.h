@@ -6,7 +6,7 @@
 
 using HeadA=matmul::MatmulType<AscendC::TPosition::VECOUT,CubeFormat::ND,half>;
 using HeadB=matmul::MatmulType<AscendC::TPosition::GM,CubeFormat::ND,half,true>;
-using HeadC=matmul::MatmulType<AscendC::TPosition::VECIN,CubeFormat::ND,half>;
+using HeadC=matmul::MatmulType<AscendC::TPosition::VECIN,CubeFormat::ND,float>;
 using HeadBias=matmul::MatmulType<AscendC::TPosition::GM,CubeFormat::ND,float>;
 
 __aicore__ inline void ScalarToMte3(AscendC::TPipe& pipe) {
@@ -25,13 +25,15 @@ __aicore__ inline void RunHead(GM_ADDR hidden, GM_ADDR weight, GM_ADDR tokenId, 
     matmul::Matmul<HeadA,HeadB,HeadC,HeadBias> mm;
     REGIST_MATMUL_OBJ(&pipe,GetSysWorkSpacePtr(),mm,&t.cubeTilingData);
     TBuf<TPosition::VECOUT> xBuf,maxBuf,idBuf;
-    TBuf<TPosition::VECIN> cBuf;
+    TBuf<TPosition::VECIN> cBuf,c32Buf;
     TBuf<> syncBuf,mmBuf;
     pipe.InitBuffer(xBuf,16*kK*2); pipe.InitBuffer(cBuf,16*kTileN*2);
+    pipe.InitBuffer(c32Buf,16*kTileN*sizeof(float));
     pipe.InitBuffer(maxBuf,32); pipe.InitBuffer(idBuf,128); pipe.InitBuffer(syncBuf,p*32);
     pipe.InitBuffer(mmBuf,t.matmulUbBytes);
     mm.SetLocalWorkspace(mmBuf.Get<uint8_t>(t.matmulUbBytes));
     auto x=xBuf.Get<half>(16*kK); auto c=cBuf.Get<half>(16*kTileN);
+    auto c32=c32Buf.Get<float>(16*kTileN);
     auto maxLocal=maxBuf.Get<half>(16); auto idLocal=idBuf.Get<int64_t>(16);
     auto syncLocal=syncBuf.Get<int32_t>(p*8);
     auto maxBits=maxLocal.ReinterpretCast<uint16_t>();
@@ -61,7 +63,12 @@ __aicore__ inline void RunHead(GM_ADDR hidden, GM_ADDR weight, GM_ADDR tokenId, 
         mm.SetTensorA(x); mm.SetTensorB(wGm[uint64_t(begin)*kK],true);
         // One Iterate owns ALL K=2560; no split-K or intermediate FP16 sums.
         if(!mm.Iterate(false)) { healthy=false; break; }
-        mm.GetTensorC(c,0,true); // compact ND [16,64], and the FP16 rounding boundary
+        // dav_m200's direct L0C->half UB copy can overflow to Inf. Keep the
+        // completed FP32 sum until the supported Vector CAST_NONE conversion
+        // (nearest-even, default saturation). Never patch rounded Inf/NaN bits.
+        mm.GetTensorC(c32,0,true); // compact FP32 ND [16,64], no rounding yet
+        PipeBarrier<PIPE_ALL>();
+        Cast(c,c32,RoundMode::CAST_NONE,16*kTileN); // the sole FP16 boundary
         PipeBarrier<PIPE_ALL>();
         const auto ready=pipe.FetchEventID(HardEvent::V_S);
         SetFlag<HardEvent::V_S>(ready); WaitFlag<HardEvent::V_S>(ready);
