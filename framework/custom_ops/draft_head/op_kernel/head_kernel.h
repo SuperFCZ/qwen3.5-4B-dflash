@@ -95,11 +95,12 @@ __aicore__ inline void RunHead(GM_ADDR hidden, GM_ADDR weight, GM_ADDR tokenId, 
                 c32.ReinterpretCast<uint32_t>().GetValue(0):uint32_t(cBits.GetValue(0));
             observer=(observer*16777619U)^word^tile;
         } else if constexpr(DFLASH_HEAD_VECTOR_TOP1==1) {
-            Cast(c32,c,RoundMode::CAST_NONE,16*kTileN); // widen FP16, never compare unrounded sums
-            PipeBarrier<PIPE_V>();
-            auto scratch=c32.ReinterpretCast<uint8_t>()[15*kTileN*sizeof(float)];
+            // Reuse c32 for one widened row plus raw-bit classifier scratch.
+            // No new UB / Matmul tiling / workspace; FP16 c remains unchanged.
+            auto scratch=c32.ReinterpretCast<uint8_t>()[64*sizeof(float)];
             for(uint32_t r=0;r<m;++r) {
-                const uint32_t n=HeadVectorWinner(c32[r*kTileN],scratch,pipe);
+                Cast(c32,c[r*kTileN],RoundMode::CAST_NONE,64); PipeBarrier<PIPE_V>();
+                const uint32_t n=HeadVectorWinner(c[r*kTileN],c32,scratch,pipe);
                 if(n>=kTileN) { healthy=false; break; }
                 const auto bits=cBits.GetValue(r*kTileN+n); const int64_t id=begin+n;
                 if(Better(bits,id,maxBits.GetValue(r),idLocal.GetValue(r))) { maxBits.SetValue(r,bits); idLocal.SetValue(r,id); }

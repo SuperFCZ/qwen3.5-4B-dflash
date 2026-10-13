@@ -132,18 +132,26 @@ def run(args):
         write_json(root/'suite.json',report)
         if report['environment']['status']!='PASS': raise ValueError(report['environment']['errors'])
         states={}; profile_results={}
+        states['vector']=build(root,'vector',conversion='compare_select',top1='vector')
+        report['builds']['vector']=str(root/'vector-build.json')
+        report['evidence']['top1_probe']=str(root/'top1-probe/suite.json')
+        write_json(root/'suite.json',report)
+        call([sys.executable,str(HERE/'test/vector_top1_probe.py'),'--runner',states['vector']['top1_runner'],
+              '--output-dir',str(root/'top1-probe'),'--device-id',str(args.device_id)],root/'top1-probe.log',states['vector']['environment'])
+        primitive=json.loads((root/'top1-probe/suite.json').read_text())
+        if primitive['status']!='PASS' or primitive['rows']!=2191: raise ValueError('complete primitive gate required')
+        if args.primitive_only:
+            report.update(status='PRIMITIVE_PASS',scope='2191-row primitive only; paired/full correctness NOT_RUN')
+            write_json(root/'suite.json',report); print(root/'suite.json',flush=True); return 0
         for label,stage in (('matmul','matmul'),('convert','convert')):
             states[label]=build(root,label,profile=stage)
             out,data=observers(args,root,label,states[label]); profile_results[label]=data; report['evidence'][label]=str(out/'suite.json')
             report['builds'][label]=str(root/f'{label}-build.json')
             report['profiling'][label]='NOT_RUN' if args.skip_msprof else profile(args,root,label,states[label],out/'real-c16-m15')
             write_json(root/'suite.json',report)
-        for label,conv,top in (('original','cast','scalar'),('baseline','compare_select','scalar'),('vector','compare_select','vector')):
+        for label,conv,top in (('original','cast','scalar'),('baseline','compare_select','scalar')):
             states[label]=build(root,label,conversion=conv,top1=top)
             report['builds'][label]=str(root/f'{label}-build.json')
-        call([sys.executable,str(HERE/'test/vector_top1_probe.py'),'--runner',states['vector']['top1_runner'],
-              '--output-dir',str(root/'top1-probe'),'--device-id',str(args.device_id)],root/'top1-probe.log',states['vector']['environment'])
-        report['evidence']['top1_probe']=str(root/'top1-probe/suite.json')
         # Representative paired gates before full acceptance.
         results={}
         for label in ('original','baseline','vector'):
@@ -182,4 +190,5 @@ if __name__=='__main__':
     for name in ('capture','native-manifest','output-dir'): p.add_argument('--'+name,type=Path,required=True)
     p.add_argument('--device-id',type=int,default=0); p.add_argument('--timeout',type=int,default=1800)
     p.add_argument('--skip-msprof',action='store_true')
+    p.add_argument('--primitive-only',action='store_true',help='stop after all 2191 diagnostic rows; full correctness NOT_RUN')
     a=p.parse_args(); a.capture=a.capture.resolve(); a.native_manifest=a.native_manifest.resolve(); raise SystemExit(run(a))

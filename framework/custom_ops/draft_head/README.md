@@ -10,7 +10,8 @@ Native Top1 对齐与 `synthetic-nan_first` 实测语义修复后，用户已确
 在 Ascend310P3/CANN 9.0.0 完整 41/41 PASS。** 历史溢出诊断见
 [OVERFLOW_CONVERSION.md](OVERFLOW_CONVERSION.md)。当前默认选择该已验收转换及 Scalar Top1，
 保留旧提交、cast/minmax 路径与隔离 OPP/evidence。
-本轮新增 opt-in Vector Top1 和独立性能观察器，见
+`ca58d9f` Vector Probe 在全 NaN 行返回 -1，未通过 Primitive。本轮改用原始 FP16
+位型分类，增加 NE/EQ/widening/mask-layout 留证，默认 Scalar 基线不变。见
 [TOP1_VECTOR_EXPERIMENT.md](TOP1_VECTOR_EXPERIMENT.md) 的一键 paired 测试入口。
 **新路径 CANN 编译、primitive NPU、完整 41-case、性能均为 NOT_RUN**；默认不启用 Vector。
 本地 CPU 模型/声明桩通过不能替代设备验收。

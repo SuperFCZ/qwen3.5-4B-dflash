@@ -23,6 +23,16 @@
         "type": [
           "int64"
         ]
+      },
+      {
+        "name": "trace",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "uint32"
+        ]
       }
     ]
   }

@@ -9,7 +9,7 @@ import unittest
 import numpy as np
 from common import HERE,REPO
 from build_config import configure,load
-from vector_top1_probe import winner,rows
+from vector_top1_probe import winner,rows,trace_report
 from top1_experiment import paired_report,CASES
 from run_suite import validate_execution
 
@@ -39,12 +39,54 @@ class VectorTop1Tests(unittest.TestCase):
 
     def test_npu_primitive_inputs_include_every_fp16_pattern(self):
         raw=rows()
+        self.assertEqual(len(raw),2191)
         self.assertEqual(set(np.unique(raw).tolist()),set(range(65536)))
         self.assertTrue(np.array_equal(raw,rows()))
         x=np.zeros(64,dtype='<u2'); x[63]=1; self.assertEqual(winner(x),63)
         x[:]=0x8002; x[62]=0x8001; self.assertEqual(winner(x),62)
         x[:]=0x7c00; x[31]=0xfc01; x[32]=0x7e00; self.assertEqual(winner(x),31)
         x[:]=0x8000; x[1]=0; self.assertEqual(winner(x),0)
+
+    def diagnostic_example(self):
+        raw=rows()[:15].copy(); trace=np.zeros((15,240),dtype='<u4')
+        def mask_bits(row): return sum(1<<i for i,v in enumerate(row) if v)
+        def put(r,offset,scalar,value):
+            trace[r,offset]=trace[r,scalar]=value&0xffffffff
+            trace[r,offset+1]=trace[r,scalar+1]=value>>32
+        for r,row in enumerate(raw):
+            nan=(row&0x7fff)>0x7c00; nmask=mask_bits(nan); idx=winner(row)
+            with np.errstate(invalid='ignore'):
+                trace[r,:64]=row.view('<f2').astype('<f4').view('<u4')
+            ranks=np.where(row&0x8000,-(row&0x7fff).astype('int32'),row.astype('int32'))
+            eq=0 if nmask else mask_bits(ranks==ranks[idx])
+            put(r,64,96,0); put(r,72,98,eq); put(r,80,100,nmask); put(r,88,102,eq)
+            trace[r,104]=0x7fc00000 if nmask else trace[r,idx]
+            trace[r,105]=63; trace[r,106]=64 if nmask else idx
+            trace[r,107]=int(not nmask); trace[r,108]=idx; trace[r,109]=0x48543102
+            trace[r,110]=64; trace[r,111]=64 if nmask else idx
+            trace[r,176:240]=trace[r,:64]
+            delta=(row&0x7fff).astype('int32')-0x7c00
+            trace[r,112:176]=delta.astype('<f2').astype('<f4').view('<u4')
+        return raw,trace
+
+    def test_trace_identifies_old_zero_masks_without_requiring_ieee_nan_ne(self):
+        raw,trace=self.diagnostic_example()
+        result=trace_report(raw,trace.tobytes())
+        self.assertEqual(result['status'],'PASS',result['errors'])
+        row=result['rows'][6]
+        self.assertEqual(row['legacy_winner'],64); self.assertEqual(row['selected_winner'],0)
+        self.assertIn('HeadFirstBit(EQ=0)=64',row['diagnosis'])
+        self.assertEqual(row['masks']['raw_nan']['scalar_low64'],'0xffffffffffffffff')
+
+    def test_trace_rejects_bad_layout_classification_widening_and_eq(self):
+        raw,trace=self.diagnostic_example()
+        for row,word,value in ((6,80,0),(6,100,0),(2,0,0),(2,88,0),(6,107,1),(6,108,64),(6,109,0),(6,112,0)):
+            bad=trace.copy(); bad[row,word]=value
+            self.assertEqual(trace_report(raw,bad.tobytes())['status'],'FAIL',(row,word))
+        # Simulate a mask stored eight bytes later, while Scalar reads the first eight.
+        bad=trace.copy(); bad[6,80:84]=[0,0,0xffffffff,0xffffffff]; bad[6,100:102]=0
+        self.assertEqual(trace_report(raw,bad.tobytes())['status'],'FAIL')
+        with self.assertRaises(ValueError): trace_report(raw,bytes(15*64*4))
 
     def test_build_default_is_accepted_scalar_compare_select(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -105,7 +147,7 @@ aclError aclDestroyTensor(const aclTensor*);
 extern "C" const char* aclGetRecentErrMsg();
 extern "C" int aclrtMemset(void*,std::size_t,int,std::size_t);
 ''')
-            (root/'aclnn_d_flash_top1_probe.h').write_text('''aclError aclnnDFlashTop1ProbeGetWorkspaceSize(const aclTensor*,const aclTensor*,uint64_t*,aclOpExecutor**);
+            (root/'aclnn_d_flash_top1_probe.h').write_text('''aclError aclnnDFlashTop1ProbeGetWorkspaceSize(const aclTensor*,const aclTensor*,const aclTensor*,uint64_t*,aclOpExecutor**);
 aclError aclnnDFlashTop1Probe(void*,uint64_t,aclOpExecutor*,aclrtStream);
 ''')
             result=subprocess.run([compiler,'-std=c++17','-Wall','-Wextra','-Werror','-fsyntax-only',

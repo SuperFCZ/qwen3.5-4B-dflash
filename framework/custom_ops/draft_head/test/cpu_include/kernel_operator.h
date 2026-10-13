@@ -34,6 +34,7 @@ inline thread_local uint32_t core=0;
 inline thread_local uint64_t ubBytes=0;
 
 namespace AscendC {
+inline thread_local bool cpuOrderedNanNE=false;
 enum class TPosition { GM,VECIN,VECOUT,VECCALC };
 enum class CacheLine { SINGLE_CACHE_LINE };
 enum class HardEvent { S_MTE3,V_S,MTE2_S };
@@ -100,12 +101,12 @@ inline void CompareScalar(LocalTensor<uint8_t> mask,LocalTensor<float> src,float
 inline void Compare(LocalTensor<uint8_t> mask,LocalTensor<float> a,LocalTensor<float> b,CMPMODE mode,uint32_t count) {
     assert(count==64 && mode==CMPMODE::NE && mask.count>=32);
     std::memset(mask.data,0,8);
-    for(uint32_t i=0;i<count;++i) if(a.data[i]!=b.data[i]) mask.data[i/8]|=uint8_t(1U<<(i%8));
+    for(uint32_t i=0;i<count;++i) if(a.data[i]!=b.data[i] && !(cpuOrderedNanNE && (std::isnan(a.data[i]) || std::isnan(b.data[i])))) mask.data[i/8]|=uint8_t(1U<<(i%8));
 }
 inline void WholeReduceMax(LocalTensor<float> dst,LocalTensor<float> src,int mask,int repeat,int dstStride,int blockStride,int srcStride,ReduceOrder order) {
     assert(mask==64 && repeat==1 && dstStride==1 && blockStride==1 && srcStride==8 && order==ReduceOrder::ORDER_VALUE_INDEX);
     float value=src.data[0]; uint32_t index=0;
-    for(uint32_t i=0;i<64;++i) { assert(!std::isnan(src.data[i])); if(src.data[i]>=value) { value=src.data[i]; index=i; } }
+    for(uint32_t i=0;i<64;++i) { if(std::isnan(src.data[i])) { value=src.data[i]; index=i; } else if(src.data[i]>=value) { value=src.data[i]; index=i; } }
     dst.data[0]=value; std::memcpy(dst.data+1,&index,4); // deliberately choose LAST tie: kernel must ignore it
 }
 inline void Cast(LocalTensor<float> dst,LocalTensor<half> src,RoundMode mode,uint32_t count) {
@@ -120,6 +121,22 @@ inline void Select(LocalTensor<float> dst,LocalTensor<uint8_t> mask,LocalTensor<
         // Bit copy explicitly preserves NaN payload/sign and zero sign.
         uint32_t raw; std::memcpy(&raw,source,4); std::memcpy(dst.data+i,&raw,4);
     }
+}
+inline void And(LocalTensor<uint16_t> dst,LocalTensor<uint16_t> a,LocalTensor<uint16_t> b,uint32_t count) {
+    assert(count<=dst.count && count<=a.count && count<=b.count);
+    for(uint32_t i=0;i<count;++i) dst.data[i]=a.data[i]&b.data[i];
+}
+inline void Adds(LocalTensor<int16_t> dst,LocalTensor<int16_t> src,int16_t value,uint32_t count) {
+    assert(count<=dst.count && count<=src.count);
+    for(uint32_t i=0;i<count;++i) { int v=int(src.data[i])+value; assert(v>=-32768 && v<=32767); dst.data[i]=int16_t(v); }
+}
+inline void Cast(LocalTensor<half> dst,LocalTensor<int16_t> src,RoundMode mode,uint32_t count) {
+    assert(mode==RoundMode::CAST_NONE && count<=dst.count && count<=src.count);
+    for(uint32_t i=0;i<count;++i) dst.data[i]=static_cast<half>(src.data[i]);
+}
+template<typename T> void DataCopy(LocalTensor<T> dst,LocalTensor<T> src,uint32_t count) {
+    assert(count<=dst.count && count<=src.count && count*sizeof(T)%32==0);
+    std::memcpy(dst.data,src.data,count*sizeof(T));
 }
 inline void Cast(LocalTensor<half> dst,LocalTensor<float> src,RoundMode mode,uint32_t count) {
     assert(mode==RoundMode::CAST_NONE && count<=dst.count && count<=src.count);

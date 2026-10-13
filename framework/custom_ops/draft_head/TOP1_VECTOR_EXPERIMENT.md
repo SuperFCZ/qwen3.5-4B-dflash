@@ -42,12 +42,13 @@ A5.1、Native golden、生产 Draft 和 `Better()` 数学规则不修改。
 
 对每个逻辑行的 64 个值：
 
-1. `Compare(row,row,NE,64)` 检测 NaN；存在 NaN 时，从 mask 取第一个位置。
-2. 无 NaN 时，`WholeReduceMax(..., ORDER_VALUE_INDEX)` 取最大值。
-3. 忽略 SDK 返回的 index，用 `CompareScalar(EQ)` 找到所有并列最大值，再取 mask
-   最低有效位。FP32 的 +0/-0 应相等；此行为必须由独立 NPU primitive gate 确认。
-4. 最低位索引用最多六次整数寄存器测试求出，不扫描 64 个 logits。
-5. 只读取获胜位置的原始 FP16 bits，调用原 `Better()` 做跨 tile 合并；跨核归约不变。
+1. 从原 FP16 bits 清除 sign，计算 `delta=(bits & 0x7fff)-0x7c00`（INT16），
+   数值范围 `[-31744,1023]`，不会溢出。delta>0 当且仅当 exponent 全 1 且 mantissa 非零。
+2. 使用 dav_m200 支持的 INT16→half→float 转换得到有限分类标记，再 CompareScalar(GT,0)。
+   NaN 标记为正整数 1..1023，Inf 为 0，有限值为负；半精度舍入不会改变分类符号。
+   **不再依赖浮点 NaN 自比较。** 存在 NaN 时从该 mask 取第一个位置。
+3. 无 NaN 时保持 WholeReduceMax + CompareScalar(EQ) + 最低有效位，忽略 SDK 的 tie index。
+4. 只读取获胜位置的原始 FP16 bits，调用原 `Better()` 做跨 tile 合并；跨核归约不变。
 
 因此 NaN payload 不参与大小排序；多个 NaN 和普通并列值都取最小 token ID，获胜的
 原始 FP16 位型不改写。NaN 优先与全局最小 ID 仍由原 Better 跨 tile/分区保持。
@@ -55,9 +56,11 @@ A5.1、Native golden、生产 Draft 和 `Better()` 数学规则不修改。
 M15 的 tile 合并为 `3880×15=58,200` 次 Better，相比逐元素合并减少 64 倍；这只是
 操作计数，不是速度承诺。Vector 指令和 V→Scalar 依赖仍有开销，需实际计时。
 
-M≤15，c32 的 padded row 15 在拓宽后可作为 64 B mask/reduce scratch。未新增 UB：
-`UserUbBytes(P)`、Matmul UB、`WorkspaceBytes(P)=192P`、sync offsets 均不变。
-FP16 logits buffer 只读用于 Top1，Audit 输出仍保存全部原 FP16 logits。
+c32 在 Matmul 和 FP16 转换结束后复用：前 256 B 放一行已舍入 logits 的 FP32 拓宽，
+后 704 B 为 mask/max、位型分类及有限标记 scratch。由整 tile 一次拓宽改为逐行拓宽，
+以避免增添 UB 改变 Matmul 配额；这是正确性修复，新增指令成本需重新测量。
+`UserUbBytes(P)`、Matmul UB、`WorkspaceBytes(P)=192P`、sync offsets 都不变。
+FP16 logits buffer 不改写，Audit 保留原输出。
 
 固定 SDK：官方 `cann/asc-devkit` **v9.0.0**，commit
 `c8c1b9df6bb9cd61c09751c7ef414b89e06af274`。核查路径：
@@ -117,10 +120,13 @@ export HEAD_NATIVE_MANIFEST=/home/w00949577/qwen35-dflash-run/head-native-gpJaP6
 
 默认执行顺序：
 
-1. matmul / convert 观察器：C16/C64 × M1/M8/M15，另跑 C16 M15 msprof。
-2. 构建 original / baseline / vector，执行 Vector Top1 全位型 NPU primitive gate。
-3. 三条正常路径分别跑同样六个真实 case，严格 Audit/ID 验收与配对计时。
+1. 构建 vector，先执行完整 **2191 行** Primitive/trace gate；失败立即停止。
+2. matmul / convert 观察器：C16/C64 × M1/M8/M15，另跑 C16 M15 msprof。
+3. 构建 original / baseline，三条正常路径跑同样六个真实 case 的严格 Audit/ID 配对验收。
 4. baseline 和 vector 各完整 41-case，再对两者 C16 M15 做独立 msprof。
+
+本轮建议首次在命令末尾加 `--primitive-only`，只关闭 Primitive 正确性问题；成功状态为
+`PRIMITIVE_PASS`，paired/full-41/performance 仍 NOT_RUN。去掉该选项后才按以上顺序继续。
 
 全程 warmup=5、repetitions=30、continuous-v1。未经插桩的 median/p95 和全部样本保存
 到汇总；msprof 是单独调用，不混入 paired samples。每个分支都有自己的 Native Head/
@@ -158,7 +164,7 @@ HEAD_DIAGNOSTICS=0 HEAD_WARMUP=5 HEAD_REPETITIONS=30 \
 
 ## 本地回归
 
-本轮 37 项 CPU 回归通过，另完成 Python/构建脚本静态检查；CANN/NPU 项仍 NOT_RUN。
+本轮 39 项 CPU 回归通过，另完成 Python/构建脚本静态检查；CANN/NPU 项仍 NOT_RUN。
 
 CPU 运行实际 Vector helper 对照原 Better，遍历全部 FP16 位型并覆盖随机行、NaN/tie/
 subnormal。Reduce stub 故意返回最后一个并列索引，确保实现不依赖 SDK tie 索引。
@@ -166,3 +172,62 @@ Scalar/Vector、cast/minmax/compare_select、两种 observer 的 kernel 控制�
 核对 full-K 访问、分区、UB/workspace 和失败核心同步。增加 build/launch 身份、观察器
 拒绝进入正确性验收、配对输入/tiling/协议不一致拒绝、ACL runner 语法等 CPU 回归。
 这些测试不模拟真实 CANN 指令、缓存或 pipeline，不能替代设备测试。
+
+## ca58d9f 的 NaN Probe 失败与 v2 trace
+
+用户的 Ascend310P3/CANN9 evidence：
+`/home/w00949577/qwen35-dflash-run/head-top1-20261013-101642`。
+Primitive batch 0 / row 6 是 64 个 `0x7e01`，期望 0，返回 -1；Guard、只读和重复未报错。
+这说明旧候选未通过 Primitive，不能声称 Vector 完整 41-case 或性能成功。
+按旧代码，-1 对应 index=64：Scalar 先读到 nanMask=0，随后 EQ mask=0。
+目前没有原始 mask 字节，尚不能断言零来自指令 NaN 语义、widening 或读回布局。
+
+固定 v9.0.0 源码中的 Compare(NE) 走 vcmpv_ne，CompareScalar(EQ) 走 vcmpvs_eq；
+源码不构成 NaN 的 IEEE 行为保证。[CANN9 Compare 文档](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/900/API/ascendcopapi/atlasascendc_api_07_0066.html)
+也不能替代当前设备调用的实测。新分类仅对有限 numeric marker 做 GT 比较。
+不使用 dav_m200 不支持的直接 INT16→FP32 Cast、整数 CompareScalar 或 ShiftRight；
+And(uint16)、Adds(int16)、INT16→half→float 均已核对固定 SDK 实现。
+
+Probe 增加独立 `trace: UINT32[15,240]` 输出，正式 Fused/Audit ABI 不变。
+每行 960 B，全部为 32 B 对齐搬运，包含：
+
+| Word offset | 内容 |
+|---|---|
+| 0..63 | 旧 full-tile FP16→FP32 Cast 原始位型 |
+| 64..71 / 72..79 | 旧 NE / EQ 的完整 32 B mask（预置 a5，展示未写区域） |
+| 80..87 / 88..95 | 新 raw-bit NaN mask / 非 NaN EQ mask |
+| 96..103 | 各 mask 的 Scalar uint64 读回，拆为低/高 UINT32 |
+| 104..111 | 旧 Reduce value/index bits、旧 winner、EQ 是否执行、新 winner、版本及旧 FirstBit 结果 |
+| 112..175 | 位型分类的有限 FP32 marker bits |
+| 176..239 | 候选逐行 FP16→FP32 Cast 原始位型 |
+
+仅 Probe 额外保留一份旧 full-tile widening 的 UB 副本，用于忠实诊断旧调用；正式 Head
+不分配该副本，不执行旧 NaN 比较，也不输出 trace。旧 EQ 在诊断中始终计算，即使旧 NE
+非零；报告用旧分支规则重建返回值，而不把诊断 EQ 当作真实已执行分支。
+
+每批三次交替 poison，trace/ID 都检查重复、Guard 和输入只读。`diagnostics-0.json`
+同时核对原始 mask 字节布局与 Scalar 读回、新 NaN mask 的全部 64 位、非 NaN EQ mask、
+非 NaN widening 的精确位型和分类 marker 符号。旧 NE 不满足 IEEE 不作为候选失败理由，
+但所有原始数据必须保留。若旧 widened 行仍全是 NaN、NE=0、EQ=0，报告会明确记录
+`HeadFirstBit(EQ=0)=64 → old caller -1`；否则按实际位型判断，不能静默重写期望。
+
+39 项 CPU 回归包含旧 NE 对 NaN 返回 false 的**假设模型**，用于复现旧 -1 并验证新分类
+不依赖该比较；这不是实测语义声明。保持原 2191 行数据及顺序不变，覆盖所有 FP16 位型。
+新增旧/新 mask 布局错位、widening 差异和 NaN 漏检的拒绝测试。
+本修复 CANN 编译、2191 行 NPU、paired 与完整 41-case 均 **NOT_RUN**。
+
+首次诊断命令（已有 CANN9 环境，复用原 capture 与 30 个 OM）：
+
+```bash
+git pull --ff-only
+export HEAD_CAPTURE=/home/w00949577/qwen35-dflash-run/draft-head-UCt9vR8q/capture/manifest.json
+export HEAD_NATIVE_MANIFEST=/home/w00949577/qwen35-dflash-run/head-native-gpJaP6vN/models/native.json
+"${MODEL_PYTHON:-python3}" framework/custom_ops/draft_head/test/top1_experiment.py \
+  --capture "$HEAD_CAPTURE" --native-manifest "$HEAD_NATIVE_MANIFEST" \
+  --output-dir "/home/w00949577/qwen35-dflash-run/head-top1-nan-$(date +%Y%m%d-%H%M%S)" \
+  --device-id "${DEVICE_ID:-0}" --primitive-only
+```
+
+回传根目录 suite.json、top1-probe/suite.json、top1-probe/batch-0000/diagnostics-0.json，
+尤其 row 6，以及 trace-0.bin / ids-0.bin / runner.log。若其它批失败，也保留对应批的文件。
+通过后可去掉 `--primitive-only` 用新目录执行完整流程；不覆盖任何旧 evidence 或 2a9211f 基线。
