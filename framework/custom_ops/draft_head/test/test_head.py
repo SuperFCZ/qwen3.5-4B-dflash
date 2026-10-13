@@ -160,8 +160,10 @@ class HeadTests(unittest.TestCase):
         compiler=shutil.which('c++')
         if not compiler: self.skipTest('C++17/_Float16 required')
         with tempfile.TemporaryDirectory() as directory:
-            for conversion in ('cast','minmax','compare_select'):
-                configure(Path(directory)/'head_config.h',Path(directory)/'build.json',0,conversion,True)
+            for conversion,top1,profile in (('cast','scalar','none'),('minmax','scalar','none'),
+                    ('compare_select','scalar','none'),('compare_select','vector','none'),
+                    ('compare_select','scalar','matmul'),('compare_select','scalar','convert')):
+                configure(Path(directory)/'head_config.h',Path(directory)/'build.json',0,conversion,True,top1,profile)
                 binary=Path(directory)/('model-'+conversion)
                 result=subprocess.run([compiler,'-std=c++17','-O2','-pthread','-ffp-contract=off','-Wall','-Wextra','-Werror',
                     '-Wno-unused-parameter','-I',directory,'-I',str(HERE/'test/cpu_include'),
@@ -281,7 +283,7 @@ aclError aclnnDFlashDraftLmHeadTop1(void*,uint64_t,aclOpExecutor*,aclrtStream);
 aclError aclnnDFlashDraftLmHeadTop1AuditGetWorkspaceSize(const aclTensor*,const aclTensor*,const aclTensor*,const aclTensor*,uint64_t*,aclOpExecutor**);
 aclError aclnnDFlashDraftLmHeadTop1Audit(void*,uint64_t,aclOpExecutor*,aclrtStream);
 ''')
-            for defines in ([],['-DHEAD_NATIVE_ONLY=1']):
+            for defines in ([],['-DHEAD_NATIVE_ONLY=1'],['-DHEAD_PROFILE_ONLY=1']):
                 result=subprocess.run([compiler,'-std=c++17','-Wall','-Wextra','-Werror','-fsyntax-only',
                     '-I',str(root),'-I',str(REPO/'framework/runtime/cpp/tests/fake_acl'),'-include',str(root/'extras.h'),
                     str(HERE/'test/runner.cpp'),*defines],capture_output=True,text=True)

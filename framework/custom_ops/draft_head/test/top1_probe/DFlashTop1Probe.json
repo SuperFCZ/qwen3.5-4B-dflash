@@ -1,0 +1,29 @@
+[
+  {
+    "op": "DFlashTop1Probe",
+    "input_desc": [
+      {
+        "name": "logits",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float16"
+        ]
+      }
+    ],
+    "output_desc": [
+      {
+        "name": "ids",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "int64"
+        ]
+      }
+    ]
+  }
+]

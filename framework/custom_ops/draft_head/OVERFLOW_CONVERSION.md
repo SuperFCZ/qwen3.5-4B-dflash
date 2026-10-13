@@ -1,4 +1,9 @@
-# Head overflow：设备诊断与 opt-in Vector 限幅候选
+# Head overflow：设备诊断与 Vector 限幅验收记录
+
+最新用户回传：`2a9211f` / `.runs/head-DGwqjbT8` 的 compare_select + Scalar Top1 已在
+Ascend310P3/CANN 9.0.0 完整 41/41 PASS。下文 NOT_RUN 描述保留为此前候选阶段记录；
+后续 Top1 性能实验及当前状态见 [TOP1_VECTOR_EXPERIMENT.md](TOP1_VECTOR_EXPERIMENT.md)。
+当前默认已选择 compare_select + scalar，Vector 仍需显式启用。
 
 ## 实测状态（与本轮待验收项分开）
 

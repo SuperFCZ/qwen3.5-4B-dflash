@@ -34,11 +34,13 @@ def validate_native(path,cap_hash):
     return models
 
 
-def validate_execution(x,mode,m,device,warmup,repetitions):
-    expected=dict(status='PASS',mode=mode,runtime='AscendCL NPU',cpu_fallback=False,guards_intact=True,
+def validate_execution(x,mode,m,device,warmup,repetitions,profiling=False):
+    expected=dict(status='MEASURED_NOT_CORRECTNESS' if profiling else 'PASS',mode=mode,runtime='AscendCL NPU',cpu_fallback=False,guards_intact=True,
                   input_readonly=True,repeat_equal=True,io_validated=True,m=m,k=K,n=N,device_id=device)
     if any(x.get(k)!=v for k,v in expected.items()): raise ValueError('runner identity/guard/readonly validation failed')
-    if x.get('row_permutation_checked') is not (m>1): raise ValueError('missing changed-request check')
+    if profiling and (mode!='fused' or x.get('profile_only') is not True): raise ValueError('not a profiling observer')
+    if not profiling and x.get('profile_only',False): raise ValueError('observer is not correctness')
+    if x.get('row_permutation_checked') is not (m>1 and not profiling): raise ValueError('missing changed-request check')
     t=x['timing']
     if mode=='audit':
         if t['repetitions']!=0 or t['warmup']!=0 or t['status']!='NOT_RUN' or t.get('protocol')!='checked-v1':
@@ -99,6 +101,7 @@ def run(args):
     config=build_config.load(args.build_config) if args.build_config else None
     if not args.native_only and (not config or config.get('abi')!='dflash-head-build-v1' or not args.runner):
         raise ValueError('custom validation needs build config and runner')
+    if config and config.get('profile')!='none': raise ValueError('profiling-only builds cannot enter correctness suite')
     runners={'native':args.native_runner.resolve()}
     if not args.native_only: runners['custom']=args.runner.resolve()
     identities={k:dict(path=str(v),sha256=sha256(v)) for k,v in runners.items()}
@@ -117,7 +120,8 @@ def run(args):
         hidden=checked_file(cap_path.parent,cap['gears'][f'c{gear}']['hidden']).read_bytes()
         for m in range(1,16):
             cases.append(dict(name=f'real-c{gear}-m{m:02d}',m=m,hidden=hidden[:m*K*2],weight=w,source=f'real-c{gear}-prefix'))
-    for case in fixtures.prepare(root/'synthetic'):
+    only_real=getattr(args,'cases',None) and all(n.startswith('real-') for n in args.cases.split(','))
+    for case in ([] if only_real else fixtures.prepare(root/'synthetic')):
         cases.append(dict(name='synthetic-'+case['name'],m=case['m'],source=case['source'],expected_ids=case['expected_ids'],
                           hidden=checked_file(root/'synthetic',case['hidden']).read_bytes(),
                           weight=checked_file(root/'synthetic',case['weight'],WEIGHT_BYTES)))
@@ -172,7 +176,7 @@ def run(args):
                             raise ValueError('changed/restored audit logits differ')
                         files += [dest/'logits-permuted.bin',dest/'logits-restored.bin']
                 if mode in ('fused','audit'):
-                    launch=verify_launch(dest/'runner.log',m,mode=='audit',config['core_limit'],config['conversion'])
+                    launch=verify_launch(dest/'runner.log',m,mode=='audit',config['core_limit'],config['conversion'],config['top1'],config['profile'])
                     if execution['workspace_bytes']<launch['system_workspace_bytes']+launch['user_workspace_bytes']:
                         raise ValueError('ACLNN workspace smaller than declared requirement')
                     row['launches'][mode]=launch

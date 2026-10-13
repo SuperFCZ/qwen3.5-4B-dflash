@@ -37,7 +37,8 @@ namespace AscendC {
 enum class TPosition { GM,VECIN,VECOUT,VECCALC };
 enum class CacheLine { SINGLE_CACHE_LINE };
 enum class HardEvent { S_MTE3,V_S,MTE2_S };
-enum class CMPMODE { GT,LT };
+enum class CMPMODE { GT,LT,EQ,NE };
+enum class ReduceOrder { ORDER_VALUE_INDEX };
 enum class SELMODE { VSEL_CMPMASK_SPR };
 enum class RoundMode { CAST_NONE };
 inline uint32_t GetBlockIdx() { return core; }
@@ -91,9 +92,25 @@ inline void CompareScalar(LocalTensor<uint8_t> mask,LocalTensor<float> src,float
     assert(count==64 && src.count>=count && mask.count>=32);
     for(uint32_t i=0;i<count/8;++i) mask.data[i]=0;
     for(uint32_t i=0;i<count;++i) {
-        const bool selected=mode==CMPMODE::GT?src.data[i]>limit:src.data[i]<limit;
+        const bool selected=mode==CMPMODE::GT?src.data[i]>limit:mode==CMPMODE::LT?src.data[i]<limit:
+            mode==CMPMODE::EQ?src.data[i]==limit:src.data[i]!=limit;
         if(selected) mask.data[i/8]|=uint8_t(1U<<(i%8));
     }
+}
+inline void Compare(LocalTensor<uint8_t> mask,LocalTensor<float> a,LocalTensor<float> b,CMPMODE mode,uint32_t count) {
+    assert(count==64 && mode==CMPMODE::NE && mask.count>=32);
+    std::memset(mask.data,0,8);
+    for(uint32_t i=0;i<count;++i) if(a.data[i]!=b.data[i]) mask.data[i/8]|=uint8_t(1U<<(i%8));
+}
+inline void WholeReduceMax(LocalTensor<float> dst,LocalTensor<float> src,int mask,int repeat,int dstStride,int blockStride,int srcStride,ReduceOrder order) {
+    assert(mask==64 && repeat==1 && dstStride==1 && blockStride==1 && srcStride==8 && order==ReduceOrder::ORDER_VALUE_INDEX);
+    float value=src.data[0]; uint32_t index=0;
+    for(uint32_t i=0;i<64;++i) { assert(!std::isnan(src.data[i])); if(src.data[i]>=value) { value=src.data[i]; index=i; } }
+    dst.data[0]=value; std::memcpy(dst.data+1,&index,4); // deliberately choose LAST tie: kernel must ignore it
+}
+inline void Cast(LocalTensor<float> dst,LocalTensor<half> src,RoundMode mode,uint32_t count) {
+    assert(mode==RoundMode::CAST_NONE && count<=dst.count && count<=src.count);
+    for(uint32_t i=0;i<count;++i) dst.data[i]=static_cast<float>(src.data[i]);
 }
 inline void Select(LocalTensor<float> dst,LocalTensor<uint8_t> mask,LocalTensor<float> yes,
                    LocalTensor<float> no,SELMODE mode,uint32_t count) {

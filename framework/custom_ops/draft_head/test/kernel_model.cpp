@@ -43,6 +43,7 @@ void Check(uint32_t m,uint32_t p,int pattern,bool audit,int fail=-1,bool probe=f
         if(pattern==1) expected=64; if(pattern==2 || pattern==4) expected=248319;
         if(pattern==3 || pattern==5) expected=63; if(pattern==6) expected=63; if(pattern==7) expected=r+1;
         if(fail>=0) expected=-1;
+        if constexpr(DFLASH_HEAD_PROFILE_STAGE!=0) { assert(fail>=0?output[r+1]==0:output[r+1]<0); continue; }
         assert(output[r+1]==expected);
         if(audit && fail<0) for(uint32_t n=0;n<248320;++n) {
             half value=0;

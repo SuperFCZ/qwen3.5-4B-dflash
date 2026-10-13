@@ -144,7 +144,7 @@ def run(args):
             result=execute(args,folder,'head',weight)
             if identity!=sha256(weight): raise ValueError('diagnostic input file changed')
             result.update(name=name,weight=record(weight,folder),hidden=record(folder/'hidden.bin',folder),
-                launch=verify_launch(folder/'runner.log',15,True,config['core_limit'],config['conversion']),
+                launch=verify_launch(folder/'runner.log',15,True,config['core_limit'],config['conversion'],config['top1'],config['profile']),
                 precast=precast_report((folder/'precast-0.bin').read_bytes(),name),
                 vector=vector_report(raw,(folder/'vector-fp32-0.bin').read_bytes(),(folder/'vector-fp16-0.bin').read_bytes(),config['conversion']))
             # Independent Vector test must agree when embedded after the Head path.

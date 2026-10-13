@@ -11,11 +11,11 @@ from opp_preflight import check_root, check_binary_path
 OP_KERNELS=('d_flash_draft_lm_head_top1','d_flash_draft_lm_head_top1_audit')
 
 
-def check_install(root,diagnostics=False):
+def check_install(root,diagnostics=False,vector_top1=False):
     root=Path(root).absolute()
     check_root(root)
     operators=[]
-    for name in OP_KERNELS+(('d_flash_head_probe','d_flash_cast_probe') if diagnostics else ()):
+    for name in OP_KERNELS+(('d_flash_head_probe','d_flash_cast_probe') if diagnostics else ())+(('d_flash_top1_probe',) if vector_top1 else ()):
         directory=root/'vendors/customize/op_impl/ai_core/tbe/kernel/ascend310p'/name
         if not directory.is_dir(): raise ValueError(f'missing installed Head operator directory: {directory}')
         binaries=sorted(directory.glob('*.o'))
@@ -44,9 +44,10 @@ def main():
     parser.add_argument('--install-root',type=Path,required=True)
     parser.add_argument('--report',type=Path,required=True)
     parser.add_argument('--diagnostics',action='store_true')
+    parser.add_argument('--vector-top1',action='store_true')
     args=parser.parse_args()
     try:
-        report=check_install(args.install_root,args.diagnostics)
+        report=check_install(args.install_root,args.diagnostics,args.vector_top1)
         print(f"PASS: {len(report['operators'])} Head/probe OPP object/JSON sets; NPU NOT_RUN; {args.install_root}",flush=True)
     except (OSError,ValueError) as error:
         report=dict(status='FAIL',scope='Head OPP filesystem preflight',install_root=str(args.install_root.absolute()),

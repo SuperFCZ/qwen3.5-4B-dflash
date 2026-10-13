@@ -68,12 +68,12 @@ template<class T, bool Audit> ge::graphStatus Tiling(gert::TilingContext* c) {
         "\"tile_n\":64,\"padded_m\":16,\"partitions\":%u,\"available_cores\":%u,\"core_limit\":%u,"
         "\"audit\":%s,\"user_workspace_bytes\":%llu,\"system_workspace_bytes\":%llu,"
         "\"user_ub_bytes\":%llu,\"matmul_ub_bytes\":%llu,\"base_k\":%d,\"single_k\":2560,\"batchmode\":1,"
-        "\"output_conversion\":\"%s\",\"fp32_tile_bytes\":4096}\n",
+        "\"output_conversion\":\"%s\",\"fp32_tile_bytes\":4096,\"top1_vector\":%d,\"profile_stage\":%d}\n",
         static_cast<long long>(m),p,platform.GetCoreNum(),DFLASH_HEAD_CORE_LIMIT,Audit?"true":"false",
         static_cast<unsigned long long>(WorkspaceBytes(p)),static_cast<unsigned long long>(system),
         static_cast<unsigned long long>(UserUbBytes(p)),static_cast<unsigned long long>(mmUb),cube.get_baseK(),
         DFLASH_HEAD_SATURATION==2?"fp32-ub-compare-select-cast-none-v1":
-        DFLASH_HEAD_SATURATION==1?"fp32-ub-minmax-cast-none-v1":"fp32-ub-cast-none-v1");
+        DFLASH_HEAD_SATURATION==1?"fp32-ub-minmax-cast-none-v1":"fp32-ub-cast-none-v1",DFLASH_HEAD_VECTOR_TOP1,DFLASH_HEAD_PROFILE_STAGE);
     return ge::GRAPH_SUCCESS;
 }
 template<bool Audit> ge::graphStatus InferShape(gert::InferShapeContext* c) {

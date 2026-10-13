@@ -6,7 +6,10 @@ from common import HERE,sha256,source_hashes,write_json
 
 CONVERSIONS={'cast':0,'minmax':1,'compare_select':2}
 
-def configure(header,output,cap,conversion="cast",diagnostics=False):
+def configure(header,output,cap,conversion="compare_select",diagnostics=False,top1="scalar",profile="none"):
+    if top1 not in ("scalar","vector") or profile not in ("none","matmul","convert"): raise ValueError("invalid top1/profile")
+    if profile!="none" and top1!="scalar": raise ValueError("profile requires scalar identity")
+    if top1=="vector" and conversion!="compare_select": raise ValueError("Vector Top1 requires accepted conversion")
     if conversion not in CONVERSIONS: raise ValueError("invalid conversion")
     if type(cap) is not int or not 0<=cap<=64: raise ValueError('core cap must be 0..64')
     template=HERE/'op_host/head_config.h'
@@ -14,8 +17,10 @@ def configure(header,output,cap,conversion="cast",diagnostics=False):
     text=template.read_text(); marker='#define DFLASH_HEAD_CORE_LIMIT 0U'
     if text.count(marker)!=1: raise ValueError('invalid default config')
     header.write_text(text.replace(marker,f'#define DFLASH_HEAD_CORE_LIMIT {cap}U').replace(
-        "#define DFLASH_HEAD_SATURATION 0",f"#define DFLASH_HEAD_SATURATION {CONVERSIONS[conversion]}"))
-    write_json(output,dict(abi='dflash-head-build-v1',core_limit=cap,conversion=conversion,diagnostics=diagnostics,header=str(header.resolve()),header_sha256=sha256(header),
+        "#define DFLASH_HEAD_SATURATION 2",f"#define DFLASH_HEAD_SATURATION {CONVERSIONS[conversion]}").replace(
+        "#define DFLASH_HEAD_VECTOR_TOP1 0",f"#define DFLASH_HEAD_VECTOR_TOP1 {int(top1=='vector')}").replace(
+        "#define DFLASH_HEAD_PROFILE_STAGE 0",f"#define DFLASH_HEAD_PROFILE_STAGE {('none','matmul','convert').index(profile)}"))
+    write_json(output,dict(abi='dflash-head-build-v1',core_limit=cap,conversion=conversion,top1=top1,profile=profile,diagnostics=diagnostics,header=str(header.resolve()),header_sha256=sha256(header),
                            source_sha256=source_hashes(),npu_execution='NOT_RUN',full_draft_validation='NOT_RUN',end_to_end='NOT_RUN'))
 
 def load(path):
@@ -24,7 +29,12 @@ def load(path):
         raise ValueError('invalid head build identity')
     conversion=value.get('conversion')
     if conversion not in CONVERSIONS or type(value.get('diagnostics')) is not bool: raise ValueError('invalid conversion identity')
+    top1=value.get('top1'); profile=value.get('profile')
+    if top1 not in ('scalar','vector') or profile not in ('none','matmul','convert'): raise ValueError('invalid top1/profile identity')
     header=Path(value['header'])
+    for marker in (f"#define DFLASH_HEAD_VECTOR_TOP1 {int(top1=='vector')}",
+                   f"#define DFLASH_HEAD_PROFILE_STAGE {('none','matmul','convert').index(profile)}"):
+        if marker not in header.read_text(): raise ValueError('top1/profile config changed')
     if f"#define DFLASH_HEAD_SATURATION {CONVERSIONS[conversion]}" not in header.read_text(): raise ValueError('conversion config changed')
     if sha256(header)!=value['header_sha256'] or f'#define DFLASH_HEAD_CORE_LIMIT {cap}U' not in header.read_text():
         raise ValueError('generated head config changed')
@@ -32,5 +42,6 @@ def load(path):
     return value
 if __name__=='__main__':
     p=argparse.ArgumentParser(); p.add_argument('--header',type=Path,required=True); p.add_argument('--output',type=Path,required=True)
-    p.add_argument('--core-limit',type=int,default=0); p.add_argument('--conversion',choices=tuple(CONVERSIONS),default='cast'); p.add_argument('--diagnostics',action='store_true')
-    a=p.parse_args(); configure(a.header,a.output,a.core_limit,a.conversion,a.diagnostics)
+    p.add_argument('--core-limit',type=int,default=0); p.add_argument('--conversion',choices=tuple(CONVERSIONS),default='compare_select'); p.add_argument('--diagnostics',action='store_true')
+    p.add_argument('--top1',choices=('scalar','vector'),default='scalar'); p.add_argument('--profile',choices=('none','matmul','convert'),default='none')
+    a=p.parse_args(); configure(a.header,a.output,a.core_limit,a.conversion,a.diagnostics,a.top1,a.profile)

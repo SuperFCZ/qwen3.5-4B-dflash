@@ -58,6 +58,14 @@ class HeadOppPreflightTests(unittest.TestCase):
             with self.assertRaises((OSError,ValueError)): head.check_install(root,True)
             self.assertEqual(len(head.check_install(root)['operators']),2)
 
+    def test_vector_top1_build_requires_its_primitive_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)/'opp'; installed(root)
+            with self.assertRaisesRegex(ValueError,'d_flash_top1_probe'): head.check_install(root,vector_top1=True)
+            installed(root,('d_flash_top1_probe',))
+            self.assertEqual(len(head.check_install(root,vector_top1=True)['operators']),3)
+            self.assertEqual(len(head.check_install(root)['operators']),2)
+
     def test_either_missing_operator_is_rejected(self):
         for missing in head.OP_KERNELS:
             with self.subTest(missing=missing),tempfile.TemporaryDirectory() as directory:

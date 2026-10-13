@@ -5,6 +5,7 @@
 #include "head_contract.h"
 #include "head_config.h"
 #include "head_conversion.h"
+#include "head_vector_top1.h"
 
 using HeadA=matmul::MatmulType<AscendC::TPosition::VECOUT,CubeFormat::ND,half>;
 using HeadB=matmul::MatmulType<AscendC::TPosition::GM,CubeFormat::ND,half,true>;
@@ -62,6 +63,7 @@ __aicore__ inline void RunHead(GM_ADDR hidden, GM_ADDR weight, GM_ADDR tokenId, 
     DataCopy(x,xGm,m*kK); PipeBarrier<PIPE_ALL>();
     for(uint32_t r=0;r<16;++r) { maxBits.SetValue(r,uint16_t(0)); idLocal.SetValue(r,int64_t(-1)); }
     bool healthy=true;
+    uint32_t observer=0;
     for(uint32_t tile=core;tile<kTiles;tile+=p) {
         const uint32_t begin=tile*kTileN;
         mm.SetTensorA(x); mm.SetTensorB(wGm[uint64_t(begin)*kK],true);
@@ -75,19 +77,44 @@ __aicore__ inline void RunHead(GM_ADDR hidden, GM_ADDR weight, GM_ADDR tokenId, 
             // Copy BEFORE any candidate mutation; finish DMA before UB reuse.
             if(tile<2) { DataCopy(rawGm[tile*16*kTileN],c32,16*kTileN); PipeBarrier<PIPE_ALL>(); }
         }
-        if constexpr(DFLASH_HEAD_SATURATION==1) HeadFiniteClamp(c32,16*kTileN);
-        if constexpr(DFLASH_HEAD_SATURATION==2)
-            HeadCompareSelectClamp(c32,c.ReinterpretCast<uint8_t>(),16*kTileN);
-        Cast(c,c32,RoundMode::CAST_NONE,16*kTileN); // sole FP16 boundary
-        PipeBarrier<PIPE_ALL>();
-        const auto ready=pipe.FetchEventID(HardEvent::V_S);
-        SetFlag<HardEvent::V_S>(ready); WaitFlag<HardEvent::V_S>(ready);
-        for(uint32_t r=0;r<m;++r) for(uint32_t n=0;n<kTileN;++n) {
-            const auto bits=cBits.GetValue(r*kTileN+n);
-            const int64_t id=begin+n;
-            if(Better(bits,id,maxBits.GetValue(r),idLocal.GetValue(r))) { maxBits.SetValue(r,bits); idLocal.SetValue(r,id); }
+        if constexpr(DFLASH_HEAD_PROFILE_STAGE!=1) {
+            if constexpr(DFLASH_HEAD_SATURATION==1) HeadFiniteClamp(c32,16*kTileN);
+            if constexpr(DFLASH_HEAD_SATURATION==2)
+                HeadCompareSelectClamp(c32,c.ReinterpretCast<uint8_t>(),16*kTileN);
+            Cast(c,c32,RoundMode::CAST_NONE,16*kTileN); // sole FP16 boundary
+            PipeBarrier<PIPE_ALL>();
         }
-        if constexpr(Audit) {
+        if constexpr(DFLASH_HEAD_PROFILE_STAGE!=0) {
+            // Profiling ONLY. Consume a real output from EVERY full-K Matmul
+            // tile, expose a rolling fingerprint through GM and final output.
+            if constexpr(DFLASH_HEAD_PROFILE_STAGE==1) {
+                const auto e=pipe.FetchEventID(HardEvent::MTE2_S);
+                SetFlag<HardEvent::MTE2_S>(e); WaitFlag<HardEvent::MTE2_S>(e);
+            } else HeadVectorToScalar(pipe);
+            const uint32_t word=DFLASH_HEAD_PROFILE_STAGE==1?
+                c32.ReinterpretCast<uint32_t>().GetValue(0):uint32_t(cBits.GetValue(0));
+            observer=(observer*16777619U)^word^tile;
+        } else if constexpr(DFLASH_HEAD_VECTOR_TOP1==1) {
+            Cast(c32,c,RoundMode::CAST_NONE,16*kTileN); // widen FP16, never compare unrounded sums
+            PipeBarrier<PIPE_V>();
+            auto scratch=c32.ReinterpretCast<uint8_t>()[15*kTileN*sizeof(float)];
+            for(uint32_t r=0;r<m;++r) {
+                const uint32_t n=HeadVectorWinner(c32[r*kTileN],scratch,pipe);
+                if(n>=kTileN) { healthy=false; break; }
+                const auto bits=cBits.GetValue(r*kTileN+n); const int64_t id=begin+n;
+                if(Better(bits,id,maxBits.GetValue(r),idLocal.GetValue(r))) { maxBits.SetValue(r,bits); idLocal.SetValue(r,id); }
+            }
+        } else {
+            const auto ready=pipe.FetchEventID(HardEvent::V_S);
+            SetFlag<HardEvent::V_S>(ready); WaitFlag<HardEvent::V_S>(ready);
+            for(uint32_t r=0;r<m;++r) for(uint32_t n=0;n<kTileN;++n) {
+                const auto bits=cBits.GetValue(r*kTileN+n);
+                const int64_t id=begin+n;
+                if(Better(bits,id,maxBits.GetValue(r),idLocal.GetValue(r))) { maxBits.SetValue(r,bits); idLocal.SetValue(r,id); }
+            }
+        }
+        if(!healthy) break;
+        if constexpr(Audit && DFLASH_HEAD_PROFILE_STAGE==0) {
             const DataCopyParams copy{static_cast<uint16_t>(m),4,0,static_cast<uint16_t>((kN-kTileN)*2/32)};
             DataCopy(debugGm[begin],c,copy);
         }
@@ -95,11 +122,31 @@ __aicore__ inline void RunHead(GM_ADDR hidden, GM_ADDR weight, GM_ADDR tokenId, 
     }
     mm.End(); PipeBarrier<PIPE_ALL>();
     if(!healthy) for(uint32_t r=0;r<16;++r) idLocal.SetValue(r,int64_t(-1));
+    if constexpr(DFLASH_HEAD_PROFILE_STAGE!=0)
+        for(uint32_t r=0;r<16;++r) idLocal.SetValue(r,healthy?int64_t(observer):int64_t(-1));
     ScalarToMte3(pipe);
     DataCopy(partialMax[core*16],maxLocal,16); DataCopy(partialId[core*16],idLocal,16);
     PipeBarrier<PIPE_ALL>();
     SyncAll(syncGm,syncLocal,p); // coupled 310P software barrier, not unsupported hardware SyncAll()
     if(core==0) {
+        if constexpr(DFLASH_HEAD_PROFILE_STAGE!=0) {
+            uint32_t fingerprint=0; bool complete=true;
+            auto incoming=c.ReinterpretCast<int64_t>();
+            for(uint32_t part=0;part<p;++part) {
+                DataCopy(incoming,partialId[part*16],16);
+                const auto e=pipe.FetchEventID(HardEvent::MTE2_S);
+                SetFlag<HardEvent::MTE2_S>(e); WaitFlag<HardEvent::MTE2_S>(e);
+                const auto partValue=incoming.GetValue(0);
+                if(partValue<0) complete=false;
+                fingerprint=(fingerprint*16777619U)^uint32_t(partValue);
+                PipeBarrier<PIPE_ALL>();
+            }
+            for(uint32_t r=0;r<m;++r) {
+                ids.SetValue(r,complete?-1-int64_t(fingerprint):0); // explicitly NOT a valid token ID
+                DataCacheCleanAndInvalid<int64_t,CacheLine::SINGLE_CACHE_LINE>(ids[r]);
+            }
+            return;
+        }
         for(uint32_t r=0;r<16;++r) idLocal.SetValue(r,int64_t(-1));
         // Matmul has ended: reuse its external logit tile as incoming scratch.
         // Running best remains in the explicitly budgeted maxBuf/idBuf.

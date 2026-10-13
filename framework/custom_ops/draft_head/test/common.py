@@ -71,7 +71,7 @@ def bits(expected,actual,width,shape=None):
     return result
 
 
-def verify_launch(path,m,audit,cap,conversion="cast"):
+def verify_launch(path,m,audit,cap,conversion="cast",top1="scalar",profile="none"):
     prefix='DFLASH_HEAD_LAUNCH '
     records=[json.loads(line.partition(prefix)[2]) for line in Path(path).read_text().splitlines() if prefix in line]
     if not records or any(r!=records[0] for r in records): raise ValueError('missing/inconsistent Head launch')
@@ -80,6 +80,8 @@ def verify_launch(path,m,audit,cap,conversion="cast"):
                           output_conversion={'cast':'fp32-ub-cast-none-v1','minmax':'fp32-ub-minmax-cast-none-v1',
                             'compare_select':'fp32-ub-compare-select-cast-none-v1'}[conversion],fp32_tile_bytes=4096).items():
         if x.get(key)!=value: raise ValueError(f'wrong Head launch: {key}')
+    if x.get('top1_vector',0)!=int(top1=='vector') or x.get('profile_stage',0)!=('none','matmul','convert').index(profile):
+        raise ValueError('Top1/profile launch mismatch')
     available=x['available_cores']; p=min(available,64,cap or available)
     if p<1 or x['partitions']!=p or x['user_workspace_bytes']!=p*192: raise ValueError('partition/workspace mismatch')
     if x['user_ub_bytes']!=16*K*2+16*64*(2+4)+160+p*32 or x['matmul_ub_bytes']<=0:

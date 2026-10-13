@@ -3,17 +3,16 @@
 Native Top1 的 M 非 4 倍数 Guard 失败已通过 NPU 定位为输出尾部 32B 写回问题：见
 [具名 Guard、分配尺寸与复用产物复测说明](NATIVE_GUARD_DIAGNOSTICS.md)。
 Native Top1 对齐与 `synthetic-nan_first` 实测语义修复后，用户已确认 Native-only **41/41 PASS**。
-不再单独重复 Native-only，当前转入 Custom 的安装产物检查及严格 41-case 验收。
+不再单独重复 Native-only；Custom 的最新验收状态与后续实验见下文。
 
 目标 Ascend310P3 / CANN 9.0.0，遵循 [OPTIMIZATION.md 的 C 契约](../../../docs/OPTIMIZATION.md)。
-**用户确认 `a4df66b` 的 FP32 GetTensorC + CAST_NONE 仍为 Custom 40/41 PASS；
-唯一失败是 synthetic-overflow_inf 的 FP16 logits，不能声称 Cast 已修复饱和。**
-`a763266` 的 `.runs/head-7sw4cwr6` 已证实 FP32 输出为 131008；Mins/Maxs 因将 NaN
-改成 `0x7fffffff` 而诊断失败，未进入敏感用例/41-case。本轮新增默认关闭的
-`HEAD_CONVERSION=compare_select`，保留 cast/minmax 对照；见
-[OVERFLOW_CONVERSION.md](OVERFLOW_CONVERSION.md) 的一键诊断、严格阶段门槛及复用产物命令。
-**新诊断/候选的 CANN 编译、NPU 41-case 和 M15 性能均为 NOT_RUN**；完整图接入与
-Draft/Decode 也未验证。
+**正确性基线已确认：`2a9211f` / `.runs/head-DGwqjbT8`，compare_select + Scalar Top1
+在 Ascend310P3/CANN 9.0.0 完整 41/41 PASS。** 历史溢出诊断见
+[OVERFLOW_CONVERSION.md](OVERFLOW_CONVERSION.md)。当前默认选择该已验收转换及 Scalar Top1，
+保留旧提交、cast/minmax 路径与隔离 OPP/evidence。
+本轮新增 opt-in Vector Top1 和独立性能观察器，见
+[TOP1_VECTOR_EXPERIMENT.md](TOP1_VECTOR_EXPERIMENT.md) 的一键 paired 测试入口。
+**新路径 CANN 编译、primitive NPU、完整 41-case、性能均为 NOT_RUN**；默认不启用 Vector。
 本地 CPU 模型/声明桩通过不能替代设备验收。
 本目录不改变 Qwen/DFlash 默认路径。单个 gate/up 接入目前只有
 [opt-in 设计](../draft_quant/GATE_UP_OPT_IN.md)，也为 `NOT_RUN`。

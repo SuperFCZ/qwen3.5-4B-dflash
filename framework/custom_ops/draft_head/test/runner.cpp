@@ -7,6 +7,9 @@
 #include "aclnn_d_flash_draft_lm_head_top1.h"
 #include "aclnn_d_flash_draft_lm_head_top1_audit.h"
 #endif
+#ifndef HEAD_PROFILE_ONLY
+#define HEAD_PROFILE_ONLY 0
+#endif
 using namespace draft_quant_test;
 using namespace head_contract;
 
@@ -112,6 +115,7 @@ int main(int argc,char** argv) {
         const std::string mode=argv[1]; dir=argv[3];
         std::ofstream(dir+"/execution.json")<<"{\"status\":\"RUNNING\"}\n";
         const bool native=mode=="native-logits" || mode=="native-top1", audit=mode=="audit", wantLogits=mode=="native-logits";
+        if(HEAD_PROFILE_ONLY && mode!="fused") throw std::runtime_error("profiling-only runner requires fused observer");
         if(!native && !audit && mode!="fused") throw std::runtime_error("unknown mode");
 #ifdef HEAD_NATIVE_ONLY
         if(!native) throw std::runtime_error("native-only runner cannot execute custom mode");
@@ -200,7 +204,7 @@ int main(int argc,char** argv) {
         RunMeasuredCalls(timing,prepare,execute,poison,verify);
         // A different request on the SAME allocation detects stale partition
         // state. Golden is a row permutation of device results, not a CPU GEMM.
-        if(m>1) {
+        if(m>1 && !HEAD_PROFILE_ONLY) {
             const auto permute=[&](const std::vector<uint8_t>& bytes) {
                 std::vector<uint8_t> out(bytes.size()); const size_t width=bytes.size()/m;
                 for(int row=0;row<m;++row) std::copy_n(bytes.data()+((row+1)%m)*width,width,out.data()+row*width);
@@ -220,13 +224,13 @@ int main(int argc,char** argv) {
             r.x.CopyIn(x); poison(1); prepare(); execute(); verify("restored.bin");
         }
         std::ofstream report(dir+"/execution.json");
-        report<<"{\"status\":\"PASS\",\"mode\":\""<<mode<<"\",\"runtime\":\"AscendCL NPU\",\"cpu_fallback\":false,"
+        report<<"{\"status\":\""<<(HEAD_PROFILE_ONLY?"MEASURED_NOT_CORRECTNESS":"PASS")<<"\",\"profile_only\":"<<(HEAD_PROFILE_ONLY?"true":"false")<<",\"mode\":\""<<mode<<"\",\"runtime\":\"AscendCL NPU\",\"cpu_fallback\":false,"
               <<"\"guards_intact\":true,\"input_readonly\":true,\"repeat_equal\":true,\"io_validated\":true,"
               <<"\"m\":"<<m<<",\"k\":2560,\"n\":248320,\"device_id\":"<<r.device<<",\"workspace_bytes\":"<<workspaceBytes
-              <<",\"row_permutation_checked\":"<<(m>1?"true":"false");
+              <<",\"row_permutation_checked\":"<<(m>1 && !HEAD_PROFILE_ONLY?"true":"false");
         timing.Write(report); report<<"}\n";
         if(!report) throw std::runtime_error("report write failed");
-        std::cout<<"Head "<<mode<<" execution PASS; numerical comparison follows\n";
+        std::cout<<"Head "<<mode<<(HEAD_PROFILE_ONLY?" profiling only; NOT correctness PASS\n":" execution PASS; numerical comparison follows\n");
         return 0;
     } catch(const std::exception& error) {
         if(!dir.empty()) std::ofstream(dir+"/execution.json")<<"{\"status\":\"FAIL\"}\n";
