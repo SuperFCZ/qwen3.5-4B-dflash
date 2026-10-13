@@ -2,15 +2,35 @@
 
 Native Top1 的 M 非 4 倍数 Guard 失败已通过 NPU 定位为输出尾部 32B 写回问题：见
 [具名 Guard、分配尺寸与复用产物复测说明](NATIVE_GUARD_DIAGNOSTICS.md)。
-Native Top1 物理 payload 对齐已在真实 C16/C64 M1..15 通过。最新 Native-only 为 40/41 PASS，
-唯一失败是 `synthetic-nan_first` 的旧预期 ID；当前仅修正该用例的实测语义验收，复测仍为
-`NOT_RUN`。须 41/41 PASS 后再进入 Custom Head，见下方“NaN/Inf 设备观察”。
+Native Top1 对齐与 `synthetic-nan_first` 实测语义修复后，用户已确认 Native-only **41/41 PASS**。
+不再单独重复 Native-only，当前转入 Custom 的安装产物检查及严格 41-case 验收。
 
 目标 Ascend310P3 / CANN 9.0.0，遵循 [OPTIMIZATION.md 的 C 契约](../../../docs/OPTIMIZATION.md)。
-**Custom 的 CANN build/package/install、NPU 数值与性能、生产图接入及完整
-Draft/Decode 均为 `NOT_RUN`；Native-only 部分设备验收结果见下方。** 本地 CPU 模型/声明桩通过不能替代设备验收。
+**用户已确认两个 Custom 算子的真实 CANN 编译、打包、隔离安装成功；
+Custom 完整 41-case NPU correctness、性能、图接入及完整 Draft/Decode 仍为 `NOT_RUN`。**
+本地 CPU 模型/声明桩通过不能替代设备验收。
 本目录不改变 Qwen/DFlash 默认路径。单个 gate/up 接入目前只有
 [opt-in 设计](../draft_quant/GATE_UP_OPT_IN.md)，也为 `NOT_RUN`。
+
+## 安装后 Head OPP 检查修复
+
+用户提供的构建 evidence：
+`/home/w00949577/z50058744/qwen3.5-4B-dflash/framework/custom_ops/draft_head/.runs/head-9D7ZDIYK`；
+build 为同仓库 `.build/head-SXxhKx62`。两个 Host/Kernel 均已成功编译，OPP 打包安装输出
+SUCCESS；随后误调用 A 的专用检查入口，因找不到 `d_flash_group_quant_linear` 而失败。
+这不是 Head kernel 缺失的证据，也不是 NPU correctness 失败；当时尚未执行 Custom 验收。
+
+现在安装阶段之后进入 `installed_opp_preflight`，调用 `test/head_opp_preflight.py`。
+它复用 A 检查器的 `check_root` / `check_binary_path`，不修改 A 的默认名称或行为，
+分别检查 `d_flash_draft_lm_head_top1` 与 `d_flash_draft_lm_head_top1_audit` 目录：
+每个目录至少有一个非空 `.o`，所有 `.o` 均须有按 CANN 9.0 FIRST `.o`/`.json` 规则
+正确导出的同名 JSON，JSON 必须可解析为 object。路径检查包括原路径和解析后的真实路径。
+报告 `opp-preflight.json.operators` 保存每个算子的目录、全部 binary/JSON 路径、字节数、SHA256。
+任何缺失、空对象、无效 JSON 或路径前缀冲突均使脚本失败，不跳过预检查。
+之后仍检查两个 ACLNN 头文件存在且非空，再编译 Custom runner。
+
+检查器的 PASS 仅表示文件系统预检查，报告中的 `npu_status` 始终为 `NOT_RUN`。
+本次新检查器针对服务器实际安装目录的运行结果待回传，不能以 CPU 假文件回归替代。
 
 ## 接口、算法与范围
 
@@ -206,7 +226,8 @@ CANN 版本和既有 Native OM 的观察，不推广为通用浮点/所有昇腾
 用户核对了第 0/14 行没有非有限输出；本修复固定检查全部 15 行的两个目标 token，
 没有为未检查的其它位置臆造额外位型预期。其它现有严格门槛全部保留。
 CPU kernel 模型仍覆盖 NaN 优先比较逻辑，它不是 Native OM 非有限值处理的模拟。
-本修复 Native-only 41/41、Custom Fused/Audit 与后续性能验收均 **NOT_RUN**。
+后续用户已确认此修复的 Native-only **41/41 PASS**；Custom Fused/Audit NPU correctness
+与后续性能验收仍为 **NOT_RUN**。
 
 复用已提供的两份产物（不 capture、不重新导出）：
 

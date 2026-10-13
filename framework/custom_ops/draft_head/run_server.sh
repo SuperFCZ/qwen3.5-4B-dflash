@@ -123,7 +123,8 @@ HEAD_CMAKE_CHECK
   source "$install/vendors/customize/bin/set_env.bash"
   set -u
   export LD_LIBRARY_PATH="$install/vendors/customize/op_api/lib:${LD_LIBRARY_PATH:-}"
-  "$python_bin" "$here/../draft_quant/test/opp_preflight.py" --install-root "$install" --report "$run_root/opp-preflight.json"
+  phase=installed_opp_preflight
+  "$python_bin" "$here/test/head_opp_preflight.py" --install-root "$install" --report "$run_root/opp-preflight.json"
   phase=check_aclnn_headers
   for header in aclnn_d_flash_draft_lm_head_top1.h aclnn_d_flash_draft_lm_head_top1_audit.h; do
     if [[ ! -s "$install/vendors/customize/op_api/include/$header" ]]; then
