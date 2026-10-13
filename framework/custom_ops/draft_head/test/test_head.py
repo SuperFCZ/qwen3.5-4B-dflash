@@ -46,6 +46,11 @@ class HeadTests(unittest.TestCase):
             log=Path(directory)/'runner.log'
             log.write_text('DFLASH_HEAD_LAUNCH '+json.dumps(launch)+'\n')
             self.assertEqual(verify_launch(log,15,True,0)['user_workspace_bytes'],1344)
+            launch['output_conversion']='fp32-ub-compare-select-cast-none-v1'
+            log.write_text('DFLASH_HEAD_LAUNCH '+json.dumps(launch)+'\n')
+            self.assertEqual(verify_launch(log,15,True,0,'compare_select')['user_ub_bytes'],user)
+            with self.assertRaisesRegex(ValueError,'output_conversion'): verify_launch(log,15,True,0,'minmax')
+            launch['output_conversion']='fp32-ub-cast-none-v1'
             launch['user_ub_bytes']-=4096
             log.write_text('DFLASH_HEAD_LAUNCH '+json.dumps(launch)+'\n')
             with self.assertRaisesRegex(ValueError,'UB accounting'): verify_launch(log,15,True,0)
@@ -155,7 +160,7 @@ class HeadTests(unittest.TestCase):
         compiler=shutil.which('c++')
         if not compiler: self.skipTest('C++17/_Float16 required')
         with tempfile.TemporaryDirectory() as directory:
-            for conversion in ('cast','minmax'):
+            for conversion in ('cast','minmax','compare_select'):
                 configure(Path(directory)/'head_config.h',Path(directory)/'build.json',0,conversion,True)
                 binary=Path(directory)/('model-'+conversion)
                 result=subprocess.run([compiler,'-std=c++17','-O2','-pthread','-ffp-contract=off','-Wall','-Wextra','-Werror',

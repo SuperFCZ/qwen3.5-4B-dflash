@@ -42,8 +42,8 @@ int main(int argc,char** argv) {
         if(head) { input[1]=ReadBytes(dir+"/hidden.bin",15*2560*2); input[2]=ReadBytes(argv[4],uint64_t(248320)*2560*2); }
         for(int i=0;i<(head?3:1);++i) { s.memory[i].Allocate(input[i].size()); s.memory[i].CopyIn(input[i]); }
         auto* values=s.Tensor(0,{64},ACL_FLOAT);
-        s.memory[6].Allocate(3*64*4); s.memory[7].Allocate(3*64*2);
-        auto* stages=s.Tensor(6,{3,64},ACL_FLOAT); auto* casts=s.Tensor(7,{3,64},ACL_FLOAT16);
+        s.memory[6].Allocate(5*64*4); s.memory[7].Allocate(5*64*2);
+        auto* stages=s.Tensor(6,{5,64},ACL_FLOAT); auto* casts=s.Tensor(7,{5,64},ACL_FLOAT16);
         aclTensor *x=nullptr,*w=nullptr,*ids=nullptr,*logits=nullptr,*precast=nullptr;
         if(head) {
             s.memory[3].Allocate(15*8); s.memory[4].Allocate(15*248320*2); s.memory[5].Allocate(2*16*64*4);

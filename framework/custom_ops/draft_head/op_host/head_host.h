@@ -72,6 +72,7 @@ template<class T, bool Audit> ge::graphStatus Tiling(gert::TilingContext* c) {
         static_cast<long long>(m),p,platform.GetCoreNum(),DFLASH_HEAD_CORE_LIMIT,Audit?"true":"false",
         static_cast<unsigned long long>(WorkspaceBytes(p)),static_cast<unsigned long long>(system),
         static_cast<unsigned long long>(UserUbBytes(p)),static_cast<unsigned long long>(mmUb),cube.get_baseK(),
+        DFLASH_HEAD_SATURATION==2?"fp32-ub-compare-select-cast-none-v1":
         DFLASH_HEAD_SATURATION==1?"fp32-ub-minmax-cast-none-v1":"fp32-ub-cast-none-v1");
     return ge::GRAPH_SUCCESS;
 }

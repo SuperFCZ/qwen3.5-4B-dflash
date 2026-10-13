@@ -2,7 +2,7 @@
 
 ## 实测状态（与本轮待验收项分开）
 
-Ascend310P3 / CANN 9.0.0，用户回传的最新 evidence：
+Ascend310P3 / CANN 9.0.0，用户此前回传的 41-case evidence：
 `/home/w00949577/z50058744/qwen3.5-4B-dflash/framework/custom_ops/draft_head/.runs/head-apVtckzt`。
 服务器原始文件未在本地读取。候选 `a4df66b` 使用 FP32 GetTensorC + CAST_NONE，仍为
 **40/41 PASS**：30 个 C16/C64 真实 case 全通过；NaN/Inf、signed zero、rounding 等
@@ -11,10 +11,15 @@ Ascend310P3 / CANN 9.0.0，用户回传的最新 evidence：
 `hidden[:,0]=2; weight[63/64,0]=65504`：数学结果 131008，Native FP16 为 `0x7bff`，
 Custom Audit 为 `0x7c00`，30 个元素不同，max_ulp=1。这个差异继续严格 FAIL。
 此前直接 FP16 GetTensorC 的 `.runs/head-5UuIaB5v` 也出现相同差异。
-**旧文档基于默认饱和描述作出的 Cast 修复推断已被设备结果否定。** 当前尚不知道
-GetTensorC FP32 是否已经为 Inf，必须读取原始 FP32 位型，不能用 CPU 数学推定。
+**旧文档基于默认饱和描述作出的 Cast 修复推断已被设备结果否定。**
 
-本轮诊断算子 CANN 编译/安装、Vector 语义、候选敏感用例/41-case、M15 性能均 **NOT_RUN**。
+`a763266` 的新诊断 evidence：
+`framework/custom_ops/draft_head/.runs/head-7sw4cwr6`（服务器，用户回传；本地未读取原始文件）。
+GetTensorC FP32 实测为 **131008 / `0x47ffe000`**，没有在 FP32 输出阶段溢出。
+Mins/Maxs 正常限幅，但把输入 NaN 原始位型改为 **`0x7fffffff`**，严格诊断因此 FAIL。
+该轮未进入五个敏感用例和完整 41-case；不能写成 Custom 已通过 41/41。
+
+本轮 **Compare/Select** 修改的 CANN 编译/安装、Vector 语义、敏感用例/41-case、M15 性能均 **NOT_RUN**。
 原 Native-only 41/41 PASS 保留，不单独重跑。A5.1、生产 Draft、Native OM/golden 均未修改。
 
 ## 固定 SDK 核查与候选边界
@@ -34,16 +39,23 @@ GetTensorC FP32 是否已经为 Inf，必须读取原始 FP32 位型，不能用
   支持 float，分别使用 vmins/vmaxs；count 接口支持批量操作。候选逐 tile 原地执行
   `Mins(+65504) → PIPE_V → Maxs(-65504) → PIPE_V → CAST_NONE`。
 - [dav_m200 Compare/Select](https://gitcode.com/cann/asc-devkit/blob/v9.0.0/impl/basic_api/dav_m200/kernel_operator_vec_cmpsel_impl.h)
-  有 FP32 比较及 FP32 Select 路径。若 Mins/Maxs 实测破坏 NaN/zero，应考虑用 GT/LT
-  mask 精确选择限幅值、其它位置保留原值。它需要额外 mask/临时 UB 和严格预算，且比较
-  NaN 的设备行为也必须验证；本轮不在缺少设备证据时同时更换第二套转换策略。
+  的 CompareScalar 使用 `vcmpvs_gt/vcmpvs_lt`，Select 模式 0 使用 `set_cmpmask/vsel`，
+  支持 FP32 源和 uint8 mask。新候选仅在 `x>65504` 或 `x<-65504` 时选择界限值，
+  否则从原 FP32 tensor 选取，目标是保留原始位型；NaN 比较/选择语义仍须独立 NPU 验证。
+  模式 0 每次只使用 64 个 float 对应的 mask，故按 64 元素 Vector 块逐块更新 mask，
+  不把第一个 mask 重复用于全部 1024 元素，也不做逐元素 Scalar 修补。
+- 临时 bound 为 64 float（256 B），mask 为 32 B，均 32 B 对齐；复用 Cast 前尚未写入的
+  2048 B FP16 output UB 的前 288 B。Select 的目的和原值源完全重叠，每次仅一轮，
+  bound/mask 与原值不重叠。依赖间使用 PIPE_V，最后才执行原 CAST_NONE。
+  固定 dav_m200 Duplicate 不支持 uint8，mask 清零使用同一地址的 uint32×8，避免引入
+  不支持的 API。模式 0 无模式 1/2 的内部临时 UB 路径。
 
-默认 `HEAD_CONVERSION=cast` 保留原路径。只有显式 `HEAD_CONVERSION=minmax` 才启用候选，
-且服务器入口强制要求 `HEAD_DIAGNOSTICS=1`。没有 FP16 Inf/NaN bit patch，没有新全词表
+默认 `HEAD_CONVERSION=cast` 保留原路径。可显式选择 `minmax` 或 `compare_select`，
+两个候选均强制要求 `HEAD_DIAGNOSTICS=1`。没有 FP16 Inf/NaN bit patch，没有新全词表
 Scalar 修补。FP32 完整 K 归约、唯一 FP16 边界、Better()、跨核同步和 GM workspace 不变。
 候选复用现有 FP32 tile，**不增加 Head UB 或 workspace**；p=7 的 user UB 88448 B、
 Matmul UB（256 KiB 总量）173696 B、user GM workspace 1344 B 均保持原值。
-Host launch / build-config / 比较器分别绑定 cast 与 minmax，避免把对照误标为候选。
+Host launch / build-config / 比较器分别绑定 cast、minmax、compare_select，避免把对照误标为候选。
 
 ## 两个独立诊断入口
 
@@ -52,9 +64,12 @@ Host launch / build-config / 比较器分别绑定 cast 与 minmax，避免把�
 非空 `.o`/对应 JSON 和 SHA256，不能跳过安装产物检查。
 
 1. **DFlashCastProbe**：单核，无 Matmul、无 Head 输入，只有 FP32 `[64]` 输入和小型输出。
-   分别保存原输入、Mins 后、Mins/Maxs 后的 FP32，以及每阶段 CAST_NONE 的 FP16。
+   保存五个阶段的 FP32 及每阶段 CAST_NONE 的 FP16：原输入、Mins、Mins/Maxs、
+   Compare GT/Select 上限、Compare GT/LT + Select 双侧限幅。Compare/Select 从 GM
+   重新读取原输入，不继承 Mins/Maxs 已改写的 NaN。诊断输出由 `[3,64]` 扩展为 `[5,64]`，
+   Host/runner/检查器同步，旧输出大小会被拒绝；正式 Fused/Audit ABI 不变。
    覆盖正负 0、FP16/FP32 subnormal、RNE tie、65472/65488/相邻 FP32、65503/65504/
-   65519/65520/65536/131008、对应负数、两种 NaN 位型、±Inf。
+   65519/65520/65536/131008、对应负数、多种正负 quiet/signaling NaN payload、±Inf。
 2. **DFlashHeadProbe**：调用实际共享 `RunHead`，相同 full-K tiling、UB 预算及归约。
    将词表 tile 0/1 在转换**之前**的 FP32 `[2,16,64]` 原样写入独立诊断输出（8192 B），
    不借用/修改原 FP16 Audit ABI 或 GM workspace。随后执行同一个 Vector 诊断，检验
@@ -69,11 +84,14 @@ NaN/Inf JSON 使用字符串表示，原始位型为准。此诊断不是 41-cas
 
 - overflow 全部 30 个位置必须证实为有限 `131008 / 0x47ffe000`。若为 `0x7f800000`
   或其它位型，保存证据并停止，不猜测 Inf 的来源。
-- Mins/Maxs 只能限幅超过 ±65504 的位置；正常值、零符号、subnormal 不得意外改变。
-  NaN 必须保留原 FP32 bits，最终 FP16 NaN 必须与 control Cast 相同；否则候选停止。
+- 每条路径独立使用相同的严格规则：只限幅超过 ±65504 的位置；正常值、零符号、
+  subnormal 不得改变；两个中间限幅阶段都要保留原 FP32 NaN bits；FP16 NaN 必须与
+  control Cast bits 相同。三条路径的 status/errors 全部保存在 `vector.candidates`。
+  `vector.status` 对应显式选中的 `selected_conversion`；已知 minmax FAIL 仍如实记录，
+  不可冒充其通过，也不能拿它代替 Compare/Select 的结果。选择 minmax 仍会被严格拒绝。
 - ±Inf 的限幅是实验候选行为，并非已证明的 Native 通用规则。NaN/Inf Head 用例仍使用
   原始权重 `0x7e00/0x7c00`，并在随后的 Native/Audit 全词表比较中严格验收。
-- 即使 Vector 门槛失败，也先保存 overflow/NaN Head 的原始数据，再返回失败。
+- 即使选中的 Vector 候选门槛失败，也先保存 overflow/NaN Head 的原始数据，再返回失败。
 - 设备诊断通过后才跑五个敏感用例，再跑原完整 41-case。subset 的 full acceptance
   明确为 NOT_RUN；只有 41 个用例全部完成才能标为 PASS，原比较器不增加任何容差。
 
@@ -87,7 +105,7 @@ NaN/Inf JSON 使用字符串表示，原始位型为准。此诊断不是 41-cas
 git pull --ff-only
 export HEAD_CAPTURE=/home/w00949577/qwen35-dflash-run/draft-head-UCt9vR8q/capture/manifest.json
 export HEAD_NATIVE_MANIFEST=/home/w00949577/qwen35-dflash-run/head-native-gpJaP6vN/models/native.json
-HEAD_NATIVE_ONLY=0 HEAD_DIAGNOSTICS=1 HEAD_CONVERSION=minmax \
+HEAD_NATIVE_ONLY=0 HEAD_DIAGNOSTICS=1 HEAD_CONVERSION=compare_select \
 HEAD_WARMUP=5 HEAD_REPETITIONS=30 \
   bash framework/custom_ops/draft_head/run_server.sh
 ```
@@ -125,7 +143,13 @@ PY
 
 ## 本地验证边界
 
+本轮本地 30 项 CPU 回归通过；脚本语法和 diff 检查通过，不能替代 CANN 编译。
 CPU 回归验证原位限幅的**目标**语义、正负 overflow、RNE ties、signed zero、subnormal、
 NaN 防改写门槛、原始 FP32 留证、构建身份和诊断 runner 语法。CPU Cast 对照现在使用
-会产生 Inf 的转换模型，避免旧模型的隐式饱和掩盖问题。两条路径均运行原 full-vocabulary
+会产生 Inf 的转换模型，避免旧模型的隐式饱和掩盖问题。三条路径均运行原 full-vocabulary
 kernel 控制流模型；这些测试不是 CANN intrinsic 仿真，更不是 NPU PASS。
+
+新增 1024 元素测试在各 64 元素块放置不同条件，验证 mask 更新、NaN payload（含 sNaN）、
+±0/subnormal 位型及 scratch 只使用前 288 B。诊断回归复现 minmax 的 `0x7fffffff` 改写，
+要求 minmax FAIL、独立正确的 Compare/Select PASS；给 Compare/Select 注入同样的位型
+改写必须 FAIL。这些都是 CPU 控制流/验收器测试，并非对 NPU 结果的预测。

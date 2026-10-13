@@ -8,9 +8,9 @@ core_limit=${DFLASH_HEAD_CORE_LIMIT:-0}
 native_only=${HEAD_NATIVE_ONLY:-0}
 conversion=${HEAD_CONVERSION:-cast}
 diagnostics=${HEAD_DIAGNOSTICS:-0}
-[[ "$conversion" == cast || "$conversion" == minmax ]] || { echo 'HEAD_CONVERSION must be cast or minmax' >&2; exit 1; }
+[[ "$conversion" == cast || "$conversion" == minmax || "$conversion" == compare_select ]] || { echo 'HEAD_CONVERSION must be cast, minmax or compare_select' >&2; exit 1; }
 [[ "$diagnostics" == 0 || "$diagnostics" == 1 ]] || { echo 'HEAD_DIAGNOSTICS must be 0 or 1' >&2; exit 1; }
-if [[ "$conversion" == minmax && "$diagnostics" != 1 ]]; then echo 'minmax requires HEAD_DIAGNOSTICS=1' >&2; exit 1; fi
+if [[ "$conversion" != cast && "$diagnostics" != 1 ]]; then echo 'clamp candidates require HEAD_DIAGNOSTICS=1' >&2; exit 1; fi
 if [[ "$diagnostics" == 1 ]]; then
   [[ "$native_only" == 0 ]] || { echo 'diagnostics require custom build' >&2; exit 1; }
   : "${HEAD_CAPTURE:?Reuse existing capture}" "${HEAD_NATIVE_MANIFEST:?Reuse existing Native OM}"

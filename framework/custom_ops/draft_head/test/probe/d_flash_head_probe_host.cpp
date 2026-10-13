@@ -9,14 +9,14 @@ template<class S,class D> bool Extra(const S* s,const D* d,
 ge::graphStatus ProbeTiling(gert::TilingContext* c) {
     if(!Extra(c->GetInputShape(2),c->GetInputDesc(2),ge::DT_FLOAT,{64}) ||
        !Extra(c->GetOutputShape(2),c->GetOutputDesc(2),ge::DT_FLOAT,{2,16,64}) ||
-       !Extra(c->GetOutputShape(3),c->GetOutputDesc(3),ge::DT_FLOAT,{3,64}) ||
-       !Extra(c->GetOutputShape(4),c->GetOutputDesc(4),ge::DT_FLOAT16,{3,64})) return ge::GRAPH_FAILED;
+       !Extra(c->GetOutputShape(3),c->GetOutputDesc(3),ge::DT_FLOAT,{5,64}) ||
+       !Extra(c->GetOutputShape(4),c->GetOutputDesc(4),ge::DT_FLOAT16,{5,64})) return ge::GRAPH_FAILED;
     return head_host::Tiling<optiling::DFlashHeadProbeTilingData,true>(c);
 }
 ge::graphStatus ProbeShape(gert::InferShapeContext* c) {
     if(head_host::InferShape<true>(c)!=ge::GRAPH_SUCCESS || !head_host::Shape(c->GetInputShape(2),{64})) return ge::GRAPH_FAILED;
     auto* s=c->GetOutputShape(2); s->SetDimNum(3); s->SetDim(0,2); s->SetDim(1,16); s->SetDim(2,64);
-    for(int i=3;i<5;++i) { auto* v=c->GetOutputShape(i); v->SetDimNum(2); v->SetDim(0,3); v->SetDim(1,64); }
+    for(int i=3;i<5;++i) { auto* v=c->GetOutputShape(i); v->SetDimNum(2); v->SetDim(0,5); v->SetDim(1,64); }
     return ge::GRAPH_SUCCESS;
 }
 ge::graphStatus ProbeType(gert::InferDataTypeContext* c) {

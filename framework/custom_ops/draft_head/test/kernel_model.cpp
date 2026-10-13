@@ -93,12 +93,32 @@ int main() {
         {1.f/16777216,0x0001},{1.f/33554432,0x0000},{0.f,0x0000}};
     for(auto test:boundary) for(bool negative:{false,true}) {
         float input=negative?-test.first:test.first; half output=0;
-        if constexpr(DFLASH_HEAD_SATURATION) HeadFiniteClamp({&input,1},1);
+        if constexpr(DFLASH_HEAD_SATURATION==1) HeadFiniteClamp({&input,1},1);
+        if constexpr(DFLASH_HEAD_SATURATION==2) {
+            alignas(32) float values[64]{}; values[0]=input;
+            alignas(32) uint8_t scratch[288]{};
+            HeadCompareSelectClamp({values,64},{scratch,288},64); input=values[0];
+        }
         AscendC::Cast({&output,1},{&input,1},AscendC::RoundMode::CAST_NONE,1);
         auto expected=test.second;
         if(!DFLASH_HEAD_SATURATION && test.first>=65520.f) expected=0x7c00;
         assert(Bits(output)==static_cast<uint16_t>(expected|(negative?0x8000:0)));
     }
+    // A different lane pattern in every block detects accidentally repeating
+    // mode-0's first 64 mask bits across the full 1024-element tile.
+    alignas(32) float payload[1024]; alignas(32) uint8_t scratch[2048];
+    std::memset(scratch,0xa5,sizeof(scratch));
+    const uint32_t patterns[]={0x7fc01234,0xffc12345,0x7f800001,0xff800001,
+        0x00000000,0x80000000,0x00000001,0x80000001,0x47ffe000,0xc7ffe000,
+        0x7f800000,0xff800000,0x477fe000,0xc77fe000,0x3f801000};
+    uint32_t wanted[1024];
+    for(uint32_t i=0;i<1024;++i) {
+        auto raw=patterns[(i+i/64)%15]; std::memcpy(payload+i,&raw,4);
+        wanted[i]=payload[i]>65504.f?0x477fe000:(payload[i]<-65504.f?0xc77fe000:raw);
+    }
+    HeadCompareSelectClamp({payload,1024},{scratch,2048},1024);
+    for(uint32_t i=0;i<1024;++i) { uint32_t raw; std::memcpy(&raw,payload+i,4); assert(raw==wanted[i]); }
+    for(uint32_t i=288;i<2048;++i) assert(scratch[i]==0xa5);
     for(uint32_t p:{1U,3U,7U,64U}) {
         assert(head_contract::IdOffset(p)==32*p && head_contract::SyncOffset(p)==160*p);
         assert(head_contract::WorkspaceBytes(p)==192*p); // GM workspace unchanged

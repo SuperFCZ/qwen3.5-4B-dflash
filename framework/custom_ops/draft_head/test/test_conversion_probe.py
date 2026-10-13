@@ -17,7 +17,7 @@ class ConversionProbeTests(unittest.TestCase):
         # Required semantics, NOT an emulation of CANN Mins/Maxs.
         upper=np.where(x>65504,np.float32(65504),x)
         lower=np.where(upper<-65504,np.float32(-65504),upper)
-        stages=np.array([x,upper,lower],dtype='<f4')
+        stages=np.array([x,upper,lower,upper,lower],dtype='<f4')
         with np.errstate(over='ignore',invalid='ignore'):
             cast=stages.astype('<f2')
         return raw,stages,cast
@@ -48,6 +48,32 @@ class ConversionProbeTests(unittest.TestCase):
         bad=y.copy(); bad.view('<u2')[2,10]=0x7c00
         self.assertEqual(vector_report(raw.tobytes(),x.tobytes(),bad.tobytes())['status'],'FAIL')
 
+    def test_minmax_nan_failure_is_retained_but_does_not_gate_compare_select(self):
+        raw,x,y=self.cpu_example()
+        i=raw.tolist().index(0x7fc00000)
+        x.view('<u4')[1:3,i]=0x7fffffff
+        y.view('<u2')[1:3,i]=0x7fff
+        result=vector_report(raw.tobytes(),x.tobytes(),y.tobytes(),'compare_select')
+        self.assertEqual(result['status'],'PASS')
+        self.assertEqual(result['candidates']['minmax']['status'],'FAIL')
+        self.assertEqual(result['candidates']['compare_select']['status'],'PASS')
+        self.assertEqual(vector_report(raw.tobytes(),x.tobytes(),y.tobytes(),'minmax')['status'],'FAIL')
+        # A canonicalized NaN in the selected path MUST still fail.
+        x.view('<u4')[4,i]=0x7fffffff
+        self.assertEqual(vector_report(raw.tobytes(),x.tobytes(),y.tobytes(),'compare_select')['status'],'FAIL')
+
+    def test_compare_select_checks_both_stages_and_all_special_values(self):
+        raw,x,y=self.cpu_example()
+        self.assertEqual(vector_report(raw.tobytes(),x.tobytes(),y.tobytes(),'compare_select')['status'],'PASS')
+        for stage in (3,4):
+            for original,replacement in ((0x80000000,0),(0x7fc01234,0x7fffffff),
+                                         (0x7f800001,0x7fc00001),(1,0)):
+                bad=x.copy(); i=raw.tolist().index(original); bad.view('<u4')[stage,i]=replacement
+                self.assertEqual(vector_report(raw.tobytes(),bad.tobytes(),y.tobytes(),'compare_select')['status'],'FAIL')
+        bad=y.copy(); bad.view('<u2')[4,14]=0x7c00
+        self.assertEqual(vector_report(raw.tobytes(),x.tobytes(),bad.tobytes(),'compare_select')['status'],'FAIL')
+        with self.assertRaises(ValueError): vector_report(raw.tobytes(),x.tobytes(),y.tobytes(),'typo')
+
     def test_precast_requires_all_30_finite_sums_and_reports_raw_bits(self):
         x=np.zeros((2,16,64),dtype='<f4'); x[0,:15,63]=131008; x[1,:15,0]=131008
         result=precast_report(x.tobytes(),'overflow_inf')
@@ -62,8 +88,8 @@ class ConversionProbeTests(unittest.TestCase):
         original=(HERE/'op_host/head_config.h').read_bytes()
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
-            configure(root/'head_config.h',root/'build.json',0,'minmax',True)
-            self.assertEqual(load(root/'build.json')['conversion'],'minmax')
+            configure(root/'head_config.h',root/'build.json',0,'compare_select',True)
+            self.assertEqual(load(root/'build.json')['conversion'],'compare_select')
             report=json.loads((root/'build.json').read_text()); report['conversion']='cast'
             (root/'build.json').write_text(json.dumps(report))
             with self.assertRaises(ValueError): load(root/'build.json')

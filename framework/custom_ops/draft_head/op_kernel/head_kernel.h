@@ -76,6 +76,8 @@ __aicore__ inline void RunHead(GM_ADDR hidden, GM_ADDR weight, GM_ADDR tokenId, 
             if(tile<2) { DataCopy(rawGm[tile*16*kTileN],c32,16*kTileN); PipeBarrier<PIPE_ALL>(); }
         }
         if constexpr(DFLASH_HEAD_SATURATION==1) HeadFiniteClamp(c32,16*kTileN);
+        if constexpr(DFLASH_HEAD_SATURATION==2)
+            HeadCompareSelectClamp(c32,c.ReinterpretCast<uint8_t>(),16*kTileN);
         Cast(c,c32,RoundMode::CAST_NONE,16*kTileN); // sole FP16 boundary
         PipeBarrier<PIPE_ALL>();
         const auto ready=pipe.FetchEventID(HardEvent::V_S);

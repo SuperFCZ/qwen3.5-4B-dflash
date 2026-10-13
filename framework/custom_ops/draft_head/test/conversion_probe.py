@@ -17,48 +17,53 @@ def sample_bits():
               65472.,65488.,65488.+2**-8,65503.,65504.,65519.,65520.,65536.,131008.]
     values=np.array(positive+[-v for v in positive],dtype='<f4').view('<u4').tolist()
     # FP32 subnormals, explicit quiet NaN payloads, both infinities; padding is tested too.
-    values += [0x00000001,0x80000001,0x007fffff,0x807fffff,0x7fc00000,0xffc12345,0x7f800000,0xff800000]
+    values += [0x00000001,0x80000001,0x007fffff,0x807fffff,0x7fc00000,0xffc12345,0x7f800000,0xff800000,
+               0x7fc01234,0xffc00001,0x7f800001,0xff800001]
     return np.array(values+[0]*(64-len(values)),dtype='<u4')
 
 
-def vector_report(raw,stages,casts):
+def vector_report(raw,stages,casts,conversion='minmax'):
+    if conversion not in build_config.CONVERSIONS: raise ValueError('unknown conversion')
     original=np.frombuffer(raw,dtype='<u4').reshape(64)
-    f32=np.frombuffer(stages,dtype='<u4').reshape(3,64)
-    f16=np.frombuffer(casts,dtype='<u2').reshape(3,64)
-    errors=[]; rows=[]
+    f32=np.frombuffer(stages,dtype='<u4').reshape(5,64)
+    f16=np.frombuffer(casts,dtype='<u2').reshape(5,64)
+    errors={name:[] for name in build_config.CONVERSIONS}; rows=[]
+    groups={'cast':(0,), 'minmax':(0,1,2), 'compare_select':(0,3,4)}
     for i,b in enumerate(original):
         value=original[i:i+1].view('<f4')[0]
         stage=f32[:,i].copy().view('<f4')
         rounded=f16[:,i].copy().view('<f2')
-        row=dict(index=i,input_value=str(float(value)),input_fp32=f'0x{int(b):08x}',
-                 stages_fp32=[f'0x{int(v):08x}' for v in f32[:,i]],
-                 outputs_fp16=[f'0x{int(v):04x}' for v in f16[:,i]])
-        rows.append(row)
-        if f32[0,i]!=b: errors.append(dict(index=i,rule='raw input copy changed'))
-        if math.isnan(value):
-            # Do not assume scalar std::min/fmax semantics or accept NaN -> bound/zero.
-            if not all(math.isnan(v) for v in stage) or f32[2,i]!=b:
-                errors.append(dict(index=i,rule='Mins/Maxs must preserve original FP32 NaN bits'))
-            if not all(math.isnan(v) for v in rounded) or f16[2,i]!=f16[0,i]:
-                errors.append(dict(index=i,rule='candidate must preserve control Cast NaN bits'))
-        else:
+        rows.append(dict(index=i,input_value=str(float(value)),input_fp32=f'0x{int(b):08x}',
+                         stages_fp32=[f'0x{int(v):08x}' for v in f32[:,i]],
+                         outputs_fp16=[f'0x{int(v):04x}' for v in f16[:,i]]))
+        for name,indices in groups.items():
+            failures=errors[name]
+            if math.isnan(value):
+                # Check EVERY stage, not merely the final result. No payload relaxation.
+                if any(f32[j,i]!=b for j in indices):
+                    failures.append(dict(index=i,rule='preserve original FP32 NaN bits',stages=list(indices)))
+                if any(not math.isnan(rounded[j]) or f16[j,i]!=f16[0,i] for j in indices):
+                    failures.append(dict(index=i,rule='preserve control Cast NaN bits',stages=list(indices)))
+                continue
             upper=np.float32(min(float(value),65504.))
             final=np.float32(max(float(upper),-65504.))
-            expected32=np.array([value,upper,final],dtype='<f4').view('<u4')
-            # Signed zero is retained by the explicit first-operand min/max oracle.
-            if not np.array_equal(f32[:,i],expected32):
-                errors.append(dict(index=i,rule='FP32 limits/zero/subnormal preservation',expected=[f'0x{v:08x}' for v in expected32]))
+            expected32=np.array([value,upper,final,upper,final],dtype='<f4').view('<u4')
+            if any(f32[j,i]!=expected32[j] for j in indices):
+                failures.append(dict(index=i,rule='FP32 limits/zero/subnormal preservation',stages=list(indices),
+                                     expected=[f'0x{v:08x}' for v in expected32]))
             with np.errstate(over='ignore',under='ignore',invalid='ignore'):
-                expected16=np.array([value,upper,final],dtype='<f2').view('<u2')
-            # Control overflow is the unknown we are measuring: do not assume
-            # whether CAST_NONE alone saturates or emits Inf. Only in-range
-            # stages and the fully clamped candidate have a prescribed result.
-            checked=[j for j,v in enumerate((value,upper,final)) if math.isfinite(v) and abs(v)<=65504]
+                expected16=np.array([value,upper,final,upper,final],dtype='<f2').view('<u2')
+            # Out-of-range control Cast is observed, not presumed to emit Inf.
+            checked=[j for j in indices if math.isfinite(stage[j]) and abs(stage[j])<=65504]
             if any(f16[j,i]!=expected16[j] for j in checked):
-                errors.append(dict(index=i,rule='RNE Cast/finite saturation',checked_stages=checked,
-                                   expected=[f'0x{v:04x}' for v in expected16]))
-    return dict(status='PASS' if not errors else 'FAIL',scope='measured vector operations against candidate requirements',
-                stage_names=['CAST_NONE control','Mins(+65504) then Cast','Mins(+65504)/Maxs(-65504) then Cast'],rows=rows,errors=errors)
+                failures.append(dict(index=i,rule='RNE Cast/finite saturation',checked_stages=checked,
+                                     expected=[f'0x{v:04x}' for v in expected16]))
+    candidates={name:dict(status='FAIL' if e else 'PASS',errors=e) for name,e in errors.items()}
+    return dict(status=candidates[conversion]['status'],selected_conversion=conversion,candidates=candidates,
+                scope='selected candidate only; all control failures retained separately',
+                stage_names=['CAST_NONE control','Mins(+65504)','Mins/Maxs',
+                             'Compare GT/Select(+65504)','Compare GT/LT + Select clamp'],
+                rows=rows,errors=errors[conversion])
 
 
 def precast_report(data,name):
@@ -122,7 +127,7 @@ def run(args):
         raw=sample_bits().tobytes()
         folder=root/'cast'; folder.mkdir(); (folder/'values.bin').write_bytes(raw)
         result=execute(args,folder,'cast','-')
-        result['vector']=vector_report(raw,(folder/'vector-fp32-0.bin').read_bytes(),(folder/'vector-fp16-0.bin').read_bytes())
+        result['vector']=vector_report(raw,(folder/'vector-fp32-0.bin').read_bytes(),(folder/'vector-fp16-0.bin').read_bytes(),config['conversion'])
         result['name']='standalone-cast'; report['probes'].append(result); write_json(summary,report)
         # Always collect the crucial raw Head result, even if standalone vector semantics fail.
         for name in ('overflow_inf','nan_first'):
@@ -141,7 +146,7 @@ def run(args):
             result.update(name=name,weight=record(weight,folder),hidden=record(folder/'hidden.bin',folder),
                 launch=verify_launch(folder/'runner.log',15,True,config['core_limit'],config['conversion']),
                 precast=precast_report((folder/'precast-0.bin').read_bytes(),name),
-                vector=vector_report(raw,(folder/'vector-fp32-0.bin').read_bytes(),(folder/'vector-fp16-0.bin').read_bytes()))
+                vector=vector_report(raw,(folder/'vector-fp32-0.bin').read_bytes(),(folder/'vector-fp16-0.bin').read_bytes(),config['conversion']))
             # Independent Vector test must agree when embedded after the Head path.
             result['standalone_vector_equal']=all((folder/f'{n}-0.bin').read_bytes()==(root/'cast'/f'{n}-0.bin').read_bytes()
                                                    for n in ('vector-fp32','vector-fp16'))
@@ -150,7 +155,7 @@ def run(args):
         passed=all(p['vector']['status']=='PASS' and p.get('precast',{}).get('status','PASS')=='PASS' and p.get('standalone_vector_equal',True)
                    for p in report['probes'])
         report['status']='PASS' if passed else 'FAIL'
-        report['next_step']='sensitive subset then full 41-case gate' if passed else 'STOP: inspect raw bits; do not adopt candidate; investigate Compare/Select if special values changed'
+        report['next_step']='sensitive subset then full 41-case gate' if passed else 'STOP: inspect selected candidate raw bits; do not adopt or relax the gate'
     except Exception as error:
         report.update(status='FAIL',error=f'{type(error).__name__}: {error}')
     write_json(summary,report)

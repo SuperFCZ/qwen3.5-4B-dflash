@@ -37,6 +37,8 @@ namespace AscendC {
 enum class TPosition { GM,VECIN,VECOUT,VECCALC };
 enum class CacheLine { SINGLE_CACHE_LINE };
 enum class HardEvent { S_MTE3,V_S,MTE2_S };
+enum class CMPMODE { GT,LT };
+enum class SELMODE { VSEL_CMPMASK_SPR };
 enum class RoundMode { CAST_NONE };
 inline uint32_t GetBlockIdx() { return core; }
 inline uint32_t GetBlockNum() { return run->p; }
@@ -71,6 +73,8 @@ public:
     int FetchEventID(HardEvent) { return 0; }
 };
 template<typename T> void Duplicate(LocalTensor<T> out,T value,uint32_t count) {
+    static_assert(std::is_same_v<T,half> || std::is_same_v<T,float> || std::is_same_v<T,int16_t> ||
+                  std::is_same_v<T,uint16_t> || std::is_same_v<T,int32_t> || std::is_same_v<T,uint32_t>);
     assert(count<=out.count); std::fill(out.data,out.data+count,value);
 }
 // CPU control model uses IEEE conversion (including overflow to Inf). This is
@@ -81,6 +85,24 @@ inline void Mins(LocalTensor<float> dst,LocalTensor<float> src,float bound,uint3
 }
 inline void Maxs(LocalTensor<float> dst,LocalTensor<float> src,float bound,uint32_t count) {
     for(uint32_t i=0;i<count;++i) dst.data[i]=src.data[i]<bound?bound:src.data[i];
+}
+// CPU reference for required Compare/Select semantics, NOT a device emulator.
+inline void CompareScalar(LocalTensor<uint8_t> mask,LocalTensor<float> src,float limit,CMPMODE mode,uint32_t count) {
+    assert(count==64 && src.count>=count && mask.count>=32);
+    for(uint32_t i=0;i<count/8;++i) mask.data[i]=0;
+    for(uint32_t i=0;i<count;++i) {
+        const bool selected=mode==CMPMODE::GT?src.data[i]>limit:src.data[i]<limit;
+        if(selected) mask.data[i/8]|=uint8_t(1U<<(i%8));
+    }
+}
+inline void Select(LocalTensor<float> dst,LocalTensor<uint8_t> mask,LocalTensor<float> yes,
+                   LocalTensor<float> no,SELMODE mode,uint32_t count) {
+    assert(mode==SELMODE::VSEL_CMPMASK_SPR && count==64 && dst.count>=count && yes.count>=count && no.count>=count);
+    for(uint32_t i=0;i<count;++i) {
+        const auto* source=(mask.data[i/8]&(1U<<(i%8)))?yes.data+i:no.data+i;
+        // Bit copy explicitly preserves NaN payload/sign and zero sign.
+        uint32_t raw; std::memcpy(&raw,source,4); std::memcpy(dst.data+i,&raw,4);
+    }
 }
 inline void Cast(LocalTensor<half> dst,LocalTensor<float> src,RoundMode mode,uint32_t count) {
     assert(mode==RoundMode::CAST_NONE && count<=dst.count && count<=src.count);

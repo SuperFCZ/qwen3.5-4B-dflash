@@ -8,7 +8,9 @@ Native Top1 对齐与 `synthetic-nan_first` 实测语义修复后，用户已确
 目标 Ascend310P3 / CANN 9.0.0，遵循 [OPTIMIZATION.md 的 C 契约](../../../docs/OPTIMIZATION.md)。
 **用户确认 `a4df66b` 的 FP32 GetTensorC + CAST_NONE 仍为 Custom 40/41 PASS；
 唯一失败是 synthetic-overflow_inf 的 FP16 logits，不能声称 Cast 已修复饱和。**
-本轮提供独立 FP32/Cast 硬件诊断和默认关闭的 Mins/Maxs 候选；见
+`a763266` 的 `.runs/head-7sw4cwr6` 已证实 FP32 输出为 131008；Mins/Maxs 因将 NaN
+改成 `0x7fffffff` 而诊断失败，未进入敏感用例/41-case。本轮新增默认关闭的
+`HEAD_CONVERSION=compare_select`，保留 cast/minmax 对照；见
 [OVERFLOW_CONVERSION.md](OVERFLOW_CONVERSION.md) 的一键诊断、严格阶段门槛及复用产物命令。
 **新诊断/候选的 CANN 编译、NPU 41-case 和 M15 性能均为 NOT_RUN**；完整图接入与
 Draft/Decode 也未验证。

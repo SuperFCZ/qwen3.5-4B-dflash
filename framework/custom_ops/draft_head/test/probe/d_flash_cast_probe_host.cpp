@@ -8,7 +8,7 @@ ge::graphStatus Tiling(gert::TilingContext* c) {
     for(int i=0;i<2;++i) {
         const auto* s=c->GetOutputShape(i); const auto* o=c->GetOutputDesc(i);
         if(!s || !o || o->GetDataType()!=(i?ge::DT_FLOAT16:ge::DT_FLOAT) || o->GetStorageFormat()!=ge::FORMAT_ND ||
-           s->GetStorageShape().GetDimNum()!=2 || s->GetStorageShape().GetDim(0)!=3 || s->GetStorageShape().GetDim(1)!=64)
+           s->GetStorageShape().GetDimNum()!=2 || s->GetStorageShape().GetDim(0)!=5 || s->GetStorageShape().GetDim(1)!=64)
             return ge::GRAPH_FAILED;
     }
     c->SetBlockDim(1); c->SetTilingKey(0); c->GetWorkspaceSizes(1)[0]=0;
@@ -18,7 +18,7 @@ ge::graphStatus Tiling(gert::TilingContext* c) {
     c->GetRawTilingData()->SetDataSize(t.GetDataSize()); return ge::GRAPH_SUCCESS;
 }
 ge::graphStatus Shape(gert::InferShapeContext* c) {
-    for(int i=0;i<2;++i) { auto* s=c->GetOutputShape(i); s->SetDimNum(2); s->SetDim(0,3); s->SetDim(1,64); }
+    for(int i=0;i<2;++i) { auto* s=c->GetOutputShape(i); s->SetDimNum(2); s->SetDim(0,5); s->SetDim(1,64); }
     return ge::GRAPH_SUCCESS;
 }
 ge::graphStatus Type(gert::InferDataTypeContext* c) {

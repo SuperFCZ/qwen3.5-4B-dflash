@@ -77,7 +77,8 @@ def verify_launch(path,m,audit,cap,conversion="cast"):
     if not records or any(r!=records[0] for r in records): raise ValueError('missing/inconsistent Head launch')
     x=records[0]
     for key,value in dict(version=1,m=m,k=K,n=N,tile_n=64,padded_m=16,audit=audit,core_limit=cap,batchmode=1,
-                          output_conversion=('fp32-ub-minmax-cast-none-v1' if conversion=='minmax' else 'fp32-ub-cast-none-v1'),fp32_tile_bytes=4096).items():
+                          output_conversion={'cast':'fp32-ub-cast-none-v1','minmax':'fp32-ub-minmax-cast-none-v1',
+                            'compare_select':'fp32-ub-compare-select-cast-none-v1'}[conversion],fp32_tile_bytes=4096).items():
         if x.get(key)!=value: raise ValueError(f'wrong Head launch: {key}')
     available=x['available_cores']; p=min(available,64,cap or available)
     if p<1 or x['partitions']!=p or x['user_workspace_bytes']!=p*192: raise ValueError('partition/workspace mismatch')
