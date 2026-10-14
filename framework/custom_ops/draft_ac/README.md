@@ -50,7 +50,7 @@ A/C 独立包都使用 `vendors/customize` 和同名动态库，不能简单叠�
 6. Factory 优先从**被 Deployment 哈希绑定的 AIR `factory_config`**原样提取到新目录 `factory-resolved.json`。可选独立 JSON 只能等于该记录。若缺失/不是 W8 offline-NZ，明确失败，不制造配置或推测 checkpoint 路径。
 7. offline-NZ 同时支持自动 `draft_weight_prepack="nz"` 和历史 `draft_weight_prepack_manifest` 两条互斥路径。历史 Manifest 必须与 Draft metadata 指向相同文件，其 SHA256 必须等于 AIR prepack 审计；自动模式从 AIR 的哈希绑定 payload 中定位生成的 Manifest。复用原有 Manifest policy/status/schema、NZ carrier 和 Const descriptor 检查，验证 26 个节点、group128/GN，以及每份实际 INT8 权重的 NZ 反解、零 padding 和 Capture 哈希。完整 Draft 再次使用同一检查。原始 factory 配置不改写，绝不在 Manifest 路径上补入 `draft_weight_prepack="nz"`。
 
-入口禁用 Torch backend 自动加载；选定联合 OPP 后通过新进程重新启动设备阶段，使 LD_LIBRARY_PATH 在 ELF loader 启动时生效，再显式 import torch_npu/TorchAir，若提前加载则失败并要求新进程。联合安装之后继续检查三组非空 `.o/.json`、CANN9 首个 `.o/.json` 路径解析规则、三个 ACLNN 头、GE prototype 动态库及哈希。**这些只证明文件完整，GE 注册是否能使用仍由后续 ATC 决定。** 活跃环境中发现旧 A/C 注册路径会拒绝；请在干净 shell 中保留接收端原有 ADN/GDR 环境，不 source 旧 A/C set_env。若 ADN/GDR 与联合包同名库产生真实加载冲突，应回传 ATC 日志进一步定位，不能把文件检查当作共存成功。
+只读 Preflight 在独立子进程中执行并记录实际导入栈；协调进程不继承其 torch_npu 模块状态，仍保留初始化顺序 guard。联合 OPP 安装并设置路径后，沿用 exec 启动新的设备解释器，使 LD_LIBRARY_PATH 在 ELF loader 启动时生效。`TORCH_DEVICE_BACKEND_AUTOLOAD=0` 只是辅助控制，不能阻止第三方显式 import。详见[进程顺序及导入证据](PROCESS_ORDER.md)。联合安装之后继续检查三组非空 `.o/.json`、CANN9 首个 `.o/.json` 路径解析规则、三个 ACLNN 头、GE prototype 动态库及哈希。**这些只证明文件完整，GE 注册是否能使用仍由后续 ATC 决定。** 活跃环境中发现旧 A/C 注册路径会拒绝；请在干净 shell 中保留接收端原有 ADN/GDR 环境，不 source 旧 A/C set_env。若 ADN/GDR 与联合包同名库产生真实加载冲突，应回传 ATC 日志进一步定位，不能把文件检查当作共存成功。
 
 ## 服务器命令
 

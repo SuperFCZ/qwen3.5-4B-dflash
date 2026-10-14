@@ -5,7 +5,7 @@ import gc
 import json
 import os
 import sys
-# Torch backend entry points must not load an old OPP during read-only resolution.
+# Auxiliary only: explicit third-party imports are isolated in the preflight child.
 os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"]="0"
 from pathlib import Path
 import subprocess
@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from common import ROOT,HERE,checked_file,record,sha256,write_json
 from a2_common import validate_layout,case_shape
 from opp import build,preflight
-from resolve import resolve,head_capture,validate_offline_nz,linked
+from process_boundary import encode_args,decode_args,require_clean_npu,npu_modules,validate_preflight_result
 
 
 def descriptors(names,values):
@@ -80,6 +80,7 @@ def export_one(spec,folder,atc):
 
 
 def probes(args,root,runner,bundles):
+    from resolve import head_capture
     import numpy as np
     import torch
     from qwen35_dflash.ascend310p.draft_ac_export import A,C,AUDIT,GE,POLICY,ensure_ops
@@ -151,6 +152,7 @@ def probes(args,root,runner,bundles):
 
 
 def full_draft(args,root,runner,bundles):
+    from resolve import validate_offline_nz,linked
     import numpy as np
     import torch
     import torchair
@@ -217,16 +219,30 @@ def full_draft(args,root,runner,bundles):
     return result
 
 
+def validate_device_startup(root,opp):
+    require_clean_npu('device worker before joint OPP load')
+    install=root/'joint/opp'; vendor=install/'vendors/customize'
+    if opp.get('status')!='BUILT_NOT_NPU_VALIDATED' or Path(opp['install']).resolve()!=install:
+        raise ValueError("device worker requires this run's completed joint OPP")
+    if json.loads((root/'joint/opp.json').read_text())!=opp or preflight(install)!=opp['preflight']:
+        raise ValueError('joint OPP changed before device startup')
+    for key,expected in (('ASCEND_CUSTOM_OPP_PATH',vendor),('LD_LIBRARY_PATH',vendor/'op_api/lib')):
+        first=os.environ.get(key,'').split(os.pathsep)[0]
+        if not first or Path(first).resolve()!=expected:
+            raise ValueError('device worker loader environment differs: '+key)
+
+
 def device_worker(path):
     state=json.loads(Path(path).read_text())
-    args=SimpleNamespace(**state['args'])
-    for key in state['path_args']: setattr(args,key,Path(getattr(args,key)))
+    args=decode_args(state)
     root=args.output_dir.resolve(); os.environ['AI_RUN_DIR']=str(root)
     report=state['report']; provenance=state['provenance']; opp=state['opp']
     try:
         report['phase']='device_startup'
         if Path(path).resolve()!=root/'worker-input.json': raise ValueError('worker input must be in its new evidence directory')
-        if preflight(Path(opp['install']))!=opp['preflight']: raise ValueError('joint OPP changed before device startup')
+        validate_device_startup(root,opp)
+        write_json(root/'device-process.json',dict(pid=os.getpid(),npu_modules=npu_modules(),
+            ASCEND_CUSTOM_OPP_PATH=os.environ.get('ASCEND_CUSTOM_OPP_PATH'),LD_LIBRARY_PATH=os.environ.get('LD_LIBRARY_PATH')))
         from a2_common import load_bundle
         bundles={16:load_bundle(args.a16_bundle,'a4'),64:load_bundle(args.a64_bundle,'a4')}
         # No torch_npu/GE import before selecting the joint OPP.
@@ -273,22 +289,36 @@ def run(args):
     report=dict(status='RUNNING',single_op_graph='NOT_RUN',full_draft='NOT_RUN',end_to_end='NOT_RUN')
     try:
         report['phase']='provenance'
-        provenance,bundles=resolve(args,root)
+        require_clean_npu('coordinator before preflight')
+        request=encode_args(args); write_json(root/'preflight-input.json',request)
+        command=[sys.executable,'-B','-u',str(HERE/'test/preflight_worker.py'),str(root/'preflight-input.json')]
+        write_json(root/'preflight-command.json',command)
+        write_json(root/'suite.json',report)
+        with (root/'preflight.log').open('w') as log:
+            subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,check=True)
+        result=json.loads((root/'preflight-result.json').read_text())
+        args,provenance=validate_preflight_result(request,result,root)
+        require_clean_npu('coordinator after preflight')
+        write_json(root/'coordinator-process.json',dict(pid=os.getpid(),preflight_pid=result['pid'],npu_modules=npu_modules()))
         report['provenance']=record(root/'preflight.json',root)
+        report['preflight_imports']=record(root/'preflight-imports.json',root)
+        report['coordinator_process']=record(root/'coordinator-process.json',root)
         if args.preflight_only:
             report.update(status='PREFLIGHT_ONLY',phase='complete')
             write_json(root/'suite.json',report)
+            print(f"PREFLIGHT_ONLY: {root/'suite.json'}; device stages NOT_RUN",flush=True)
             return 0
-        if 'torch_npu' in sys.modules:
-            raise RuntimeError('torch_npu loaded before joint OPP selection; start this entry in a fresh process')
-        report['phase']='joint_opp'
+        require_clean_npu('coordinator before joint OPP build')
+        report['phase']='joint_opp'; write_json(root/'suite.json',report)
         opp=build(SimpleNamespace(a_build_config=args.a_build_config,c_release=args.c_release,output_dir=root/'joint'))
+        require_clean_npu('coordinator after joint OPP build')
+        if opp.get('status')!='BUILT_NOT_NPU_VALIDATED': raise ValueError('joint OPP build did not complete')
+        if preflight(Path(opp['install']))!=opp['preflight']: raise ValueError('joint OPP changed after build')
         vendor=Path(opp['preflight']['vendor'])
         os.environ['ASCEND_CUSTOM_OPP_PATH']=str(vendor)+os.pathsep+os.environ.get('ASCEND_CUSTOM_OPP_PATH','')
         os.environ['LD_LIBRARY_PATH']=str(vendor/'op_api/lib')+os.pathsep+os.environ.get('LD_LIBRARY_PATH','')
         state=root/'worker-input.json'
-        write_json(state,dict(args={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()},
-                             path_args=[k for k,v in vars(args).items() if isinstance(v,Path)],
+        write_json(state,dict(**encode_args(args),
                              report=report,provenance=provenance,opp=opp))
         write_json(root/'suite.json',report)
         # Fresh ELF loader: changing LD_LIBRARY_PATH inside Python is insufficient.

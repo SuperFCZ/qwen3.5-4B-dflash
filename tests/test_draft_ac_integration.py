@@ -322,23 +322,48 @@ def test_torch_export_retains_custom_node_and_immutable_buffers():
 @pytest.mark.parametrize('preflight_only',[True,False])
 def test_entry_never_loads_npu_before_fresh_joint_loader(tmp_path,monkeypatch,preflight_only):
     ac_tools(monkeypatch)
-    spec=importlib.util.spec_from_file_location('ac_entry',ROOT/'framework/custom_ops/draft_ac/test/run.py')
+    script=ROOT/'framework/custom_ops/draft_ac/test/run.py'
+    spec=importlib.util.spec_from_file_location('ac_entry',script)
     entry=importlib.util.module_from_spec(spec);spec.loader.exec_module(entry)
-    monkeypatch.delitem(sys.modules,'torch_npu',raising=False)
+    assert 'torch_npu' not in sys.modules
     monkeypatch.setenv('ASCEND_CUSTOM_OPP_PATH','receiver-adn-gdr')
     monkeypatch.setenv('LD_LIBRARY_PATH','receiver-libraries')
-    root=tmp_path/'new';args=SimpleNamespace(output_dir=root,preflight_only=preflight_only,a_build_config=tmp_path/'a',c_release=tmp_path/'c')
-    def resolve(args,root):
-        entry.write_json(root/'preflight.json',dict(status='PASS'))
-        return dict(records={}),{}
-    monkeypatch.setattr(entry,'resolve',resolve)
-    builds=[]
+    root=(tmp_path/'new').resolve();args=SimpleNamespace(output_dir=root,preflight_only=preflight_only,a_build_config=tmp_path/'a',c_release=tmp_path/'c')
+    # Real child process, with a CPU-only indirect import fixture. No production
+    # bypass flag is added; only this test supplies the evidence resolver double.
+    stubs=tmp_path/'stubs';stubs.mkdir()
+    (stubs/'torch_npu.py').write_text('CPU_IMPORT_FIXTURE = True\n')
+    (stubs/'offline_weights.py').write_text('import importlib.util\nassert importlib.util.find_spec("torch_npu") is not None\nimport torch_npu\n')
+    (stubs/'resolve.py').write_text('from common import write_json\nimport offline_weights\ndef resolve(args,root):\n write_json(root/"preflight.json",dict(status="PASS",records={}))\n return {},{}\n')
+    actual_run=subprocess.run
+    def child(command,**kwargs):
+        code=f'import sys; sys.path.insert(0,{str(script.parent)!r}); import preflight_worker; sys.path.insert(0,{str(stubs)!r}); raise SystemExit(preflight_worker.run(sys.argv[1]))'
+        return actual_run([sys.executable,'-B','-c',code,command[-1]],**kwargs)
+    monkeypatch.setattr(entry.subprocess,'run',child)
+    builds=[];audit=dict(vendor=str(root/'joint/opp/vendors/customize'))
     def build(args):
-        builds.append(args);return dict(preflight=dict(vendor=str(root/'joint/opp/vendors/customize')))
-    monkeypatch.setattr(entry,'build',build)
+        assert 'torch_npu' not in sys.modules
+        builds.append(args);(root/'joint').mkdir()
+        result=dict(status='BUILT_NOT_NPU_VALIDATED',install=str(root/'joint/opp'),preflight=audit)
+        entry.write_json(root/'joint/opp.json',result);return result
+    monkeypatch.setattr(entry,'build',build);monkeypatch.setattr(entry,'preflight',lambda *a:audit)
     class Exec(BaseException): pass
     calls=[]
-    def execve(binary,command,env): calls.append((binary,command,env));raise Exec()
+    def execve(binary,command,env):
+        calls.append((binary,command,env))
+        # Exercise the real device startup gate in ANOTHER fresh process. OPP
+        # filesystem validation is stubbed; no CANN compilation/NPU is claimed.
+        code=f"""import sys,json,os
+from pathlib import Path
+sys.path.insert(0,{str(script.parent)!r})
+import run
+state=json.loads(Path(sys.argv[1]).read_text()); root=Path(state['args']['output_dir'])
+run.preflight=lambda *a:state['opp']['preflight']
+run.validate_device_startup(root,state['opp'])
+run.write_json(root/'cpu-device-process.json',dict(pid=os.getpid(),npu_modules=run.npu_modules(),npu='NOT_RUN'))
+"""
+        actual_run([binary,'-B','-c',code,command[-1]],env=env,check=True)
+        raise Exec()
     monkeypatch.setattr(entry.os,'execve',execve)
     if preflight_only:
         assert entry.run(args)==0 and not builds and not calls
@@ -346,10 +371,36 @@ def test_entry_never_loads_npu_before_fresh_joint_loader(tmp_path,monkeypatch,pr
     else:
         with pytest.raises(Exec): entry.run(args)
         assert len(builds)==len(calls)==1 and '--device-worker' in calls[0][1]
-        assert calls[0][2]['LD_LIBRARY_PATH'].startswith(str(root/'joint/opp/vendors/customize/op_api/lib'))
+        device=json.loads((root/'cpu-device-process.json').read_text())
+        assert device['npu_modules']==[] and device['pid']!=__import__('os').getpid()
         assert calls[0][2]['ASCEND_CUSTOM_OPP_PATH'].endswith('receiver-adn-gdr')
         assert calls[0][2]['TORCH_DEVICE_BACKEND_AUTOLOAD']=='0'
-        assert json.loads((root/'suite.json').read_text())['single_op_graph']=='NOT_RUN'
+    imports=json.loads((root/'preflight-imports.json').read_text())
+    coordinator=json.loads((root/'coordinator-process.json').read_text())
+    assert imports['loaded'] and 'torch_npu' in imports['after']
+    assert imports['pid']!=coordinator['pid'] and coordinator['npu_modules']==[]
+    stack=imports['first_import']['stack']
+    assert any(f['file'].endswith('offline_weights.py') and f['source']=='import torch_npu' for f in stack)
+    assert any(f['source'] and 'find_spec(' in f['source'] for f in imports['first_lookup']['stack'])
+    assert 'torch_npu' not in sys.modules
+
+
+@pytest.mark.parametrize('damage',['missing','incomplete','wrong_env','changed','preloaded'])
+def test_device_gate_rejects_missing_joint_or_contaminated_process(tmp_path,monkeypatch,damage):
+    ac_tools(monkeypatch)
+    spec=importlib.util.spec_from_file_location('ac_device_gate',ROOT/'framework/custom_ops/draft_ac/test/run.py')
+    entry=importlib.util.module_from_spec(spec);spec.loader.exec_module(entry)
+    root=tmp_path.resolve(); install=root/'joint/opp';vendor=install/'vendors/customize'
+    (root/'joint').mkdir()
+    audit=dict(vendor=str(vendor));opp=dict(status='BUILT_NOT_NPU_VALIDATED',install=str(install),preflight=audit)
+    entry.write_json(root/'joint/opp.json',opp)
+    monkeypatch.setenv('ASCEND_CUSTOM_OPP_PATH',str(vendor));monkeypatch.setenv('LD_LIBRARY_PATH',str(vendor/'op_api/lib'))
+    if damage!='missing': monkeypatch.setattr(entry,'preflight',lambda *a:audit)
+    if damage=='incomplete': opp['status']='FAIL'
+    elif damage=='wrong_env': monkeypatch.setenv('LD_LIBRARY_PATH','old-opp/lib')
+    elif damage=='changed': entry.write_json(root/'joint/opp.json',{})
+    elif damage=='preloaded': monkeypatch.setitem(sys.modules,'torch_npu',SimpleNamespace())
+    with pytest.raises((ValueError,RuntimeError)): entry.validate_device_startup(root,opp)
 
 
 @pytest.mark.parametrize('mode',['automatic','manifest'])
@@ -428,3 +479,22 @@ def test_full_draft_accepts_both_nz_routes_before_model_loading(tmp_path,monkeyp
     root=tmp_path/'new';root.mkdir()
     with pytest.raises(ReachedLoader): entry.full_draft(args,root,None,{16:bundle})
     assert json.loads(factory.read_text())==config
+
+
+def test_device_worker_without_joint_opp_stops_before_any_device_code(tmp_path,monkeypatch):
+    ac_tools(monkeypatch)
+    spec=importlib.util.spec_from_file_location('ac_missing_opp_worker',ROOT/'framework/custom_ops/draft_ac/test/run.py')
+    entry=importlib.util.module_from_spec(spec);spec.loader.exec_module(entry)
+    root=tmp_path.resolve(); (root/'joint').mkdir()
+    opp=dict(status='BUILT_NOT_NPU_VALIDATED',install=str(root/'joint/opp'),preflight={})
+    entry.write_json(root/'joint/opp.json',opp)
+    state=dict(**entry.encode_args(SimpleNamespace(output_dir=root)),opp=opp,provenance={},
+               report=dict(status='RUNNING',single_op_graph='NOT_RUN',full_draft='NOT_RUN',end_to_end='NOT_RUN'))
+    path=root/'worker-input.json';entry.write_json(path,state)
+    def forbidden(*args): pytest.fail('device tests must not run without installed joint OPP')
+    monkeypatch.setattr(entry,'probes',forbidden)
+    assert 'torch_npu' not in sys.modules
+    assert entry.device_worker(path)==1
+    report=json.loads((root/'suite.json').read_text())
+    assert 'missing DFlashGroupQuantLinear' in report['error'] and report['single_op_graph']=='NOT_RUN'
+    assert 'torch_npu' not in sys.modules and not (root/'device-process.json').exists()
