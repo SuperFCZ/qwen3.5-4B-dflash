@@ -29,6 +29,70 @@ def head_capture(path):
     return module.load_capture(path)
 
 
+def validate_offline_nz(config,graph,air_root,bundle_path,bundle):
+    """Both immutable NZ routes, bound to AIR audit and actual captured weights.
+
+    Never add an automatic-prepack setting to a historical manifest config.
+    The shared loader checks manifest schema; _cached_weight verifies payload
+    hash, exact inverse and zero padding against each captured INT8 matrix.
+    """
+    from collections import Counter
+    import torch
+    from qwen35_dflash.ascend310p.weight_prepack import PREPACK_POLICY,load_prepacked_weights,_cached_weight
+    from qwen35_dflash.ascend310p.weight_quant_layout import GE_OP,validate_weight_quant_layout
+    mode=config.get('draft_weight_prepack'); selected=config.get('draft_weight_prepack_manifest')
+    if (config.get('draft_quantization')!='w8a16' or config.get('draft_quant_matmul','weight_quant')!='weight_quant'
+            or not ((mode=='nz' and not selected) or (mode is None and isinstance(selected,str) and selected))):
+        raise ValueError('requires W8 weight_quant with either automatic NZ or an existing NZ manifest, not both')
+    metadata=graph.get('metadata',{}); abi=graph.get('runtime_input_abi',{})
+    layout=abi.get('weight_quant_layout',{}); prepack=layout.get('prepack',{})
+    count=sum(a.get('ge_node_occurrences',0) for a in graph.get('custom_op_audit',[]) if a.get('ge_op_type')==GE_OP)
+    if (abi.get('status')!='PASS' or metadata.get('draft_weight_storage')!=PREPACK_POLICY
+            or count!=26 or layout.get('node_count')!=26 or prepack.get('node_count')!=26
+            or len({n.get('name') for n in layout.get('nodes',[])})!=26):
+        raise ValueError('offline NZ requires the complete real 26-node AIR audit')
+    validate_weight_quant_layout(graph)  # Policy, status, locked Const descriptors, formats and node inventory.
+    if selected:
+        path=Path(selected).expanduser().resolve()
+        recorded=metadata.get('draft_weight_prepack_manifest')
+        if (metadata.get('draft_weight_prepack') is not None or not isinstance(recorded,str)
+                or Path(recorded).expanduser().resolve()!=path):
+            raise ValueError('Factory and Draft metadata prepack manifest differ')
+    else:
+        if metadata.get('draft_weight_prepack')!='nz' or metadata.get('draft_weight_prepack_manifest'):
+            raise ValueError('Factory and Draft automatic NZ selection differ')
+        # Automatic export records its generated cache among hashed AIR payloads.
+        matches=[r for r in graph.get('payload_files',[]) if r.get('sha256')==prepack.get('offline_manifest_sha256')]
+        if len(matches)!=1: raise ValueError('automatic NZ manifest is missing or ambiguous in AIR payloads')
+        path=checked_file(air_root,matches[0])
+    if not path.is_file() or sha256(path)!=prepack.get('offline_manifest_sha256'):
+        raise ValueError('offline NZ manifest missing or SHA256 differs from AIR prepack audit')
+    cache=load_prepacked_weights(path)
+    manifest=load(path)
+    # Check every declared carrier, including cache entries not used by this graph.
+    for item in manifest['weights']: checked_file(path.parent,item)
+    expected=Counter()
+    if len(bundle.get('cases',[]))!=26: raise ValueError('requires 26 captured checkpoint projections')
+    for case in bundle['cases']:
+        n,k=case['n'],case['k']
+        qpath=checked_file(Path(bundle_path).parent,case['files']['q_nk.bin'],n*k)
+        q=torch.frombuffer(bytearray(qpath.read_bytes()),dtype=torch.int8).reshape(n,k)
+        _,logical_hash,item=_cached_weight(q,cache)
+        if item['sha256']!=case['files']['w_nz.bin']['sha256']:
+            raise ValueError('manifest NZ carrier differs from accepted Capture')
+        expected[(n,k,logical_hash,item['sha256'])]+=1
+    actual=Counter()
+    for node in layout['nodes']:
+        n,k=node['weight_shape']; entry=node['prepacked_constant']
+        if k%128 or node.get('group_size')!=128 or node.get('scale_shape')!=[k//128,n]:
+            raise ValueError('AIR group128/GN scale contract differs')
+        actual[(n,k,entry['logical_sha256'],entry['storage_sha256'])]+=1
+    if actual!=expected: raise ValueError('AIR NZ constants differ from actual captured checkpoint weights')
+    if cache['sha256']!=prepack['offline_manifest_sha256'] or sha256(path)!=cache['sha256']:
+        raise ValueError('offline NZ manifest changed during validation')
+    return dict(path=str(path),sha256=cache['sha256'])
+
+
 def resolve(args,root):
     records={}
     def keep(label,path):
@@ -107,7 +171,7 @@ def resolve(args,root):
     if air.get('status')!='PASS' or deployment.get('status')!='PASS': raise ValueError('Native export incomplete')
     draft=next(g for g in deployment['graphs'] if g['name']=='draft')
     exported=next(g for g in air['graphs'] if g['name']=='draft')
-    for key in ('metadata','air','runtime_input_abi','input_names','output_names'):
+    for key in ('metadata','air','runtime_input_abi','custom_op_audit','input_names','output_names'):
         if exported.get(key)!=draft.get(key): raise ValueError('Native AIR/Deployment Draft differs: '+key)
     for payload in exported['payload_files']: checked_file(air_path.parent,payload)
     from qwen35_dflash.ascend310p.draft_gears import verify_om_files,om_records
@@ -129,8 +193,7 @@ def resolve(args,root):
         supplied=load(keep('factory_config_supplied',args.factory_config))
         if config!=supplied: raise ValueError('explicit Factory JSON differs from hash-bound AIR factory_config')
     if not isinstance(config,dict) or not config: raise ValueError('AIR factory_config missing; inspect the original export metadata before proceeding')
-    if config.get('draft_quantization')!='w8a16' or config.get('draft_weight_prepack')!='nz':
-        raise ValueError('AIR factory_config is not W8 offline NZ; variant-matrix config needs its recorded per-variant metadata, do not guess')
+    records['offline_nz_manifest']=validate_offline_nz(config,exported,air_path.parent,args.a16_bundle,bundles[16])
     args.factory_config=root/'factory-resolved.json'; write_json(args.factory_config,config)
     keep('factory_config_resolved',args.factory_config)
     result=dict(status='PASS',scope='read-only provenance; GE/ATC/NPU NOT_RUN',records=records,a_installed_opp=a_opp,

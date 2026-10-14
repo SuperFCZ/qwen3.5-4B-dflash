@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from common import ROOT,HERE,checked_file,record,sha256,write_json
 from a2_common import validate_layout,case_shape
 from opp import build,preflight
-from resolve import resolve,head_capture
+from resolve import resolve,head_capture,validate_offline_nz,linked
 
 
 def descriptors(names,values):
@@ -159,12 +159,18 @@ def full_draft(args,root,runner,bundles):
     from qwen35_dflash.ascend310p.draft_gears import verify_om_files,om_records
     from a2_capture import frozen_inputs
     config=json.loads(args.factory_config.read_text())
-    if config.get('draft_quantization')!='w8a16' or config.get('draft_quant_matmul','weight_quant')!='weight_quant' or config.get('draft_weight_prepack')!='nz':
-        raise ValueError('full graph requires the unchanged W8A16 offline-NZ factory config')
     deployment=json.loads(args.native_deployment.read_text())
     candidates=[g for g in deployment['graphs'] if g['name']=='draft' and g['metadata'].get('draft_quantization')=='w8a16']
     if deployment.get('status')!='PASS' or len(candidates)!=1: raise ValueError('need one original W8 Draft deployment')
     native=candidates[0]; verify_om_files(native,args.native_deployment.parent)
+    air_path=linked(args.native_deployment.parent,deployment['air_manifest'])
+    original_air=json.loads(air_path.read_text())
+    exported=next(g for g in original_air['graphs'] if g['name']=='draft')
+    if config!=original_air.get('factory_config'):
+        raise ValueError('full Draft factory config differs from hash-bound AIR')
+    for key in ('metadata','runtime_input_abi','custom_op_audit'):
+        if exported.get(key)!=native.get(key): raise ValueError('Native AIR/Deployment differs: '+key)
+    validate_offline_nz(config,exported,air_path.parent,args.a16_bundle,bundles[16])
     native_oms=[checked_file(args.native_deployment.parent,r) for r in om_records(native)]
     result=[]
     for gear,replay in ((16,args.replay16),(64,args.replay64)):

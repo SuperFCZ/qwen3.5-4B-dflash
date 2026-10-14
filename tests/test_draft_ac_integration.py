@@ -192,9 +192,41 @@ def test_joint_opp_requires_three_pairs_and_headers(tmp_path,monkeypatch,damage)
     else:
         result=tool.preflight(install);assert len(result['kernels'])==3 and result['status']=='PASS'
 
+def offline_nz_fixture(root,monkeypatch,mode='automatic'):
+    """Real CPU NZ files/audits; small matrices, 26 distinct projection identities."""
+    from test_weight_quant_layout import fixture_graph
+    from qwen35_dflash.ascend310p.weight_prepack import write_prepacked_weights,load_prepacked_weights,prepack_weight_quant_constants,PREPACK_POLICY
+    from qwen35_dflash.ascend310p.weight_quant_layout import normalize_weight_quant_layout,GE_OP
+    monkeypatch.setenv('AI_RUN_DIR',str(root))
+    weights={f'w{i}:0':((torch.arange(64*256)+i)%256-128).to(torch.int8).reshape(64,256) for i in range(26)}
+    manifest=write_prepacked_weights(weights,root/'prepack');cache=load_prepacked_weights(manifest)
+    def record(path): return dict(path=str(path.relative_to(root)),bytes=path.stat().st_size,sha256=__import__('hashlib').sha256(path.read_bytes()).hexdigest())
+    nodes=[];cases=[]
+    for i,q in enumerate(weights.values()):
+        g=fixture_graph();w=next(n for n in g.op if n.name=='w');w.type='Const'
+        w.attr['value'].t.desc.CopyFrom(w.output_desc[0]);w.attr['value'].t.data=q.numpy().tobytes()
+        op=next(n for n in g.op if n.type==GE_OP);op.name=f'quant{i}'
+        next(n for n in g.op if n.name=='out').input[:]=[op.name+':0']
+        audit=prepack_weight_quant_constants(g,normalize_weight_quant_layout(g),{'w:0':q},cache)
+        nodes.extend(audit['nodes']);qp=root/f'q{i}.bin';qp.write_bytes(q.numpy().tobytes())
+        packed=cache['weights'][((64,256),tensor_hash(q))]
+        cases.append(dict(name=f'projection{i}',n=64,k=256,files={'q_nk.bin':record(qp),'w_nz.bin':record(manifest.parent/packed['path'])}))
+    audit['nodes']=nodes;audit['node_count']=26
+    audit['prepack']['constants']=[n['prepacked_constant'] for n in nodes]
+    audit['prepack']['node_count']=26
+    audit['prepack']['removed_weight_transdata']=[n['name']+'_weight_nz' for n in nodes]
+    selection={'draft_weight_prepack':'nz'} if mode=='automatic' else {'draft_weight_prepack_manifest':str(manifest)}
+    config=dict(draft_quantization='w8a16',draft_quant_matmul='weight_quant',**selection)
+    graph=dict(metadata=dict(draft_quantization='w8a16',draft_weight_storage=PREPACK_POLICY,**selection),
+               runtime_input_abi=dict(status='PASS',weight_quant_layout=audit),
+               custom_op_audit=[dict(ge_op_type=GE_OP,ge_node_occurrences=26)],payload_files=[record(manifest)])
+    return config,graph,dict(cases=cases),manifest
+
+
+@pytest.mark.parametrize('nz_mode',['automatic','manifest'])
 @pytest.mark.parametrize('air_name',['air-manifest.json','air-manifest-w8a16.json'])
 @pytest.mark.parametrize('damage',[None,'stage_hash','capture_path','replay_hash','factory','air_hash','air_missing'])
-def test_resolve_accepted_evidence_chain_without_guessing_paths(tmp_path,monkeypatch,damage,air_name):
+def test_resolve_accepted_evidence_chain_without_guessing_paths(tmp_path,monkeypatch,damage,air_name,nz_mode):
     opp,tool=ac_tools(monkeypatch)
     def save(path,obj):
         path=tmp_path/path;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(obj));return path
@@ -207,11 +239,14 @@ def test_resolve_accepted_evidence_chain_without_guessing_paths(tmp_path,monkeyp
     import opp_preflight
     monkeypatch.setattr(opp_preflight,'check_install',lambda p:dict(status='PASS'))
     source={};bundle_records={};bundle_data={};head=dict(gears={})
-    config=dict(draft_quantization='w8a16',draft_weight_prepack='nz')
+    native_root=tmp_path/'native'; native_root.mkdir()
+    config,graph,captured,nz_manifest=offline_nz_fixture(native_root,monkeypatch,nz_mode)
+    for case in captured['cases']:
+        for record in case['files'].values(): record['path']='native/'+record['path']
     checkpoint=dict(model_sha256='checkpoint',config_sha256='config')
     om=save(Path('native/om.json'),{});om64=save(Path('native/om64.json'),{})
     omrec=relative(om,tmp_path/'native');om64rec=relative(om64,tmp_path/'native')
-    graph=dict(name='draft',metadata={},om=omrec,input_names=[],output_names=[],runtime_input_abi={},air={},payload_files=[])
+    graph.update(name='draft',om=omrec,input_names=[],output_names=[],air={})
     air=save(Path('native')/air_name,dict(status='PASS',graphs=[graph],factory_config=config))
     if air_name!='air-manifest.json':
         # An unrelated default-name file must never override Deployment's link.
@@ -225,7 +260,7 @@ def test_resolve_accepted_evidence_chain_without_guessing_paths(tmp_path,monkeyp
         directory=tmp_path/f'snapshot{gear}';directory.mkdir();(directory/'contract.txt').write_text('fixture')
         replay=save(Path(f'replay{gear}.json'),dict(fake_acl=False,draft_om_sha256=omrec['sha256'],draft_static64_om_sha256=om64rec['sha256'],input_directory=str(directory),snapshot_sha256={},kv_output_audit=dict(context_rows=gear)))
         replays[gear]=replay
-        item=dict(source=dict(feature_layers=[1,5],report_sha256=tool.sha256(replay)),checkpoint=checkpoint)
+        item=dict(source=dict(feature_layers=[1,5],report_sha256=tool.sha256(replay)),checkpoint=checkpoint,**captured)
         bundle=save(Path(f'capture{gear}.json'),item);bundle_data[gear]=item
         native=save(Path(f'a-native{gear}.json'),{})
         bundle_records[f'c{gear}']=dict(bundle=ref(bundle),native_om_manifest=ref(native));head['gears'][f'c{gear}']=item
@@ -263,6 +298,8 @@ def test_resolve_accepted_evidence_chain_without_guessing_paths(tmp_path,monkeyp
         result,_=tool.resolve(args,output)
         assert result['status']=='PASS' and args.a_build_config==cfg and tool.load(args.factory_config)==config
         assert result['records']['air_manifest']==ref(air)
+        assert result['records']['offline_nz_manifest']==ref(nz_manifest)
+        if nz_mode=='manifest': assert 'draft_weight_prepack' not in tool.load(args.factory_config)
         assert args.a16_native==tmp_path/'a-native16.json'
         assert cfg.read_text()==json.dumps(dict(header=str(header)))
 
@@ -313,3 +350,81 @@ def test_entry_never_loads_npu_before_fresh_joint_loader(tmp_path,monkeypatch,pr
         assert calls[0][2]['ASCEND_CUSTOM_OPP_PATH'].endswith('receiver-adn-gdr')
         assert calls[0][2]['TORCH_DEVICE_BACKEND_AUTOLOAD']=='0'
         assert json.loads((root/'suite.json').read_text())['single_op_graph']=='NOT_RUN'
+
+
+@pytest.mark.parametrize('mode',['automatic','manifest'])
+@pytest.mark.parametrize('damage',[None,'manifest_missing','manifest_hash','manifest_policy','manifest_status',
+    'nz_format','weight_missing','weight_tamper','inverse','metadata_path','audit_hash','audit_status',
+    'node_count','const_desc','constant_hash','group','capture_hash','both','backend'])
+def test_offline_nz_binding_is_not_just_a_manifest_path(tmp_path,monkeypatch,mode,damage):
+    _,tool=ac_tools(monkeypatch)
+    config,graph,bundle,manifest=offline_nz_fixture(tmp_path,monkeypatch,mode)
+    # Historical .get() may yield None either for an absent key or JSON null.
+    if mode=='manifest': config['draft_weight_prepack']=None
+    original=copy.deepcopy(config)
+    layout=graph['runtime_input_abi']['weight_quant_layout']; prepack=layout['prepack']
+    data=json.loads(manifest.read_text()); weight=manifest.parent/data['weights'][0]['path']
+    def update_manifest():
+        manifest.write_text(json.dumps(data)); digest=tool.sha256(manifest)
+        prepack['offline_manifest_sha256']=digest
+        graph['payload_files'][0].update(sha256=digest,bytes=manifest.stat().st_size)
+    if damage=='manifest_missing': manifest.unlink()
+    elif damage=='manifest_hash': manifest.write_text('{}')
+    elif damage in ('manifest_policy','manifest_status','nz_format'):
+        if damage=='nz_format': data['weights'][0]['format']='ND'
+        else: data['policy' if damage=='manifest_policy' else 'status']='wrong'
+        update_manifest() # Reach schema checks, rather than fail only the hash check.
+    elif damage=='weight_missing': weight.unlink()
+    elif damage in ('weight_tamper','inverse'):
+        raw=bytearray(weight.read_bytes());raw[0]^=1;weight.write_bytes(raw)
+        if damage=='inverse':
+            data['weights'][0]['sha256']=tool.sha256(weight);update_manifest()
+            # All carrier hashes agree but the bytes no longer restore captured Q.
+            bundle['cases'][0]['files']['w_nz.bin']['sha256']=tool.sha256(weight)
+            layout['nodes'][0]['prepacked_constant']['storage_sha256']=tool.sha256(weight)
+    elif damage=='metadata_path': graph['metadata']['draft_weight_prepack_manifest']=str(tmp_path/'unrelated.json')
+    elif damage=='audit_hash': prepack['offline_manifest_sha256']='0'*64
+    elif damage=='audit_status': prepack['status']='FAIL'
+    elif damage=='node_count': prepack['node_count']=25
+    elif damage=='const_desc': layout['nodes'][0]['prepacked_constant']['value_format']='ND'
+    elif damage=='constant_hash': layout['nodes'][0]['prepacked_constant']['logical_sha256']='0'*64
+    elif damage=='group': layout['nodes'][0]['group_size']=64
+    elif damage=='capture_hash': bundle['cases'][0]['files']['q_nk.bin']['sha256']='0'*64
+    elif damage=='both': config.update(draft_weight_prepack='nz',draft_weight_prepack_manifest=str(manifest))
+    elif damage=='backend': config['draft_quant_matmul']='dequant'
+    if damage:
+        with pytest.raises((ValueError,FileNotFoundError)):
+            tool.validate_offline_nz(config,graph,tmp_path,tmp_path/'capture.json',bundle)
+    else:
+        result=tool.validate_offline_nz(config,graph,tmp_path,tmp_path/'capture.json',bundle)
+        assert result==dict(path=str(manifest),sha256=tool.sha256(manifest))
+        assert config==original
+
+
+@pytest.mark.parametrize('mode',['automatic','manifest'])
+def test_full_draft_accepts_both_nz_routes_before_model_loading(tmp_path,monkeypatch,mode):
+    _,tool=ac_tools(monkeypatch)
+    spec=importlib.util.spec_from_file_location('ac_full_nz_entry',ROOT/'framework/custom_ops/draft_ac/test/run.py')
+    entry=importlib.util.module_from_spec(spec);spec.loader.exec_module(entry)
+    config,graph,bundle,manifest=offline_nz_fixture(tmp_path,monkeypatch,mode)
+    graph['name']='draft'
+    def save(name,data):
+        p=tmp_path/name;p.write_text(json.dumps(data));return p
+    factory=save('factory.json',config);air=save('air.json',dict(factory_config=config,graphs=[graph]))
+    # Compiled deployment intentionally lacks AIR payload_files, as real compiler output does.
+    deployed={k:v for k,v in graph.items() if k!='payload_files'}
+    deployment=save('deployment.json',dict(status='PASS',air_manifest=dict(path=air.name,sha256=tool.sha256(air)),graphs=[deployed]))
+    from qwen35_dflash.ascend310p import quant_factory,draft_gears
+    monkeypatch.setitem(sys.modules,'torchair',SimpleNamespace())
+    monkeypatch.setattr(draft_gears,'verify_om_files',lambda *a:None)
+    monkeypatch.setattr(draft_gears,'om_records',lambda *a:[])
+    class ReachedLoader(Exception): pass
+    def prepare(received,*a):
+        assert received==config
+        if mode=='manifest': assert 'draft_weight_prepack' not in received
+        raise ReachedLoader()
+    monkeypatch.setattr(quant_factory.create_quant_incremental_graphs,'prepare_export',prepare)
+    args=SimpleNamespace(factory_config=factory,native_deployment=deployment,a16_bundle=tmp_path/'capture.json',replay16=None,replay64=None)
+    root=tmp_path/'new';root.mkdir()
+    with pytest.raises(ReachedLoader): entry.full_draft(args,root,None,{16:bundle})
+    assert json.loads(factory.read_text())==config
