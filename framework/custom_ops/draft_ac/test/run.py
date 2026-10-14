@@ -68,6 +68,12 @@ def compare(expected,actual,folder):
 
 def export_one(spec,folder,atc):
     import torch
+    import torchair
+    from qwen35_dflash.ascend310p.draft_ac_export import GE,converter_capabilities
+    capabilities=[converter_capabilities(op,torchair) for op in spec.custom_ops if op.torch_op in GE]
+    if capabilities:
+        write_json(folder/'converter-capabilities.json',capabilities)
+        print('A/C converter capabilities: '+str(folder/'converter-capabilities.json'),flush=True)
     from qwen35_dflash.ascend310p.exporter import export_air_bundle
     from qwen35_dflash.ascend310p.compiler import compile_air_bundle
     air=export_air_bundle(lambda _:(spec,),{},folder/'artifacts')

@@ -43,18 +43,84 @@ def test_gn_is_transposed_not_reshaped_and_anchor_rows_unchanged():
 
 
 @pytest.mark.parametrize('op',[A,C,AUDIT])
-def test_named_converter_ports_and_exact_output_arity(op):
+@pytest.mark.parametrize('mode',['named','positional','wrapped_named','opaque'])
+def test_converter_ports_and_exact_output_arity(op,mode):
     registry={}; seen=[]
-    def custom_op(op_type,*,inputs,outputs,attrs):
+    names=['x','w_nz','s'] if op==A else ['hidden','weight']
+    outputs=['token_id','logits'] if op==AUDIT else ['y' if op==A else 'token_id']
+    def named(op_type,*,inputs,outputs,attrs):
         seen.append((op_type,inputs,outputs,attrs)); return ['out'+str(i) for i in range(len(outputs))]
+    def positional(op_type,*args):
+        seen.append((op_type,args)); return ['out'+str(i) for i in range(len(outputs))]
+    def wrapped_named(op_type,*args,inputs,outputs,attrs):
+        assert not args
+        return named(op_type,inputs=inputs,outputs=outputs,attrs=attrs)
+    class Opaque:
+        __signature__='uninspectable C-extension-style fixture'
+        def __call__(self,op_type,*args): return positional(op_type,*args)
+    custom_op={'named':named,'positional':positional,'wrapped_named':wrapped_named,'opaque':Opaque()}[mode]
     def register(target):
         def wrap(fn): registry[target]=fn; return fn
         return wrap
     session=prepare_export(CustomOpExportSpec(op,GE[op]),SimpleNamespace(ge=SimpleNamespace(custom_op=custom_op),register_fx_node_ge_converter=register))
-    result=next(iter(registry.values()))(*range(3 if op==A else 2))
+    converter=next(iter(registry.values()))
+    kwargs={'x':0,'weight':1,'scale':2} if op==A else {'hidden':0,'weight':1}
+    result=converter(**kwargs,meta_outputs=None)
     assert session.converter_calls==1 and seen[0][0]==GE[op]
-    assert list(seen[0][1])==(['x','w_nz','s'] if op==A else ['hidden','weight'])
+    expected_mode='named-only' if mode in ('named','wrapped_named') else 'registered-ir-positional'
+    assert session.converter_mode==expected_mode
+    if expected_mode=='named-only':
+        assert list(seen[0][1])==names and list(seen[0][1].values())==list(range(len(names)))
+        assert seen[0][2]==outputs and seen[0][3]=={}
+    else: assert seen[0][1]==tuple(range(len(names)))
     assert result==(['out0','out1'] if op==AUDIT else 'out0')
+    with pytest.raises(TypeError): converter(**{**kwargs,'unknown_input':object()})
+    with pytest.raises(TypeError): converter()
+    assert session.converter_calls==1
+
+
+@pytest.mark.parametrize('failure',['no_ge','no_custom_op','no_registrar','bad_custom_signature','bad_registrar_signature','bad_decorator'])
+def test_converter_capability_errors_identify_missing_or_unsupported_api(failure):
+    from qwen35_dflash.ascend310p.draft_ac_export import converter_capabilities
+    def named(op_type,*,inputs,outputs,attrs): pytest.fail('diagnostics must not emit GE nodes')
+    def register(op): return lambda fn:fn
+    api=SimpleNamespace(ge=SimpleNamespace(custom_op=named),register_fx_node_ge_converter=register)
+    if failure=='no_ge': del api.ge
+    elif failure=='no_custom_op': api.ge.custom_op=None
+    elif failure=='no_registrar': api.register_fx_node_ge_converter=None
+    elif failure=='bad_custom_signature': api.ge.custom_op=lambda unrelated:None
+    elif failure=='bad_registrar_signature': api.register_fx_node_ge_converter=lambda op,required:None
+    elif failure=='bad_decorator': api.register_fx_node_ge_converter=lambda op:None
+    spec=CustomOpExportSpec(A,GE[A]); diagnostic=converter_capabilities(spec,api)
+    if failure!='bad_decorator': assert diagnostic['status']=='UNSUPPORTED'
+    with pytest.raises(RuntimeError,match='A/C interface=') as caught: prepare_export(spec,api)
+    message=str(caught.value)
+    assert ('missing callable' if failure.startswith('no_') else 'signature' if 'signature' in failure else 'decorator') in message
+
+
+@pytest.mark.parametrize('op',[A,C,AUDIT])
+@pytest.mark.parametrize('mode',['named','positional'])
+@pytest.mark.parametrize('result',[None,[],['only','too','many']])
+def test_converter_rejects_wrong_sdk_outputs_without_retry(op,mode,result):
+    registry=[];calls=[]
+    def named(op_type,*,inputs,outputs,attrs): calls.append(op_type);return result
+    def positional(op_type,*args): calls.append(op_type);return result
+    def registrar(op): return lambda fn:registry.append(fn)
+    api=SimpleNamespace(ge=SimpleNamespace(custom_op=named if mode=='named' else positional),register_fx_node_ge_converter=registrar)
+    session=prepare_export(CustomOpExportSpec(op,GE[op]),api)
+    with pytest.raises(RuntimeError,match='custom GE output'): registry[0](*range(3 if op==A else 2))
+    assert calls==[GE[op]] and session.converter_calls==1
+
+
+def test_ge_runtime_error_keeps_selected_mode_and_does_not_try_another_mapping():
+    registry=[];calls=[]
+    def custom_op(op_type,*args): calls.append((op_type,args));raise TypeError('receiver rejected registered IR')
+    def registrar(op): return lambda fn:registry.append(fn)
+    api=SimpleNamespace(ge=SimpleNamespace(custom_op=custom_op),register_fx_node_ge_converter=registrar)
+    session=prepare_export(CustomOpExportSpec(A,GE[A]),api)
+    with pytest.raises(RuntimeError,match='GE emission failed using registered-ir-positional'):
+        registry[0](0,1,2)
+    assert calls==[(GE[A],(0,1,2))] and session.converter_calls==1
 
 
 def fixture():
@@ -498,3 +564,31 @@ def test_device_worker_without_joint_opp_stops_before_any_device_code(tmp_path,m
     report=json.loads((root/'suite.json').read_text())
     assert 'missing DFlashGroupQuantLinear' in report['error'] and report['single_op_graph']=='NOT_RUN'
     assert 'torch_npu' not in sys.modules and not (root/'device-process.json').exists()
+
+
+@pytest.mark.parametrize('mode',['named','positional'])
+def test_audit_converter_requires_both_token_ids_and_logits(mode):
+    registry=[]
+    def named(op_type,*,inputs,outputs,attrs): return ['ids_only']
+    def positional(op_type,*args): return ['ids_only']
+    def register(op): return lambda fn:registry.append(fn)
+    api=SimpleNamespace(ge=SimpleNamespace(custom_op=named if mode=='named' else positional),register_fx_node_ge_converter=register)
+    session=prepare_export(CustomOpExportSpec(AUDIT,GE[AUDIT]),api)
+    with pytest.raises(RuntimeError,match='output arity differs'): registry[0](0,1)
+    assert session.converter_calls==1
+
+
+def test_export_keeps_capability_diagnostic_when_api_is_missing(tmp_path,monkeypatch):
+    ac_tools(monkeypatch)
+    script=ROOT/'framework/custom_ops/draft_ac/test/run.py'
+    loader=importlib.util.spec_from_file_location('ac_api_diagnostic_entry',script)
+    entry=importlib.util.module_from_spec(loader);loader.loader.exec_module(entry)
+    api=SimpleNamespace(__version__='CPU-test-missing-api')
+    monkeypatch.setitem(sys.modules,'torchair',api)
+    from qwen35_dflash.ascend310p import exporter
+    spec=SimpleNamespace(custom_ops=(CustomOpExportSpec(A,GE[A]),))
+    def export(*args,**kwargs): return prepare_export(spec.custom_ops[0],api)
+    monkeypatch.setattr(exporter,'export_air_bundle',export)
+    with pytest.raises(RuntimeError,match='missing callable'): entry.export_one(spec,tmp_path,'not-used')
+    report=json.loads((tmp_path/'converter-capabilities.json').read_text())[0]
+    assert report['status']=='UNSUPPORTED' and not report['custom_op']['callable'] and not report['registrar']['callable']

@@ -36,6 +36,16 @@ C 只代理原 `DraftGraph.ops.top1`，仍由原 `forward` 计算 `self.norm(hid
 
 只有显式集成 spec 会使用保存钩子和编译审计，未带 `draft_ac` 元数据的导出规则不变。GE 输出必须保留准确节点数，不能将 compiler 的原生 WeightQuant 审计放宽成“任意数量”。
 
+### TorchAir Converter 接口兼容
+
+用户提供的 `/home/w00949577/qwen35-dflash-run/ac-ge-20261014-075251` 已通过 Preflight、三算子联合 OPP 编译安装和 C++ runner 构建，但首次 AIR 导出被旧的接口检查拒绝。旧报错没有区分 API 缺失与 `_custom_op_call_mode()` 返回合法的 `registered-ir-positional`，因此不能仅凭该日志断言服务器的具体签名。
+
+A/C 现复用已有框架的两种调用约定：命名接口 `custom_op(OpType, inputs={...}, outputs=[...], attrs={})`，以及已注册 IR 的位置接口 `custom_op(OpType, *ordered_tensors)`。位置顺序严格遵循上表，A/C 不添加属性。显式暴露 `inputs/outputs/attrs` 的 variadic wrapper 仍按命名形式处理；无法 introspect 的 callable 按框架原有位置调用约定尝试一次，并明确记录签名不可见，不能视为 SDK 已验证。
+
+每个图在导出前保存 `converter-capabilities.json`：TorchAir 版本/来源、两个 API 是否 callable、真实签名和 wrapper 签名、框架原分类、选定调用方式、端口及静态 bind 错误。API 缺失、签名不支持、注册失败和 SDK 调用失败分别报错；失败不会尝试另一种映射，不会产生多余 GE 节点。输出数量严格检查，Audit 必须同时返回 ID 和 logits。Fake dtype/shape、Converter 调用计数、AIR 节点数量和 NPU bitwise gate 均保留。
+
+本轮本地 Converter/集成/runtime-input 回归 **249 PASS**。服务器真实 API 诊断、修复后的 AIR/ATC 和 NPU 正确性在运行前仍为 **NOT_RUN**。请随 `suite.json` 和 `.server.log` 回传失败图目录的 `converter-capabilities.json`、AIR 导出/ATC 日志及已有 `dynamo.pbtxt`（若生成）。
+
 ## OPP 共存与 provenance
 
 A/C 独立包都使用 `vendors/customize` 和同名动态库，不能简单叠放覆盖。入口从冻结源码及**已验收的生成 header**新建一个联合 msopgen 工程，含 A、C Fused、C Audit 三个算子。保留 A K256/broadcast/A-UB 及原 pipeline/core 配置；保留 C compare_select/vector/profile=none。没有 Probe 或新算法。

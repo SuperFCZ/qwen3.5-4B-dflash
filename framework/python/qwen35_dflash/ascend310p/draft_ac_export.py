@@ -7,6 +7,8 @@ from __future__ import annotations
 import copy
 from dataclasses import replace
 import hashlib
+import inspect
+import json
 import threading
 import torch
 from torch import nn
@@ -57,26 +59,92 @@ def ensure_ops():
         _LIBS.append(lib)
 
 
-def prepare_export(spec,torchair):
-    from .custom_op_export import CustomOpExportSession,_custom_op_call_mode
-    if spec.torch_op not in GE or spec.ge_op_type!=GE[spec.torch_op] or spec.overload!='default': raise ValueError('unknown A/C ABI')
-    ensure_ops(); op=getattr(torch.ops.dflash_ac,spec.torch_op.split('::')[1]).default
+def converter_capabilities(spec,torchair):
+    """Inspect without emitting GE nodes; signature support is not GE/ATC PASS."""
+    from .custom_op_export import _custom_op_call_mode
+    if spec.torch_op not in GE or spec.ge_op_type!=GE[spec.torch_op] or spec.overload!='default':
+        raise ValueError('unknown A/C ABI')
+    def describe(fn):
+        info=dict(callable=callable(fn),module=getattr(fn,'__module__',None),name=getattr(fn,'__qualname__',None))
+        signature=None
+        if callable(fn):
+            try: signature=inspect.signature(fn); info['signature']=str(signature)
+            except (TypeError,ValueError) as e: info['signature_error']=str(e)
+            try: info['wrapper_signature']=str(inspect.signature(fn,follow_wrapped=False))
+            except (TypeError,ValueError): pass
+            try: info['source_file']=inspect.getsourcefile(fn)
+            except TypeError: pass
+        return info,signature
     call=getattr(getattr(torchair,'ge',None),'custom_op',None)
     registrar=getattr(torchair,'register_fx_node_ge_converter',None)
-    if not callable(call) or not callable(registrar) or _custom_op_call_mode(call)=='registered-ir-positional':
-        raise RuntimeError('A/C requires TorchAir named-input ge.custom_op and converter registration')
-    session=CustomOpExportSession(spec,str(op._schema),'framework-meta-only','named-ac-v1','framework-registered-ge-ir')
-    def converter(*args,meta_outputs=None):
-        del meta_outputs
+    call_info,signature=describe(call); reg_info,reg_signature=describe(registrar)
+    names=['x','w_nz','s'] if spec.torch_op==A else ['hidden','weight']
+    outputs=['token_id','logits'] if spec.torch_op==AUDIT else ['y' if spec.torch_op==A else 'token_id']
+    report=dict(torchair_version=str(getattr(torchair,'__version__','unknown')),torchair_file=getattr(torchair,'__file__',None),
+                torch_target=spec.torch_target,ge_op_type=spec.ge_op_type,input_ports=names,output_ports=outputs,
+                custom_op=call_info,registrar=reg_info,errors=[],scope='API capability only; GE/ATC/NPU NOT_RUN')
+    if not callable(call): report['errors'].append('missing callable torchair.ge.custom_op')
+    if not callable(registrar): report['errors'].append('missing callable torchair.register_fx_node_ge_converter')
+    if callable(call):
+        mode=_custom_op_call_mode(call); report['legacy_call_mode']=mode
+        # A wrapper may have *args AND explicit keyword ports. Do not mistake
+        # this documented named interface for registered-IR tensor varargs.
+        if signature and {'inputs','outputs','attrs'}<=signature.parameters.keys(): mode='named-only'
+        report['selected_call_mode']=mode
+        if signature:
+            try:
+                if mode=='named-only': signature.bind(spec.ge_op_type,inputs=dict.fromkeys(names),outputs=outputs,attrs={})
+                else: signature.bind(spec.ge_op_type,*([None]*len(names)))
+            except TypeError as e: report['errors'].append(f'unsupported ge.custom_op signature for {mode}: {e}')
+        else:
+            report['signature_policy']='uninspectable; existing framework registered-IR positional convention; no retry'
+    if reg_signature:
+        try: reg_signature.bind(None)
+        except TypeError as e: report['errors'].append(f'unsupported converter registrar signature: {e}')
+    report['status']='UNSUPPORTED' if report['errors'] else 'CALL_FORM_SELECTED'
+    return report
+
+
+def prepare_export(spec,torchair):
+    from .custom_op_export import CustomOpExportSession
+    diagnostic=converter_capabilities(spec,torchair)
+    def fail(message,error=None):
+        raise RuntimeError(message+'; A/C interface='+json.dumps(diagnostic,sort_keys=True)) from error
+    if diagnostic['errors']: fail('; '.join(diagnostic['errors']))
+    ensure_ops(); op=getattr(torch.ops.dflash_ac,spec.torch_op.split('::')[1]).default
+    call=torchair.ge.custom_op; registrar=torchair.register_fx_node_ge_converter
+    mode=diagnostic['selected_call_mode']; names=diagnostic['input_ports']; outputs=diagnostic['output_ports']
+    session=CustomOpExportSession(spec,str(op._schema),'framework-meta-only',mode,'framework-registered-ge-ir')
+    def emit(args):
         session.converter_calls+=1
-        names=('x','w_nz','s') if spec.torch_op==A else ('hidden','weight')
-        outputs=['token_id','logits'] if spec.torch_op==AUDIT else ['y' if spec.torch_op==A else 'token_id']
-        result=call(spec.ge_op_type,inputs=dict(zip(names,args)),outputs=outputs,attrs={})
-        if len(outputs)==1 and isinstance(result,(list,tuple)):
-            if len(result)!=1: raise RuntimeError('custom GE output arity differs')
-            return result[0]
+        try:
+            # Registered IR supplies the exact frozen port schema for positional
+            # calls. No attrs, casts, native replacement or alternate retry.
+            result=(call(spec.ge_op_type,*args) if mode=='registered-ir-positional' else
+                    call(spec.ge_op_type,inputs=dict(zip(names,args)),outputs=list(outputs),attrs={}))
+        except Exception as e: fail(f'{spec.ge_op_type} GE emission failed using {mode}: {e}',e)
+        if len(outputs)==1:
+            if isinstance(result,(list,tuple)):
+                if len(result)!=1: fail('custom GE output arity differs: expected '+str(outputs))
+                result=result[0]
+            if result is None: fail('custom GE output is missing: '+str(outputs))
+        elif not isinstance(result,(list,tuple)) or len(result)!=len(outputs) or any(v is None for v in result):
+            fail('custom GE output arity differs: expected '+str(outputs))
         return result
-    registrar(op)(converter)
+    # Explicit schema signatures reject missing/extra/unknown inputs rather
+    # than letting zip silently truncate; FX keyword calls preserve port order.
+    if spec.torch_op==A:
+        def converter(x,weight,scale,meta_outputs=None):
+            return emit((x,weight,scale))
+    else:
+        def converter(hidden,weight,meta_outputs=None):
+            return emit((hidden,weight))
+    try:
+        decorator=registrar(op)
+    except Exception as e: fail(f'converter registration failed for {spec.torch_target}: {e}',e)
+    if not callable(decorator): fail('converter registrar did not return a callable decorator')
+    try: decorator(converter)
+    except Exception as e: fail(f'converter registration failed for {spec.torch_target}: {e}',e)
     return session
 
 
