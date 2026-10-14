@@ -1,4 +1,8 @@
-# C Top1：Scalar 瓶颈诊断与第一版 Vector 候选
+# C Top1：Scalar 瓶颈诊断与 Vector 实验记录
+
+最新实测已通过 Primitive 2191/2191、Scalar/Vector 41/41，M15 Vector ≈17.1 ms。
+本文件保留实验历史；当前正式默认与新构建待验收状态见 [C_RELEASE.md](C_RELEASE.md)。
+实验脚本仍显式开启 Probe；直接运行诊断时使用 `HEAD_TOP1_PROBE=1`，正式默认不带 Probe。
 
 ## 已确认的设备基线
 
@@ -141,7 +145,7 @@ Top1 对照；比较器核对 hidden/weight/capture/Native manifest SHA256、til
 若只验证候选、暂不跑整套性能对照：
 
 ```bash
-HEAD_NATIVE_ONLY=0 HEAD_TOP1=vector HEAD_CONVERSION=compare_select \
+HEAD_NATIVE_ONLY=0 HEAD_TOP1=vector HEAD_TOP1_PROBE=1 HEAD_CONVERSION=compare_select \
 HEAD_DIAGNOSTICS=0 HEAD_WARMUP=5 HEAD_REPETITIONS=30 \
   bash framework/custom_ops/draft_head/run_server.sh
 ```

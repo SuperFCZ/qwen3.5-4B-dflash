@@ -6,14 +6,14 @@ Native Top1 对齐与 `synthetic-nan_first` 实测语义修复后，用户已确
 不再单独重复 Native-only；Custom 的最新验收状态与后续实验见下文。
 
 目标 Ascend310P3 / CANN 9.0.0，遵循 [OPTIMIZATION.md 的 C 契约](../../../docs/OPTIMIZATION.md)。
-**正确性基线已确认：`2a9211f` / `.runs/head-DGwqjbT8`，compare_select + Scalar Top1
-在 Ascend310P3/CANN 9.0.0 完整 41/41 PASS。** 历史溢出诊断见
-[OVERFLOW_CONVERSION.md](OVERFLOW_CONVERSION.md)。当前默认选择该已验收转换及 Scalar Top1，
-保留旧提交、cast/minmax 路径与隔离 OPP/evidence。
-`ca58d9f` Vector Probe 在全 NaN 行返回 -1，未通过 Primitive。本轮改用原始 FP16
-位型分类，增加 NE/EQ/widening/mask-layout 留证，默认 Scalar 基线不变。见
-[TOP1_VECTOR_EXPERIMENT.md](TOP1_VECTOR_EXPERIMENT.md) 的一键 paired 测试入口。
-**新路径 CANN 编译、primitive NPU、完整 41-case、性能均为 NOT_RUN**；默认不启用 Vector。
+**用户已确认 Vector 真实 NPU 验收：2191/2191 Primitive，Scalar/Vector 各 41/41；
+M15 Vector ≈17.1 ms，Native ≈23.26 ms。** 原始 evidence 为
+`/home/w00949577/qwen35-dflash-run/head-top1-full-20261013-115730`。
+本轮冻结 compare_select + Vector Top1 为默认，Scalar 为可选回退。正常构建只包含
+Fused/Audit 两个算子，不生成或依赖 Probe；数学实现保持 18c59c5 的源码 SHA。
+正式配置、稳定 ACLNN 接口和服务器一键验收见 [C_RELEASE.md](C_RELEASE.md)。
+**新正式双算子包的 CANN/NPU 正确性和性能仍为 NOT_RUN**，不能沿用历史 PASS。
+独立诊断与实验入口继续保留：[TOP1_VECTOR_EXPERIMENT.md](TOP1_VECTOR_EXPERIMENT.md)。
 本地 CPU 模型/声明桩通过不能替代设备验收。
 本目录不改变 Qwen/DFlash 默认路径。单个 gate/up 接入目前只有
 [opt-in 设计](../draft_quant/GATE_UP_OPT_IN.md)，也为 `NOT_RUN`。

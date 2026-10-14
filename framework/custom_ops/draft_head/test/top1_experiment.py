@@ -24,7 +24,7 @@ def call(command,log,env,timeout=None):
 def build(root,label,conversion='compare_select',top1='scalar',profile='none'):
     state=root/f'{label}-build.json'
     env=os.environ.copy(); env.update(HEAD_CONVERSION=conversion,HEAD_TOP1=top1,HEAD_PROFILE_STAGE=profile,
-        HEAD_NATIVE_ONLY='0',HEAD_DIAGNOSTICS='0',HEAD_BUILD_ONLY='1',HEAD_BUILD_STATE=str(state))
+        HEAD_NATIVE_ONLY='0',HEAD_DIAGNOSTICS='0',HEAD_TOP1_PROBE='1' if top1=='vector' else '0',HEAD_BUILD_ONLY='1',HEAD_BUILD_STATE=str(state))
     call(['bash',str(HERE/'run_server.sh')],root/f'{label}-build.log',env)
     result=json.loads(state.read_text()); result['environment']={**os.environ,**result['environment']}
     config=build_config.load(result['config'])

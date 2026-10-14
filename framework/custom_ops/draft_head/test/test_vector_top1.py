@@ -88,12 +88,12 @@ class VectorTop1Tests(unittest.TestCase):
         self.assertEqual(trace_report(raw,bad.tobytes())['status'],'FAIL')
         with self.assertRaises(ValueError): trace_report(raw,bytes(15*64*4))
 
-    def test_build_default_is_accepted_scalar_compare_select(self):
+    def test_build_default_is_accepted_vector_compare_select(self):
         with tempfile.TemporaryDirectory() as directory:
             h=Path(directory)/'head_config.h'; out=Path(directory)/'build.json'
             configure(h,out,0)
             config=load(out)
-            self.assertEqual((config['conversion'],config['top1'],config['profile']),('compare_select','scalar','none'))
+            self.assertEqual((config['conversion'],config['top1'],config['profile']),('compare_select','vector','none'))
             configure(h,out,0,top1='vector')
             self.assertIn('DFLASH_HEAD_VECTOR_TOP1 1',h.read_text())
             data=json.loads(out.read_text()); data['profile']='matmul'; out.write_text(json.dumps(data))

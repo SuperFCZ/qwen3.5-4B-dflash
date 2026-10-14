@@ -3,7 +3,8 @@
 最新用户回传：`2a9211f` / `.runs/head-DGwqjbT8` 的 compare_select + Scalar Top1 已在
 Ascend310P3/CANN 9.0.0 完整 41/41 PASS。下文 NOT_RUN 描述保留为此前候选阶段记录；
 后续 Top1 性能实验及当前状态见 [TOP1_VECTOR_EXPERIMENT.md](TOP1_VECTOR_EXPERIMENT.md)。
-当前默认已选择 compare_select + scalar，Vector 仍需显式启用。
+后续 Vector 已完成真实 41/41 验收，当前正式默认为 compare_select + Vector；
+见 [C_RELEASE.md](C_RELEASE.md)，下文保留转换修复阶段的历史记录。
 
 ## 实测状态（与本轮待验收项分开）
 
@@ -118,7 +119,7 @@ HEAD_WARMUP=5 HEAD_REPETITIONS=30 \
 脚本依次：新目录构建/安装 → 独立 Vector → Head precast → 敏感 subset → 完整 41-case。
 仍严格要求全部 Audit FP16 logits bitwise、Fused/Audit INT64 IDs 一致，以及 guards、readonly、
 repeat、row permutation、timed-tail/postcheck；Native 执行是同输入 golden 对照。
-`HEAD_CONVERSION=cast HEAD_DIAGNOSTICS=0` 可恢复原 CAST_NONE 对照构建，已知 overflow 会失败，
+`HEAD_CONVERSION=cast HEAD_TOP1=scalar HEAD_DIAGNOSTICS=0` 可恢复原 CAST_NONE 对照构建，已知 overflow 会失败，
 不得把它的预期失败改成通过。只有真实设备结果决定后续是否采用候选，当前不修改默认值。
 
 回传新目录的 `server.log`、`build-config.json`、`opp-preflight.json`、

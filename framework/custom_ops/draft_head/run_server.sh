@@ -7,7 +7,10 @@ device=${DEVICE_ID:-0}
 core_limit=${DFLASH_HEAD_CORE_LIMIT:-0}
 native_only=${HEAD_NATIVE_ONLY:-0}
 conversion=${HEAD_CONVERSION:-compare_select}
-top1=${HEAD_TOP1:-scalar}
+top1=${HEAD_TOP1:-vector}
+top1_probe=${HEAD_TOP1_PROBE:-0}
+[[ "$top1_probe" == 0 || "$top1_probe" == 1 ]] || { echo 'HEAD_TOP1_PROBE must be 0 or 1' >&2; exit 1; }
+if [[ "$top1_probe" == 1 && ( "$top1" != vector || "$native_only" != 0 ) ]]; then echo 'Top1 probe requires vector' >&2; exit 1; fi
 profile=${HEAD_PROFILE_STAGE:-none}
 build_only=${HEAD_BUILD_ONLY:-0}
 [[ "$top1" == scalar || "$top1" == vector ]] || { echo 'HEAD_TOP1 must be scalar or vector' >&2; exit 1; }
@@ -20,7 +23,7 @@ if [[ "$build_only" == 1 ]]; then
   : "${HEAD_BUILD_STATE:?Set new build-state JSON path}" "${HEAD_CAPTURE:?Reuse capture}" "${HEAD_NATIVE_MANIFEST:?Reuse Native OM}"
   [[ ! -e "$HEAD_BUILD_STATE" && "$native_only" == 0 ]] || exit 1
 fi
-if [[ "$top1" == vector ]]; then
+if [[ "$native_only" == 0 ]]; then
   : "${HEAD_CAPTURE:?Reuse existing Head capture}" "${HEAD_NATIVE_MANIFEST:?Reuse existing Native OM}"
 fi
 diagnostics=${HEAD_DIAGNOSTICS:-0}
@@ -63,7 +66,7 @@ if [[ -z "$capture" ]]; then
   if [[ -n "${HEAD_EMBEDDING_KEY:-}" ]]; then extra+=(--embedding-key "$HEAD_EMBEDDING_KEY"); fi
   "$python_bin" "$here/test/capture.py" --draft-dir "$DRAFT_DIR" --target-dir "$TARGET_DIR" \
     --c16-replay-report "$C16_REPLAY_REPORT" --c64-replay-report "$C64_REPLAY_REPORT" \
-    --output-dir "$artifact_root/capture" --device-id "$device" "${extra[@]}"
+    --output-dir "$artifact_root/capture" --device-id "$device" ${extra[@]+"${extra[@]}"}
   capture="$artifact_root/capture/manifest.json"
 fi
 native=${HEAD_NATIVE_MANIFEST:-}
@@ -102,7 +105,7 @@ else
       msopgen gen -i "$here/test/probe/$op.json" -c ai_core-Ascend310P3 -lan cpp -out "$project" -op "$op" -m 1
     done
   fi
-  if [[ "$top1" == vector ]]; then
+  if [[ "$top1_probe" == 1 ]]; then
     msopgen gen -i "$here/test/top1_probe/DFlashTop1Probe.json" -c ai_core-Ascend310P3 -lan cpp -out "$project" -op DFlashTop1Probe -m 1
   fi
   phase=check_generated_project
@@ -146,7 +149,7 @@ foreach(probe_name d_flash_head_probe d_flash_cast_probe)
 endforeach()
 PROBE_CMAKE_CHECK
   fi
-  if [[ "$top1" == vector ]]; then
+  if [[ "$top1_probe" == 1 ]]; then
     cp "$here/test/top1_probe/d_flash_top1_probe_host.cpp" "$project/op_host/d_flash_top1_probe.cpp"
     cp "$here/test/top1_probe/d_flash_top1_probe_tiling.h" "$project/op_host/"
     cp "$here/test/top1_probe/d_flash_top1_probe_kernel.cpp" "$project/op_kernel/d_flash_top1_probe.cpp"
@@ -176,8 +179,9 @@ endif()
 HEAD_CMAKE_CHECK
   diagnostic_args=()
   if [[ "$diagnostics" == 1 ]]; then diagnostic_args+=(--diagnostics); fi
+  if [[ "$top1_probe" == 1 ]]; then diagnostic_args+=(--top1-probe); fi
   "$python_bin" "$here/test/build_config.py" --header "$project/op_host/head_config.h" \
-    --output "$run_root/build-config.json" --core-limit "$core_limit" --conversion "$conversion" --top1 "$top1" --profile "$profile" "${diagnostic_args[@]}"
+    --output "$run_root/build-config.json" --core-limit "$core_limit" --conversion "$conversion" --top1 "$top1" --profile "$profile" ${diagnostic_args[@]+"${diagnostic_args[@]}"}
   cp "$project/op_host/head_config.h" "$project/op_kernel/head_config.h"
   phase=build
   (cd "$project"; bash build.sh)
@@ -190,9 +194,14 @@ HEAD_CMAKE_CHECK
   source "$install/vendors/customize/bin/set_env.bash"
   set -u
   export LD_LIBRARY_PATH="$install/vendors/customize/op_api/lib:${LD_LIBRARY_PATH:-}"
-  if [[ "$top1" == vector ]]; then diagnostic_args+=(--vector-top1); fi
+  diagnostic_args=()
+  if [[ "$diagnostics" == 1 ]]; then diagnostic_args+=(--diagnostics); fi
+  if [[ "$top1_probe" == 1 ]]; then diagnostic_args+=(--vector-top1); fi
+  if [[ "$conversion" == compare_select && "$profile" == none && "$diagnostics" == 0 && "$top1_probe" == 0 ]]; then
+    diagnostic_args+=(--release)
+  fi
   phase=installed_opp_preflight
-  "$python_bin" "$here/test/head_opp_preflight.py" --install-root "$install" --report "$run_root/opp-preflight.json" "${diagnostic_args[@]}"
+  "$python_bin" "$here/test/head_opp_preflight.py" --install-root "$install" --report "$run_root/opp-preflight.json" ${diagnostic_args[@]+"${diagnostic_args[@]}"}
   phase=check_aclnn_headers
   for header in aclnn_d_flash_draft_lm_head_top1.h aclnn_d_flash_draft_lm_head_top1_audit.h; do
     if [[ ! -s "$install/vendors/customize/op_api/include/$header" ]]; then
@@ -205,14 +214,14 @@ HEAD_CMAKE_CHECK
       [[ -s "$install/vendors/customize/op_api/include/$header" ]] || { echo "Missing $header" >&2; exit 1; }
     done
   fi
-  if [[ "$top1" == vector ]]; then
+  if [[ "$top1_probe" == 1 ]]; then
     [[ -s "$install/vendors/customize/op_api/include/aclnn_d_flash_top1_probe.h" ]] || exit 1
   fi
   vector_build=OFF; profile_build=OFF
-  [[ "$top1" != vector ]] || vector_build=ON
+  [[ "$top1_probe" != 1 ]] || vector_build=ON
   [[ "$profile" == none ]] || profile_build=ON
   phase=build_custom_runner
-  cmake -S "$here/test" -B "$build_root/custom" -DCANN_ROOT="$cann_root" -DASCEND_OPP_PATH="$install" -DHEAD_DIAGNOSTICS="$diagnostics" -DHEAD_VECTOR_TOP1="$vector_build" -DHEAD_PROFILE_ONLY="$profile_build"
+  cmake -S "$here/test" -B "$build_root/custom" -DCANN_ROOT="$cann_root" -DASCEND_OPP_PATH="$install" -DHEAD_DIAGNOSTICS="$diagnostics" -DHEAD_TOP1_PROBE="$vector_build" -DHEAD_PROFILE_ONLY="$profile_build"
   cmake --build "$build_root/custom" --parallel
   extra+=(--runner "$build_root/custom/head_custom_test" --build-config "$run_root/build-config.json")
 fi
@@ -223,14 +232,15 @@ from pathlib import Path
 out,run,build,install=map(Path,sys.argv[1:])
 value=dict(status='BUILT_NOT_VALIDATED',run_root=str(run),build_root=str(build),install=str(install),
            config=str(run/'build-config.json'),runner=str(build/'custom/head_custom_test'),
-           native_runner=str(build/'native/head_native_test'),top1_runner=str(build/'custom/head_top1_probe_test'),
+           native_runner=str(build/'native/head_native_test'),
            environment={k:os.environ[k] for k in ('ASCEND_OPP_PATH','ASCEND_CUSTOM_OPP_PATH','ASCEND_HOME_PATH','LD_LIBRARY_PATH','PATH','PYTHONPATH') if k in os.environ})
+if (build/'custom/head_top1_probe_test').is_file(): value['top1_runner']=str(build/'custom/head_top1_probe_test')
 with out.open('x') as f: json.dump(value,f,indent=2)
 HEAD_STATE
   echo "Built only; correctness NOT_RUN: $HEAD_BUILD_STATE"
   exit 0
 fi
-if [[ "$top1" == vector ]]; then
+if [[ "$top1_probe" == 1 ]]; then
   phase=vector_top1_semantics
   "$python_bin" "$here/test/vector_top1_probe.py" --runner "$build_root/custom/head_top1_probe_test" \
     --output-dir "$run_root/top1-probe" --device-id "$device"
@@ -244,10 +254,10 @@ if [[ "$diagnostics" == 1 ]]; then
   "$python_bin" "$here/test/run_suite.py" --capture "$capture" --native-manifest "$native" \
     --native-runner "$build_root/native/head_native_test" --output-dir "$run_root/sensitive" --device-id "$device" \
     --warmup "${HEAD_WARMUP:-5}" --repetitions "${HEAD_REPETITIONS:-30}" --timeout "${HEAD_TIMEOUT:-1800}" \
-    --cases synthetic-overflow_inf,synthetic-nan_first,synthetic-signed_zero_underflow,synthetic-rounded_tie,synthetic-rounded_up "${extra[@]}"
+    --cases synthetic-overflow_inf,synthetic-nan_first,synthetic-signed_zero_underflow,synthetic-rounded_tie,synthetic-rounded_up ${extra[@]+"${extra[@]}"}
 fi
 phase=full_vocabulary_suite
 "$python_bin" "$here/test/run_suite.py" --capture "$capture" --native-manifest "$native" \
   --native-runner "$build_root/native/head_native_test" --output-dir "$run_root/data" --device-id "$device" \
-  --warmup "${HEAD_WARMUP:-5}" --repetitions "${HEAD_REPETITIONS:-30}" --timeout "${HEAD_TIMEOUT:-1800}" "${extra[@]}"
+  --warmup "${HEAD_WARMUP:-5}" --repetitions "${HEAD_REPETITIONS:-30}" --timeout "${HEAD_TIMEOUT:-1800}" ${extra[@]+"${extra[@]}"}
 echo "Summary: $run_root/data/suite.json; full Draft/Decode NOT_RUN"

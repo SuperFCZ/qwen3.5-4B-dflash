@@ -1,0 +1,32 @@
+{
+  "abi": "dflash-head-release-v1",
+  "algorithm_commit": "18c59c5",
+  "historical_evidence": "/home/w00949577/qwen35-dflash-run/head-top1-full-20261013-115730",
+  "source_sha256": {
+    "DFlashDraftLmHeadTop1.json": "079a0281fe7ed2eadd0a933a6f4581bb27813b23660631855aa60c3f15b1c72b",
+    "op_host/d_flash_draft_lm_head_top1.cpp": "ae90bbde78c89bf590cc91c667d698fcd6050532e1b52c4329f4c4333c00f3e7",
+    "op_host/d_flash_draft_lm_head_top1_audit.cpp": "204683fd6a6cc7368e6a6eb069ee3e6fb541cab751648b1ab2e49696172d146e",
+    "op_host/d_flash_draft_lm_head_top1_audit_tiling.h": "07da3c8b4672b9ffb10f6455e6630ab134271c730db2365a40429d4a274551a8",
+    "op_host/d_flash_draft_lm_head_top1_tiling.h": "3cb53cecc2fcbe35fde0e6f88daa492960fd7d45d6bb8860521473f6e0ae7200",
+    "op_host/head_contract.h": "047615407982104f6153ad45d2e5855da4b6399326daaa3af5162d2401bd4977",
+    "op_host/head_host.h": "be52434eddf09d0910a2f77484f330aa5b1c175872caccba1f17a5cb64cc41d8",
+    "op_kernel/d_flash_draft_lm_head_top1.cpp": "59c031cbef0a7cff45813ec518b23b75f31e8b0e326179584fbf4d1cd3fbf171",
+    "op_kernel/d_flash_draft_lm_head_top1_audit.cpp": "b477688fd078724245910f91206312a7691d3155404acf032c4bd4858372e693",
+    "op_kernel/head_contract.h": "b6fa9d867d798a88d0f0e9078e25f37cc09ed75d8461e1af3d6f5fb1c521b95c",
+    "op_kernel/head_conversion.h": "4c558fb60dfce4f40d3ebbce6ca14e7e59d81100d1b31509383d12333740b655",
+    "op_kernel/head_kernel.h": "022bd27ed8efd1b38be629c32a2399bda29b91cfec32a22f919457741f3f2936",
+    "op_kernel/head_vector_top1.h": "92598be4a841bc4b79521783f1cf565530e45970538e45034b86d639940421d4"
+  },
+  "defaults": {
+    "conversion": "compare_select",
+    "top1": "vector",
+    "profile": "none",
+    "diagnostics": false,
+    "top1_probe": false
+  },
+  "operators": [
+    "d_flash_draft_lm_head_top1",
+    "d_flash_draft_lm_head_top1_audit"
+  ],
+  "local_npu_validation_at_freeze": "NOT_RUN"
+}
