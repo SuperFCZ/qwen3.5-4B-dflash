@@ -46,6 +46,10 @@ A/C 现复用已有框架的两种调用约定：命名接口 `custom_op(OpType,
 
 本轮本地 Converter/集成/runtime-input 回归 **249 PASS**。服务器真实 API 诊断、修复后的 AIR/ATC 和 NPU 正确性在运行前仍为 **NOT_RUN**。请随 `suite.json` 和 `.server.log` 回传失败图目录的 `converter-capabilities.json`、AIR 导出/ATC 日志及已有 `dynamo.pbtxt`（若生成）。
 
+### FileConstant 写入与验证
+
+A/C 的外置权重检查安排在 SDK `_save_weight2file` 完成后、图 dump/GE 保存前；导出结束再检查 Tensor/文件与绑定，避免 `_convert_data_to_const` 刚创建节点时就访问尚未写入的文件。诊断记录实际 SDK 源码、节点属性、目录布局、大小、offset 与 SHA256，所有原验证保留。详见 [FileConstant 物化说明](FILECONSTANT_MATERIALIZATION.md)。新版本真实 ATC/NPU 验收在执行前仍为 NOT_RUN。
+
 ## OPP 共存与 provenance
 
 A/C 独立包都使用 `vendors/customize` 和同名动态库，不能简单叠放覆盖。入口从冻结源码及**已验收的生成 header**新建一个联合 msopgen 工程，含 A、C Fused、C Audit 三个算子。保留 A K256/broadcast/A-UB 及原 pipeline/core 配置；保留 C compare_select/vector/profile=none。没有 Probe 或新算法。

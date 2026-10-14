@@ -268,7 +268,7 @@ def device_worker(path):
             ASCEND_CUSTOM_OPP_PATH=os.environ.get('ASCEND_CUSTOM_OPP_PATH'),LD_LIBRARY_PATH=os.environ.get('LD_LIBRARY_PATH'),
             source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip())
         report['source_sha256']={str(p.relative_to(ROOT)):sha256(p) for p in HERE.rglob('*') if p.is_file() and p.suffix in ('.py','.cpp','.h','.sh','.txt')}
-        for name in ('draft_ac_export.py','draft_ac_constants.py','incremental.py','quant_factory.py','custom_op_export.py','runtime_input_export.py','exporter.py','compiler.py'):
+        for name in ('draft_ac_export.py','draft_ac_constants.py','draft_ac_payload.py','incremental.py','quant_factory.py','custom_op_export.py','runtime_input_export.py','exporter.py','compiler.py'):
             path=ROOT/'framework/python/qwen35_dflash/ascend310p'/name; report['source_sha256'][str(path.relative_to(ROOT))]=sha256(path)
         report['phase']='single_op_graph'; write_json(root/'suite.json',report)
         probes(args,root,runner,bundles); report['single_op_graph']='PASS'

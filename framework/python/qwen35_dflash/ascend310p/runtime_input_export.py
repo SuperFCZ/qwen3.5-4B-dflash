@@ -269,6 +269,10 @@ def canonical_runtime_input_abi(
 
     with _PATCH_LOCK, capture_weight_quant_metadata(capture_weight_quant_shapes) as tensor_metadata:
         original = export_utils._convert_data_to_const
+        ac_payload = None
+        if draft_ac is not None:
+            from .draft_ac_payload import PayloadLifecycle
+            ac_payload = PayloadLifecycle(draft_ac, export_utils, original)
 
         def convert(inputs, export_graph, file_path, weight_name):
             reordered = _order_weight_conversion_inputs(inputs, export_graph)
@@ -290,6 +294,8 @@ def canonical_runtime_input_abi(
             }
             immutable_weights = {export_graph.op[i].name + ":0": value
                                  for i, value in enumerate(inputs) if id(value) in weight_name}
+            if ac_payload is not None:
+                ac_payload.capture(export_graph, immutable_weights, file_path, inputs, weight_name)
             result = original(inputs, export_graph, file_path, weight_name)
             _normalize_public_nodes(export_graph, bindings)
             try:
@@ -329,9 +335,8 @@ def canonical_runtime_input_abi(
                           "const_output_shape_locked=true weightquant_inference=enabled "
                           f"descriptor={weight_quant['prepack']['descriptor_policy']}", flush=True)
             if draft_ac is not None:
-                from .draft_ac_constants import normalize_ac_constants
                 try:
-                    audit['draft_ac']=normalize_ac_constants(export_graph,immutable_weights,draft_ac,Path(file_path))
+                    ac_payload.after_convert(export_graph,immutable_weights,file_path,result,inputs,weight_name,audit)
                 except (ValueError,OSError) as error:
                     atomic_write_json(Path(file_path)/'ac-constants.json',dict(status='FAIL',error=str(error),
                         nodes=[dict(name=n.name,type=n.type,inputs=list(n.input),attrs=list(n.attr)) for n in export_graph.op
@@ -385,16 +390,22 @@ def canonical_runtime_input_abi(
             return result
 
         export_utils._convert_data_to_const = convert
+        if ac_payload is not None and callable(ac_payload.original_save):
+            export_utils._save_weight2file = ac_payload.save
         try:
             # Specializes Python model attributes, not tensor dimensions or
             # data-derived values. Tensor/SymInt shapes remain dynamic.
             with dynamo_config.patch(specialize_float=True):
                 yield audit
+            if ac_payload is not None:
+                ac_payload.finish()
             if audit["calls"] != 1:
                 raise RuntimeError("expected one canonical public ABI serialization per AIR graph")
             audit["status"] = "PASS"
         finally:
             export_utils._convert_data_to_const = original
+            if ac_payload is not None and callable(ac_payload.original_save):
+                export_utils._save_weight2file = ac_payload.original_save
 
 
 def validated_runtime_input_abi(

@@ -3,10 +3,10 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 import torch
-from .draft_ac_export import A,C,AUDIT,GE,POLICY,tensor_hash
+from .draft_ac_export import A,C,AUDIT,GE,POLICY
 from .weight_quant_layout import _dtype,_resolved_desc,_storage_desc,_nz_shape,_source
 from .weight_prepack import pack_int8_nz,_const_value_desc,CONST_SHAPE_LOCK
-from .utils import atomic_write_json,sha256_file
+from .utils import atomic_write_json
 
 
 def _bound(nodes,edge,values,dtype,shape):
@@ -24,23 +24,18 @@ def _bound(nodes,edge,values,dtype,shape):
     return node,tensor,desc
 
 
-def _verify_payload(node,tensor,directory):
-    digest=tensor_hash(tensor); size=tensor.numel()*tensor.element_size()
-    if node.type=='Const':
-        if len(node.attr['value'].t.data)!=size or hashlib.sha256(node.attr['value'].t.data).hexdigest()!=digest:
-            raise ValueError('Const payload differs from exporter immutable binding')
-        return dict(kind='Const',sha256=digest,bytes=size)
-    if 'file_path' not in node.attr or not node.attr['file_path'].s:
-        raise ValueError('unsupported FileConstant: missing file_path (save op/pbtxt for receiver diagnosis)')
-    path=Path(node.attr['file_path'].s.decode()); path=(directory/path).resolve() if not path.is_absolute() else path.resolve()
-    if not path.is_relative_to(directory.resolve()) or not path.is_file() or path.stat().st_size!=size or sha256_file(path)!=digest:
-        raise ValueError(f'FileConstant payload missing/escaped/changed: {path}')
-    if 'offset' in node.attr and node.attr['offset'].i!=0: raise ValueError('FileConstant offset is unsupported in first-stage integration')
-    return dict(kind='FileConstant',path=str(path),sha256=digest,bytes=size)
+def _verify_payload(node,tensor,directory,expected=None):
+    from .draft_ac_payload import verify_payload
+    result=verify_payload(node,tensor,directory,expected)
+    if node.type=='FileConstant':
+        # GE/ATC must read the exact verified file, independent of its cwd.
+        node.attr['file_path'].s=result['path'].encode('utf-8')
+    return result
 
 
-def normalize_ac_constants(graph,immutable,config,directory):
+def normalize_ac_constants(graph,immutable,config,directory,*,expected_hashes=None):
     if config.get('policy')!=POLICY or config.get('mode') not in ('off','a','c','ac'): raise ValueError('unknown A/C save policy')
+    expected_hashes=expected_hashes or {}
     directory=Path(directory); nodes={op.name:op for op in graph.op}
     selected=[op for op in graph.op if op.type in GE.values()]
     expected={GE[A]:config['a_count'],GE[C]:config['c_count'],GE[AUDIT]:config.get('audit_count',0)}
@@ -57,10 +52,10 @@ def normalize_ac_constants(graph,immutable,config,directory):
             wn,q,wd=_bound(nodes,op.input[1],immutable,torch.int8,[n,k])
             sn,s,sd=_bound(nodes,op.input[2],immutable,torch.float16,[k//128,n])
             if not s.is_contiguous(): raise ValueError('A GN scale must have contiguous GN bytes')
-            scale_payload=_verify_payload(sn,s,directory)
+            scale_payload=_verify_payload(sn,s,directory,expected_hashes.get(op.input[2]))
             # Read/check source first. Create a NEW Const so any other consumer
             # still sees the original ND tensor; never relabel its ND bytes.
-            source_payload=_verify_payload(wn,q,directory)
+            source_payload=_verify_payload(wn,q,directory,expected_hashes.get(op.input[1]))
             packed=pack_int8_nz(q).cpu().contiguous(); payload=packed.numpy().tobytes()
             restored=packed.reshape(k//32,n//16,16,32).permute(1,2,0,3).reshape(n,k)
             if not torch.equal(restored,q.detach().cpu()): raise ValueError('A NZ inverse is not bit-exact')
@@ -84,7 +79,7 @@ def normalize_ac_constants(graph,immutable,config,directory):
                 records.append(dict(name=op.name,ge_type=op.type,head_weight=dict(kind='runtime-readonly',sha256=config['head_weight_sha256'])))
                 continue
             wn,w,wd=_bound(nodes,op.input[1],immutable,torch.float16,[248320,2560])
-            payload=_verify_payload(wn,w,directory)
+            payload=_verify_payload(wn,w,directory,expected_hashes.get(op.input[1]))
             op.input_desc[1].CopyFrom(wd); op.input_desc[1].name='weight'
             records.append(dict(name=op.name,ge_type=op.type,head_weight=payload))
     # No dead ND copies retained after replacement. Shared/control uses survive.
