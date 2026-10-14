@@ -192,8 +192,9 @@ def test_joint_opp_requires_three_pairs_and_headers(tmp_path,monkeypatch,damage)
     else:
         result=tool.preflight(install);assert len(result['kernels'])==3 and result['status']=='PASS'
 
-@pytest.mark.parametrize('damage',[None,'stage_hash','capture_path','replay_hash','factory'])
-def test_resolve_accepted_evidence_chain_without_guessing_paths(tmp_path,monkeypatch,damage):
+@pytest.mark.parametrize('air_name',['air-manifest.json','air-manifest-w8a16.json'])
+@pytest.mark.parametrize('damage',[None,'stage_hash','capture_path','replay_hash','factory','air_hash','air_missing'])
+def test_resolve_accepted_evidence_chain_without_guessing_paths(tmp_path,monkeypatch,damage,air_name):
     opp,tool=ac_tools(monkeypatch)
     def save(path,obj):
         path=tmp_path/path;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(obj));return path
@@ -211,7 +212,10 @@ def test_resolve_accepted_evidence_chain_without_guessing_paths(tmp_path,monkeyp
     om=save(Path('native/om.json'),{});om64=save(Path('native/om64.json'),{})
     omrec=relative(om,tmp_path/'native');om64rec=relative(om64,tmp_path/'native')
     graph=dict(name='draft',metadata={},om=omrec,input_names=[],output_names=[],runtime_input_abi={},air={},payload_files=[])
-    air=save(Path('native/air.json'),dict(status='PASS',graphs=[graph],factory_config=config))
+    air=save(Path('native')/air_name,dict(status='PASS',graphs=[graph],factory_config=config))
+    if air_name!='air-manifest.json':
+        # An unrelated default-name file must never override Deployment's link.
+        save(Path('native/air-manifest.json'),dict(status='FAIL',factory_config={}))
     dep=save(Path('native/deployment.json'),dict(status='PASS',air_manifest=relative(air,tmp_path/'native'),graphs=[graph]))
     from qwen35_dflash.ascend310p import draft_gears
     monkeypatch.setattr(draft_gears,'verify_om_files',lambda *a:None)
@@ -244,18 +248,21 @@ def test_resolve_accepted_evidence_chain_without_guessing_paths(tmp_path,monkeyp
     csuite=save(Path('c-suite.json'),dict(status='PASS',capture_sha256=tool.sha256(cap),native_manifest_sha256=tool.sha256(native)))
     state=save(Path('state.json'),{})
     release=save(Path('release.json'),dict(build_state=str(state),build_artifacts=[],installed_opp={},suite=ref(csuite)))
-    args=SimpleNamespace(a51_suite=paired,c_release=release,head_capture=cap,head_native=native,native_deployment=dep,air_manifest=air,replay16=replays[16],replay64=replays[64],factory_config=None)
+    args=SimpleNamespace(a51_suite=paired,c_release=release,head_capture=cap,head_native=native,native_deployment=dep,air_manifest=None,replay16=replays[16],replay64=replays[64],factory_config=None)
     if damage=='stage_hash': stage.write_text('{}')
     elif damage=='capture_path': args.a16_bundle=tmp_path/'wrong.json'
     elif damage=='replay_hash':
         data=tool.load(replays[16]);data['fake_acl']=True;save(Path('replay16.json'),data)
     elif damage=='factory': args.factory_config=save(Path('wrong.json'),{})
+    elif damage=='air_hash': air.write_text('{}')
+    elif damage=='air_missing': air.unlink()
     output=tmp_path/'new';output.mkdir()
     if damage:
         with pytest.raises(ValueError): tool.resolve(args,output)
     else:
         result,_=tool.resolve(args,output)
         assert result['status']=='PASS' and args.a_build_config==cfg and tool.load(args.factory_config)==config
+        assert result['records']['air_manifest']==ref(air)
         assert args.a16_native==tmp_path/'a-native16.json'
         assert cfg.read_text()==json.dumps(dict(header=str(header)))
 
