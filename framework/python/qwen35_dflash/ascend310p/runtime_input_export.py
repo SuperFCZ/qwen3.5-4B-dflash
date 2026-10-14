@@ -232,6 +232,7 @@ def canonical_runtime_input_abi(
     weight_quant_probe: Mapping[str, Any] | None = None,
     weight_prepack_manifest: str | None = None,
     weight_prepack_output: Path | None = None,
+    draft_ac: Mapping[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
     if weight_prepack_manifest and weight_prepack_output is not None:
         raise ValueError("select automatic NZ packing or an existing offline manifest")
@@ -327,6 +328,15 @@ def canonical_runtime_input_abi(
                           f"const_value_origin={node['prepacked_constant']['value_origin_shape']} "
                           "const_output_shape_locked=true weightquant_inference=enabled "
                           f"descriptor={weight_quant['prepack']['descriptor_policy']}", flush=True)
+            if draft_ac is not None:
+                from .draft_ac_constants import normalize_ac_constants
+                try:
+                    audit['draft_ac']=normalize_ac_constants(export_graph,immutable_weights,draft_ac,Path(file_path))
+                except (ValueError,OSError) as error:
+                    atomic_write_json(Path(file_path)/'ac-constants.json',dict(status='FAIL',error=str(error),
+                        nodes=[dict(name=n.name,type=n.type,inputs=list(n.input),attrs=list(n.attr)) for n in export_graph.op
+                               if n.type in ('DFlashGroupQuantLinear','DFlashDraftLmHeadTop1','DFlashDraftLmHeadTop1Audit','FileConstant')]))
+                    raise
             gdr_dtypes = _gdr_output_dtype_audit(export_graph)
             if gdr_dtypes["node_count"]:
                 audit["gdr_output_dtypes"] = gdr_dtypes

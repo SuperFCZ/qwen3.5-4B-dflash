@@ -1836,6 +1836,9 @@ def prepare_custom_op_export(
 ) -> CustomOpExportSession:
     """Validate schema/Meta and prepare one exact front-end lowering contract."""
 
+    if spec.torch_op in {"dflash_ac::group_quant_linear", "dflash_ac::head_top1", "dflash_ac::head_audit"}:
+        from .draft_ac_export import prepare_export
+        return prepare_export(spec,torchair_module)
     if spec.overload != "default":
         raise NotImplementedError(
             f"no exact export adapter is implemented for {spec.torch_target}"
