@@ -15,6 +15,7 @@ def _bound(nodes,edge,values,dtype,shape):
         raise ValueError(f'A/C requires immutable typed tensor at {edge}; runtime weights/views are forbidden')
     desc=_resolved_desc(nodes,edge,{edge:dict(dtype='DT_INT8' if dtype==torch.int8 else 'DT_FLOAT16',shape=list(shape))})
     if desc.layout not in ('','ND'): raise ValueError('logical A/C constant must start as ND')
+    if node.type=='FileConstant': desc.layout='ND' # Canonicalize the proven logical descriptor before snapshotting.
     if node.type=='Const':
         value_desc=node.attr['value'].t.desc
         if _dtype(value_desc) not in ('DT_UNDEFINED',_dtype(desc)) or (list(value_desc.shape.dim) and list(value_desc.shape.dim)!=list(shape)):

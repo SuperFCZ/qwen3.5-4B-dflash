@@ -147,3 +147,122 @@ def test_fileconstant_symlink_cannot_escape_export_directory(tmp_path):
 
 def test_eager_file_materializer_uses_the_same_strict_hash_gate(tmp_path,monkeypatch):
     test_hook_checks_after_materialization_before_dump_and_restores(tmp_path,monkeypatch,True,None,True,eager=True)
+
+
+def _add_fileconstant_port_map(node):
+    for key in ('_input_name_key','_input_name_value','_output_name_key','_output_name_value'):
+        node.attr[key].list.SetInParent()
+    node.attr['_output_name_key'].list.s.append(b'y')
+    node.attr['_output_name_value'].list.i.append(0)
+
+
+@pytest.mark.parametrize('when',['writer','after_dump'])
+@pytest.mark.parametrize('damage',[None,'path','file_id','offset','dtype','shape','descriptor_dtype',
+    'descriptor_shape','descriptor_layout','unknown_attr','map_name','map_index','partial_map','input_map','removed_node','file_bytes'])
+def test_observed_sdk_port_maps_preserve_strict_binding(tmp_path,monkeypatch,when,damage):
+    from qwen35_dflash.ascend310p.draft_ac_payload import PayloadLifecycle
+    monkeypatch.setenv('AI_RUN_DIR',str(tmp_path));root=tmp_path/'graph';root.mkdir()
+    g,values,config=fixture();q,s=values['w:0'],values['s:0']
+    # Match the real SDK's sparse FileConstant descriptors and attr representation.
+    for edge,tensor in values.items():
+        node=next(n for n in g.op if n.name==edge[:-2]);node.type='FileConstant';node.attr.clear()
+        node.attr['file_path'].s=str(root/edge[:-2]).encode();node.attr['file_id'].s=b''
+        node.attr['dtype'].dt=2 if tensor.dtype==torch.int8 else 1
+        node.attr['shape'].list.i.extend(tensor.shape);node.attr['shape'].list.val_type=2
+        node.output_desc[0].Clear();node.output_desc[0].name='y'
+    scale=next(n for n in g.op if n.name=='s')
+    before=scale.SerializeToString(deterministic=True)
+    def mutate():
+        _add_fileconstant_port_map(scale)
+        if damage=='path': scale.attr['file_path'].s=str(root/'another').encode()
+        elif damage=='file_id': scale.attr['file_id'].s=b'other'
+        elif damage=='offset': scale.attr['offset'].i=32
+        elif damage=='dtype': scale.attr['dtype'].dt=2
+        elif damage=='shape': scale.attr['shape'].list.i[:]=[64,2]
+        elif damage=='descriptor_dtype': scale.output_desc[0].dtype=2
+        elif damage=='descriptor_shape': scale.output_desc[0].shape.dim[:]=[64,2]
+        elif damage=='descriptor_layout': scale.output_desc[0].layout='FRACTAL_NZ'
+        elif damage=='unknown_attr': scale.attr['_unproven_sdk_update'].b=True
+        elif damage=='map_name': scale.attr['_output_name_key'].list.s[:]=[b'wrong']
+        elif damage=='map_index': scale.attr['_output_name_value'].list.i[:]=[1]
+        elif damage=='partial_map': del scale.attr['_input_name_key']
+        elif damage=='input_map': scale.attr['_input_name_value'].list.i.append(0)
+        elif damage=='removed_node':
+            for i,n in enumerate(g.op):
+                if n.name=='s': del g.op[i];break
+        elif damage=='file_bytes': (root/'s').write_bytes(b'x'*s.numel()*2)
+    def writer(inputs,path,names,count):
+        for edge,t in values.items(): (root/edge[:-2]).write_bytes(t.numpy().tobytes())
+        if when=='writer': mutate()
+    lifecycle=PayloadLifecycle(config,SimpleNamespace(_save_weight2file=writer),lambda *a:None)
+    inputs=[q,s];names={id(q):'w',id(s):'s'};audit={}
+    lifecycle.capture(g,values,root,inputs,names)
+    lifecycle.after_convert(g,values,root,(True,2),inputs,names,audit)
+    def execute():
+        lifecycle.save(inputs,str(root),names,2)
+        if when=='after_dump': mutate()
+        lifecycle.finish()
+    if damage:
+        with pytest.raises((ValueError,KeyError)): execute()
+        assert audit['draft_ac']['status']=='FAIL'
+        report=json.loads((root/'ac-payloads.json').read_text());assert report['status']=='FAIL'
+        if when=='after_dump' and damage!='file_bytes':
+            failure=report['failure']
+            assert failure['reason_code']=='FILE_BINDING_CHANGED'
+            assert failure['snapshot'] and failure['field_diff']
+            if damage!='removed_node': assert failure['final']
+    else:
+        execute()
+        assert audit['draft_ac']['status']=='PASS'
+        assert lifecycle.verified['s:0']['sha256']==tensor_digest(s)
+        assert lifecycle.nodes['s:0'].SerializeToString(deterministic=True)!=before
+        checks=json.loads((root/'ac-payloads.json').read_text())['binding_checks']
+        allowed=[c for c in checks if c['allowed_changes']]
+        assert len(allowed)==1 and set(allowed[0]['allowed_changes'])==set(('_input_name_key','_input_name_value','_output_name_key','_output_name_value'))
+        repaired=next(c for c in checks if c['node']=='s' and c['status']=='VERIFIED_REPAIR')
+        assert any(d['field'].startswith('output_desc[0].dtype') for d in repaired['field_diff'])
+        assert list(lifecycle.nodes['s:0'].output_desc[0].shape.dim)==[2,64]
+        assert lifecycle.nodes['s:0'].output_desc[0].layout=='ND'
+
+
+def test_port_map_diff_does_not_mutate_nodes_or_accept_partial_defaults():
+    import copy
+    from qwen35_dflash.ascend310p.draft_ac_payload import binding_check
+    g,_,_=fixture();expected=g.op[2];expected.type='FileConstant'
+    live=copy.deepcopy(expected);_add_fileconstant_port_map(live)
+    left,right=expected.SerializeToString(deterministic=True),live.SerializeToString(deterministic=True)
+    assert binding_check(expected,live,'cpu')['status']=='PASS'
+    assert expected.SerializeToString(deterministic=True)==left and live.SerializeToString(deterministic=True)==right
+    live.attr['_input_name_key'].s=b'injected non-list field'
+    assert binding_check(expected,live,'cpu')['status']=='FAIL'
+
+
+def test_existing_valid_sdk_mapping_cannot_be_removed():
+    import copy
+    from qwen35_dflash.ascend310p.draft_ac_payload import binding_check
+    g,_,_=fixture();expected=g.op[2];expected.type='FileConstant';_add_fileconstant_port_map(expected)
+    live=copy.deepcopy(expected)
+    assert binding_check(expected,live,'cpu')['status']=='PASS'
+    for key in ('_input_name_key','_input_name_value','_output_name_key','_output_name_value'): del live.attr[key]
+    result=binding_check(expected,live,'cpu')
+    assert result['status']=='FAIL' and len(result['field_diff'])==4
+    assert all(d['classification']=='protected' for d in result['field_diff'])
+
+
+def test_reported_arg1_1_fc_scale_descriptor_and_port_map(tmp_path):
+    import copy
+    from qwen35_dflash.ascend310p.draft_ac_payload import binding_check
+    g=graph_type()();original=g.op.add(name='arg1_1',type='FileConstant')
+    original.output_desc.add(name='y')
+    original.attr['file_path'].s=str(tmp_path/'scale').encode();original.attr['file_id'].s=b''
+    original.attr['dtype'].dt=1;original.attr['shape'].list.i.extend([100,2560]);original.attr['shape'].list.val_type=2
+    scale=torch.zeros(100,2560,dtype=torch.float16)
+    expected=copy.deepcopy(original)
+    _bound({'arg1_1':expected},'arg1_1:0',{'arg1_1:0':scale},torch.float16,[100,2560])
+    live=copy.deepcopy(expected);_add_fileconstant_port_map(live)
+    assert binding_check(original,live,'old-stale-snapshot')['status']=='FAIL'
+    fixed=binding_check(expected,live,'after_export')
+    assert fixed['status']=='PASS' and len(fixed['allowed_changes'])==4
+    assert scale.numel()*scale.element_size()==512000
+    assert list(expected.output_desc[0].shape.dim)==[100,2560]
+    assert expected.output_desc[0].dtype==1 and expected.output_desc[0].layout=='ND'

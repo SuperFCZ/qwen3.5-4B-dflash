@@ -36,6 +36,64 @@ def node_info(node):
                 output_descriptors=[str(d) for d in node.output_desc])
 
 
+# Observed in ac-ge-20261014-091937: FileConstant has no inputs and one
+# output. These are serialized port-name maps, not arbitrary SDK metadata.
+PORT_MAP_KEYS=('_input_name_key','_input_name_value','_output_name_key','_output_name_value')
+
+
+def valid_port_map(node):
+    present=set(PORT_MAP_KEYS).intersection(node.attr)
+    if not present: return True
+    if present!=set(PORT_MAP_KEYS) or node.input or len(node.output_desc)!=1 or not node.output_desc[0].name:
+        return False
+    for key in PORT_MAP_KEYS:
+        wanted=type(node.attr[key])();wanted.list.SetInParent()
+        if key=='_output_name_key': wanted.list.s.append(node.output_desc[0].name.encode('utf-8'))
+        if key=='_output_name_value': wanted.list.i.append(0)
+        if node.attr[key]!=wanted: return False
+    return True
+
+
+def binding_check(expected,live,stage):
+    """Field diff without mutating either node. Only the proven complete map may be added."""
+    from google.protobuf.json_format import MessageToDict
+    changes=[];allowed=[]
+    def change(field,before,after,classification='protected'):
+        changes.append(dict(field=field,before=before,after=after,classification=classification))
+    if live is None:
+        change('node',node_info(expected),None)
+    else:
+        for key in ('name','type'):
+            if getattr(expected,key)!=getattr(live,key): change(key,getattr(expected,key),getattr(live,key))
+        if list(expected.input)!=list(live.input): change('input',list(expected.input),list(live.input))
+        sdk_addition=(not set(PORT_MAP_KEYS).intersection(expected.attr) and valid_port_map(live)
+                      and set(PORT_MAP_KEYS)<=set(live.attr))
+        for key in sorted(set(expected.attr)|set(live.attr)):
+            left=expected.attr.get(key);right=live.attr.get(key)
+            if left!=right:
+                accepted=sdk_addition and key in PORT_MAP_KEYS and left is None
+                if accepted: allowed.append(key)
+                change('attributes.'+key,None if left is None else node_info(expected)['attributes'][key],
+                       None if right is None else node_info(live)['attributes'][key],
+                       'verified-sdk-port-map-addition' if accepted else 'protected')
+        def descriptor_diff(left,right,prefix):
+            if isinstance(left,dict) and isinstance(right,dict):
+                for key in sorted(set(left)|set(right)): descriptor_diff(left.get(key),right.get(key),prefix+'.'+key)
+            elif left!=right: change(prefix,left,right)
+        for kind in ('input_desc','output_desc'):
+            a,b=getattr(expected,kind),getattr(live,kind)
+            if len(a)!=len(b): change(kind+'.count',len(a),len(b))
+            for i,(left,right) in enumerate(zip(a,b)):
+                descriptor_diff(MessageToDict(left,preserving_proto_field_name=True),
+                                MessageToDict(right,preserving_proto_field_name=True),f'{kind}[{i}]')
+        if not valid_port_map(expected) or not valid_port_map(live):
+            change('port_map_contract','no inputs; one named output at index 0','invalid/incomplete map')
+    passed=not any(c['classification']=='protected' for c in changes)
+    return dict(node=expected.name,stage=stage,status='PASS' if passed else 'FAIL',
+                snapshot=node_info(expected),final=node_info(live) if live is not None else None,
+                field_diff=changes,allowed_changes=allowed)
+
+
 def file_location(node,directory):
     directory=Path(directory); root=directory.resolve()
     detail=dict(node_info(node),directory=str(root),cwd=str(Path.cwd()),offset=node.attr['offset'].i if 'offset' in node.attr else 0)
@@ -105,7 +163,7 @@ class PayloadLifecycle:
         self.api={name:callable_info(fn) for name,fn in (
             ('_convert_data_to_const',original_convert),('_save_weight2file',self.original_save),
             ('make_export_graph',getattr(export_utils,'make_export_graph',None)))}
-        self.pending=False; self.bindings={}; self.nodes={}; self.events=[]
+        self.pending=False; self.bindings={}; self.nodes={}; self.events=[]; self.binding_checks=[]; self.removed=set()
 
     def capture(self,graph,immutable,directory,inputs,weight_name):
         from .draft_ac_export import A,C,AUDIT,GE
@@ -118,7 +176,7 @@ class PayloadLifecycle:
 
     def event(self,stage,status,error=None):
         self.events.append(dict(stage=stage,status=status,files=file_layout(self.directory)))
-        report=dict(status=status,events=self.events,nodes=[node_info(n) for n in self.nodes.values()],
+        report=dict(status=status,events=self.events,binding_checks=self.binding_checks,nodes=[node_info(n) for n in self.nodes.values()],
                     original_fileconstants=getattr(self,'original_fileconstants',[]),
                     bindings={e:dict(dtype=str(t.dtype),shape=list(t.shape),bytes=t.numel()*t.element_size(),sha256=h)
                               for e,(t,h) in self.bindings.items()},verified=getattr(self,'verified',{}))
@@ -126,7 +184,8 @@ class PayloadLifecycle:
             dict(reason_code='MATERIALIZER_ERROR' if stage=='save_weight2file' else 'VALIDATION_ERROR',exception_type=type(error).__name__)))
         atomic_write_json(self.directory/'ac-payloads.json',report)
         if status=='FAIL' and hasattr(self,'audit'):
-            self.audit['draft_ac']=dict(self.audit.get('draft_ac',{}),status='FAIL',error=str(error),verification_stage=stage)
+            self.audit['draft_ac']=dict(self.audit.get('draft_ac',{}),status='FAIL',error=str(error),
+                                       verification_stage=stage,failure=report.get('failure'))
             atomic_write_json(self.directory/'ac-constants.json',self.audit['draft_ac'])
 
     def after_convert(self,graph,immutable,directory,result,inputs,weight_name,audit):
@@ -139,7 +198,10 @@ class PayloadLifecycle:
             if tuple(map(id,inputs))!=self.input_ids or dict(weight_name)!=self.weight_names:
                 raise ValueError('A/C immutable input/weight binding changed during conversion')
             for node in self.nodes.values():
-                if node.type=='FileConstant': file_location(node,self.directory) # Reject escapes BEFORE SDK writes.
+                if node.type=='FileConstant':
+                    if not valid_port_map(node):
+                        raise PayloadError('FILE_BINDING_CHANGED',binding_check(node,node,'after_convert'))
+                    file_location(node,self.directory) # Reject escapes BEFORE SDK writes.
             external=(isinstance(result,(tuple,list)) and len(result)==2 and result[0] is True)
             if external and not self.saved and any(n.type=='FileConstant' for n in self.nodes.values()) and callable(self.original_save):
                 if result[1]!=self.used: raise ValueError('A/C external weight count differs')
@@ -150,15 +212,32 @@ class PayloadLifecycle:
             self.event('after_convert','FAIL',e);raise
 
     def normalize(self,stage):
-        from .draft_ac_constants import normalize_ac_constants
+        from .draft_ac_constants import normalize_ac_constants,_bound
+        from .draft_ac_export import A,GE
         try:
+            replaceable={op.input[1].rpartition(':')[0] for op in self.graph.op if op.type==GE[A]}
             self.audit['draft_ac']=normalize_ac_constants(self.graph,self.immutable,self.config,self.directory,
                                                         expected_hashes={e:h for e,(_,h) in self.bindings.items()})
-            # normalize anchors only verified FileConstant paths; mirror that
-            # authorized change in the post-export binding snapshots.
-            for node in self.nodes.values():
-                if node.type=='FileConstant':
-                    path,_=file_location(node,self.directory);node.attr['file_path'].s=str(path).encode('utf-8')
+            current={n.name:n for n in self.graph.op}
+            for edge,node in list(self.nodes.items()):
+                if node.type!='FileConstant': continue
+                # Independently reproduce ONLY our verified path and descriptor
+                # repair. Never bless all fields by copying the live node first.
+                expected=copy.deepcopy(node);tensor,_=self.bindings[edge]
+                _bound({expected.name:expected},edge,{edge:tensor},tensor.dtype,list(tensor.shape))
+                path,_=file_location(expected,self.directory);expected.attr['file_path'].s=str(path).encode('utf-8')
+                repaired=binding_check(node,expected,stage+':immutable-descriptor/path-repair')
+                repaired['status']='VERIFIED_REPAIR'
+                for change in repaired['field_diff']: change['classification']='verified-immutable-descriptor/path-repair'
+                self.binding_checks.append(repaired)
+                live=current.get(node.name)
+                if live is None and node.name in replaceable:
+                    self.removed.add(edge) # Proven A NZ replacement; still hash original Tensor/file at finish.
+                else:
+                    check=binding_check(expected,live,stage);self.binding_checks.append(check)
+                    if check['status']!='PASS': raise PayloadError('FILE_BINDING_CHANGED',check)
+                    expected=copy.deepcopy(live) # All fields have now been checked.
+                self.nodes[edge]=expected
             self.pending=False; self.event(stage,'PASS')
         except Exception as e:
             self.event(stage,'FAIL',e);raise
@@ -190,8 +269,9 @@ class PayloadLifecycle:
             current={n.name:n for n in self.graph.op};self.verified={}
             for edge,(tensor,digest) in self.bindings.items():
                 node=self.nodes[edge]; live=current.get(node.name)
-                if node.type=='FileConstant' and live is not None and (live.type!='FileConstant' or live.attr!=node.attr):
-                    raise PayloadError('FILE_BINDING_CHANGED',node_info(live))
+                if node.type=='FileConstant' and not (live is None and edge in self.removed):
+                    check=binding_check(node,live,'after_export');self.binding_checks.append(check)
+                    if check['status']!='PASS': raise PayloadError('FILE_BINDING_CHANGED',check)
                 self.verified[edge]=verify_payload(node,tensor,self.directory,digest)
             self.event('after_export','PASS')
         except Exception as e:
