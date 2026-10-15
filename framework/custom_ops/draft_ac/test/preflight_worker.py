@@ -19,6 +19,9 @@ def run(path):
         with trace_npu_imports(root/'preflight-imports.json'):
             from resolve import resolve
             resolve(args,root) # All existing checks, including real NZ inverse, unchanged.
+            if getattr(args,'full_draft',False):
+                from full_interface import require_full_interfaces
+                require_full_interfaces(args,root/'full-interface-preflight.json')
         result.update(status='PASS',**encode_args(args),preflight=record(root/'preflight.json',root),
                       imports=record(root/'preflight-imports.json',root))
     except Exception as error:

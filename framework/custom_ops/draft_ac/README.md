@@ -66,6 +66,10 @@ A/C 独立包都使用 `vendors/customize` 和同名动态库，不能简单叠�
 
 只读 Preflight 在独立子进程中执行并记录实际导入栈；协调进程不继承其 torch_npu 模块状态，仍保留初始化顺序 guard。联合 OPP 安装并设置路径后，沿用 exec 启动新的设备解释器，使 LD_LIBRARY_PATH 在 ELF loader 启动时生效。`TORCH_DEVICE_BACKEND_AUTOLOAD=0` 只是辅助控制，不能阻止第三方显式 import。详见[进程顺序及导入证据](PROCESS_ORDER.md)。联合安装之后继续检查三组非空 `.o/.json`、CANN9 首个 `.o/.json` 路径解析规则、三个 ACLNN 头、GE prototype 动态库及哈希。**这些只证明文件完整，GE 注册是否能使用仍由后续 ATC 决定。** 活跃环境中发现旧 A/C 注册路径会拒绝；请在干净 shell 中保留接收端原有 ADN/GDR 环境，不 source 旧 A/C set_env。若 ADN/GDR 与联合包同名库产生真实加载冲突，应回传 ATC 日志进一步定位，不能把文件检查当作共存成功。
 
+## 完整工厂接口早期检查
+
+`--full-draft` 会在联合 OPP 构建前的隔离 Preflight 中检查锁定的 GDR dispatcher schema 和 ADN/GDR 原型，并在新设备解释器、56 个图执行前复查。旧九参数 GDR 不能代替包含 `effective_length` 的 v2 接口；原 schema、正式 prepare_export 和数值标准保持不变。只读历史/当前环境诊断及恢复步骤见 [GDR 接口调查](GDR_INTERFACE.md)。
+
 ## 服务器命令
 
 在现有 Ascend310P3/CANN9.0、TorchAir/torch_npu/接收端 ADN/GDR 可用的模型环境中：

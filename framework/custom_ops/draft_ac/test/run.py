@@ -256,6 +256,11 @@ def device_worker(path):
         import torch_npu
         torch.npu.set_device(args.device_id)
         if '310P' not in torch.npu.get_device_name(args.device_id): raise ValueError('requires real 310P')
+        if args.full_draft:
+            report['phase']='full_interface_preflight'; write_json(root/'suite.json',report)
+            from full_interface import require_full_interfaces
+            require_full_interfaces(args,root/'full-interface-device.json')
+            report['full_interface']=record(root/'full-interface-device.json',root)
         report['opp']=record(root/'joint/opp.json',root)
         cann=os.environ.get('CANN_ROOT',os.environ.get('ASCEND_HOME_PATH','/usr/local/Ascend/ascend-toolkit/latest'))
         report['phase']='runner_build'; write_json(root/'suite.json',report)
