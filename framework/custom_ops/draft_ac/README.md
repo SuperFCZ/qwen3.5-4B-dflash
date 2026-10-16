@@ -180,11 +180,9 @@ python -B -m unittest discover -s framework/custom_ops/draft_quant/test -p 'test
 ```bash
 git pull --ff-only
 export AC_OUTPUT_DIR=/home/w00949577/qwen35-dflash-run/ac-draft-scope-$(date +%Y%m%d-%H%M%S)
-bash framework/custom_ops/draft_ac/run_known_evidence.sh --draft-only --preflight-only
-
-# 上一步通过后，用另一个新目录执行设备验收：
-export AC_OUTPUT_DIR=/home/w00949577/qwen35-dflash-run/ac-draft-only-$(date +%Y%m%d-%H%M%S)
-bash framework/custom_ops/draft_ac/run_known_evidence.sh --draft-only
+bash framework/custom_ops/draft_ac/run_known_evidence.sh --draft-only \
+  --native-base /home/w00949577/LLM_infer/qwen3.5-4B-dflash-gdr-chunk \
+  --preflight-only
 ```
 
 回传 `$AC_OUTPUT_DIR.server.log`、`preflight.log`、`draft-interface-preflight.json`、
@@ -248,11 +246,84 @@ Draft-only 隔离 Preflight 现在在模型加载、联合 OPP 构建及 56 个�
 4. 单独记录 `draft_ac_*.py` 扩展 SHA256。设备子进程再执行同样检查，保存
    `source-lock-device.json`，Factory 加载时的原检查也不删除。
 
-沿用上面的 `--draft-only --preflight-only` 命令即可先轻量复测；只有源码及历史身份
-预检通过，才在另一个新目录执行 `--draft-only`。请额外回传 `source-lock-preflight.json`
+本节记录 `2ac51d1` 的当前锁恢复过程；现已确认 Native 使用另一份 205 条声明的锁，
+必须使用下节历史源码隔离入口。请额外回传 `source-lock-preflight.json`
 及 `source-lock-device.json`。若冻结 Native 的锁身份不同，先根据报告继续调查，不覆盖
 Native AIR、Deployment、SOURCE_LOCK 或 Golden。
 
 本轮本地 CPU 回归：463 PASS，88 项因未配置 C++ fake ACL runner 或依赖该 runner 的
 host fixture 跳过；macOS 的 Linux fixture `/bin/true` 使用本地 `/usr/bin/true` 适配，
 未修改锁定测试。新隔离 pipeline 的 GE/ATC/NPU、完整 Draft 与端到端：`NOT_RUN`。
+
+### 历史 Native Base + 独立 Diagnostic Extension
+
+服务器已验证历史目录 `/home/w00949577/LLM_infer/qwen3.5-4B-dflash-gdr-chunk`
+完整匹配冻结 Native AIR：SOURCE_LOCK SHA256
+`7872c0f687aca12421786ed9508b8416a987ec38d5d8bc116dee39861c119395`，
+205/205 条声明、197/197 个文件通过，identity_diff 为空。Git 对应 `319f51d`。
+它与当前 201 条声明的锁之间有 18 个共同文件内容不同，不能替换 Factory 或伪造身份。
+
+`--draft-only` 现在必须显式提供 `--native-base`。该目录是唯一 Native 源码根，
+不创建服务器替代 checkout，不写入历史文件，不修改历史 SOURCE_LOCK 或 Native Golden。
+
+导入及进程边界：
+
+- 协调进程只编排；独立 `native_worker.py preflight` 在导入模型框架之前，验证
+  Deployment 哈希绑定的 Native AIR、明确指定的历史路径、原始锁 SHA256、205 条身份
+  及全部声明。已加载 `models` / `qwen35_dflash` 模块会被拒绝，不清空 sys.modules。
+- 历史 `models`、`qwen35_dflash` 模块由只读历史目录加载。导入器从已校验源码字节
+  编译，不读取/生成历史 pyc；Python 写操作指向历史根会被拒绝。还记录全部历史
+  Python 文件快照，检测包初始化文件及未列入锁的辅助 Python 文件变化。
+- 仅六个新模块名允许从当前仓库加载：`draft_ac_export`、`draft_ac_constants`、
+  `draft_ac_payload`、`draft_ac_export_pipeline`、`draft_ac_runtime_input_export`、
+  `draft_ac_weight_prepack`。它们使用历史框架依赖，不替换任何历史模块；不把当前框架目录加入历史包搜索路径。
+  历史根若已存在同名扩展会明确拒绝，避免覆盖。
+- 原 Factory 还依赖接收端 wrapper。Preflight 校验冻结 AIR 的 input manifest SHA256、
+  `receiver_wrapper` group 哈希、wrapper 字节数与文件哈希、原 `receiver_models_dir`，
+  然后调用历史 `_append_receiver_models()` 按原流程追加该目录并导入 wrapper（不实例化模型）。
+  接收端 Python 文件快照独立记录为 Receiver 来源，不能覆盖已有 Native 模块；wrapper
+  若被非 Manifest 绑定路径遮蔽则拒绝。接收端漂移也会在 OPP 构建前被检查。
+- 每个已加载模块记录真实 `__file__`、SHA256、Native/Extension/Receiver 分类及模块对象身份。
+  Factory 和 verifier 的代码文件必须来自历史路径；随后实际调用历史
+  `_verify_quant_source_lock()`，严格要求返回 Native AIR 的路径、SHA256 和 205 条记录。
+  在每次 Factory 加载前再次检查，而不是伪造返回值或只验证当前 Factory。
+- 扩展代码及诊断工具的文件哈希、Git revision、导出设置单独记录。Preflight 返回后，
+  协调进程在构建 OPP 前再次检查快照；联合 OPP 设置后 exec 新设备进程，以相同的已接受
+  快照启动。任何源码或扩展变化都会失败，不沿用旧模块/旧动态库。
+- 历史预打包接口没有 `output_dir`。已有 NZ Manifest 路径使用原四个位置参数调用，
+  保留全部原始预打包检查；历史模式拒绝自动预打包。A/C 的 descriptor、FileConstant
+  物化、SHA256、NZ bitwise、GE 节点数审计继续在显式扩展 pipeline 中执行。
+
+预检在模型加载、OPP 构建和 56 个单算子图之前完成。Target GDR 仍执行原十参数
+schema 判定并单独记录；当前服务器九参数环境为 `target_interface=BLOCKED`，
+不阻止只依赖实际 Draft 接口的诊断。Target/Verify 和端到端始终 `NOT_RUN`。
+
+**本轮只运行轻量 Preflight：**
+
+```bash
+git pull --ff-only
+export AC_OUTPUT_DIR=/home/w00949577/qwen35-dflash-run/ac-native-base-preflight-$(date +%Y%m%d-%H%M%S)
+bash framework/custom_ops/draft_ac/run_known_evidence.sh \
+  --draft-only \
+  --native-base /home/w00949577/LLM_infer/qwen3.5-4B-dflash-gdr-chunk \
+  --preflight-only
+```
+
+回传 `native-base-preflight.json`（包含模块来源、两套源码身份和扩展快照）、
+`source-lock-preflight.json`、`draft-interface-preflight.json`、`preflight-result.json`、
+`suite.json`、`preflight.log` 和旁侧 `.server.log`。只有本次真实 Preflight 通过后，
+再提供正式设备验收命令；不得把导入/CPU PASS 写成八组 Draft NPU PASS。
+
+后续设备路径保留 C16/C64 × off/a/c/ac 八组，复用冻结 Native OM，严格比较 Token IDs
+和全部十个 KV 输出，保留 26 个投影及 Head 权重哈希、guard/readonly/repeat、
+timed-tail/postcheck 与 continuous-v1 median/p95。设备 worker 另写
+`native-base-device.json`，且边界最终检查失败会将 suite 标记 FAIL。
+
+CPU 回归使用 `319f51d` 的 Git 内容作为临时测试数据，覆盖原 Factory 205 条身份、
+扩展/Native 来源隔离、预加载混用、锁篡改、Native 身份差异、扩展变化、只读历史根、
+两进程快照一致性，以及历史 FileConstant + NZ Manifest 接口兼容性、原接收端 wrapper 的 Manifest 绑定和防遮蔽检查。这些测试不运行
+服务器 checkpoint、CANN 或 NPU。历史隔离入口的八组 GE/ATC/NPU 验收：**NOT_RUN**。
+
+本轮本地回归结果：427 PASS、84 项因未配置 C++ fake ACL runner 跳过；shell 语法及
+差异空白检查通过。macOS 的 `/bin/true` fixture 使用本地 `/usr/bin/true` 适配，
+没有改动历史锁定文件。服务器历史隔离 Preflight 和八组设备验收均仍为 NOT_RUN。

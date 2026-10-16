@@ -102,9 +102,18 @@ def canonical_runtime_input_abi(
                 if prepacked is not None or weight_prepack_output is not None:
                     weight_quant["fileconstant_descriptors"] = restore_fileconstant_weight_descriptors(
                         export_graph, weight_quant, immutable_weights, tensor_metadata)
-                    weight_quant = prepack_weight_quant_constants(
-                        export_graph, weight_quant, immutable_weights, prepacked,
-                        output_dir=weight_prepack_output)
+                    if weight_prepack_output is None:
+                        # Native 319f51d accepts the immutable cache as its fourth
+                        # positional argument; never pass a newer keyword to it.
+                        weight_quant = prepack_weight_quant_constants(
+                            export_graph, weight_quant, immutable_weights, prepacked)
+                    else:
+                        import inspect
+                        if 'output_dir' not in inspect.signature(prepack_weight_quant_constants).parameters:
+                            raise ValueError("historical Native prepack does not support automatic output_dir")
+                        weight_quant = prepack_weight_quant_constants(
+                            export_graph, weight_quant, immutable_weights, prepacked,
+                            output_dir=weight_prepack_output)
             except ValueError as error:
                 failure = weight_quant_layout_failure(export_graph, tensor_metadata, error)
                 audit["weight_quant_layout"] = failure

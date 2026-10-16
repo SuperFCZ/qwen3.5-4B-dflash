@@ -58,14 +58,22 @@ def audit_source_lock(root, historical):
     return report
 
 
-def require_source_lock(native, output):
-    report = audit_source_lock(ROOT, native['metadata'].get('quant_source_lock'))
+def require_source_lock(native, output, *, native_root=None):
+    selected = Path(native_root).resolve() if native_root is not None else ROOT
+    report = audit_source_lock(selected, native['metadata'].get('quant_source_lock'))
     try:
         if report['status'] != 'PASS':
             raise ValueError('source files or historical quant_source_lock identity differ')
         # Do not replace or weaken the original factory verifier. Run it too.
         from qwen35_dflash.ascend310p.quant_factory import _verify_quant_source_lock
-        verified = _verify_quant_source_lock()
+        if native_root is not None:
+            from native_base import active
+            boundary=active()
+            if boundary is None or boundary.base!=selected:
+                raise RuntimeError('historical source verification requires an isolated Native boundary')
+            verified=boundary.before_factory(native)
+        else:
+            verified = _verify_quant_source_lock()
         if verified != report['current']:
             raise ValueError('factory verifier identity differs from full audit')
         report['factory_verifier'] = 'PASS'

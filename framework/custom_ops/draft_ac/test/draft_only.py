@@ -75,7 +75,13 @@ def require_draft_interfaces(args, path):
         config, native, air_path = native_history(args)
         from source_lock import require_source_lock
         source_report = Path(path).with_name(Path(path).stem.replace('draft-interface', 'source-lock')+'.json')
-        require_source_lock(native, source_report)
+        native_root=getattr(args,'native_base',None)
+        if native_root is None:
+            require_source_lock(native, source_report)
+        else:
+            require_source_lock(native, source_report, native_root=native_root)
+            from native_base import check_extension_compatibility
+            report['native_extension_compatibility']=check_extension_compatibility(config,native)
         report['source_lock'] = record(source_report, Path(path).parent)
         report['native_air'] = record(air_path, air_path.parent)
         import torch
@@ -132,6 +138,9 @@ def load_draft(config, native):
     import torch
     def no_forward(module, inputs):
         raise RuntimeError('Draft-only factory must not execute a model forward: ' + type(module).__name__)
+    from native_base import active
+    boundary=active()
+    if boundary is not None: boundary.before_factory(native,require_receiver=True)
     guard = torch.nn.modules.module.register_module_forward_pre_hook(no_forward)
     try:
         specs = create_quant_incremental_graphs(config)

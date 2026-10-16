@@ -265,6 +265,10 @@ def device_worker(path):
     report=state['report']; provenance=state['provenance']; opp=state['opp']
     try:
         report['phase']='device_startup'
+        if getattr(args,'draft_only',False):
+            from native_base import active
+            if active() is None: raise RuntimeError('Draft-only device stage requires the isolated Native worker')
+            active().verify_loaded()
         if Path(path).resolve()!=root/'worker-input.json': raise ValueError('worker input must be in its new evidence directory')
         validate_device_startup(root,opp)
         write_json(root/'device-process.json',dict(pid=os.getpid(),npu_modules=npu_modules(),
@@ -298,9 +302,9 @@ def device_worker(path):
             device_name=torch.npu.get_device_name(args.device_id),platform=platform.platform(),cann_root=cann,
             ASCEND_CUSTOM_OPP_PATH=os.environ.get('ASCEND_CUSTOM_OPP_PATH'),LD_LIBRARY_PATH=os.environ.get('LD_LIBRARY_PATH'),
             source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip())
-        report['source_sha256']={str(p.relative_to(ROOT)):sha256(p) for p in HERE.rglob('*') if p.is_file() and p.suffix in ('.py','.cpp','.h','.sh','.txt')}
+        report['extension_tree_source_sha256']={str(p.relative_to(ROOT)):sha256(p) for p in HERE.rglob('*') if p.is_file() and p.suffix in ('.py','.cpp','.h','.sh','.txt')}
         for name in ('draft_ac_export.py','draft_ac_constants.py','draft_ac_payload.py','draft_ac_export_pipeline.py','draft_ac_runtime_input_export.py','draft_ac_weight_prepack.py','incremental.py','quant_factory.py','custom_op_export.py','runtime_input_export.py','exporter.py','compiler.py'):
-            path=ROOT/'framework/python/qwen35_dflash/ascend310p'/name; report['source_sha256'][str(path.relative_to(ROOT))]=sha256(path)
+            path=ROOT/'framework/python/qwen35_dflash/ascend310p'/name; report['extension_tree_source_sha256'][str(path.relative_to(ROOT))]=sha256(path)
         report['phase']='single_op_graph'; write_json(root/'suite.json',report)
         probes(args,root,runner,bundles); report['single_op_graph']='PASS'
         if args.full_draft or getattr(args,'draft_only',False):
@@ -310,6 +314,9 @@ def device_worker(path):
         for entry in provenance['records'].values():
             if sha256(entry['path'])!=entry['sha256']: raise ValueError('source evidence changed during run')
         if preflight(Path(opp['install']))!=opp['preflight']: raise ValueError('joint OPP changed during run')
+        if getattr(args,'draft_only',False):
+            from native_base import active
+            report['imported_source_modules']=active().verify_loaded()
         report.update(status='PASS',phase='complete')
     except Exception as error:
         import traceback
@@ -321,15 +328,24 @@ def device_worker(path):
 
 
 def run(args):
-    root=args.output_dir.resolve(); root.mkdir(parents=True,exist_ok=False)
+    root=args.output_dir.resolve()
+    if getattr(args,'native_base',None) and root.is_relative_to(Path(args.native_base).resolve()):
+        raise ValueError('evidence output must be outside read-only Native Base')
+    root.mkdir(parents=True,exist_ok=False)
     os.environ['AI_RUN_DIR']=str(root)
     write_json(root/'request.json',{k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()})
     report=dict(status='RUNNING',single_op_graph='NOT_RUN',full_draft='NOT_RUN',draft_only='NOT_RUN',target_interface='NOT_RUN',end_to_end='NOT_RUN')
     try:
         report['phase']='provenance'
+        if getattr(args,'draft_only',False) and not getattr(args,'native_base',None):
+            raise ValueError('--draft-only requires explicit --native-base; latest Factory cannot substitute')
+        if getattr(args,'native_base',None) and not getattr(args,'draft_only',False):
+            raise ValueError('--native-base is only supported for --draft-only diagnostics')
         require_clean_npu('coordinator before preflight')
         request=encode_args(args); write_json(root/'preflight-input.json',request)
-        command=[sys.executable,'-B','-u',str(HERE/'test/preflight_worker.py'),str(root/'preflight-input.json')]
+        command=([sys.executable,'-B','-u',str(HERE/'test/native_worker.py'),'preflight',str(root/'preflight-input.json')]
+                 if getattr(args,'draft_only',False) else
+                 [sys.executable,'-B','-u',str(HERE/'test/preflight_worker.py'),str(root/'preflight-input.json')])
         write_json(root/'preflight-command.json',command)
         write_json(root/'suite.json',report)
         with (root/'preflight.log').open('w') as log:
@@ -338,7 +354,11 @@ def run(args):
         args,provenance=validate_preflight_result(request,result,root)
         require_clean_npu('coordinator after preflight')
         write_json(root/'coordinator-process.json',dict(pid=os.getpid(),preflight_pid=result['pid'],npu_modules=npu_modules()))
+        native_boundary=None
         if getattr(args,'draft_only',False):
+            from native_base import validate_preflight_boundary
+            native_boundary=validate_preflight_boundary(root,request,accepted_args=encode_args(args)['args'])
+            report['native_boundary']=native_boundary
             report['draft_interface']=record(root/'draft-interface-preflight.json',root)
             report['target_interface']=json.loads((root/'draft-interface-preflight.json').read_text())['target_interface']
         report['provenance']=record(root/'preflight.json',root)
@@ -360,10 +380,13 @@ def run(args):
         os.environ['LD_LIBRARY_PATH']=str(vendor/'op_api/lib')+os.pathsep+os.environ.get('LD_LIBRARY_PATH','')
         state=root/'worker-input.json'
         write_json(state,dict(**encode_args(args),
-                             report=report,provenance=provenance,opp=opp))
+                             report=report,provenance=provenance,opp=opp,native_boundary=native_boundary))
         write_json(root/'suite.json',report)
         # Fresh ELF loader: changing LD_LIBRARY_PATH inside Python is insufficient.
-        os.execve(sys.executable,[sys.executable,'-B','-u',str(Path(__file__).resolve()),'--device-worker',str(state)],os.environ.copy())
+        command=([sys.executable,'-B','-u',str(HERE/'test/native_worker.py'),'device',str(state)]
+                 if getattr(args,'draft_only',False) else
+                 [sys.executable,'-B','-u',str(Path(__file__).resolve()),'--device-worker',str(state)])
+        os.execve(sys.executable,command,os.environ.copy())
     except Exception as error:
         import traceback
         traceback.print_exc()
@@ -378,6 +401,7 @@ if __name__=='__main__':
     for name in ('a51-suite','c-release','head-capture','head-native','native-deployment','replay16','replay64','output-dir'):
         p.add_argument('--'+name,type=Path,required=True)
     for name in ('factory-config','air-manifest','a16-bundle','a64-bundle'): p.add_argument('--'+name,type=Path)
+    p.add_argument('--native-base',type=Path,help='Read-only historical source root bound by Native AIR SOURCE_LOCK')
     p.add_argument('--preflight-only',action='store_true')
     scope=p.add_mutually_exclusive_group()
     scope.add_argument('--full-draft',action='store_true')
