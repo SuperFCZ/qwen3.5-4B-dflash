@@ -327,3 +327,72 @@ CPU 回归使用 `319f51d` 的 Git 内容作为临时测试数据，覆盖原 Fa
 本轮本地回归结果：427 PASS、84 项因未配置 C++ fake ACL runner 跳过；shell 语法及
 差异空白检查通过。macOS 的 `/bin/true` fixture 使用本地 `/usr/bin/true` 适配，
 没有改动历史锁定文件。服务器历史隔离 Preflight 和八组设备验收均仍为 NOT_RUN。
+
+### a6b5498 generator tracing：单图复测
+
+服务器 `ac-draft-only-20261016-060918` 已完成历史源码/接口 Preflight、联合 OPP 安装
+和 Runner 构建；失败发生在首次 `a-c16-fc` 的 `torchair.dynamo_export`。该轮日志没有
+保存 `from user code` 或 generator 内层帧，不能从外层 traceback 直接归因 Transformers。
+
+本地 PyTorch 2.10 CPU 受控复现（不是服务器 PyTorch 2.8/NPU 结果）：
+
+| 同一普通 nn.Module + fullgraph 捕获 | 结果 |
+|---|---|
+| 不安装只读审计钩子 | 捕获成功 |
+| 安装 a6b5498 的 `protect_writes()` | `Attempt to trace generator` |
+| 安装修复后的钩子 | 捕获成功，仍严格拒绝历史目录写入/删除/重命名 |
+
+失败栈指向 `native_base.py` 的 `audit()`：`any(inside(p) for p in paths)`。
+父 callback 虽然被 Dynamo 判为没有 torch 操作，其 generator expression 仍会作为独立
+frame 遇到 eval-frame hook。修复仅把两个 generator expression 改为普通条件/循环，
+并对不涉及写入的审计事件直接返回。没有移除写保护，没有 `torch.compiler.disable`、
+没有 suppress_errors、没有放宽 formal export 或数值检查。
+
+`5e5b0d7` 原 exporter 与拆分后的 pipeline 中，包围 `torchair.dynamo_export` 的
+inference/工作目录/ABI context block 逐字相同。CPU 对照也保留 host contextmanager；
+无需先删除生成器式 contextmanager 或修改历史 exporter。服务器仍需以下单图门槛确认。
+
+`Config not found for dflash-v1` 单独处理：官方 Transformers 5.13.1 的
+[auto_docstring 源码](https://github.com/huggingface/transformers/blob/v5.13.1/src/transformers/utils/auto_docstring.py)
+在文档配置查找失败时打印该提示，并使用 `ModelConfig` 占位值继续返回；该分支没有
+直接抛出 generator 异常。新的 `environment.json` 记录服务器实际安装版本、源文件
+SHA256、消息所在函数/行号/附近代码及当时的 alias 值。它不被当作已证实根因，也不
+通过修改 Transformers 或历史模型配置来隐藏提示。PyTorch 对直接 generator frame
+的限制见 [v2.8.0 convert_frame](https://github.com/pytorch/pytorch/blob/v2.8.0/torch/_dynamo/convert_frame.py)。
+
+独立入口 `run_single_graph.sh`：
+
+- 从旧 `worker-input.json`、已通过的 Native boundary、`suite.json` 和 `joint/opp.json`
+  核对已有 OPP/Runner，复查安装文件/注册/二进制哈希及冻结构建配置，不重建或覆盖旧包。
+- 在新目录重新执行全部只读 provenance 和历史 Native Base Preflight。新代码使用新的
+  Extension 哈希快照，绝不拿旧 extension 快照冒充当前版本。选择已验证的旧 OPP 环境后，
+  启动另一个全新 Python/ELF 进程。
+- 只选 `C16/fc`；复用正式 exporter、compiler、Runner 和 Native bitwise 比较函数。
+  不执行其余 55 图、Head 或八组 Draft。完整模式仍检查 guards、只读、重复、行置换、
+  timed-tail/postcheck；输入、FileConstant、NZ、GE OpType/端口审计均保留。
+- 默认记录 `TORCH_LOGS="+dynamo"`、`TORCHDYNAMO_VERBOSE=1`；`--trace-bytecode` 额外启用
+  `trace_source` / `trace_bytecode`。日志写入 `preflight.log` 和 `single-graph.log`。
+  异常写入完整 `traceback.txt` 及结构化 `exception.json`，记录 frame 函数、文件、行号、
+  源码哈希，并提取 traceback 局部变量中尚存的 generator code/frame 信息；不 repr Tensor。
+- 默认完成 AIR→ATC→NPU。可附加 `--air-only` 定位导出；其状态为 `AIR_ONLY`，ATC/NPU
+  保持 `NOT_RUN`，不能算单图数值 PASS。`export-stages.json` 保留实际失败阶段。
+
+在原先 Transformers 5.13.1 隔离 venv 和 CANN9 环境下执行（不要切换到其它模型环境）：
+
+```bash
+git pull --ff-only
+bash framework/custom_ops/draft_ac/run_single_graph.sh \
+  --source-evidence /home/w00949577/qwen35-dflash-run/ac-draft-only-20261016-060918 \
+  --output-dir /home/w00949577/qwen35-dflash-run/ac-fc-generator-$(date +%Y%m%d-%H%M%S) \
+  --trace-bytecode
+```
+
+回传新目录的 `suite.json`、`single-graph.log`、`environment.json`、
+`native-base-single.json`、`a-c16-fc/export-stages.json`；失败时附 `exception.json`、
+`traceback.txt`（Preflight 失败则附 `preflight.log`）。成功时附
+`a-c16-fc/comparison.json` 以及 `native/runner.log`、`custom/runner.log`。
+单图 AIR/ATC/NPU 在服务器执行前均为 `NOT_RUN`；八组 Draft 和端到端仍为 `NOT_RUN`。
+只有首图实际 bitwise PASS 后才重启 56 图及完整 Draft，不用 CPU 复现替代设备验收。
+
+本轮相关 CPU 回归：353 PASS，包括 legacy 钩子受控复现、fullgraph 捕获、写保护不变、
+单图范围、AIR-only 状态、OPP/Runner 篡改拒绝和新进程日志/环境设置。没有本地 CANN/NPU PASS。

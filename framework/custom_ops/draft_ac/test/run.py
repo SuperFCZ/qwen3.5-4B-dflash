@@ -66,7 +66,7 @@ def compare(expected,actual,folder):
     return report
 
 
-def export_one(spec,folder,atc,*,draft_only=False):
+def export_one(spec,folder,atc,*,draft_only=False,air_only=False):
     import torch
     import torchair
     from qwen35_dflash.ascend310p.draft_ac_export import GE,converter_capabilities
@@ -76,30 +76,41 @@ def export_one(spec,folder,atc,*,draft_only=False):
         print('A/C converter capabilities: '+str(folder/'converter-capabilities.json'),flush=True)
     from qwen35_dflash.ascend310p.draft_ac_export_pipeline import export_air_bundle
     from qwen35_dflash.ascend310p.draft_ac_export_pipeline import compile_air_bundle
+    stages=dict(air='RUNNING',atc='NOT_RUN')
+    write_json(folder/'export-stages.json',stages)
     air=export_air_bundle(lambda _:(spec,),{},folder/'artifacts')
+    stages['air']='PASS';write_json(folder/'export-stages.json',stages)
     if draft_only:
         from draft_only import audit_draft_air
         audit_draft_air(air,folder)
+    if air_only:
+        return None,dict(air=record(Path(air['manifest_path']),folder),atc='NOT_RUN',npu='NOT_RUN')
+    stages['atc']='RUNNING';write_json(folder/'export-stages.json',stages)
     compiled=compile_air_bundle(air['manifest_path'],atc_bin=atc,soc_version='Ascend310P3',
         extra_args=['--precision_mode=must_keep_origin_dtype','--deterministic=0'])
+    stages['atc']='PASS';write_json(folder/'export-stages.json',stages)
     graph=compiled['graphs'][0]
     om=checked_file(Path(compiled['manifest_path']).parent,graph['om'])
     torch._dynamo.reset(); gc.collect()
     return om,dict(air=record(Path(air['manifest_path']),folder),deployment=record(Path(compiled['manifest_path']),folder),om=record(om,folder))
 
 
-def probes(args,root,runner,bundles):
+def probes(args,root,runner,bundles,*,only_first=False,air_only=False):
     from resolve import head_capture
     import numpy as np
     import torch
     from qwen35_dflash.ascend310p.draft_ac_export import A,C,AUDIT,GE,POLICY,ensure_ops
     from qwen35_dflash.ascend310p.contracts import AirGraphSpec,CustomOpExportSpec
+    if air_only and not only_first: raise ValueError('AIR-only is restricted to the single a-c16-fc diagnostic')
     ensure_ops(); device=f'npu:{args.device_id}'; results=[]
     def tensor(path,dtype,shape): return torch.from_numpy(np.fromfile(path,dtype=dtype).reshape(shape)).to(device)
-    for gear,bundle_path,native_path in ((16,args.a16_bundle,args.a16_native),(64,args.a64_bundle,args.a64_native)):
+    selections=((16,args.a16_bundle,args.a16_native),) if only_first else ((16,args.a16_bundle,args.a16_native),(64,args.a64_bundle,args.a64_native))
+    for gear,bundle_path,native_path in selections:
         bundle=bundles[gear]; native=json.loads(native_path.read_text())
         if native.get('status')!='PASS' or native.get('bundle_sha256')!=sha256(bundle_path): raise ValueError('A Native manifest is not bound to this capture')
-        for case in bundle['cases']:
+        cases=[c for c in bundle['cases'] if c['name']=='fc'] if only_first else bundle['cases']
+        if only_first and len(cases)!=1: raise ValueError('single graph requires exactly one frozen C16 fc capture')
+        for case in cases:
             validate_layout(bundle_path.parent,case,'a4'); m,k,n=case_shape(case,'a4')
             folder=root/f'a-c{gear}-{case["name"]}'; folder.mkdir()
             native_case=next(c for c in native['cases'] if c['name']==case['name'] and c['status']=='PASS')
@@ -116,14 +127,21 @@ def probes(args,root,runner,bundles):
                          weight_sha256=case['files']['q_nk.bin']['sha256'],scale_gn_sha256=case['files']['s_gn.bin']['sha256'])])
             spec=AirGraphSpec(name='ac_projection',role='diagnostic',model=model,example_args=(x,),input_names=('x',),output_names=('y',),
                               custom_ops=(CustomOpExportSpec(A,GE[A]),),metadata=dict(tensor_abi=abi,draft_ac=control))
-            om,artifacts=export_one(spec,folder,args.atc)
+            om,artifacts=export_one(spec,folder,args.atc,air_only=True) if air_only else export_one(spec,folder,args.atc)
             del spec,model,x; gc.collect(); torch.npu.empty_cache()
+            if air_only:
+                results.append(dict(name='c16-fc',status='AIR_EXPORTED',artifacts=artifacts,atc='NOT_RUN',npu='NOT_RUN'))
+                continue
             nt,golden=execute(runner,native_om,abi,{'x':xpath},folder/'native',args.device_id)
             ct,actual=execute(runner,om,abi,{'x':xpath},folder/'custom',args.device_id)
             compare(golden,actual,folder)
             results.append(dict(name=f'c{gear}-{case["name"]}',status='PASS',artifacts=artifacts,native=nt,custom=ct))
             write_json(root/'a-probes.json',dict(status='RUNNING',cases=results))
-    write_json(root/'a-probes.json',dict(status='PASS',cases=results))
+    write_json(root/'a-probes.json',dict(status='AIR_EXPORTED' if air_only else 'PASS',cases=results,
+        **(dict(scope='a-c16-fc only; other 55 graphs and full Draft NOT_RUN',expected_cases=1) if only_first else {})))
+    if only_first:
+        if len(results)!=1 or results[0]['name']!='c16-fc': raise ValueError('single-graph scope drifted')
+        return results,[]
     cap=head_capture(args.head_capture); native=json.loads(args.head_native.read_text())
     if cap.get('status')!='PASS' or cap.get('abi')!='dflash-draft-head-v1' or native.get('status')!='PASS' or native.get('capture_sha256')!=sha256(args.head_capture):
         raise ValueError('Head capture/Native identity differs')

@@ -9,8 +9,8 @@ from native_base import activate,digest,bound_native
 
 
 def main():
-    if len(sys.argv)!=3 or sys.argv[1] not in ('preflight','device'):
-        raise ValueError('usage: native_worker.py preflight|device REQUEST_JSON')
+    if len(sys.argv)!=3 or sys.argv[1] not in ('preflight','device','single'):
+        raise ValueError('usage: native_worker.py preflight|device|single REQUEST_JSON')
     stage=sys.argv[1]; request=Path(sys.argv[2]).resolve(); state=json.loads(request.read_text())
     root=Path(state['args']['output_dir']).resolve()
     if request!=root/('preflight-input.json' if stage=='preflight' else 'worker-input.json'):
@@ -21,7 +21,7 @@ def main():
     code=1
     try:
         expected=None
-        if stage=='device':
+        if stage in ('device','single'):
             link=state['native_boundary']; path=(root/link['path']).resolve()
             if not path.is_relative_to(root) or digest(path)!=link['sha256']:
                 raise ValueError('accepted Native boundary report changed')
@@ -29,7 +29,7 @@ def main():
         boundary,report=activate(state,Path(__file__).resolve().parents[4],expected=expected)
         report['request_sha256']=digest(request)
         output.write_text(json.dumps(report,indent=2)+'\n')
-        entry=Path(__file__).with_name('preflight_worker.py' if stage=='preflight' else 'run.py')
+        entry=Path(__file__).with_name('preflight_worker.py' if stage=='preflight' else 'single_graph.py' if stage=='single' else 'run.py')
         sys.argv=[str(entry)]+([str(request)] if stage=='preflight' else ['--device-worker',str(request)])
         try: runpy.run_path(str(entry),run_name='__main__')
         except SystemExit as stop: code=stop.code if isinstance(stop.code,int) else 1

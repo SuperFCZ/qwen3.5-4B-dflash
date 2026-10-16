@@ -229,11 +229,17 @@ def protect_writes(base):
         paths=[]
         if event=='open':
             path,mode,flags=args
-            if (mode and any(m in mode for m in 'wax+')) or flags & (os.O_WRONLY|os.O_RDWR|os.O_CREAT|os.O_TRUNC|os.O_APPEND): paths=[path]
+            if (mode and ('w' in mode or 'a' in mode or 'x' in mode or '+' in mode)) or flags & (os.O_WRONLY|os.O_RDWR|os.O_CREAT|os.O_TRUNC|os.O_APPEND): paths=[path]
         elif event in ('os.remove','os.rmdir','os.mkdir','os.chmod','os.chown','os.truncate','os.utime'): paths=args[:1]
         elif event in ('os.rename','os.link'): paths=args[:2]
         elif event=='os.symlink': paths=args[1:2]
-        if any(inside(p) for p in paths): raise PermissionError('Native Base is read-only: '+event)
+        else:
+            return
+        # Audit callbacks can run while Dynamo's eval-frame hook is active.
+        # A generator expression here becomes a separately traced frame, even
+        # when the callback itself is skipped. Keep this host guard generator-free.
+        for path in paths:
+            if inside(path): raise PermissionError('Native Base is read-only: '+event)
     sys.addaudithook(audit)
 
 
@@ -272,7 +278,10 @@ def activate(state, extension, *, expected=None):
         accepted_args=state['args'],
         native_profile_revision=NATIVE_REVISION,native_checkout_revision=revision(base),
         extension_revision=revision(extension),extension_revision_scope='Git HEAD; file hashes bind actual working tree content',
-        export_settings=dict(mode='draft-only',gears=[16,64],variants=['off','a','c','ac'],
+        export_settings=dict(mode='single-graph' if state['args'].get('single_graph') else 'draft-only',
+            gears=[16] if state['args'].get('single_graph') else [16,64],
+            variants=['a'] if state['args'].get('single_graph') else ['off','a','c','ac'],
+            air_only=bool(state['args'].get('air_only',False)),
             atc=state['args'].get('atc','atc'),precision_mode='must_keep_origin_dtype',deterministic=0,
             timing_protocol='continuous-v1',warmup=5,repetitions=30,native_golden='REUSE_ONLY',
             target_execution='NOT_RUN',end_to_end='NOT_RUN'),
