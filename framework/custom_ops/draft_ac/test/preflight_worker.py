@@ -19,6 +19,9 @@ def run(path):
         with trace_npu_imports(root/'preflight-imports.json'):
             from resolve import resolve
             resolve(args,root) # All existing checks, including real NZ inverse, unchanged.
+            if getattr(args,'draft_only',False):
+                from draft_only import require_draft_interfaces
+                require_draft_interfaces(args,root/'draft-interface-preflight.json')
             if getattr(args,'full_draft',False):
                 from full_interface import require_full_interfaces
                 require_full_interfaces(args,root/'full-interface-preflight.json')

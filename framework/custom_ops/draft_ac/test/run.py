@@ -66,7 +66,7 @@ def compare(expected,actual,folder):
     return report
 
 
-def export_one(spec,folder,atc):
+def export_one(spec,folder,atc,*,draft_only=False):
     import torch
     import torchair
     from qwen35_dflash.ascend310p.draft_ac_export import GE,converter_capabilities
@@ -77,6 +77,9 @@ def export_one(spec,folder,atc):
     from qwen35_dflash.ascend310p.exporter import export_air_bundle
     from qwen35_dflash.ascend310p.compiler import compile_air_bundle
     air=export_air_bundle(lambda _:(spec,),{},folder/'artifacts')
+    if draft_only:
+        from draft_only import audit_draft_air
+        audit_draft_air(air,folder)
     compiled=compile_air_bundle(air['manifest_path'],atc_bin=atc,soc_version='Ascend310P3',
         extra_args=['--precision_mode=must_keep_origin_dtype','--deterministic=0'])
     graph=compiled['graphs'][0]
@@ -180,13 +183,23 @@ def full_draft(args,root,runner,bundles):
         if exported.get(key)!=native.get(key): raise ValueError('Native AIR/Deployment differs: '+key)
     validate_offline_nz(config,exported,air_path.parent,args.a16_bundle,bundles[16])
     native_oms=[checked_file(args.native_deployment.parent,r) for r in om_records(native)]
+    acceptance=dict(scope='frozen Draft replay only',end_to_end='NOT_RUN',target_execution='NOT_RUN')
+    if getattr(args,'draft_only',False):
+        acceptance['target_interface']=json.loads((root/'draft-interface-device.json').read_text())['target_interface']
+        acceptance['diagnostic_mode']='draft_only'
+    else:
+        acceptance['diagnostic_mode']='full_factory_preflight'
     result=[]
     for gear,replay in ((16,args.replay16),(64,args.replay64)):
         golden=None
         for mode in ('off','a','c','ac'):
             folder=root/f'draft-{mode}-c{gear}'; folder.mkdir()
-            create_quant_incremental_graphs.prepare_export(config,torchair)
-            specs=create_quant_incremental_graphs(config); source=next(s for s in specs if s.name=='draft')
+            if getattr(args,'draft_only',False):
+                from draft_only import load_draft
+                source=load_draft(config,native); specs=None
+            else:
+                create_quant_incremental_graphs.prepare_export(config,torchair)
+                specs=create_quant_incremental_graphs(config); source=next(s for s in specs if s.name=='draft')
             if source.metadata['incremental_contract']!=native['metadata']['incremental_contract']:
                 raise ValueError('reloaded Draft contract differs from frozen Native deployment')
             graph=source.model; layers=bundles[gear]['source']['feature_layers']
@@ -194,18 +207,25 @@ def full_draft(args,root,runner,bundles):
             if origin['context_rows']!=gear or tuple(names)!=source.input_names: raise ValueError('frozen Draft ABI/order/gear differs')
             if (origin['draft_om_sha256']!=native['om']['sha256'] or (gear==64 and origin['draft_static64_om_sha256']!=native['static_gear_oms'][1]['om']['sha256'])):
                 raise ValueError('frozen replay is not bound to the provided Native Draft OM')
+            weight_bindings=[]
             for name,parent,attr in projection_modules(graph):
                 m=getattr(parent,attr); captured=next(c for c in bundles[gear]['cases'] if c['name']==name)
-                if tensor_hash(m.qweight)!=captured['files']['q_nk.bin']['sha256'] or tensor_hash(m.scales.t().contiguous())!=captured['files']['s_gn.bin']['sha256']:
+                q_hash=tensor_hash(m.qweight); s_hash=tensor_hash(m.scales.t().contiguous())
+                if q_hash!=captured['files']['q_nk.bin']['sha256'] or s_hash!=captured['files']['s_gn.bin']['sha256']:
                     raise ValueError('full graph checkpoint projection differs from A4 capture: '+name)
-            if tensor_hash(graph.head.weight)!=json.loads(args.head_capture.read_text())['weight']['file']['sha256']:
+                weight_bindings.append(dict(name=name,weight_sha256=q_hash,scale_gn_sha256=s_hash))
+            head_hash=tensor_hash(graph.head.weight)
+            if head_hash!=json.loads(args.head_capture.read_text())['weight']['file']['sha256']:
                 raise ValueError('full graph head differs from accepted Head capture')
+            write_json(folder/'weight-bindings.json',dict(status='PASS',scope='reloaded tensors match frozen captures; not NPU acceptance',
+                projections=weight_bindings,head_weight_sha256=head_hash,a_capture_sha256=sha256(args.a16_bundle if gear==16 else args.a64_bundle),
+                head_capture_sha256=sha256(args.head_capture)))
             inputs=tuple(torch.from_numpy(a.copy()).to(f'npu:{args.device_id}') for a in arrays)
             selected=integration_spec(source,mode,inputs,gear)
             abi=selected.metadata['tensor_abi']; inp=folder/'input'; inp.mkdir()
             paths={}
             for name,array in zip(names,arrays): array.tofile(inp/(name+'.bin')); paths[name]=inp/(name+'.bin')
-            om,artifacts=export_one(selected,folder,args.atc)
+            om,artifacts=export_one(selected,folder,args.atc,draft_only=getattr(args,'draft_only',False))
             del graph,source,specs,selected,inputs; gc.collect(); torch.npu.empty_cache()
             nt,current_native=execute(runner,native_oms[0 if gear==16 else 1],abi,paths,folder/'native',args.device_id)
             if golden is not None: compare(golden,current_native,folder/'native')
@@ -214,8 +234,8 @@ def full_draft(args,root,runner,bundles):
             compare(golden,actual,folder) # IDs AND all ten full KV buffers, including untouched rows.
             result.append(dict(gear=gear,mode=mode,status='PASS',scope='frozen real Draft only',native=nt,custom=ct,artifacts=artifacts,
                                frozen_report_sha256=sha256(replay),inputs={k:sha256(v) for k,v in paths.items()}))
-            write_json(root/'draft-suite.json',dict(status='RUNNING',cases=result,end_to_end='NOT_RUN'))
-    write_json(root/'draft-suite.json',dict(status='PASS',cases=result,end_to_end='NOT_RUN'))
+            write_json(root/'draft-suite.json',dict(status='RUNNING',cases=result,**acceptance))
+    write_json(root/'draft-suite.json',dict(status='PASS',cases=result,**acceptance))
     lines=['# Frozen Draft OM timing', '', 'Same frozen inputs; continuous-v1, warmup=5, repetitions=30. End-to-end generation: NOT_RUN.', '',
            '| Gear | Mode | Native median/p95 ms | Candidate median/p95 ms | Native/candidate median |', '|---|---|---:|---:|---:|']
     for row in result:
@@ -256,6 +276,12 @@ def device_worker(path):
         import torch_npu
         torch.npu.set_device(args.device_id)
         if '310P' not in torch.npu.get_device_name(args.device_id): raise ValueError('requires real 310P')
+        if getattr(args,'draft_only',False):
+            report['phase']='draft_interface_preflight'; write_json(root/'suite.json',report)
+            from draft_only import require_draft_interfaces
+            interface=require_draft_interfaces(args,root/'draft-interface-device.json')
+            report['target_interface']=interface['target_interface']
+            report['draft_interface']=record(root/'draft-interface-device.json',root)
         if args.full_draft:
             report['phase']='full_interface_preflight'; write_json(root/'suite.json',report)
             from full_interface import require_full_interfaces
@@ -277,9 +303,10 @@ def device_worker(path):
             path=ROOT/'framework/python/qwen35_dflash/ascend310p'/name; report['source_sha256'][str(path.relative_to(ROOT))]=sha256(path)
         report['phase']='single_op_graph'; write_json(root/'suite.json',report)
         probes(args,root,runner,bundles); report['single_op_graph']='PASS'
-        if args.full_draft:
-            report['phase']='full_draft'; write_json(root/'suite.json',report)
-            full_draft(args,root,runner,bundles); report['full_draft']='PASS'
+        if args.full_draft or getattr(args,'draft_only',False):
+            scope='draft_only' if getattr(args,'draft_only',False) else 'full_draft'
+            report['phase']=scope; write_json(root/'suite.json',report)
+            full_draft(args,root,runner,bundles); report[scope]='PASS'
         for entry in provenance['records'].values():
             if sha256(entry['path'])!=entry['sha256']: raise ValueError('source evidence changed during run')
         if preflight(Path(opp['install']))!=opp['preflight']: raise ValueError('joint OPP changed during run')
@@ -297,7 +324,7 @@ def run(args):
     root=args.output_dir.resolve(); root.mkdir(parents=True,exist_ok=False)
     os.environ['AI_RUN_DIR']=str(root)
     write_json(root/'request.json',{k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()})
-    report=dict(status='RUNNING',single_op_graph='NOT_RUN',full_draft='NOT_RUN',end_to_end='NOT_RUN')
+    report=dict(status='RUNNING',single_op_graph='NOT_RUN',full_draft='NOT_RUN',draft_only='NOT_RUN',target_interface='NOT_RUN',end_to_end='NOT_RUN')
     try:
         report['phase']='provenance'
         require_clean_npu('coordinator before preflight')
@@ -311,6 +338,9 @@ def run(args):
         args,provenance=validate_preflight_result(request,result,root)
         require_clean_npu('coordinator after preflight')
         write_json(root/'coordinator-process.json',dict(pid=os.getpid(),preflight_pid=result['pid'],npu_modules=npu_modules()))
+        if getattr(args,'draft_only',False):
+            report['draft_interface']=record(root/'draft-interface-preflight.json',root)
+            report['target_interface']=json.loads((root/'draft-interface-preflight.json').read_text())['target_interface']
         report['provenance']=record(root/'preflight.json',root)
         report['preflight_imports']=record(root/'preflight-imports.json',root)
         report['coordinator_process']=record(root/'coordinator-process.json',root)
@@ -349,7 +379,10 @@ if __name__=='__main__':
         p.add_argument('--'+name,type=Path,required=True)
     for name in ('factory-config','air-manifest','a16-bundle','a64-bundle'): p.add_argument('--'+name,type=Path)
     p.add_argument('--preflight-only',action='store_true')
-    p.add_argument('--full-draft',action='store_true'); p.add_argument('--device-id',type=int,default=0); p.add_argument('--atc',default='atc')
+    scope=p.add_mutually_exclusive_group()
+    scope.add_argument('--full-draft',action='store_true')
+    scope.add_argument('--draft-only',action='store_true',help='Isolated Draft diagnostic; Target interface is reported separately, never relaxed')
+    p.add_argument('--device-id',type=int,default=0); p.add_argument('--atc',default='atc')
     args=p.parse_args()
     for k,v in vars(args).items():
         if isinstance(v,Path): setattr(args,k,v.resolve())

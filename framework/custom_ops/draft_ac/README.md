@@ -139,3 +139,62 @@ PYTHONPATH=framework/python python -B -m pytest -q   tests/test_draft_ac_integra
 python -B -m unittest discover -s framework/custom_ops/draft_head/test -p 'test_*.py'
 python -B -m unittest discover -s framework/custom_ops/draft_quant/test -p 'test_a51*.py'
 ```
+
+
+### 显式 Draft-only 接口隔离（当前环境诊断）
+
+服务器环境调查表明 `ls_llm` / `cpro` 的 torch_npu 二进制相同、GDR dispatcher
+均为九参数；其它已检查环境没有证明具备十参数接口。历史 GDR effective_length-v2
+与 ADN GE prototype 的哈希已匹配 Native AIR，但 GE prototype 不能补上 PyTorch
+前端缺失的 `effective_length` 参数。A/C 56 个单算子图的设备验收已由服务器确认，
+这不代表完整 Draft 或端到端已通过。
+
+新增 `--draft-only` 与 `--full-draft` 互斥，默认不开启。它是独立诊断入口：
+
+- 隔离 Preflight 子进程先完整校验历史 AIR/Deployment 的 incremental_contract、
+  15 输入/11 输出 ABI、原 Factory config 和身份元数据。保持原有 Evidence、NZ
+  反解、Checkpoint、OPP、Capture、Replay 和 SHA256 检查。
+- 只准备 Draft 使用的 `adn_rms_norm`、functional `npu_scatter_nd_update` 和
+  `npu_weight_quant_batchmatmul` 的严格 schema/Meta/Converter；A/C Converter
+  仍由原导出器按各模式注册。读取 GDR schema 仅用于记录 Target 接口状态，
+  不注册、不伪造、不放宽 GDR。
+- 使用**未修改的** `create_quant_incremental_graphs` 加载原 Target/Draft 权重并
+  构造完整 contract，保留其 source lock、输入 Manifest、Embedding/Head 来源验证。
+  这是 metadata/权重构造，仍需要当前接收端加载器可导入及其所引用符号存在；
+  不承诺能在任意缺少 torch_npu 符号的环境运行。构造期间任何 module forward
+  都明确报错；只保留原 `DraftGraph` spec，其它 Target/Verify specs 不导出、不执行。
+  不调用公共 Factory 的 `prepare_export`，也不改变该 hook 的 GDR 十参数检查。
+- 重建后的**完整** contract、ABI、Target/Embedding/Checkpoint 身份必须与历史
+  Native 元数据一致；26 个投影的权重/scale 与 Head 权重仍逐一比较既有 Capture
+  SHA256。15 候选行、anchor、proposal_count 和完整 KV 输出保持原语义。
+- 在 ATC 前进一步审计唯一 Draft AIR：原 Const/NZ、26 个投影及 Head 节点规则保留，
+  出现 GDR、Target attention、CacheUpdate、DynamicQuant 或 Target QuantMatmul
+  节点会明确失败，不得带入 Target 路径。
+- 新目录重建联合 OPP，执行既有 56 个单算子 gate，再执行 C16/C64 × off/a/c/ac
+  八组 Draft OM。每组对冻结 Native OM 的 IDs 和所有十个完整 KV buffer 逐字节比较，
+  保留 guards、只读、repeat、timed-tail/postcheck 和 continuous-v1 5/30 median/p95。
+  不重新 Capture、导出 Native Golden，不写生产 deployment plan。
+
+服务器命令（使用原 Ascend310P3/CANN9、TorchAir 与 ADN/GDR 环境；不要 source 旧 A/C OPP）：
+
+```bash
+git pull --ff-only
+export AC_OUTPUT_DIR=/home/w00949577/qwen35-dflash-run/ac-draft-scope-$(date +%Y%m%d-%H%M%S)
+bash framework/custom_ops/draft_ac/run_known_evidence.sh --draft-only --preflight-only
+
+# 上一步通过后，用另一个新目录执行设备验收：
+export AC_OUTPUT_DIR=/home/w00949577/qwen35-dflash-run/ac-draft-only-$(date +%Y%m%d-%H%M%S)
+bash framework/custom_ops/draft_ac/run_known_evidence.sh --draft-only
+```
+
+回传 `$AC_OUTPUT_DIR.server.log`、`preflight.log`、`draft-interface-preflight.json`、
+`draft-interface-device.json`、`suite.json`、`draft-suite.json`、`draft-timing.md`；
+失败时另回传对应 `draft-*-c*/` 下的 `draft-scope.json`（若已生成）、AIR/ATC 日志、
+`weight-bindings.json`、`comparison.json` 与 `native/runner.log`、`candidate/runner.log`。
+
+报告明确区分：`draft_only=PASS` 仅在本次八组 Draft 全通过后产生；当前九参数环境
+`target_interface=BLOCKED`，`full_draft=NOT_RUN`、`end_to_end=NOT_RUN`。
+原 `--full-draft` / 公共 Target/Draft 导出仍受 GDR 十参数 gate 阻塞。
+CPU 回归包含原 Draft forward 的 Target/GDR 禁用哨兵、范围白名单、历史 contract 与
+文件篡改、全部 IDs/KV bitwise 拒绝测试。**新 Draft-only GE/ATC/NPU 与性能：NOT_RUN**，
+不能沿用 56 个历史单算子 PASS 或 CPU 测试冒充新验收。
