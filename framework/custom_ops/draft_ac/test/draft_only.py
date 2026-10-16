@@ -72,7 +72,11 @@ def require_draft_interfaces(args, path):
     report = dict(status='BLOCKED', scope='Draft-only interfaces; no model execution',
                   draft_only='NOT_RUN', target_interface='NOT_RUN', end_to_end='NOT_RUN')
     try:
-        config, _, air_path = native_history(args)
+        config, native, air_path = native_history(args)
+        from source_lock import require_source_lock
+        source_report = Path(path).with_name(Path(path).stem.replace('draft-interface', 'source-lock')+'.json')
+        require_source_lock(native, source_report)
+        report['source_lock'] = record(source_report, Path(path).parent)
         report['native_air'] = record(air_path, air_path.parent)
         import torch
         import torch_npu

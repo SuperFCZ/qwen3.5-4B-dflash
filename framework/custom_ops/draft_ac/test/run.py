@@ -74,8 +74,8 @@ def export_one(spec,folder,atc,*,draft_only=False):
     if capabilities:
         write_json(folder/'converter-capabilities.json',capabilities)
         print('A/C converter capabilities: '+str(folder/'converter-capabilities.json'),flush=True)
-    from qwen35_dflash.ascend310p.exporter import export_air_bundle
-    from qwen35_dflash.ascend310p.compiler import compile_air_bundle
+    from qwen35_dflash.ascend310p.draft_ac_export_pipeline import export_air_bundle
+    from qwen35_dflash.ascend310p.draft_ac_export_pipeline import compile_air_bundle
     air=export_air_bundle(lambda _:(spec,),{},folder/'artifacts')
     if draft_only:
         from draft_only import audit_draft_air
@@ -299,7 +299,7 @@ def device_worker(path):
             ASCEND_CUSTOM_OPP_PATH=os.environ.get('ASCEND_CUSTOM_OPP_PATH'),LD_LIBRARY_PATH=os.environ.get('LD_LIBRARY_PATH'),
             source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip())
         report['source_sha256']={str(p.relative_to(ROOT)):sha256(p) for p in HERE.rglob('*') if p.is_file() and p.suffix in ('.py','.cpp','.h','.sh','.txt')}
-        for name in ('draft_ac_export.py','draft_ac_constants.py','draft_ac_payload.py','incremental.py','quant_factory.py','custom_op_export.py','runtime_input_export.py','exporter.py','compiler.py'):
+        for name in ('draft_ac_export.py','draft_ac_constants.py','draft_ac_payload.py','draft_ac_export_pipeline.py','draft_ac_runtime_input_export.py','draft_ac_weight_prepack.py','incremental.py','quant_factory.py','custom_op_export.py','runtime_input_export.py','exporter.py','compiler.py'):
             path=ROOT/'framework/python/qwen35_dflash/ascend310p'/name; report['source_sha256'][str(path.relative_to(ROOT))]=sha256(path)
         report['phase']='single_op_graph'; write_json(root/'suite.json',report)
         probes(args,root,runner,bundles); report['single_op_graph']='PASS'

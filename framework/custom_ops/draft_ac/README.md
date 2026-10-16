@@ -198,3 +198,61 @@ bash framework/custom_ops/draft_ac/run_known_evidence.sh --draft-only
 CPU 回归包含原 Draft forward 的 Target/GDR 禁用哨兵、范围白名单、历史 contract 与
 文件篡改、全部 IDs/KV bitwise 拒绝测试。**新 Draft-only GE/ATC/NPU 与性能：NOT_RUN**，
 不能沿用 56 个历史单算子 PASS 或 CPU 测试冒充新验收。
+
+### SOURCE_LOCK 恢复与提前验收（5e5b0d7 后）
+
+服务器 `ac-draft-only-20261016-025158` 在完成 56 个单算子 gate 后，首次加载 Factory
+因 `docs/ARCHITECTURE.md` 哈希不一致失败；完整 Draft / 端到端仍为 `NOT_RUN`。
+全量 CPU 审计发现 **201 条声明、191 个唯一文件，11 条声明涉及 9 个不一致文件**：
+
+| 文件 | 与锁定哈希匹配的 Git 版本 |
+|---|---|
+| `docs/ARCHITECTURE.md` | `9018673` |
+| `framework/python/qwen35_dflash/ascend310p/compiler.py` | `119fa26` |
+| `framework/python/qwen35_dflash/ascend310p/custom_op_export.py` | `ea560cb` |
+| `framework/python/qwen35_dflash/ascend310p/exporter.py` | `93be6b0` |
+| `framework/python/qwen35_dflash/ascend310p/runtime_input_export.py` | `93be6b0` |
+| `framework/python/qwen35_dflash/ascend310p/weight_prepack.py` | `93be6b0` |
+| `tests/test_weight_prepack.py` | `93be6b0` |
+| `tests/test_draft_variant_bundles.py` | `93be6b0` |
+| `tests/test_weight_quant_layout.py` | `d50d203` |
+
+文档差异由 `6d86508` 追加 A/C 诊断说明造成。恢复后的文档 SHA256 为
+`088552cca7461263612fda36779f3a9b67ab4fe963ac35cac5c2a5620cf8eb6e`。
+其它文件包含有价值的 A/C/FileConstant 改动，不能直接丢弃：
+
+- 九个锁定文件恢复为逐字节匹配的历史内容。完整差异保存在
+  [changes-through-5e5b0d7.patch](source_lock_recovery/changes-through-5e5b0d7.patch)，
+  包括文档说明、原导出扩展、测试与 macOS 测试路径适配。
+- A/C 专用导出器、公共输入/FileConstant 生命周期、INT8 descriptor 修复分别移到
+  `draft_ac_export_pipeline.py`、`draft_ac_runtime_input_export.py`、`draft_ac_weight_prepack.py`。
+  这些是显式诊断扩展，不伪装成历史 Native 源码。未使用模块替换、运行时源码改写或
+  修改 `sys.modules` 来绕过锁；原 Factory、原 verifier 和公共导出器保持锁定内容。
+- A/C 服务入口显式调用独立 pipeline。原 converter 调用计数、Const descriptor、
+  SHA256、NZ bitwise、FileConstant 延迟物化和精确节点数检查均保留；编译前仍严格执行
+  `validate_ac_graph`，然后调用锁定的通用编译器。额外的 descriptor/protobuf 回归移到
+  独立测试文件，原锁定测试也保留。
+- 本地恢复后 **201/201 声明匹配，191 个文件匹配**。
+  [恢复前完整审计](source_lock_recovery/audit-before.json) 与
+  [恢复后完整审计](source_lock_recovery/audit-after.json) 保存每条声明及实际/期望哈希。
+
+`SOURCE_LOCK.json` 原始字节未改，SHA256 仍为
+`107ba0425348620cdc7edf5f09e845d04d435df3e123e083e63ff5f752ba3b1f`。
+这证明本地与该锁匹配，**尚不能证明它与服务器冻结 AIR 中的 quant_source_lock 相同**。
+Draft-only 隔离 Preflight 现在在模型加载、联合 OPP 构建及 56 个图测试前：
+
+1. 遍历全部声明并汇总所有缺失/篡改/非法路径，保存 `source-lock-preflight.json`。
+2. 将完整 `{path, sha256, verified_file_count}` 与 Deployment 哈希绑定的 Native AIR
+   Draft 元数据严格逐字段比较；路径、计数、哈希或额外字段不一致均失败，不自动升级锁。
+3. 再调用未改动的 `_verify_quant_source_lock()`，核对其返回身份与完整审计一致。
+4. 单独记录 `draft_ac_*.py` 扩展 SHA256。设备子进程再执行同样检查，保存
+   `source-lock-device.json`，Factory 加载时的原检查也不删除。
+
+沿用上面的 `--draft-only --preflight-only` 命令即可先轻量复测；只有源码及历史身份
+预检通过，才在另一个新目录执行 `--draft-only`。请额外回传 `source-lock-preflight.json`
+及 `source-lock-device.json`。若冻结 Native 的锁身份不同，先根据报告继续调查，不覆盖
+Native AIR、Deployment、SOURCE_LOCK 或 Golden。
+
+本轮本地 CPU 回归：463 PASS，88 项因未配置 C++ fake ACL runner 或依赖该 runner 的
+host fixture 跳过；macOS 的 Linux fixture `/bin/true` 使用本地 `/usr/bin/true` 适配，
+未修改锁定测试。新隔离 pipeline 的 GE/ATC/NPU、完整 Draft 与端到端：`NOT_RUN`。

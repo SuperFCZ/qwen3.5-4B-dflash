@@ -1,0 +1,454 @@
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index 953b172..bef8e72 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -89,3 +89,11 @@ Target 图在 Draft 间共享，Draft 在两条 Verify 间共享；由部署清
+ | [cli.py](../framework/python/qwen35_dflash/ascend310p/cli.py) | AIR 导出、OM 编译与 runner 构建 |
+ | [acl_chunk.cpp](../framework/runtime/cpp/src/acl_chunk.cpp) | AscendCL 执行、档位选择与状态管理 |
+ | [benchmark_gdr_lengths.py](../tools/benchmark_gdr_lengths.py) | 统一测试与汇总 |
++
++## A5.1 + C 可选图实验
++
++[集成入口与验收说明](../framework/custom_ops/draft_ac/README.md) 在独立目录重建联合 OPP，
++先验证单算子 GE/AIR/OM，再可选运行原 `DraftGraph.forward` 的静态 C16/C64 对照。
++模式为原始、A-only、C-only、A+C；A 对应 26 个 WeightQuant 投影，C 仅替换 post-norm 的 15 行 Head/Top1。
++默认 factory、Target/Verify 和生产 runner-plan 不切换。新图保留原 ABI 契约作为审计信息，
++但使用 diagnostic envelope，不能直接视为生产部署包。图内及端到端 NPU 验收在设备执行前为 `NOT_RUN`。
+diff --git a/framework/python/qwen35_dflash/ascend310p/compiler.py b/framework/python/qwen35_dflash/ascend310p/compiler.py
+index af20512..555f220 100644
+--- a/framework/python/qwen35_dflash/ascend310p/compiler.py
++++ b/framework/python/qwen35_dflash/ascend310p/compiler.py
+@@ -328,6 +328,9 @@ def _validated_custom_op_audit(graph: Mapping[str, Any]) -> list[dict[str, Any]]
+             )
+     from .weight_quant_layout import validate_weight_quant_layout
+     validate_weight_quant_layout(graph)
++    if metadata.get("draft_ac") is not None:
++        from .draft_ac_constants import validate_ac_graph
++        validate_ac_graph(graph)
+     return result
+ 
+ 
+diff --git a/framework/python/qwen35_dflash/ascend310p/custom_op_export.py b/framework/python/qwen35_dflash/ascend310p/custom_op_export.py
+index f7d532b..04c8fb7 100644
+--- a/framework/python/qwen35_dflash/ascend310p/custom_op_export.py
++++ b/framework/python/qwen35_dflash/ascend310p/custom_op_export.py
+@@ -1836,6 +1836,9 @@ def prepare_custom_op_export(
+ ) -> CustomOpExportSession:
+     """Validate schema/Meta and prepare one exact front-end lowering contract."""
+ 
++    if spec.torch_op in {"dflash_ac::group_quant_linear", "dflash_ac::head_top1", "dflash_ac::head_audit"}:
++        from .draft_ac_export import prepare_export
++        return prepare_export(spec,torchair_module)
+     if spec.overload != "default":
+         raise NotImplementedError(
+             f"no exact export adapter is implemented for {spec.torch_target}"
+diff --git a/framework/python/qwen35_dflash/ascend310p/exporter.py b/framework/python/qwen35_dflash/ascend310p/exporter.py
+index 175c91c..421fd64 100644
+--- a/framework/python/qwen35_dflash/ascend310p/exporter.py
++++ b/framework/python/qwen35_dflash/ascend310p/exporter.py
+@@ -237,13 +237,14 @@ def export_air_bundle(
+                 weight_prepack_output=(graph_dir / "prepacked-weights"
+                                        if spec.metadata.get("draft_weight_storage")
+                                        and spec.metadata.get("draft_weight_prepack") == "nz" else None),
++                draft_ac=spec.metadata.get("draft_ac"),
+                 public_output_names=spec.output_names,
+                 verify_discard_output_names=(
+                     [s["name"] for s in spec.metadata["incremental_contract"]["verify_discard_states"]]
+                     if spec.name == "target_verify" else ()
+                 ),
+             )
+-            if (spec.metadata.get("incremental_contract") or any(
++            if (spec.metadata.get("incremental_contract") or spec.metadata.get("draft_ac") or any(
+                 op.ge_op_type == "WeightQuantBatchMatmulV2" for op in spec.custom_ops
+             )) else nullcontext(None)
+         )
+diff --git a/framework/python/qwen35_dflash/ascend310p/runtime_input_export.py b/framework/python/qwen35_dflash/ascend310p/runtime_input_export.py
+index c576b4d..dfc41e4 100644
+--- a/framework/python/qwen35_dflash/ascend310p/runtime_input_export.py
++++ b/framework/python/qwen35_dflash/ascend310p/runtime_input_export.py
+@@ -232,6 +232,7 @@ def canonical_runtime_input_abi(
+     weight_quant_probe: Mapping[str, Any] | None = None,
+     weight_prepack_manifest: str | None = None,
+     weight_prepack_output: Path | None = None,
++    draft_ac: Mapping[str, Any] | None = None,
+ ) -> Iterator[dict[str, Any]]:
+     if weight_prepack_manifest and weight_prepack_output is not None:
+         raise ValueError("select automatic NZ packing or an existing offline manifest")
+@@ -261,11 +262,17 @@ def canonical_runtime_input_abi(
+     from .weight_quant_layout import (
+         capture_weight_quant_metadata, normalize_weight_quant_layout, weight_quant_layout_failure,
+     )
+-    from .weight_prepack import load_prepacked_weights, prepack_weight_quant_constants
++    from .weight_prepack import (
++        load_prepacked_weights, prepack_weight_quant_constants, restore_fileconstant_weight_descriptors,
++    )
+     prepacked = load_prepacked_weights(weight_prepack_manifest) if weight_prepack_manifest else None
+ 
+     with _PATCH_LOCK, capture_weight_quant_metadata(capture_weight_quant_shapes) as tensor_metadata:
+         original = export_utils._convert_data_to_const
++        ac_payload = None
++        if draft_ac is not None:
++            from .draft_ac_payload import PayloadLifecycle
++            ac_payload = PayloadLifecycle(draft_ac, export_utils, original)
+ 
+         def convert(inputs, export_graph, file_path, weight_name):
+             reordered = _order_weight_conversion_inputs(inputs, export_graph)
+@@ -287,12 +294,16 @@ def canonical_runtime_input_abi(
+             }
+             immutable_weights = {export_graph.op[i].name + ":0": value
+                                  for i, value in enumerate(inputs) if id(value) in weight_name}
++            if ac_payload is not None:
++                ac_payload.capture(export_graph, immutable_weights, file_path, inputs, weight_name)
+             result = original(inputs, export_graph, file_path, weight_name)
+             _normalize_public_nodes(export_graph, bindings)
+             try:
+                 weight_quant = normalize_weight_quant_layout(export_graph, tensor_metadata,
+                                                               probe_config=weight_quant_probe)
+                 if prepacked is not None or weight_prepack_output is not None:
++                    weight_quant["fileconstant_descriptors"] = restore_fileconstant_weight_descriptors(
++                        export_graph, weight_quant, immutable_weights, tensor_metadata)
+                     weight_quant = prepack_weight_quant_constants(
+                         export_graph, weight_quant, immutable_weights, prepacked,
+                         output_dir=weight_prepack_output)
+@@ -323,6 +334,14 @@ def canonical_runtime_input_abi(
+                           f"const_value_origin={node['prepacked_constant']['value_origin_shape']} "
+                           "const_output_shape_locked=true weightquant_inference=enabled "
+                           f"descriptor={weight_quant['prepack']['descriptor_policy']}", flush=True)
++            if draft_ac is not None:
++                try:
++                    ac_payload.after_convert(export_graph,immutable_weights,file_path,result,inputs,weight_name,audit)
++                except (ValueError,OSError) as error:
++                    atomic_write_json(Path(file_path)/'ac-constants.json',dict(status='FAIL',error=str(error),
++                        nodes=[dict(name=n.name,type=n.type,inputs=list(n.input),attrs=list(n.attr)) for n in export_graph.op
++                               if n.type in ('DFlashGroupQuantLinear','DFlashDraftLmHeadTop1','DFlashDraftLmHeadTop1Audit','FileConstant')]))
++                    raise
+             gdr_dtypes = _gdr_output_dtype_audit(export_graph)
+             if gdr_dtypes["node_count"]:
+                 audit["gdr_output_dtypes"] = gdr_dtypes
+@@ -371,16 +390,22 @@ def canonical_runtime_input_abi(
+             return result
+ 
+         export_utils._convert_data_to_const = convert
++        if ac_payload is not None and callable(ac_payload.original_save):
++            export_utils._save_weight2file = ac_payload.save
+         try:
+             # Specializes Python model attributes, not tensor dimensions or
+             # data-derived values. Tensor/SymInt shapes remain dynamic.
+             with dynamo_config.patch(specialize_float=True):
+                 yield audit
++            if ac_payload is not None:
++                ac_payload.finish()
+             if audit["calls"] != 1:
+                 raise RuntimeError("expected one canonical public ABI serialization per AIR graph")
+             audit["status"] = "PASS"
+         finally:
+             export_utils._convert_data_to_const = original
++            if ac_payload is not None and callable(ac_payload.original_save):
++                export_utils._save_weight2file = ac_payload.original_save
+ 
+ 
+ def validated_runtime_input_abi(
+diff --git a/framework/python/qwen35_dflash/ascend310p/weight_prepack.py b/framework/python/qwen35_dflash/ascend310p/weight_prepack.py
+index a2d65bb..817c741 100644
+--- a/framework/python/qwen35_dflash/ascend310p/weight_prepack.py
++++ b/framework/python/qwen35_dflash/ascend310p/weight_prepack.py
+@@ -13,7 +13,7 @@ from pathlib import Path
+ 
+ import torch
+ 
+-from .weight_quant_layout import GE_OP, POLICY, _dtype, _nz_shape, _source
++from .weight_quant_layout import GE_OP, POLICY, _dtype, _nz_shape, _resolved_desc, _source
+ from .utils import atomic_write_json, contained_path, file_record, load_json_object, require_run_output, sha256_file
+ 
+ 
+@@ -146,6 +146,61 @@ def _cached_weight(matrix, cache):
+     return data, logical_hash, record
+ 
+ 
++def restore_fileconstant_weight_descriptors(graph, layout_audit, immutable_weights, tensor_metadata):
++    """Restore only audited INT8 FileConstant outputs from immutable bindings.
++
++    TorchAir may replace a typed Data with a FileConstant whose output desc is
++    undefined/empty. The layout pass resolves a COPY using FX metadata, while
++    prepack deliberately validates the source node itself. Reconcile the FX
++    record and any concrete GE fields with the exporter-bound tensor before
++    filling that node. Runtime inputs, constant payloads and file attributes
++    are never changed; the prepack immutability/hash/shape gates still run.
++    """
++    if layout_audit.get("policy") != POLICY or not layout_audit.get("nodes"):
++        raise ValueError("FileConstant repair requires the production WeightQuant layout audit")
++    nodes = {node.name: node for node in graph.op}
++    plans, records = [], []
++    for record in layout_audit["nodes"]:
++        op = nodes[record["name"]]
++        conversion, port = _source(nodes, op.input[1])
++        if (op.type != GE_OP or port != 0 or conversion.type != "TransData"
++                or len(conversion.input) != 1 or record["format_conversion"] != conversion.name):
++            raise ValueError("FileConstant repair requires the audited weight TransData")
++        edge = conversion.input[0]
++        source, source_port = _source(nodes, edge)
++        if source.type != "FileConstant":
++            continue  # Const and runtime inputs keep the existing prepack checks.
++        value = immutable_weights.get(edge)
++        if (source_port != 0 or len(source.output_desc) != 1 or source.input
++                or not isinstance(value, torch.Tensor) or value.device.type == "meta"
++                or value.dtype != torch.int8 or value.ndim != 2
++                or any(type(d) is not int or d <= 0 for d in value.shape)
++                or list(value.shape) != record["weight_shape"]):
++            raise ValueError(f"FileConstant {edge} lacks a matching immutable INT8 weight binding")
++        expected = {"dtype": "DT_INT8", "shape": list(value.shape)}
++        metadata = tensor_metadata.get(edge)
++        if metadata is not None and (metadata.get("dtype") != expected["dtype"] or
++                                     metadata.get("shape") != expected["shape"]):
++            raise ValueError(f"FileConstant FX metadata/immutable tensor conflict at {edge}: "
++                             f"metadata={metadata}, immutable={expected}")
++        # Reuse the existing resolver to reject conflicting concrete GE fields.
++        # Only the proven immutable tensor can supply missing descriptor fields.
++        resolved = _resolved_desc(nodes, edge, {edge: expected})
++        before = source.output_desc[0]
++        if _dtype(resolved) != "DT_INT8" or list(resolved.shape.dim) != expected["shape"]:
++            raise ValueError(f"FileConstant {edge} descriptor differs from its immutable tensor")
++        if resolved != before:
++            plans.append((before, resolved))
++            records.append({"source": edge, "before_dtype": _dtype(before),
++                            "before_shape": list(before.shape.dim), **expected,
++                            "fx_metadata_checked": metadata is not None})
++    # Validate every candidate before changing any producer descriptor.
++    for before, resolved in plans:
++        before.CopyFrom(resolved)
++    return {"policy": "immutable-int8-fileconstant-descriptor-v1", "status": "PASS",
++            "node_count": len(records), "nodes": records}
++
++
+ def prepack_weight_quant_constants(graph, layout_audit, immutable_weights, cache=None, *, output_dir=None):
+     """Replace audited weight TransData with byte-exact NZ Const at AIR save.
+ 
+diff --git a/tests/test_weight_prepack.py b/tests/test_weight_prepack.py
+index 73794d8..e606c08 100644
+--- a/tests/test_weight_prepack.py
++++ b/tests/test_weight_prepack.py
+@@ -13,10 +13,10 @@ import torch
+ from qwen35_dflash.ascend310p.runtime_input_export import canonical_runtime_input_abi
+ from qwen35_dflash.ascend310p.weight_prepack import (
+     CONST_DESC_POLICY, CONST_SHAPE_LOCK, PREPACK_POLICY, _const_value_desc, validate_prepacked_graph,
+-    pack_int8_nz, load_prepacked_weights, prepack_weight_quant_constants,
++    pack_int8_nz, load_prepacked_weights, prepack_weight_quant_constants, restore_fileconstant_weight_descriptors,
+ )
+ from qwen35_dflash.ascend310p.weight_quant_layout import normalize_weight_quant_layout, validate_weight_quant_layout
+-from test_weight_quant_layout import fixture_graph, evaluate_weight_quant_graph
++from test_weight_quant_layout import fixture_graph, evaluate_weight_quant_graph, fake_ge_tensor
+ from test_draft_variant_bundles import variant_builder
+ from test_incremental_air_om import small_threads
+ from rms_norm_test_support import adn_rms_norm_cpu
+@@ -49,6 +49,91 @@ def const(node, value):
+     node.attr["value"].t.data = value.numpy().tobytes()
+ 
+ 
++def sparse_fileconstant(node):
++    """Receiver regression: FX knows the weight, FileConstant desc does not."""
++    node.type = "FileConstant"
++    node.ClearField("input")
++    node.attr.clear()
++    node.attr["file_id"].s = b"immutable-weight.bin"
++    node.attr["offset"].i = 512
++    desc = node.output_desc[0]
++    desc.dtype = desc.DESCRIPTOR.fields_by_name["dtype"].enum_type.values_by_name["DT_UNDEFINED"].number
++    desc.shape.dim[:] = []
++
++
++def sparse_weight_graph(n=64, k=256):
++    graph = fixture_graph(shared=True)
++    nodes = {node.name: node for node in graph.op}
++    for name, shape in (("x", [16, k]), ("w", [n, k]), ("wt", [k, n]),
++                        ("s", [n, k // 128]), ("st", [k // 128, n])):
++        nodes[name].output_desc[0].shape.dim[:] = shape
++    sparse_fileconstant(nodes["w"])
++    metadata = {"w:0": {"dtype": "DT_INT8", "shape": [n, k]}}
++    audit = normalize_weight_quant_layout(graph, metadata)
++    q = torch.zeros(n, k, dtype=torch.int8)
++    return graph, audit, {"w:0": q}, metadata
++
++
++@pytest.mark.parametrize("n,k", [(64, 256), (19456, 2560), (2560, 9728)])
++@pytest.mark.parametrize("use_fx", [False, True])
++def test_fileconstant_restore_checks_real_shapes_without_changing_binding(n, k, use_fx):
++    graph, audit, immutable, metadata = sparse_weight_graph(n, k)
++    nodes = {node.name: node for node in graph.op}
++    before = {name: node.SerializeToString(deterministic=True) for name, node in nodes.items() if name != "w"}
++    original = copy.deepcopy(nodes["w"])
++    report = restore_fileconstant_weight_descriptors(graph, audit, immutable, metadata if use_fx else {})
++    weight = nodes["w"]
++    assert weight.type == "FileConstant" and not weight.input
++    assert weight.attr == original.attr  # Keep the exact file binding/offset.
++    assert len(weight.output_desc) == 1 and list(weight.output_desc[0].shape.dim) == [n, k]
++    enum = weight.output_desc[0].DESCRIPTOR.fields_by_name["dtype"].enum_type
++    assert enum.values_by_number[weight.output_desc[0].dtype].name == "DT_INT8"
++    assert before == {name: node.SerializeToString(deterministic=True) for name, node in nodes.items() if name != "w"}
++    assert report["node_count"] == 1 and report["nodes"][0]["fx_metadata_checked"] is use_fx
++    snapshot = graph.SerializeToString(deterministic=True)
++    assert restore_fileconstant_weight_descriptors(graph, audit, immutable, metadata)["node_count"] == 0
++    assert graph.SerializeToString(deterministic=True) == snapshot
++
++
++@pytest.mark.parametrize("damage", ["missing_binding", "binding_dtype", "binding_shape", "meta_tensor",
++                                    "fx_dtype", "fx_shape", "fx_symbolic", "ge_dtype", "ge_shape",
++                                    "dependency", "multiple_outputs"])
++def test_fileconstant_restore_does_not_override_conflicts_or_guess_immutability(damage):
++    graph, audit, immutable, metadata = sparse_weight_graph()
++    weight = next(node for node in graph.op if node.name == "w")
++    if damage == "missing_binding": immutable.clear()
++    elif damage == "binding_dtype": immutable["w:0"] = immutable["w:0"].half()
++    elif damage == "binding_shape": immutable["w:0"] = immutable["w:0"].t()
++    elif damage == "meta_tensor": immutable["w:0"] = torch.empty(64, 256, dtype=torch.int8, device="meta")
++    elif damage == "fx_dtype": metadata["w:0"]["dtype"] = "DT_FLOAT16"
++    elif damage == "fx_shape": metadata["w:0"]["shape"] = [256, 64]
++    elif damage == "fx_symbolic": metadata["w:0"]["shape"] = [-1, 256]
++    elif damage == "ge_dtype": weight.output_desc[0].dtype = 1  # Test protobuf DT_FLOAT16.
++    elif damage == "ge_shape": weight.output_desc[0].shape.dim[:] = [63, 256]
++    elif damage == "dependency": weight.input.append("x:-1")
++    else: weight.output_desc.add().CopyFrom(weight.output_desc[0])
++    before = graph.SerializeToString(deterministic=True)
++    with pytest.raises(ValueError):
++        restore_fileconstant_weight_descriptors(graph, audit, immutable, metadata)
++    assert graph.SerializeToString(deterministic=True) == before
++
++
++def test_fileconstant_restore_validates_all_candidates_before_mutation():
++    graph, audit, immutable, metadata = sparse_weight_graph()
++    nodes = {node.name: node for node in graph.op}
++    for name in ("w", "quant_weight_nz", "quant"):
++        clone = graph.op.add(); clone.CopyFrom(nodes[name]); clone.name = "other_" + name
++        if name == "quant_weight_nz": clone.input[0] = "other_w:0"
++        if name == "quant": clone.input[1] = "other_quant_weight_nz:0"
++    audit["nodes"].append(dict(audit["nodes"][0], name="other_quant", format_conversion="other_quant_weight_nz"))
++    immutable["other_w:0"] = immutable["w:0"]
++    metadata["other_w:0"] = {"dtype": "DT_FLOAT16", "shape": [64, 256]}
++    before = graph.SerializeToString(deterministic=True)
++    with pytest.raises(ValueError, match="FX metadata/immutable tensor conflict"):
++        restore_fileconstant_weight_descriptors(graph, audit, immutable, metadata)
++    assert graph.SerializeToString(deterministic=True) == before
++
++
+ def check_const_value_shape(constant, x_shape):
+     """Check serialized storage and logical K, not CANN inference success."""
+     desc = constant.attr["value"].t.desc
+@@ -254,12 +339,21 @@ def test_value_alone_recreates_the_same_nz_edge_and_exact_output(tmp_path, rows)
+ 
+ 
+ @pytest.mark.parametrize("damage", ["runtime_input", "weight_changed", "payload_changed", "rehashed_wrong_layout"])
+-def test_cannot_use_runtime_or_corrupt_offline_weights(tmp_path, damage):
++@pytest.mark.parametrize("externalized", [False, True])
++def test_cannot_use_runtime_or_corrupt_offline_weights(tmp_path, damage, externalized):
+     g = fixture_graph()
+     q = (torch.arange(64 * 256).reshape(64, 256) % 256 - 128).to(torch.int8)
+     manifest = cached_weight(tmp_path, q)
+-    if damage != "runtime_input": const(next(n for n in g.op if n.name == "w"), q)
+-    audit = normalize_weight_quant_layout(g)
++    metadata = {"w:0": {"dtype": "DT_INT8", "shape": [64, 256]}}
++    if damage != "runtime_input":
++        weight = next(n for n in g.op if n.name == "w")
++        if externalized: sparse_fileconstant(weight)
++        else: const(weight, q)
++    audit = normalize_weight_quant_layout(g, metadata)
++    before_restore = g.SerializeToString(deterministic=True)
++    restore_fileconstant_weight_descriptors(g, audit, {"w:0": q}, metadata)
++    if damage == "runtime_input":
++        assert g.SerializeToString(deterministic=True) == before_restore
+     if damage == "weight_changed": q = q.clone(); q[0, 0] += 1
+     if damage in {"payload_changed", "rehashed_wrong_layout"}:
+         wrong = q.numpy().tobytes()
+@@ -310,6 +404,57 @@ def test_actual_air_save_hook_binds_immutable_values_before_conversion(monkeypat
+     assert module._convert_data_to_const is original
+ 
+ 
++@pytest.mark.parametrize("automatic", [False, True])
++def test_actual_air_save_hook_repairs_sparse_fileconstant_before_strict_prepack(monkeypatch, tmp_path, automatic):
++    graph = fixture_graph(shared=True)
++    graph.op[0].output_desc[0].shape.dim[0] = 16
++    x = torch.zeros(16, 256).half()
++    q = ((torch.arange(64).reshape(-1, 1) * 17 + torch.arange(256) * 13) % 256 - 128).to(torch.int8)
++    s = torch.ones(64, 2).half() / 32
++    torchair = ModuleType("torchair")
++    tensor_type = fake_ge_tensor(monkeypatch)
++    original_set_meta = tensor_type.set_meta
++
++    def original(inputs, graph, path, weight_name):
++        for i, value in enumerate(inputs):
++            if id(value) in weight_name:
++                if value.dtype == torch.int8: sparse_fileconstant(graph.op[i])
++                else: const(graph.op[i], value)
++        return True, len(weight_name)
++
++    module = SimpleNamespace(_convert_data_to_const=original)
++    monkeypatch.setitem(sys.modules, "torchair", torchair)
++    monkeypatch.setitem(sys.modules, "torchair._utils.export_utils", module)
++    monkeypatch.setenv("AI_RUN_DIR", str(tmp_path))
++    options = ({"weight_prepack_output": tmp_path / "cache"} if automatic else
++               {"weight_prepack_manifest": str(cached_weight(tmp_path / "cache", q))})
++    with canonical_runtime_input_abi(torchair, public_inputs=[x], public_names=["x"],
++                                     capture_weight_quant_shapes=True, **options) as audit:
++        # Capture typed FX metadata BEFORE TorchAir externalizes the weight and
++        # replaces its output descriptor with DT_UNDEFINED / shape=[].
++        tensor_type(next(node for node in graph.op if node.name == "w")).set_meta(q)
++        module._convert_data_to_const([x, q, s], graph, str(tmp_path), {id(q): "qweight", id(s): "scales"})
++    layout = audit["weight_quant_layout"]
++    restoration = layout["fileconstant_descriptors"]
++    assert restoration["node_count"] == 1
++    assert restoration["nodes"][0] == {"source": "w:0", "before_dtype": "DT_UNDEFINED", "before_shape": [],
++                                        "dtype": "DT_INT8", "shape": [64, 256], "fx_metadata_checked": True}
++    # A shared original producer stays a correctly described FileConstant,
++    # while WeightQuant receives the actual hash-verified NZ Const bytes.
++    weight = next(node for node in graph.op if node.name == "w")
++    assert weight.type == "FileConstant" and list(weight.output_desc[0].shape.dim) == [64, 256]
++    assert weight.output_desc[0].dtype == 2  # Test protobuf DT_INT8.
++    assert weight.attr["file_id"].s == b"immutable-weight.bin" and weight.attr["offset"].i == 512
++    assert [node.name for node in graph.op if node.type in {"Data", "RefData"}] == ["x"]
++    assert layout["prepack"]["status"] == "PASS" and not layout["inserted_transdata"]
++    packed = next(node for node in graph.op if node.name == "quant_weight_nz").attr["value"].t
++    assert packed.data == pack_int8_nz(q).numpy().tobytes()
++    assert layout["prepack"]["constants"][0]["logical_sha256"] == hashlib.sha256(q.numpy().tobytes()).hexdigest()
++    report = json.loads((tmp_path / "weight-quant-layout.json").read_text())
++    assert report["fileconstant_descriptors"] == restoration
++    assert module._convert_data_to_const is original and tensor_type.set_meta is original_set_meta
++
++
+ @pytest.mark.usefixtures("weight_quant_cpu", "adn_rms_norm_cpu")
+ def test_script_export_and_compile_contracts_preserve_w4_and_target(tmp_path, variant_builder):
+     build, calls = variant_builder
+diff --git a/tests/test_draft_variant_bundles.py b/tests/test_draft_variant_bundles.py
+index 898ad4b..ce4d74f 100644
+--- a/tests/test_draft_variant_bundles.py
++++ b/tests/test_draft_variant_bundles.py
+@@ -4,6 +4,7 @@ import json
+ import os
+ from dataclasses import replace
+ from pathlib import Path
++import shutil
+ import subprocess
+ 
+ import pytest
+@@ -95,7 +96,7 @@ def variant_builder(tmp_path, monkeypatch):
+                    shared_draft_features=True, verify_gdr=route, **(extra or {}))
+         air = export_air_bundle(FACTORY, cfg, tmp_path / variant / route,
+             torchair_module=Air(), reuse_target_from=reuse_target, reuse_common_from=reuse_common)
+-        result = compile_air_bundle(air["manifest_path"], soc_version="Ascend310P3", atc_bin="/bin/true",
++        result = compile_air_bundle(air["manifest_path"], soc_version="Ascend310P3", atc_bin=shutil.which("true"),
+                                    runner=atc, atc_identity="fake-atc")
+         return Path(result["manifest_path"])
+     build.air, build.atc = Air(), atc
+diff --git a/tests/test_weight_quant_layout.py b/tests/test_weight_quant_layout.py
+index cd2fc5c..0a05ca2 100644
+--- a/tests/test_weight_quant_layout.py
++++ b/tests/test_weight_quant_layout.py
+@@ -34,9 +34,9 @@ def graph_type():
+     entry.field.add(name="key", number=1, type=9, label=1)
+     entry.field.add(name="value", number=2, type=11, type_name=".Attr", label=1)
+     msg("Tensor", [("desc", 11, 1, "Desc"), ("data", 12, 1, None)])
+-    msg("Ints", [("i", 3, 3, None), ("val_type", 3, 1, None)])
++    msg("Ints", [("i", 3, 3, None), ("val_type", 3, 1, None), ("s", 12, 3, None)])
+     msg("Attr", [("i", 3, 1, None), ("b", 8, 1, None), ("t", 11, 1, "Tensor"),
+-                 ("list", 11, 1, "Ints"), ("s", 12, 1, None)])
++                 ("list", 11, 1, "Ints"), ("s", 12, 1, None), ("dt", 3, 1, None)])
+     op = msg("Op", [("name", 9, 1, None), ("type", 9, 1, None), ("input", 9, 3, None),
+                     ("input_desc", 11, 3, "Desc"), ("output_desc", 11, 3, "Desc"),
+                     ("attr", 11, 3, "Op.Entry")])

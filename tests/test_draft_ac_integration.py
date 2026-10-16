@@ -8,7 +8,7 @@ import sys
 from types import SimpleNamespace
 import pytest
 import torch
-from test_weight_quant_layout import graph_type
+from draft_ac_test_support import graph_type
 from qwen35_dflash.ascend310p.draft_ac_export import A,C,AUDIT,GE,POLICY,ensure_ops,linear_meta,head_meta,ACLinear,ACOps,prepare_export,tensor_hash
 from qwen35_dflash.ascend310p.draft_ac_constants import normalize_ac_constants,validate_ac_graph
 from qwen35_dflash.ascend310p.contracts import CustomOpExportSpec
@@ -585,7 +585,7 @@ def test_export_keeps_capability_diagnostic_when_api_is_missing(tmp_path,monkeyp
     entry=importlib.util.module_from_spec(loader);loader.loader.exec_module(entry)
     api=SimpleNamespace(__version__='CPU-test-missing-api')
     monkeypatch.setitem(sys.modules,'torchair',api)
-    from qwen35_dflash.ascend310p import exporter
+    from qwen35_dflash.ascend310p import draft_ac_export_pipeline as exporter
     spec=SimpleNamespace(custom_ops=(CustomOpExportSpec(A,GE[A]),))
     def export(*args,**kwargs): return prepare_export(spec.custom_ops[0],api)
     monkeypatch.setattr(exporter,'export_air_bundle',export)

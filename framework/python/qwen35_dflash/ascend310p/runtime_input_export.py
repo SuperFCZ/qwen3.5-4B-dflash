@@ -232,7 +232,6 @@ def canonical_runtime_input_abi(
     weight_quant_probe: Mapping[str, Any] | None = None,
     weight_prepack_manifest: str | None = None,
     weight_prepack_output: Path | None = None,
-    draft_ac: Mapping[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
     if weight_prepack_manifest and weight_prepack_output is not None:
         raise ValueError("select automatic NZ packing or an existing offline manifest")
@@ -262,17 +261,11 @@ def canonical_runtime_input_abi(
     from .weight_quant_layout import (
         capture_weight_quant_metadata, normalize_weight_quant_layout, weight_quant_layout_failure,
     )
-    from .weight_prepack import (
-        load_prepacked_weights, prepack_weight_quant_constants, restore_fileconstant_weight_descriptors,
-    )
+    from .weight_prepack import load_prepacked_weights, prepack_weight_quant_constants
     prepacked = load_prepacked_weights(weight_prepack_manifest) if weight_prepack_manifest else None
 
     with _PATCH_LOCK, capture_weight_quant_metadata(capture_weight_quant_shapes) as tensor_metadata:
         original = export_utils._convert_data_to_const
-        ac_payload = None
-        if draft_ac is not None:
-            from .draft_ac_payload import PayloadLifecycle
-            ac_payload = PayloadLifecycle(draft_ac, export_utils, original)
 
         def convert(inputs, export_graph, file_path, weight_name):
             reordered = _order_weight_conversion_inputs(inputs, export_graph)
@@ -294,16 +287,12 @@ def canonical_runtime_input_abi(
             }
             immutable_weights = {export_graph.op[i].name + ":0": value
                                  for i, value in enumerate(inputs) if id(value) in weight_name}
-            if ac_payload is not None:
-                ac_payload.capture(export_graph, immutable_weights, file_path, inputs, weight_name)
             result = original(inputs, export_graph, file_path, weight_name)
             _normalize_public_nodes(export_graph, bindings)
             try:
                 weight_quant = normalize_weight_quant_layout(export_graph, tensor_metadata,
                                                               probe_config=weight_quant_probe)
                 if prepacked is not None or weight_prepack_output is not None:
-                    weight_quant["fileconstant_descriptors"] = restore_fileconstant_weight_descriptors(
-                        export_graph, weight_quant, immutable_weights, tensor_metadata)
                     weight_quant = prepack_weight_quant_constants(
                         export_graph, weight_quant, immutable_weights, prepacked,
                         output_dir=weight_prepack_output)
@@ -334,14 +323,6 @@ def canonical_runtime_input_abi(
                           f"const_value_origin={node['prepacked_constant']['value_origin_shape']} "
                           "const_output_shape_locked=true weightquant_inference=enabled "
                           f"descriptor={weight_quant['prepack']['descriptor_policy']}", flush=True)
-            if draft_ac is not None:
-                try:
-                    ac_payload.after_convert(export_graph,immutable_weights,file_path,result,inputs,weight_name,audit)
-                except (ValueError,OSError) as error:
-                    atomic_write_json(Path(file_path)/'ac-constants.json',dict(status='FAIL',error=str(error),
-                        nodes=[dict(name=n.name,type=n.type,inputs=list(n.input),attrs=list(n.attr)) for n in export_graph.op
-                               if n.type in ('DFlashGroupQuantLinear','DFlashDraftLmHeadTop1','DFlashDraftLmHeadTop1Audit','FileConstant')]))
-                    raise
             gdr_dtypes = _gdr_output_dtype_audit(export_graph)
             if gdr_dtypes["node_count"]:
                 audit["gdr_output_dtypes"] = gdr_dtypes
@@ -390,22 +371,16 @@ def canonical_runtime_input_abi(
             return result
 
         export_utils._convert_data_to_const = convert
-        if ac_payload is not None and callable(ac_payload.original_save):
-            export_utils._save_weight2file = ac_payload.save
         try:
             # Specializes Python model attributes, not tensor dimensions or
             # data-derived values. Tensor/SymInt shapes remain dynamic.
             with dynamo_config.patch(specialize_float=True):
                 yield audit
-            if ac_payload is not None:
-                ac_payload.finish()
             if audit["calls"] != 1:
                 raise RuntimeError("expected one canonical public ABI serialization per AIR graph")
             audit["status"] = "PASS"
         finally:
             export_utils._convert_data_to_const = original
-            if ac_payload is not None and callable(ac_payload.original_save):
-                export_utils._save_weight2file = ac_payload.original_save
 
 
 def validated_runtime_input_abi(

@@ -237,14 +237,13 @@ def export_air_bundle(
                 weight_prepack_output=(graph_dir / "prepacked-weights"
                                        if spec.metadata.get("draft_weight_storage")
                                        and spec.metadata.get("draft_weight_prepack") == "nz" else None),
-                draft_ac=spec.metadata.get("draft_ac"),
                 public_output_names=spec.output_names,
                 verify_discard_output_names=(
                     [s["name"] for s in spec.metadata["incremental_contract"]["verify_discard_states"]]
                     if spec.name == "target_verify" else ()
                 ),
             )
-            if (spec.metadata.get("incremental_contract") or spec.metadata.get("draft_ac") or any(
+            if (spec.metadata.get("incremental_contract") or any(
                 op.ge_op_type == "WeightQuantBatchMatmulV2" for op in spec.custom_ops
             )) else nullcontext(None)
         )

@@ -89,11 +89,3 @@ Target 图在 Draft 间共享，Draft 在两条 Verify 间共享；由部署清�
 | [cli.py](../framework/python/qwen35_dflash/ascend310p/cli.py) | AIR 导出、OM 编译与 runner 构建 |
 | [acl_chunk.cpp](../framework/runtime/cpp/src/acl_chunk.cpp) | AscendCL 执行、档位选择与状态管理 |
 | [benchmark_gdr_lengths.py](../tools/benchmark_gdr_lengths.py) | 统一测试与汇总 |
-
-## A5.1 + C 可选图实验
-
-[集成入口与验收说明](../framework/custom_ops/draft_ac/README.md) 在独立目录重建联合 OPP，
-先验证单算子 GE/AIR/OM，再可选运行原 `DraftGraph.forward` 的静态 C16/C64 对照。
-模式为原始、A-only、C-only、A+C；A 对应 26 个 WeightQuant 投影，C 仅替换 post-norm 的 15 行 Head/Top1。
-默认 factory、Target/Verify 和生产 runner-plan 不切换。新图保留原 ABI 契约作为审计信息，
-但使用 diagnostic envelope，不能直接视为生产部署包。图内及端到端 NPU 验收在设备执行前为 `NOT_RUN`。

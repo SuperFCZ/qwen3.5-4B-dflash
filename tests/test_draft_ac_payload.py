@@ -6,10 +6,10 @@ import sys
 import pytest
 import torch
 from test_draft_ac_integration import fixture
-from test_weight_quant_layout import graph_type
+from draft_ac_test_support import graph_type
 from qwen35_dflash.ascend310p.draft_ac_payload import CHUNK_BYTES,PayloadError,tensor_digest,verify_payload
 from qwen35_dflash.ascend310p.draft_ac_constants import _bound
-from qwen35_dflash.ascend310p.runtime_input_export import canonical_runtime_input_abi
+from qwen35_dflash.ascend310p.draft_ac_runtime_input_export import canonical_runtime_input_abi
 
 
 @pytest.mark.parametrize('style',['absolute','relative','directory_prefixed'])

@@ -34,9 +34,9 @@ def graph_type():
     entry.field.add(name="key", number=1, type=9, label=1)
     entry.field.add(name="value", number=2, type=11, type_name=".Attr", label=1)
     msg("Tensor", [("desc", 11, 1, "Desc"), ("data", 12, 1, None)])
-    msg("Ints", [("i", 3, 3, None), ("val_type", 3, 1, None), ("s", 12, 3, None)])
+    msg("Ints", [("i", 3, 3, None), ("val_type", 3, 1, None)])
     msg("Attr", [("i", 3, 1, None), ("b", 8, 1, None), ("t", 11, 1, "Tensor"),
-                 ("list", 11, 1, "Ints"), ("s", 12, 1, None), ("dt", 3, 1, None)])
+                 ("list", 11, 1, "Ints"), ("s", 12, 1, None)])
     op = msg("Op", [("name", 9, 1, None), ("type", 9, 1, None), ("input", 9, 3, None),
                     ("input_desc", 11, 3, "Desc"), ("output_desc", 11, 3, "Desc"),
                     ("attr", 11, 3, "Op.Entry")])

@@ -35,6 +35,8 @@ def test_legacy_gdr_is_reported_but_required_draft_interface_still_gates(tmp_pat
     config = dict(draft_quantization='w8a16', draft_quant_matmul='weight_quant')
     air = tmp_path/'old-air.json'; air.write_text('{}')
     monkeypatch.setattr(tool, 'native_history', lambda args: (config, {}, air))
+    source_lock = importlib.import_module('source_lock')
+    monkeypatch.setattr(source_lock, 'require_source_lock', lambda native, path: path.write_text('{}'))
     monkeypatch.setitem(sys.modules, 'torch_npu', SimpleNamespace())
     monkeypatch.setitem(sys.modules, 'torchair', SimpleNamespace())
     from qwen35_dflash.ascend310p import custom_op_export as custom

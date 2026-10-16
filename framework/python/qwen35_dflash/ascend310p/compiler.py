@@ -328,9 +328,6 @@ def _validated_custom_op_audit(graph: Mapping[str, Any]) -> list[dict[str, Any]]
             )
     from .weight_quant_layout import validate_weight_quant_layout
     validate_weight_quant_layout(graph)
-    if metadata.get("draft_ac") is not None:
-        from .draft_ac_constants import validate_ac_graph
-        validate_ac_graph(graph)
     return result
 
 

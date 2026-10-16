@@ -1,0 +1,1417 @@
+{
+  "status": "PASS",
+  "scope": "local source files vs unchanged SOURCE_LOCK; historical Native AIR identity NOT_RUN",
+  "lock_sha256": "107ba0425348620cdc7edf5f09e845d04d435df3e123e083e63ff5f752ba3b1f",
+  "declaration_count": 201,
+  "unique_file_count": 191,
+  "failed_declaration_count": 0,
+  "files": [
+    {
+      "declaration": "$.package_layout.hiai_source_file",
+      "path": "models/modeling_qwen3_5_hiai_nd.py",
+      "expected_sha256": "2ed85627bd45f79633f486f590b5cd40546980e1d59db3679a85e642cdaf9e83",
+      "status": "PASS",
+      "actual_sha256": "2ed85627bd45f79633f486f590b5cd40546980e1d59db3679a85e642cdaf9e83"
+    },
+    {
+      "declaration": "$.package_layout.hiai_bridge_file",
+      "path": "models/internal_dflash_bridge.py",
+      "expected_sha256": "ffb3f40b1fd5d2eb72f3495df593f3848dfafda37f6926f5904f380c11ecae89",
+      "status": "PASS",
+      "actual_sha256": "ffb3f40b1fd5d2eb72f3495df593f3848dfafda37f6926f5904f380c11ecae89"
+    },
+    {
+      "declaration": "$.package_layout.namespace_compatibility_file",
+      "path": "models/__init__.py",
+      "expected_sha256": "9bf3e37aed93d372ca13b17b9c6dae32efa47f805f32b48628fb5316eae34b6d",
+      "status": "PASS",
+      "actual_sha256": "9bf3e37aed93d372ca13b17b9c6dae32efa47f805f32b48628fb5316eae34b6d"
+    },
+    {
+      "declaration": "$.package_layout.compatibility_entry_file",
+      "path": "models/dflash_qwen_adapter_v1.py",
+      "expected_sha256": "f6fc41736b41928ebfc7d5368fbf31e509b1b3db9c5e9291e51d968080bd046b",
+      "status": "PASS",
+      "actual_sha256": "f6fc41736b41928ebfc7d5368fbf31e509b1b3db9c5e9291e51d968080bd046b"
+    },
+    {
+      "declaration": "$.target_modeling.framework_configuration_file",
+      "path": "models/dflash_v1/configuration_qwen3_5.py",
+      "expected_sha256": "bc1576114c83458d781ace26ea0ada9ce1dfc4ac87bbf34b622636ecc4882b7c",
+      "status": "PASS",
+      "actual_sha256": "bc1576114c83458d781ace26ea0ada9ce1dfc4ac87bbf34b622636ecc4882b7c"
+    },
+    {
+      "declaration": "$.target_modeling.framework_modeling_file",
+      "path": "models/dflash_v1/modeling_qwen3_5_dflash.py",
+      "expected_sha256": "1ef038503f51dbb97d6aeb8590a254cbec5cf04220f62513b04b2e744003d806",
+      "status": "PASS",
+      "actual_sha256": "1ef038503f51dbb97d6aeb8590a254cbec5cf04220f62513b04b2e744003d806"
+    },
+    {
+      "declaration": "$.target_modeling.feature_helper_file",
+      "path": "models/dflash_v1/dflash_target_features.py",
+      "expected_sha256": "879fe84023f27c91ff80475ae35104374c02dc65b6cbfb06c0f0c06768cc3cc9",
+      "status": "PASS",
+      "actual_sha256": "879fe84023f27c91ff80475ae35104374c02dc65b6cbfb06c0f0c06768cc3cc9"
+    },
+    {
+      "declaration": "$.v1_runtime.package_init_file",
+      "path": "models/dflash_v1/__init__.py",
+      "expected_sha256": "701d387bbe3fe332486000d0be851b736295011c170086e388899035a5b819ba",
+      "status": "PASS",
+      "actual_sha256": "701d387bbe3fe332486000d0be851b736295011c170086e388899035a5b819ba"
+    },
+    {
+      "declaration": "$.v1_runtime.config_file",
+      "path": "models/dflash_v1/dflash_config.py",
+      "expected_sha256": "f5341c7ca7112daf97fd00f80d2abf34adce4443c165f58eafc09d07695a8e04",
+      "status": "PASS",
+      "actual_sha256": "f5341c7ca7112daf97fd00f80d2abf34adce4443c165f58eafc09d07695a8e04"
+    },
+    {
+      "declaration": "$.v1_runtime.ops_file",
+      "path": "models/dflash_v1/dflash_ops.py",
+      "expected_sha256": "595a73d68565a009cc7bd9f8523f94e846accff41a9926a9fe3d8e24400fcb94",
+      "status": "PASS",
+      "actual_sha256": "595a73d68565a009cc7bd9f8523f94e846accff41a9926a9fe3d8e24400fcb94"
+    },
+    {
+      "declaration": "$.v1_runtime.adapter_file",
+      "path": "models/dflash_v1/dflash_qwen_adapter_v1.py",
+      "expected_sha256": "2b0ba9c1987c87ef69dafe90fedb20b40be54187182326d9d9e4c20afec75044",
+      "status": "PASS",
+      "actual_sha256": "2b0ba9c1987c87ef69dafe90fedb20b40be54187182326d9d9e4c20afec75044"
+    },
+    {
+      "declaration": "$.v1_runtime.scheduler_file",
+      "path": "models/dflash_v1/dflash_reference_decode_v1.py",
+      "expected_sha256": "e7efc6fbfdf049a597f33d37b6e348ae6274c3242e8ad56396e3f1122b911f70",
+      "status": "PASS",
+      "actual_sha256": "e7efc6fbfdf049a597f33d37b6e348ae6274c3242e8ad56396e3f1122b911f70"
+    },
+    {
+      "declaration": "$.v1_runtime.draft_model_file",
+      "path": "models/dflash_v1/modeling_dflash.py",
+      "expected_sha256": "eb799bd282d2f7f6d5f7a12279a9c90ae07b3d0b67bf00f9a2013964d44f51a0",
+      "status": "PASS",
+      "actual_sha256": "eb799bd282d2f7f6d5f7a12279a9c90ae07b3d0b67bf00f9a2013964d44f51a0"
+    },
+    {
+      "declaration": "$.v1_runtime.weight_loader_file",
+      "path": "models/dflash_v1/dflash_weights.py",
+      "expected_sha256": "c85bcc22620c9108d430e0f23e55b7dd08207e6a7884615e508370644bd653b2",
+      "status": "PASS",
+      "actual_sha256": "c85bcc22620c9108d430e0f23e55b7dd08207e6a7884615e508370644bd653b2"
+    },
+    {
+      "declaration": "$.v1_runtime.acceptance_diagnostic_file",
+      "path": "models/dflash_v1/diagnose_acceptance.py",
+      "expected_sha256": "b0fca34d22f44d8abb5e68949ae00feb02fb6a78d4db58c7f6a54e2c3365b779",
+      "status": "PASS",
+      "actual_sha256": "b0fca34d22f44d8abb5e68949ae00feb02fb6a78d4db58c7f6a54e2c3365b779"
+    },
+    {
+      "declaration": "$.npu_embedded_runtime.runner_file",
+      "path": "models/dflash_v1/run_npu.py",
+      "expected_sha256": "4ffb0caf1470b8c1e49c9c796580ee7dbe1cc1eed6ab1e70ce16f0c36de342f8",
+      "status": "PASS",
+      "actual_sha256": "4ffb0caf1470b8c1e49c9c796580ee7dbe1cc1eed6ab1e70ce16f0c36de342f8"
+    },
+    {
+      "declaration": "$.npu_embedded_runtime.loader_file",
+      "path": "models/dflash_v1/internal_target_loader.py",
+      "expected_sha256": "b6b586e24e0d48d30cc8011390f8eb73dde955f37f54df69a109494aa4698d83",
+      "status": "PASS",
+      "actual_sha256": "b6b586e24e0d48d30cc8011390f8eb73dde955f37f54df69a109494aa4698d83"
+    },
+    {
+      "declaration": "$.npu_embedded_runtime.loader_contract_file",
+      "path": "models/dflash_v1/internal_target_loader_template.py",
+      "expected_sha256": "ff3ee81eed31e663fdb5e503a4d2c4ff3e4df0b86d6d66eac7f57078eea10e78",
+      "status": "PASS",
+      "actual_sha256": "ff3ee81eed31e663fdb5e503a4d2c4ff3e4df0b86d6d66eac7f57078eea10e78"
+    },
+    {
+      "declaration": "$.npu_embedded_runtime.hiai_source_check_file",
+      "path": "models/dflash_v1/dflash_hiai_feature_check.py",
+      "expected_sha256": "46224492fac7a769436b50d55042043c375bf5d9fdf412543942520394a580f7",
+      "status": "PASS",
+      "actual_sha256": "46224492fac7a769436b50d55042043c375bf5d9fdf412543942520394a580f7"
+    },
+    {
+      "declaration": "$.npu_embedded_runtime.hiai_runtime_file",
+      "path": "models/dflash_v1/dflash_hiai_feature_runtime.py",
+      "expected_sha256": "46b95a67e2cb74b98e6d3964153fee31b5134b2c27a316c991bc83f41d120d4a",
+      "status": "PASS",
+      "actual_sha256": "46b95a67e2cb74b98e6d3964153fee31b5134b2c27a316c991bc83f41d120d4a"
+    },
+    {
+      "declaration": "$.npu_embedded_runtime.ascend_ops_file",
+      "path": "models/dflash_v1/dflash_ascend310p_ops.py",
+      "expected_sha256": "6fa99587a9131ad30d418b046b1519d845476257a8d321c4a4d37b55a8da18e6",
+      "status": "PASS",
+      "actual_sha256": "6fa99587a9131ad30d418b046b1519d845476257a8d321c4a4d37b55a8da18e6"
+    },
+    {
+      "declaration": "$.npu_embedded_runtime.target_quant_contract_file",
+      "path": "models/dflash_v1/target_quant.py",
+      "expected_sha256": "5a0b6d6158eb1f492510d52ec50de588e5b77b055e9f185215a8702f13615c45",
+      "status": "PASS",
+      "actual_sha256": "5a0b6d6158eb1f492510d52ec50de588e5b77b055e9f185215a8702f13615c45"
+    },
+    {
+      "declaration": "$.npu_embedded_runtime.original_quant_file",
+      "path": "models/dflash_v1/original_quant.py",
+      "expected_sha256": "67dc155f33ab25cd75862a55bd249b6d9ef1c1f5418da8bb74a0520131511273",
+      "status": "PASS",
+      "actual_sha256": "67dc155f33ab25cd75862a55bd249b6d9ef1c1f5418da8bb74a0520131511273"
+    },
+    {
+      "declaration": "$.npu_embedded_runtime.target_quant_preflight_file",
+      "path": "models/dflash_v1/preflight_target_quant.py",
+      "expected_sha256": "78739c2ef538cb918dc63bc0ca093b85ed8eb051fd632c1294a8d05098a0c599",
+      "status": "PASS",
+      "actual_sha256": "78739c2ef538cb918dc63bc0ca093b85ed8eb051fd632c1294a8d05098a0c599"
+    },
+    {
+      "declaration": "$.npu_embedded_runtime.w8a8_emulation_file",
+      "path": "models/dflash_v1/w8a8_emulation.py",
+      "expected_sha256": "fa604b2778f9e6a5e3c623f76ce714eb028713d5afdecbc52dae46514e070c37",
+      "status": "PASS",
+      "actual_sha256": "fa604b2778f9e6a5e3c623f76ce714eb028713d5afdecbc52dae46514e070c37"
+    },
+    {
+      "declaration": "$.npu_embedded_runtime.w8a8_cpu_validator_file",
+      "path": "models/dflash_v1/validate_w8a8_cpu.py",
+      "expected_sha256": "d86d60a8dc1c308a6a9047992313c3c1240e06cc249a55397ca211d2dc4bfdc6",
+      "status": "PASS",
+      "actual_sha256": "d86d60a8dc1c308a6a9047992313c3c1240e06cc249a55397ca211d2dc4bfdc6"
+    },
+    {
+      "declaration": "$.npu_embedded_runtime.stage_profiler_file",
+      "path": "models/dflash_v1/stage_profile.py",
+      "expected_sha256": "53603b7d02c3096bcfb75860c8377516447b2fc1b7a4876648c78a0d404c02f8",
+      "status": "PASS",
+      "actual_sha256": "53603b7d02c3096bcfb75860c8377516447b2fc1b7a4876648c78a0d404c02f8"
+    },
+    {
+      "declaration": "$.npu_embedded_runtime.msprof_controller_file",
+      "path": "models/dflash_v1/msprof_cli.py",
+      "expected_sha256": "0574e0934e8d93c5851ed442900e6884a0b2e9ace2f3657caa69b70ffb4918eb",
+      "status": "PASS",
+      "actual_sha256": "0574e0934e8d93c5851ed442900e6884a0b2e9ace2f3657caa69b70ffb4918eb"
+    },
+    {
+      "declaration": "$.npu_embedded_runtime.native_route_tests_file",
+      "path": "tests/test_torch_npu_gdr_routes.py",
+      "expected_sha256": "7e8225e195836d51e9f4d64e42c36125714c35d7afc0d39611dbf80c3004d2d5",
+      "status": "PASS",
+      "actual_sha256": "7e8225e195836d51e9f4d64e42c36125714c35d7afc0d39611dbf80c3004d2d5"
+    },
+    {
+      "declaration": "$.rollback_runtime.runner_file",
+      "path": "models/dflash_v1/run_rollback.py",
+      "expected_sha256": "3cdb84c11991c5172c492c163c4efb8889cc48327cf234de200dcdc7892ceb39",
+      "status": "PASS",
+      "actual_sha256": "3cdb84c11991c5172c492c163c4efb8889cc48327cf234de200dcdc7892ceb39"
+    },
+    {
+      "declaration": "$.rollback_runtime.adapter_file",
+      "path": "models/dflash_v1/dflash_rollback_adapter.py",
+      "expected_sha256": "9edb700e0aee0ca2ca6951787dc60260ef923ecef072544b579debd5ed16210d",
+      "status": "PASS",
+      "actual_sha256": "9edb700e0aee0ca2ca6951787dc60260ef923ecef072544b579debd5ed16210d"
+    },
+    {
+      "declaration": "$.rollback_runtime.scheduler_file",
+      "path": "models/dflash_v1/dflash_rollback_decode.py",
+      "expected_sha256": "3e117dd5819724c7ef368b014e37eacc4e9fa8f617b0d5c1308fdf3b3e5a906e",
+      "status": "PASS",
+      "actual_sha256": "3e117dd5819724c7ef368b014e37eacc4e9fa8f617b0d5c1308fdf3b3e5a906e"
+    },
+    {
+      "declaration": "$.rollback_runtime.hiai_modeling_file",
+      "path": "models/modeling_qwen3_5_hiai_nd_dflash_rollback.py",
+      "expected_sha256": "d1a158457c8de6968c22474d111a91d2b717b7a7267276227421fcc52f56ed96",
+      "status": "PASS",
+      "actual_sha256": "d1a158457c8de6968c22474d111a91d2b717b7a7267276227421fcc52f56ed96"
+    },
+    {
+      "declaration": "$.rollback_runtime.wrapper_file",
+      "path": "models/export_model_wrapper_qwen3_5_dflash_rollback.py",
+      "expected_sha256": "e40fa8956a4192289e2bdb81c43d234bf93b38ebd0b849166151085562eaecff",
+      "status": "PASS",
+      "actual_sha256": "e40fa8956a4192289e2bdb81c43d234bf93b38ebd0b849166151085562eaecff"
+    },
+    {
+      "declaration": "$.rollback_runtime.shared_qlinear_source_file",
+      "path": "models/modeling_qwen3_5_hiai_nd.py",
+      "expected_sha256": "2ed85627bd45f79633f486f590b5cd40546980e1d59db3679a85e642cdaf9e83",
+      "status": "PASS",
+      "actual_sha256": "2ed85627bd45f79633f486f590b5cd40546980e1d59db3679a85e642cdaf9e83"
+    },
+    {
+      "declaration": "$.npu_benchmark.runner_file",
+      "path": "models/dflash_v1/benchmark_npu.py",
+      "expected_sha256": "8ec8eb04ee6a5ecbd9d4d15cb0f350f5d2f3f9060cd2cff029b17c12fd7465ea",
+      "status": "PASS",
+      "actual_sha256": "8ec8eb04ee6a5ecbd9d4d15cb0f350f5d2f3f9060cd2cff029b17c12fd7465ea"
+    },
+    {
+      "declaration": "$.npu_benchmark.msprof_wrapper_file",
+      "path": "tools/run_msprof.sh",
+      "expected_sha256": "6af3c32196e635140f9662fb3212ded0612ee562270aea50d4e4e63a59807338",
+      "status": "PASS",
+      "actual_sha256": "6af3c32196e635140f9662fb3212ded0612ee562270aea50d4e4e63a59807338"
+    },
+    {
+      "declaration": "$.npu_benchmark.contract_file",
+      "path": "config/npu_benchmark_v1.json",
+      "expected_sha256": "b5fdd64b1eaea44b3f53452bc260cf62de53ca38b1fcd8699bf4f9e358d99c76",
+      "status": "PASS",
+      "actual_sha256": "b5fdd64b1eaea44b3f53452bc260cf62de53ca38b1fcd8699bf4f9e358d99c76"
+    },
+    {
+      "declaration": "$.npu_benchmark.documentation_file",
+      "path": "docs/USAGE.md",
+      "expected_sha256": "125e9be3e503bc675784ffad50b1b9cf314db1615210018de0baee61ba86fe17",
+      "status": "PASS",
+      "actual_sha256": "125e9be3e503bc675784ffad50b1b9cf314db1615210018de0baee61ba86fe17"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[0].source_file",
+      "path": "README.md",
+      "expected_sha256": "3f7a5f1750de3eedb6fb0d71cfad521f2562382529a8e38e7164ca5b35e2a8f5",
+      "status": "PASS",
+      "actual_sha256": "3f7a5f1750de3eedb6fb0d71cfad521f2562382529a8e38e7164ca5b35e2a8f5"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[1].source_file",
+      "path": "config/gdr_chunk_air_om_factory.example.json",
+      "expected_sha256": "1bdddd6588d21f34e5ee93ad9a97e1a2223a7a0343dd429949fd6be0ef071b02",
+      "status": "PASS",
+      "actual_sha256": "1bdddd6588d21f34e5ee93ad9a97e1a2223a7a0343dd429949fd6be0ef071b02"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[2].source_file",
+      "path": "docs/ARCHITECTURE.md",
+      "expected_sha256": "088552cca7461263612fda36779f3a9b67ab4fe963ac35cac5c2a5620cf8eb6e",
+      "status": "PASS",
+      "actual_sha256": "088552cca7461263612fda36779f3a9b67ab4fe963ac35cac5c2a5620cf8eb6e"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[3].source_file",
+      "path": "docs/assets/dflash-draft-flow.svg",
+      "expected_sha256": "1635daa2439aea4082fe6c4818c353d4e7ff77a6822adc635d15433f9f880c83",
+      "status": "PASS",
+      "actual_sha256": "1635daa2439aea4082fe6c4818c353d4e7ff77a6822adc635d15433f9f880c83"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[4].source_file",
+      "path": "docs/assets/dflash-w8a16-draft-flow.svg",
+      "expected_sha256": "a4cf890b7255ec7b7d076c01910fe35a053fb590a38214b79b59f1a2b999f708",
+      "status": "PASS",
+      "actual_sha256": "a4cf890b7255ec7b7d076c01910fe35a053fb590a38214b79b59f1a2b999f708"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[5].source_file",
+      "path": "docs/assets/dflash-generation-flow.svg",
+      "expected_sha256": "cd274c15a688f1a877567b92a6ae524fd511423265de87bafdbbf7d7c3d0cb3d",
+      "status": "PASS",
+      "actual_sha256": "cd274c15a688f1a877567b92a6ae524fd511423265de87bafdbbf7d7c3d0cb3d"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[6].source_file",
+      "path": "docs/USAGE.md",
+      "expected_sha256": "125e9be3e503bc675784ffad50b1b9cf314db1615210018de0baee61ba86fe17",
+      "status": "PASS",
+      "actual_sha256": "125e9be3e503bc675784ffad50b1b9cf314db1615210018de0baee61ba86fe17"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[7].source_file",
+      "path": "framework/FRAMEWORK_LOCK.json",
+      "expected_sha256": "d92fa60d791b2f39bd359e583c7b6e93d908df116e360274ffcdbf226f1d1d1e",
+      "status": "PASS",
+      "actual_sha256": "d92fa60d791b2f39bd359e583c7b6e93d908df116e360274ffcdbf226f1d1d1e"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[8].source_file",
+      "path": "framework/abi/closed-runtime-baseline-v1.json",
+      "expected_sha256": "7cbd30ebd84cf9608941a417d16e3773386c522e7f25120e6a2a0ce00d292074",
+      "status": "PASS",
+      "actual_sha256": "7cbd30ebd84cf9608941a417d16e3773386c522e7f25120e6a2a0ce00d292074"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[9].source_file",
+      "path": "framework/abi/dflash-chunk-v3.json",
+      "expected_sha256": "6dc60023695733efce6e95b931d7a567b698e85b532eaefb19017774f0db9492",
+      "status": "PASS",
+      "actual_sha256": "6dc60023695733efce6e95b931d7a567b698e85b532eaefb19017774f0db9492"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[10].source_file",
+      "path": "framework/abi/dflash-deployment-v1.json",
+      "expected_sha256": "778dacdabd7ee1841df603d56855557d309c5b19c13dcb55a1f57728b986ec74",
+      "status": "PASS",
+      "actual_sha256": "778dacdabd7ee1841df603d56855557d309c5b19c13dcb55a1f57728b986ec74"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[11].source_file",
+      "path": "framework/abi/performance-v1.json",
+      "expected_sha256": "271bd8de51ed6c505c7b156f9232440b610c7419476e73b78e762480422def34",
+      "status": "PASS",
+      "actual_sha256": "271bd8de51ed6c505c7b156f9232440b610c7419476e73b78e762480422def34"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[12].source_file",
+      "path": "framework/python/qwen35_dflash/__init__.py",
+      "expected_sha256": "c0145fdb3e8ff494e0f7c39d28d4cb4d7c7dc41133efb24c12b646f282cdca10",
+      "status": "PASS",
+      "actual_sha256": "c0145fdb3e8ff494e0f7c39d28d4cb4d7c7dc41133efb24c12b646f282cdca10"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[13].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/__init__.py",
+      "expected_sha256": "83f346d19e5996a369ce12c464297e0991270847de1ee98ef8cae420ec797007",
+      "status": "PASS",
+      "actual_sha256": "83f346d19e5996a369ce12c464297e0991270847de1ee98ef8cae420ec797007"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[14].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/__main__.py",
+      "expected_sha256": "3d2438ae92f4746e9ffaa1f837b1fe803f6281091d1f31f8c95643716f257d9a",
+      "status": "PASS",
+      "actual_sha256": "3d2438ae92f4746e9ffaa1f837b1fe803f6281091d1f31f8c95643716f257d9a"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[15].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/acl_runtime.py",
+      "expected_sha256": "4d0efd22e0f9a2fdab4d0a9cd75b582878e743b1fe6cfbd0fdf8cbb23950f985",
+      "status": "PASS",
+      "actual_sha256": "4d0efd22e0f9a2fdab4d0a9cd75b582878e743b1fe6cfbd0fdf8cbb23950f985"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[16].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/cli.py",
+      "expected_sha256": "f8657d857a894a4425dd8ce82398c430dc10ad3585dde4ac973773a432bde080",
+      "status": "PASS",
+      "actual_sha256": "f8657d857a894a4425dd8ce82398c430dc10ad3585dde4ac973773a432bde080"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[17].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/compiler.py",
+      "expected_sha256": "c6e95b79f78a3392d541386d22b9bb2de5aa0cc395a8f896a09c890e0739a416",
+      "status": "PASS",
+      "actual_sha256": "c6e95b79f78a3392d541386d22b9bb2de5aa0cc395a8f896a09c890e0739a416"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[18].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/contracts.py",
+      "expected_sha256": "e2ded3aaa94931eb7ec64eefddb7090e8dd1fa1946e6cc50199a08006bc530c3",
+      "status": "PASS",
+      "actual_sha256": "e2ded3aaa94931eb7ec64eefddb7090e8dd1fa1946e6cc50199a08006bc530c3"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[19].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/cpp_runtime.py",
+      "expected_sha256": "750a168a600277eb5473a8b9e006f6816098f64ac6f365289c1bfc18f16472ad",
+      "status": "PASS",
+      "actual_sha256": "750a168a600277eb5473a8b9e006f6816098f64ac6f365289c1bfc18f16472ad"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[20].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/custom_op_export.py",
+      "expected_sha256": "53b376e89a77e8acbf91304712c077658d3d75839a894b46b670a9158dc0e911",
+      "status": "PASS",
+      "actual_sha256": "53b376e89a77e8acbf91304712c077658d3d75839a894b46b670a9158dc0e911"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[21].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/exporter.py",
+      "expected_sha256": "12c2257495667920aa0a488408ffab20b198a132553b92a1386cbad3d4b5d327",
+      "status": "PASS",
+      "actual_sha256": "12c2257495667920aa0a488408ffab20b198a132553b92a1386cbad3d4b5d327"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[22].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/generation.py",
+      "expected_sha256": "59a0188d18a6041561ea844838bb4cc36e92ac60790917c76c3c4c1420b02222",
+      "status": "PASS",
+      "actual_sha256": "59a0188d18a6041561ea844838bb4cc36e92ac60790917c76c3c4c1420b02222"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[23].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/incremental.py",
+      "expected_sha256": "2500bb080c9319595868486c00fcd9b19fd5ac259b1536e8781e479c655af85c",
+      "status": "PASS",
+      "actual_sha256": "2500bb080c9319595868486c00fcd9b19fd5ac259b1536e8781e479c655af85c"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[24].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/incremental_plan.py",
+      "expected_sha256": "c34571ff8c0aa83a7058c1084e3f41075ecafc17b4f3864639a118dd8da980bf",
+      "status": "PASS",
+      "actual_sha256": "c34571ff8c0aa83a7058c1084e3f41075ecafc17b4f3864639a118dd8da980bf"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[25].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/input_manifest.py",
+      "expected_sha256": "c7bed4a8782acd4fc8753d279e1f089c111c21eb6e264c573f9a202671c409ed",
+      "status": "PASS",
+      "actual_sha256": "c7bed4a8782acd4fc8753d279e1f089c111c21eb6e264c573f9a202671c409ed"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[26].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/integrated.py",
+      "expected_sha256": "8fdd270be7dec00ac87fe6b0e79d3becceae6ad0d84409a8b9f91348969206b0",
+      "status": "PASS",
+      "actual_sha256": "8fdd270be7dec00ac87fe6b0e79d3becceae6ad0d84409a8b9f91348969206b0"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[27].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/quant_factory.py",
+      "expected_sha256": "78c409e5555d3fee1543ee64a1d1237ae590f0b66c06a3521e089ccde0eed34c",
+      "status": "PASS",
+      "actual_sha256": "78c409e5555d3fee1543ee64a1d1237ae590f0b66c06a3521e089ccde0eed34c"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[28].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/recompute_backend.py",
+      "expected_sha256": "071349a9557916409a0f1631fd97f9741e70812fd0f97099bf528b6951bb18e3",
+      "status": "PASS",
+      "actual_sha256": "071349a9557916409a0f1631fd97f9741e70812fd0f97099bf528b6951bb18e3"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[29].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/runtime_input_export.py",
+      "expected_sha256": "c29df807b35e9ddcbee00ccfe23b82e2182a324349748332159996532a2d4341",
+      "status": "PASS",
+      "actual_sha256": "c29df807b35e9ddcbee00ccfe23b82e2182a324349748332159996532a2d4341"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[30].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/standard_op_export.py",
+      "expected_sha256": "8c4d210e76b321d17a37d66d7d8fdef45591396c8fa06f6668d65fc4d1b52a06",
+      "status": "PASS",
+      "actual_sha256": "8c4d210e76b321d17a37d66d7d8fdef45591396c8fa06f6668d65fc4d1b52a06"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[31].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/utils.py",
+      "expected_sha256": "d3886905be1437976a307892f7b5323d4acf676257a59283dc850326788be6a8",
+      "status": "PASS",
+      "actual_sha256": "d3886905be1437976a307892f7b5323d4acf676257a59283dc850326788be6a8"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[32].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/workflow.py",
+      "expected_sha256": "ec3781023d29a254c04682f0ce3e92ae61233e056985a006356317e3fa0f10d7",
+      "status": "PASS",
+      "actual_sha256": "ec3781023d29a254c04682f0ce3e92ae61233e056985a006356317e3fa0f10d7"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[33].source_file",
+      "path": "framework/runtime/cpp/CMakeLists.txt",
+      "expected_sha256": "2dd627f6dd12ce678d498a65cbecac8bcfa95efd0d185b9f39057343764d179d",
+      "status": "PASS",
+      "actual_sha256": "2dd627f6dd12ce678d498a65cbecac8bcfa95efd0d185b9f39057343764d179d"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[34].source_file",
+      "path": "framework/runtime/cpp/include/qwen35_dflash/acl_executor.hpp",
+      "expected_sha256": "dd78002c742e3e1d68f0d0a01519729247bbf38f0d835f73fafb50676b8a4b85",
+      "status": "PASS",
+      "actual_sha256": "dd78002c742e3e1d68f0d0a01519729247bbf38f0d835f73fafb50676b8a4b85"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[35].source_file",
+      "path": "framework/runtime/cpp/include/qwen35_dflash/chunk.hpp",
+      "expected_sha256": "58c2f43311c167907a4b9ffda9d5efe5529095f48c10cf855d50ff5187b7e2df",
+      "status": "PASS",
+      "actual_sha256": "58c2f43311c167907a4b9ffda9d5efe5529095f48c10cf855d50ff5187b7e2df"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[36].source_file",
+      "path": "framework/runtime/cpp/include/qwen35_dflash/generation.hpp",
+      "expected_sha256": "5253a13cd99d40eab6d757209fc1acff6e04d7e1608dc307d3c620ec002b01a3",
+      "status": "PASS",
+      "actual_sha256": "5253a13cd99d40eab6d757209fc1acff6e04d7e1608dc307d3c620ec002b01a3"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[37].source_file",
+      "path": "framework/runtime/cpp/include/qwen35_dflash/sha256.hpp",
+      "expected_sha256": "fc430e38616b76d159d16b6ab47dc11fed333523b954eb8722ac87fff28b8e3c",
+      "status": "PASS",
+      "actual_sha256": "fc430e38616b76d159d16b6ab47dc11fed333523b954eb8722ac87fff28b8e3c"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[38].source_file",
+      "path": "framework/runtime/cpp/include/qwen35_dflash/stage_profile.hpp",
+      "expected_sha256": "c9165fd8b754e09bbd02156f2fd9e1ac9438db3995ebb3832319631240242387",
+      "status": "PASS",
+      "actual_sha256": "c9165fd8b754e09bbd02156f2fd9e1ac9438db3995ebb3832319631240242387"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[39].source_file",
+      "path": "framework/runtime/cpp/src/acl_chunk.cpp",
+      "expected_sha256": "afba85a552bdb289b45838df63fc338886b0a5f07570d10b6d869884c5539232",
+      "status": "PASS",
+      "actual_sha256": "afba85a552bdb289b45838df63fc338886b0a5f07570d10b6d869884c5539232"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[40].source_file",
+      "path": "framework/runtime/cpp/src/acl_executor.cpp",
+      "expected_sha256": "84c3f4a46fb7449a536a05d63894981d0981417372acb6c6451a596c90756ae1",
+      "status": "PASS",
+      "actual_sha256": "84c3f4a46fb7449a536a05d63894981d0981417372acb6c6451a596c90756ae1"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[41].source_file",
+      "path": "framework/runtime/cpp/src/chunk.cpp",
+      "expected_sha256": "f96d53f77d5c315c806be5a956b8421c483411f4ffc6d386dbcbd9a0b6553ce0",
+      "status": "PASS",
+      "actual_sha256": "f96d53f77d5c315c806be5a956b8421c483411f4ffc6d386dbcbd9a0b6553ce0"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[42].source_file",
+      "path": "framework/runtime/cpp/src/generation.cpp",
+      "expected_sha256": "08d7c329ae92d2603daa6f0f51edb1f9e3317244545d97342a5b381d076f2d81",
+      "status": "PASS",
+      "actual_sha256": "08d7c329ae92d2603daa6f0f51edb1f9e3317244545d97342a5b381d076f2d81"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[43].source_file",
+      "path": "framework/runtime/cpp/src/main.cpp",
+      "expected_sha256": "6f8263649dec180b4d7ea2d3bc2d3de1965f5eaff47df19553fa4d81ddbab4d8",
+      "status": "PASS",
+      "actual_sha256": "6f8263649dec180b4d7ea2d3bc2d3de1965f5eaff47df19553fa4d81ddbab4d8"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[44].source_file",
+      "path": "framework/runtime/cpp/src/sha256.cpp",
+      "expected_sha256": "0b04000a9430a6a2e58a68c975f2e63ef29cf09bb9f5903839371ace523ac584",
+      "status": "PASS",
+      "actual_sha256": "0b04000a9430a6a2e58a68c975f2e63ef29cf09bb9f5903839371ace523ac584"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[45].source_file",
+      "path": "framework/runtime/cpp/src/stage_profile.cpp",
+      "expected_sha256": "c433352faf09a5e8824299d779448b1fa0dcf78a911d4d15ef55135f1b66c963",
+      "status": "PASS",
+      "actual_sha256": "c433352faf09a5e8824299d779448b1fa0dcf78a911d4d15ef55135f1b66c963"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[46].source_file",
+      "path": "framework/runtime/cpp/tests/fake_acl/acl/acl.h",
+      "expected_sha256": "79eb5d9b4e121d08d59c319578fc35cecbd5037b409cf9c8321517486ef7c465",
+      "status": "PASS",
+      "actual_sha256": "79eb5d9b4e121d08d59c319578fc35cecbd5037b409cf9c8321517486ef7c465"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[47].source_file",
+      "path": "framework/runtime/cpp/tests/fake_acl/fake_acl.cpp",
+      "expected_sha256": "d1201b7059ce041e16e6f0f7276b94fd82da2410dd0174baed89814ab0eba311",
+      "status": "PASS",
+      "actual_sha256": "d1201b7059ce041e16e6f0f7276b94fd82da2410dd0174baed89814ab0eba311"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[48].source_file",
+      "path": "framework/runtime/cpp/tests/run_fake_runner.cmake",
+      "expected_sha256": "1c714b589f36f291796c15f901af11b57086925a068c9f3c640393477e7742de",
+      "status": "PASS",
+      "actual_sha256": "1c714b589f36f291796c15f901af11b57086925a068c9f3c640393477e7742de"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[49].source_file",
+      "path": "framework/runtime/cpp/tests/test_generation.cpp",
+      "expected_sha256": "f5156d68fb9b2c481536c839d39b616b9baa303ecd0fc55db87c78bfebf028f5",
+      "status": "PASS",
+      "actual_sha256": "f5156d68fb9b2c481536c839d39b616b9baa303ecd0fc55db87c78bfebf028f5"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[50].source_file",
+      "path": "framework/scripts/compare_cpp_closed_runtime.py",
+      "expected_sha256": "6e1ec6003148633f4f65013082181fa0ae84e8d27cae6532279321584c173e77",
+      "status": "PASS",
+      "actual_sha256": "6e1ec6003148633f4f65013082181fa0ae84e8d27cae6532279321584c173e77"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[51].source_file",
+      "path": "framework/scripts/lock_quant_inputs.py",
+      "expected_sha256": "03aa0d1f3743d022ac75e11e7c431f16c76f8baf4c7b1c228e4111d25f3ccad5",
+      "status": "PASS",
+      "actual_sha256": "03aa0d1f3743d022ac75e11e7c431f16c76f8baf4c7b1c228e4111d25f3ccad5"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[52].source_file",
+      "path": "tests/test_cpp_stage_profile.py",
+      "expected_sha256": "257270d86a0d06f32cf520dad27acb211adc9bdc180e6b042f07f9baac9d52b9",
+      "status": "PASS",
+      "actual_sha256": "257270d86a0d06f32cf520dad27acb211adc9bdc180e6b042f07f9baac9d52b9"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[53].source_file",
+      "path": "tests/test_custom_op_export.py",
+      "expected_sha256": "2efa24f44d32c25a9f49bef7068efe9cd1494c912415b5dc9952e5a58b22117e",
+      "status": "PASS",
+      "actual_sha256": "2efa24f44d32c25a9f49bef7068efe9cd1494c912415b5dc9952e5a58b22117e"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[54].source_file",
+      "path": "tests/test_incremental_air_om.py",
+      "expected_sha256": "5698371594e4886bded414a9cb0ca2659142ec50bb68abcd6c7161aacc9604f6",
+      "status": "PASS",
+      "actual_sha256": "5698371594e4886bded414a9cb0ca2659142ec50bb68abcd6c7161aacc9604f6"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[55].source_file",
+      "path": "tests/test_msprof_stage_script.py",
+      "expected_sha256": "36a4f7fc3aa42d2ea5424527bbd9ba73d2365680c743129143b2344577c02824",
+      "status": "PASS",
+      "actual_sha256": "36a4f7fc3aa42d2ea5424527bbd9ba73d2365680c743129143b2344577c02824"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[56].source_file",
+      "path": "tests/test_prompt_tokenization.py",
+      "expected_sha256": "e996ce7fff4bce407a0143dfed053d67b88a76ffa916677d65c22305fbc78292",
+      "status": "PASS",
+      "actual_sha256": "e996ce7fff4bce407a0143dfed053d67b88a76ffa916677d65c22305fbc78292"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[57].source_file",
+      "path": "tests/test_quant_air_om_framework.py",
+      "expected_sha256": "20bb238a793f971691577688d0708adb28f15dbe78f002ecb653b9a76de1a527",
+      "status": "PASS",
+      "actual_sha256": "20bb238a793f971691577688d0708adb28f15dbe78f002ecb653b9a76de1a527"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[58].source_file",
+      "path": "tests/test_runtime_input_export.py",
+      "expected_sha256": "62949be5d66f80ca250f373ed5d0ab7a45e8569bbcdad4b691c929db5e02174a",
+      "status": "PASS",
+      "actual_sha256": "62949be5d66f80ca250f373ed5d0ab7a45e8569bbcdad4b691c929db5e02174a"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[59].source_file",
+      "path": "tests/test_source_lock_benchmark.py",
+      "expected_sha256": "63fc4ee9b90d6eab502e08f14c11c580d4d9ac482827c1969854bf342fb6bfec",
+      "status": "PASS",
+      "actual_sha256": "63fc4ee9b90d6eab502e08f14c11c580d4d9ac482827c1969854bf342fb6bfec"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[60].source_file",
+      "path": "tests/test_stage_profile.py",
+      "expected_sha256": "56b10087e9528426ed8f6da8657d6faf5c32ade5701c9285021919c16a332e5c",
+      "status": "PASS",
+      "actual_sha256": "56b10087e9528426ed8f6da8657d6faf5c32ade5701c9285021919c16a332e5c"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[61].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/compare_rounds.py",
+      "expected_sha256": "fd9032b5d08192a41a9315cd55ad2afe663150ea0ebade1fa9ad114a697c767d",
+      "status": "PASS",
+      "actual_sha256": "fd9032b5d08192a41a9315cd55ad2afe663150ea0ebade1fa9ad114a697c767d"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[62].source_file",
+      "path": "tests/test_round_comparison.py",
+      "expected_sha256": "7f2008b9de9a30c7f53fad6da2edc6f0665ad80c9ba19e4c692959edde6be65c",
+      "status": "PASS",
+      "actual_sha256": "7f2008b9de9a30c7f53fad6da2edc6f0665ad80c9ba19e4c692959edde6be65c"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[63].source_file",
+      "path": "tests/test_atc_diagnostics.py",
+      "expected_sha256": "8d0ccdf39b226266fbe015fb0b356b2d09e4c4e94df43e45eb3854d6f5e9519c",
+      "status": "PASS",
+      "actual_sha256": "8d0ccdf39b226266fbe015fb0b356b2d09e4c4e94df43e45eb3854d6f5e9519c"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[64].source_file",
+      "path": "tools/profile_verify_om.py",
+      "expected_sha256": "3742cca061687a833684cd6d5ca59b3687d8b031c627b76ad9b00da4391d809d",
+      "status": "PASS",
+      "actual_sha256": "3742cca061687a833684cd6d5ca59b3687d8b031c627b76ad9b00da4391d809d"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[65].source_file",
+      "path": "tests/test_profile_verify_om.py",
+      "expected_sha256": "6c6fb13fba895bb6c771886060f5afd39d604822615839b2d7f0a1889b5f6ed1",
+      "status": "PASS",
+      "actual_sha256": "6c6fb13fba895bb6c771886060f5afd39d604822615839b2d7f0a1889b5f6ed1"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[66].source_file",
+      "path": "tools/profile_om.py",
+      "expected_sha256": "3329cdd377a4ee4826ace7b5c9b2405b29b6326dbfa88dae34b0beddc5f3d7a9",
+      "status": "PASS",
+      "actual_sha256": "3329cdd377a4ee4826ace7b5c9b2405b29b6326dbfa88dae34b0beddc5f3d7a9"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[67].source_file",
+      "path": "models/dflash_v1/msprof_summary.py",
+      "expected_sha256": "8addd6f898f099a0989038a665164fcc095f1425782dd15ec60b041db30c9b7f",
+      "status": "PASS",
+      "actual_sha256": "8addd6f898f099a0989038a665164fcc095f1425782dd15ec60b041db30c9b7f"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[68].source_file",
+      "path": "tests/rms_norm_test_support.py",
+      "expected_sha256": "807f4c7797065c0043c369d3ed00d6f1f9ffa528db710c45235446fe09fcbc2e",
+      "status": "PASS",
+      "actual_sha256": "807f4c7797065c0043c369d3ed00d6f1f9ffa528db710c45235446fe09fcbc2e"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[69].source_file",
+      "path": "tests/test_dflash_rms_norm.py",
+      "expected_sha256": "281096cd106be0d7ee5ddf3cb007bbea59bd51a7bbb3741d5e1096c40c275d2b",
+      "status": "PASS",
+      "actual_sha256": "281096cd106be0d7ee5ddf3cb007bbea59bd51a7bbb3741d5e1096c40c275d2b"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[70].source_file",
+      "path": "tests/test_msprof_application_exit.py",
+      "expected_sha256": "67d39dd82a183aae1a2e98ad1bac5b26a12759c24a3db1624eba32b828f6a9e7",
+      "status": "PASS",
+      "actual_sha256": "67d39dd82a183aae1a2e98ad1bac5b26a12759c24a3db1624eba32b828f6a9e7"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[71].source_file",
+      "path": "tools/debug_draft_om.py",
+      "expected_sha256": "6ef553613a761bd3e320b7235c0f7a702b3922b5701d0d07f937c253035635b4",
+      "status": "PASS",
+      "actual_sha256": "6ef553613a761bd3e320b7235c0f7a702b3922b5701d0d07f937c253035635b4"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[72].source_file",
+      "path": "tests/test_debug_draft_om.py",
+      "expected_sha256": "bdc2c8cbda1e8d0e846858d07543960e30ecbb1311c223e30804110b1f2aa5db",
+      "status": "PASS",
+      "actual_sha256": "bdc2c8cbda1e8d0e846858d07543960e30ecbb1311c223e30804110b1f2aa5db"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[73].source_file",
+      "path": "tools/analyze_draft_replay.py",
+      "expected_sha256": "760359533bc3f0ed3fdc6cd2f13d2a8b75d55211e15b1cfe41e8dcbdc91358e9",
+      "status": "PASS",
+      "actual_sha256": "760359533bc3f0ed3fdc6cd2f13d2a8b75d55211e15b1cfe41e8dcbdc91358e9"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[74].source_file",
+      "path": "tools/debug_draft_context/run.py",
+      "expected_sha256": "3b41b637acc8c9d987f0bf25ab9ff270d50a7e91158e57ec2c4e4b4f02c8a807",
+      "status": "PASS",
+      "actual_sha256": "3b41b637acc8c9d987f0bf25ab9ff270d50a7e91158e57ec2c4e4b4f02c8a807"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[75].source_file",
+      "path": "tests/test_debug_draft_context.py",
+      "expected_sha256": "9b247093122f46755e02b0af0876d387193de1991fb4778d19d41fbe88bb65c8",
+      "status": "PASS",
+      "actual_sha256": "9b247093122f46755e02b0af0876d387193de1991fb4778d19d41fbe88bb65c8"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[76].source_file",
+      "path": "tools/debug_gdr/runner.cpp",
+      "expected_sha256": "40e90c2cfec8132ca02a2931bfc30e185176c88999f4187a865c4dae82d8c2c2",
+      "status": "PASS",
+      "actual_sha256": "40e90c2cfec8132ca02a2931bfc30e185176c88999f4187a865c4dae82d8c2c2"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[77].source_file",
+      "path": "tools/debug_gdr/fake_acl_test.cpp",
+      "expected_sha256": "06fe3128bb62be66ff867c0812cf8e1dfba3ab2f574446aa116e5a8f486adeb3",
+      "status": "PASS",
+      "actual_sha256": "06fe3128bb62be66ff867c0812cf8e1dfba3ab2f574446aa116e5a8f486adeb3"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[78].source_file",
+      "path": "tools/debug_gdr/CMakeLists.txt",
+      "expected_sha256": "08f1eeabad3e58ad9a32623b1c735ebb655020ea361fb5ac67845d29ba7b96ff",
+      "status": "PASS",
+      "actual_sha256": "08f1eeabad3e58ad9a32623b1c735ebb655020ea361fb5ac67845d29ba7b96ff"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[79].source_file",
+      "path": "tools/debug_gdr/run.py",
+      "expected_sha256": "fbf176c3ec191a5a615523531f6f21a7484fb92b63564b5ef1f234020da34c07",
+      "status": "PASS",
+      "actual_sha256": "fbf176c3ec191a5a615523531f6f21a7484fb92b63564b5ef1f234020da34c07"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[80].source_file",
+      "path": "tools/debug_gdr/test_debug_gdr.py",
+      "expected_sha256": "696517a07441984d143af3637c126ff638e1bc766931260dcf9c195ef45fb86a",
+      "status": "PASS",
+      "actual_sha256": "696517a07441984d143af3637c126ff638e1bc766931260dcf9c195ef45fb86a"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[81].source_file",
+      "path": "tools/debug_draft_context/fc_determinism.py",
+      "expected_sha256": "ca643be668775fa6ea1e648c37b41666fc7dfed5cdff3f8a6be62e16e0aa94d2",
+      "status": "PASS",
+      "actual_sha256": "ca643be668775fa6ea1e648c37b41666fc7dfed5cdff3f8a6be62e16e0aa94d2"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[82].source_file",
+      "path": "tests/test_fc_determinism.py",
+      "expected_sha256": "1a47664193b30e5c94f4450e6b2292b3b4c2d8270bfdd0db3cba849cfe637656",
+      "status": "PASS",
+      "actual_sha256": "1a47664193b30e5c94f4450e6b2292b3b4c2d8270bfdd0db3cba849cfe637656"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[83].source_file",
+      "path": "tools/benchmark_prompts.py",
+      "expected_sha256": "372bca86e5b1a17dc71f4594cb4ae71c40fd38a5413b6208c620abfbb4fa4cd8",
+      "status": "PASS",
+      "actual_sha256": "372bca86e5b1a17dc71f4594cb4ae71c40fd38a5413b6208c620abfbb4fa4cd8"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[84].source_file",
+      "path": "tests/test_prompt_suite.py",
+      "expected_sha256": "688d2b8c5253a026b92e880e71ac356a0b4eb65111e2b326c89f3221bceb88d1",
+      "status": "PASS",
+      "actual_sha256": "688d2b8c5253a026b92e880e71ac356a0b4eb65111e2b326c89f3221bceb88d1"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[85].source_file",
+      "path": "tests/test_draft_compile_determinism.py",
+      "expected_sha256": "351630a1088df1c44134bdb77b438b315d3e40efd1dad12b2fd74f2d268df884",
+      "status": "PASS",
+      "actual_sha256": "351630a1088df1c44134bdb77b438b315d3e40efd1dad12b2fd74f2d268df884"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[86].source_file",
+      "path": "tools/decode_outputs.py",
+      "expected_sha256": "bffe0c14dbbd2c51ae345987e7e4a197c59b677ba11f7aea39d143fb42939d6d",
+      "status": "PASS",
+      "actual_sha256": "bffe0c14dbbd2c51ae345987e7e4a197c59b677ba11f7aea39d143fb42939d6d"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[87].source_file",
+      "path": "tests/test_prompt_analysis.py",
+      "expected_sha256": "c5c0dc6122ac99614c4d07e47743b8644fe7f316b39e8b1224e87b8debe69ed4",
+      "status": "PASS",
+      "actual_sha256": "c5c0dc6122ac99614c4d07e47743b8644fe7f316b39e8b1224e87b8debe69ed4"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[88].source_file",
+      "path": "docs/RESULTS.md",
+      "expected_sha256": "c8429b20b8c114ba5def643bdb704376ce15605873ec498cd4b1526376104ddd",
+      "status": "PASS",
+      "actual_sha256": "c8429b20b8c114ba5def643bdb704376ce15605873ec498cd4b1526376104ddd"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[89].source_file",
+      "path": "framework/abi/dflash-mtp-v1.json",
+      "expected_sha256": "c9e0797fb23f2bead56d735a9eb4ab6753e1d825a91e04ef34d2fee1bdae2113",
+      "status": "PASS",
+      "actual_sha256": "c9e0797fb23f2bead56d735a9eb4ab6753e1d825a91e04ef34d2fee1bdae2113"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[90].source_file",
+      "path": "tests/test_mtp_verify_route.py",
+      "expected_sha256": "cd66b218fed21c59d52ce19de11815e0e31ed095afb03758f0b8e79ca9599236",
+      "status": "PASS",
+      "actual_sha256": "cd66b218fed21c59d52ce19de11815e0e31ed095afb03758f0b8e79ca9599236"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[91].source_file",
+      "path": "tools/benchmark_gdr_lengths.py",
+      "expected_sha256": "64eee409a733df5d1bf0b02de38263edd6cd44e3a4a6522479105eaccb86f713",
+      "status": "PASS",
+      "actual_sha256": "64eee409a733df5d1bf0b02de38263edd6cd44e3a4a6522479105eaccb86f713"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[92].source_file",
+      "path": "tests/test_gdr_length_matrix.py",
+      "expected_sha256": "fd07752e1d878d40968038f12925a5ef34ef94be79a696e0350879a8083ebc45",
+      "status": "PASS",
+      "actual_sha256": "fd07752e1d878d40968038f12925a5ef34ef94be79a696e0350879a8083ebc45"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[93].source_file",
+      "path": "config/dflash_env.sh.example",
+      "expected_sha256": "50be66aefa1a7e19d6e9ce6cda95653b6c8dcd1fc64ec583a22b59a10e630c78",
+      "status": "PASS",
+      "actual_sha256": "50be66aefa1a7e19d6e9ce6cda95653b6c8dcd1fc64ec583a22b59a10e630c78"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[94].source_file",
+      "path": "tools/activate_env.sh",
+      "expected_sha256": "e5032807ae35f84581dc5d362dc2ccc5d65dac5235b90ce4492da96a40cb2ee2",
+      "status": "PASS",
+      "actual_sha256": "e5032807ae35f84581dc5d362dc2ccc5d65dac5235b90ce4492da96a40cb2ee2"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[95].source_file",
+      "path": "tools/python-bootstrap/sitecustomize.py",
+      "expected_sha256": "e68b19bc84dc7499ab114ace2a1b5a9a6516fb830aa4dbfd79c235f000f2b295",
+      "status": "PASS",
+      "actual_sha256": "e68b19bc84dc7499ab114ace2a1b5a9a6516fb830aa4dbfd79c235f000f2b295"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[96].source_file",
+      "path": "tests/test_environment_config.py",
+      "expected_sha256": "a208efaa5fb053f4d60b51444f429ff87acbd2b86aad28be9084f5732ecbd222",
+      "status": "PASS",
+      "actual_sha256": "a208efaa5fb053f4d60b51444f429ff87acbd2b86aad28be9084f5732ecbd222"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[97].source_file",
+      "path": "framework/abi/dflash-chunk-v4.json",
+      "expected_sha256": "58a9a4fa4a3e8ce3e1b1d8f787cf6aa26a27242cba55ceb464394e75ef990334",
+      "status": "PASS",
+      "actual_sha256": "58a9a4fa4a3e8ce3e1b1d8f787cf6aa26a27242cba55ceb464394e75ef990334"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[98].source_file",
+      "path": "framework/abi/dflash-mtp-v2.json",
+      "expected_sha256": "09364d5114e7272f8f2322f195d52e06007b34af12b1aab53b824fdbf5032214",
+      "status": "PASS",
+      "actual_sha256": "09364d5114e7272f8f2322f195d52e06007b34af12b1aab53b824fdbf5032214"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[99].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/common_reuse.py",
+      "expected_sha256": "1a5c5d1ac40f7b589ec3ce28c7784812011364df252c712dab4a55533a381c36",
+      "status": "PASS",
+      "actual_sha256": "1a5c5d1ac40f7b589ec3ce28c7784812011364df252c712dab4a55533a381c36"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[100].source_file",
+      "path": "tests/test_common_gdr_reuse.py",
+      "expected_sha256": "0c0c8c13cabf8d973788f3b9950c4f8d19145980b1e07f32eef4e8ef647f33a2",
+      "status": "PASS",
+      "actual_sha256": "0c0c8c13cabf8d973788f3b9950c4f8d19145980b1e07f32eef4e8ef647f33a2"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[101].source_file",
+      "path": "tests/test_internal_dflash_bridge_rollback.py",
+      "expected_sha256": "76a600d219cab8645294091c880f33d0c474b09605a4b61d4b5790b3013bbacf",
+      "status": "PASS",
+      "actual_sha256": "76a600d219cab8645294091c880f33d0c474b09605a4b61d4b5790b3013bbacf"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[102].source_file",
+      "path": "config/prompts_long_1k.json",
+      "expected_sha256": "23ca736bc49e4c96648eca767fc01fb36d4c91a40bc9f1118943986bca1ecd53",
+      "status": "PASS",
+      "actual_sha256": "23ca736bc49e4c96648eca767fc01fb36d4c91a40bc9f1118943986bca1ecd53"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[103].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/repeatability.py",
+      "expected_sha256": "8e2ad2ebd61aa0f8c6c22abd0ebc99adb504088128d9c22e738317e4921f05c3",
+      "status": "PASS",
+      "actual_sha256": "8e2ad2ebd61aa0f8c6c22abd0ebc99adb504088128d9c22e738317e4921f05c3"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[104].source_file",
+      "path": "tests/test_offline_datasets.py",
+      "expected_sha256": "288dad1229872c8ee6d59096dec4a2d646cc3e0b9fb2e2a1a96a48c1c5d722eb",
+      "status": "PASS",
+      "actual_sha256": "288dad1229872c8ee6d59096dec4a2d646cc3e0b9fb2e2a1a96a48c1c5d722eb"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[105].source_file",
+      "path": "tools/offline_datasets.py",
+      "expected_sha256": "e21a4e9867a5575f02e6c4f7a32762ed3bca09e354f1e54fc367a05fed19810b",
+      "status": "PASS",
+      "actual_sha256": "e21a4e9867a5575f02e6c4f7a32762ed3bca09e354f1e54fc367a05fed19810b"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[106].source_file",
+      "path": "tools/ordinary_baseline.py",
+      "expected_sha256": "20bd521472ca79c540e21b6419c9f5e8b6889d5d7002ab98d3be4a56e155dd6f",
+      "status": "PASS",
+      "actual_sha256": "20bd521472ca79c540e21b6419c9f5e8b6889d5d7002ab98d3be4a56e155dd6f"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[107].source_file",
+      "path": "tests/test_ordinary_baseline.py",
+      "expected_sha256": "b40105edc9a35b426879bcfaa7670a45494247ed44495ff8577171a2342770e8",
+      "status": "PASS",
+      "actual_sha256": "b40105edc9a35b426879bcfaa7670a45494247ed44495ff8577171a2342770e8"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[108].source_file",
+      "path": "tests/test_compact_draft_execution.py",
+      "expected_sha256": "f46a8e8b8cde91d6a093b8853a05f8d9ce57a54c454d39d2da914537b289dae9",
+      "status": "PASS",
+      "actual_sha256": "f46a8e8b8cde91d6a093b8853a05f8d9ce57a54c454d39d2da914537b289dae9"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[109].source_file",
+      "path": "tests/test_prebound_om_io.py",
+      "expected_sha256": "d3f190395c6f39db88c3374d5933ae27761b39ef168767a2cb1ce307d33f9d0d",
+      "status": "PASS",
+      "actual_sha256": "d3f190395c6f39db88c3374d5933ae27761b39ef168767a2cb1ce307d33f9d0d"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[110].source_file",
+      "path": "tests/test_draft_execution_optimizations.py",
+      "expected_sha256": "c400506082d48e3f5268d2f68cbef48e3fa36e22c54fc451a80a885fdbd64c5c",
+      "status": "PASS",
+      "actual_sha256": "c400506082d48e3f5268d2f68cbef48e3fa36e22c54fc451a80a885fdbd64c5c"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[111].source_file",
+      "path": "tools/profile_om_bundle.py",
+      "expected_sha256": "deb0098025c3d4d670ec08e7e44c60c1842901e0f8a21ae0350b66e53c0d9f7b",
+      "status": "PASS",
+      "actual_sha256": "deb0098025c3d4d670ec08e7e44c60c1842901e0f8a21ae0350b66e53c0d9f7b"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[112].source_file",
+      "path": "tests/test_profile_om_bundle.py",
+      "expected_sha256": "267ab1b93137f5c056815f734fce0527ebf728f29a3f913f44d80bbda4b739b1",
+      "status": "PASS",
+      "actual_sha256": "267ab1b93137f5c056815f734fce0527ebf728f29a3f913f44d80bbda4b739b1"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[113].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/weight_prepack.py",
+      "expected_sha256": "a32de5f102f605a8f570177191b27b6c8b2b8fa271a591d9c423b684027031d2",
+      "status": "PASS",
+      "actual_sha256": "a32de5f102f605a8f570177191b27b6c8b2b8fa271a591d9c423b684027031d2"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[114].source_file",
+      "path": "tools/pack_draft_weights_nz.py",
+      "expected_sha256": "b0f3b847ef18480aec08889e50434624e4c457efae2480d9ddb76275324c8213",
+      "status": "PASS",
+      "actual_sha256": "b0f3b847ef18480aec08889e50434624e4c457efae2480d9ddb76275324c8213"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[115].source_file",
+      "path": "tests/test_weight_prepack.py",
+      "expected_sha256": "c50dda7128da419a131bf5a1f7b3a54012bef4118594306d3aacee6ae36aaafb",
+      "status": "PASS",
+      "actual_sha256": "c50dda7128da419a131bf5a1f7b3a54012bef4118594306d3aacee6ae36aaafb"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[116].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/atc_diagnostics.py",
+      "expected_sha256": "a6b575589c34ed598c4eaf056b47a5c2f59d74ac996ecec3fe237bc9358c8d8a",
+      "status": "PASS",
+      "actual_sha256": "a6b575589c34ed598c4eaf056b47a5c2f59d74ac996ecec3fe237bc9358c8d8a"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[117].source_file",
+      "path": "tests/test_atc_shape_diagnostics.py",
+      "expected_sha256": "72d52650fa95aa13f8b12b3495555ae94e7ad8c24d9583998b2392b2c94bf5ee",
+      "status": "PASS",
+      "actual_sha256": "72d52650fa95aa13f8b12b3495555ae94e7ad8c24d9583998b2392b2c94bf5ee"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[118].source_file",
+      "path": "tools/extract_atc_node.py",
+      "expected_sha256": "23c97a9ed80b2392a5bce41e4e570ba30ef0df5c12db02507dee1169aa907d81",
+      "status": "PASS",
+      "actual_sha256": "23c97a9ed80b2392a5bce41e4e570ba30ef0df5c12db02507dee1169aa907d81"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[119].source_file",
+      "path": "tests/test_extract_atc_node.py",
+      "expected_sha256": "19dc0cbdeab90735ad5982204eeb3b9bb0ee0e5b2947341d5440497fbde6d104",
+      "status": "PASS",
+      "actual_sha256": "19dc0cbdeab90735ad5982204eeb3b9bb0ee0e5b2947341d5440497fbde6d104"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[120].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/draft_gears.py",
+      "expected_sha256": "f7000548ab8e08e4bef535458034fe9834531b843e88711774eb95ccf50ca41b",
+      "status": "PASS",
+      "actual_sha256": "f7000548ab8e08e4bef535458034fe9834531b843e88711774eb95ccf50ca41b"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[121].source_file",
+      "path": "tests/test_static_draft_gears.py",
+      "expected_sha256": "034dad3d7f2c0dd3a7bdcc61b623460d40278d2559ba43e404b3edcbd7a1bb8b",
+      "status": "PASS",
+      "actual_sha256": "034dad3d7f2c0dd3a7bdcc61b623460d40278d2559ba43e404b3edcbd7a1bb8b"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[122].source_file",
+      "path": "tests/test_decode_metrics.py",
+      "expected_sha256": "60b08143c3eb9d61a2b52b654f69e84c7712f1a887c3c54ca8fb609e89a500c9",
+      "status": "PASS",
+      "actual_sha256": "60b08143c3eb9d61a2b52b654f69e84c7712f1a887c3c54ca8fb609e89a500c9"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[123].source_file",
+      "path": "framework/python/qwen35_dflash/decode_metrics.py",
+      "expected_sha256": "a5bb7a5fc35556daedc291d78c6785f59d6299bbd01835541b19b1505926b9e7",
+      "status": "PASS",
+      "actual_sha256": "a5bb7a5fc35556daedc291d78c6785f59d6299bbd01835541b19b1505926b9e7"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[124].source_file",
+      "path": "tools/validate_draft_matmul_om.py",
+      "expected_sha256": "e33bac821af36333cd34116c7444e3b284be6607af1ae2b8f391608371fb2703",
+      "status": "PASS",
+      "actual_sha256": "e33bac821af36333cd34116c7444e3b284be6607af1ae2b8f391608371fb2703"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[125].source_file",
+      "path": "tests/test_draft_matmul_om_validation.py",
+      "expected_sha256": "7203133a89ebb3baa12c71f48cd26c3e38a7e1fb7abf5b6787278fccca039984",
+      "status": "PASS",
+      "actual_sha256": "7203133a89ebb3baa12c71f48cd26c3e38a7e1fb7abf5b6787278fccca039984"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[126].source_file",
+      "path": "framework/runtime/cpp/src/matmul_probe.cpp",
+      "expected_sha256": "0ac15c66f57df294ae9c9e81d67918380bd31b479e23e382dfe542f8a6c7b66d",
+      "status": "PASS",
+      "actual_sha256": "0ac15c66f57df294ae9c9e81d67918380bd31b479e23e382dfe542f8a6c7b66d"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[127].source_file",
+      "path": "framework/runtime/cpp/include/qwen35_dflash/matmul_probe.hpp",
+      "expected_sha256": "9b70745122559530c149d785b35cbe30d5196f5074350f21fa7e451aadcef86a",
+      "status": "PASS",
+      "actual_sha256": "9b70745122559530c149d785b35cbe30d5196f5074350f21fa7e451aadcef86a"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[128].source_file",
+      "path": "tools/matmul_probe_cpp.py",
+      "expected_sha256": "36d2b0af31e18ed4994f9e874d971f7bb391d17545ddcb4a338a3fab07eee262",
+      "status": "PASS",
+      "actual_sha256": "36d2b0af31e18ed4994f9e874d971f7bb391d17545ddcb4a338a3fab07eee262"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[129].source_file",
+      "path": "tests/test_matmul_probe_cpp.py",
+      "expected_sha256": "54f23534b663b897b810b1409fc41e2d45e9e614832d5d192b4c4b7c507f5fa4",
+      "status": "PASS",
+      "actual_sha256": "54f23534b663b897b810b1409fc41e2d45e9e614832d5d192b4c4b7c507f5fa4"
+    },
+    {
+      "declaration": "$.incremental_om_framework.files[130].source_file",
+      "path": "docs/OPTIMIZATION.md",
+      "expected_sha256": "9d1c55db89ca2bccda3d96dcfcf0ed0838c3434d00fda0b2616950f0447c4390",
+      "status": "PASS",
+      "actual_sha256": "9d1c55db89ca2bccda3d96dcfcf0ed0838c3434d00fda0b2616950f0447c4390"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[0].source_file",
+      "path": "models/dflash_v1/draft_quantization.py",
+      "expected_sha256": "10718beb9f64b37ef57d2e3b53affab450e8cac5c8c32cb51327e99f3b2be845",
+      "status": "PASS",
+      "actual_sha256": "10718beb9f64b37ef57d2e3b53affab450e8cac5c8c32cb51327e99f3b2be845"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[1].source_file",
+      "path": "models/dflash_v1/prepare_draft.py",
+      "expected_sha256": "09e4f1ba0c832ef9a2b719f96ee619b73e2e37bcec569e9a1d7f4aa8416cbd91",
+      "status": "PASS",
+      "actual_sha256": "09e4f1ba0c832ef9a2b719f96ee619b73e2e37bcec569e9a1d7f4aa8416cbd91"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[2].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/draft_constants.py",
+      "expected_sha256": "507e8a36905f4beda5b9fc7a6e44613792eb978a75ca3861506ea5b2833e61c5",
+      "status": "PASS",
+      "actual_sha256": "507e8a36905f4beda5b9fc7a6e44613792eb978a75ca3861506ea5b2833e61c5"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[3].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/draft_variants.py",
+      "expected_sha256": "ad206f2a2768328515e67e082706b5944d07e8e96d3b9cc2cc35b7dc6fe50894",
+      "status": "PASS",
+      "actual_sha256": "ad206f2a2768328515e67e082706b5944d07e8e96d3b9cc2cc35b7dc6fe50894"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[4].source_file",
+      "path": "tools/build_draft_variants.py",
+      "expected_sha256": "25a1ed46ea848a455d32bbb373a1fee909b816ccd277e3bc8c74712af3aefd5e",
+      "status": "PASS",
+      "actual_sha256": "25a1ed46ea848a455d32bbb373a1fee909b816ccd277e3bc8c74712af3aefd5e"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[5].source_file",
+      "path": "tools/benchmark_draft_variants.py",
+      "expected_sha256": "9112d51b7e8bd0935cd79e831db083fb5acd70c702936accba0f3b92bfac1625",
+      "status": "PASS",
+      "actual_sha256": "9112d51b7e8bd0935cd79e831db083fb5acd70c702936accba0f3b92bfac1625"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[6].source_file",
+      "path": "tests/test_draft_quantization.py",
+      "expected_sha256": "6226d72c945a7ff06b9049ebae8c8b2d3784ee066812b15c2fe7368f43d03a2d",
+      "status": "PASS",
+      "actual_sha256": "6226d72c945a7ff06b9049ebae8c8b2d3784ee066812b15c2fe7368f43d03a2d"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[7].source_file",
+      "path": "tests/test_draft_variant_bundles.py",
+      "expected_sha256": "a5a70510c3def204f417411aa106ae93c08390343cd55f8a0e90071129be09d2",
+      "status": "PASS",
+      "actual_sha256": "a5a70510c3def204f417411aa106ae93c08390343cd55f8a0e90071129be09d2"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[8].source_file",
+      "path": "tests/test_draft_comparison.py",
+      "expected_sha256": "46997f41b0a29f6950f65d2649f92b6902028b6ef418be72b43a344977d0bd07",
+      "status": "PASS",
+      "actual_sha256": "46997f41b0a29f6950f65d2649f92b6902028b6ef418be72b43a344977d0bd07"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[9].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/bundle_matrix.py",
+      "expected_sha256": "4f77748567b22da8ca4936ea294668d207a830cb496aed055934a2b7539470c1",
+      "status": "PASS",
+      "actual_sha256": "4f77748567b22da8ca4936ea294668d207a830cb496aed055934a2b7539470c1"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[10].source_file",
+      "path": "tests/test_unified_draft_bundle.py",
+      "expected_sha256": "be5af725d83881db1f4c1f4a21532ca10bdc3e3056636c8e114a771f2ba6c93d",
+      "status": "PASS",
+      "actual_sha256": "be5af725d83881db1f4c1f4a21532ca10bdc3e3056636c8e114a771f2ba6c93d"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[11].source_file",
+      "path": "tests/test_unified_benchmarks.py",
+      "expected_sha256": "2314cb92d28550344d0fa062ef41d6a269a390619c40634bcd7770a4db8009b8",
+      "status": "PASS",
+      "actual_sha256": "2314cb92d28550344d0fa062ef41d6a269a390619c40634bcd7770a4db8009b8"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[12].source_file",
+      "path": "models/dflash_v1/weight_quant_matmul.py",
+      "expected_sha256": "856c368977da0997f7bab75e0cfdff7aef0665d800a0faddf61f0e3bec9a17d9",
+      "status": "PASS",
+      "actual_sha256": "856c368977da0997f7bab75e0cfdff7aef0665d800a0faddf61f0e3bec9a17d9"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[13].source_file",
+      "path": "tools/benchmark_draft_matmul.py",
+      "expected_sha256": "39ecb7dc6b4a400012309022bbb38e3b7027f1d4d988536c141c01963c59d423",
+      "status": "PASS",
+      "actual_sha256": "39ecb7dc6b4a400012309022bbb38e3b7027f1d4d988536c141c01963c59d423"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[14].source_file",
+      "path": "tests/weight_quant_test_support.py",
+      "expected_sha256": "11c0d550fbf38ae5a132defd589fe7a857ab09e8aab4bd9f70ffc23a18c2fdc1",
+      "status": "PASS",
+      "actual_sha256": "11c0d550fbf38ae5a132defd589fe7a857ab09e8aab4bd9f70ffc23a18c2fdc1"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[15].source_file",
+      "path": "tests/test_weight_quant_matmul_export.py",
+      "expected_sha256": "4c547fb486a66d824f68525549568080983a4b61eca72f9099859e69eb1524f4",
+      "status": "PASS",
+      "actual_sha256": "4c547fb486a66d824f68525549568080983a4b61eca72f9099859e69eb1524f4"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[16].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/atc_fusion.py",
+      "expected_sha256": "c261b0098562785e1a31bd681dd8b3ed92de6c547a9aa5b9ace225a469c7967f",
+      "status": "PASS",
+      "actual_sha256": "c261b0098562785e1a31bd681dd8b3ed92de6c547a9aa5b9ace225a469c7967f"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[17].source_file",
+      "path": "tests/test_weight_quant_atc_fusion.py",
+      "expected_sha256": "b6ef33958eceeb375aa299927c33420563475536e8e873835132289bc90df7af",
+      "status": "PASS",
+      "actual_sha256": "b6ef33958eceeb375aa299927c33420563475536e8e873835132289bc90df7af"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[18].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/weight_quant_layout.py",
+      "expected_sha256": "d1394a64a6f3dd24af805828b637b9df2fbbce3922260f1751a622e05f434e08",
+      "status": "PASS",
+      "actual_sha256": "d1394a64a6f3dd24af805828b637b9df2fbbce3922260f1751a622e05f434e08"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[19].source_file",
+      "path": "tools/probe_draft_matmul_atc.py",
+      "expected_sha256": "538435b6f5f23d178bba1cc046de287e450f27569835de35798e6a574706aa5f",
+      "status": "PASS",
+      "actual_sha256": "538435b6f5f23d178bba1cc046de287e450f27569835de35798e6a574706aa5f"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[20].source_file",
+      "path": "tests/test_weight_quant_layout.py",
+      "expected_sha256": "7a5a5b85109d56fd9bb5673891f1df8d98539a277706d88958219bf8fde0fcca",
+      "status": "PASS",
+      "actual_sha256": "7a5a5b85109d56fd9bb5673891f1df8d98539a277706d88958219bf8fde0fcca"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[21].source_file",
+      "path": "tests/test_draft_matmul_atc_probe.py",
+      "expected_sha256": "2235e7bf1a61e1285958de99e73e9f0307297eacae508b40e4d64efadb255c24",
+      "status": "PASS",
+      "actual_sha256": "2235e7bf1a61e1285958de99e73e9f0307297eacae508b40e4d64efadb255c24"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[22].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/weight_prepack.py",
+      "expected_sha256": "a32de5f102f605a8f570177191b27b6c8b2b8fa271a591d9c423b684027031d2",
+      "status": "PASS",
+      "actual_sha256": "a32de5f102f605a8f570177191b27b6c8b2b8fa271a591d9c423b684027031d2"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[23].source_file",
+      "path": "tools/pack_draft_weights_nz.py",
+      "expected_sha256": "b0f3b847ef18480aec08889e50434624e4c457efae2480d9ddb76275324c8213",
+      "status": "PASS",
+      "actual_sha256": "b0f3b847ef18480aec08889e50434624e4c457efae2480d9ddb76275324c8213"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[24].source_file",
+      "path": "tests/test_weight_prepack.py",
+      "expected_sha256": "c50dda7128da419a131bf5a1f7b3a54012bef4118594306d3aacee6ae36aaafb",
+      "status": "PASS",
+      "actual_sha256": "c50dda7128da419a131bf5a1f7b3a54012bef4118594306d3aacee6ae36aaafb"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[25].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/atc_diagnostics.py",
+      "expected_sha256": "a6b575589c34ed598c4eaf056b47a5c2f59d74ac996ecec3fe237bc9358c8d8a",
+      "status": "PASS",
+      "actual_sha256": "a6b575589c34ed598c4eaf056b47a5c2f59d74ac996ecec3fe237bc9358c8d8a"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[26].source_file",
+      "path": "tests/test_atc_shape_diagnostics.py",
+      "expected_sha256": "72d52650fa95aa13f8b12b3495555ae94e7ad8c24d9583998b2392b2c94bf5ee",
+      "status": "PASS",
+      "actual_sha256": "72d52650fa95aa13f8b12b3495555ae94e7ad8c24d9583998b2392b2c94bf5ee"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[27].source_file",
+      "path": "framework/python/qwen35_dflash/ascend310p/draft_gears.py",
+      "expected_sha256": "f7000548ab8e08e4bef535458034fe9834531b843e88711774eb95ccf50ca41b",
+      "status": "PASS",
+      "actual_sha256": "f7000548ab8e08e4bef535458034fe9834531b843e88711774eb95ccf50ca41b"
+    },
+    {
+      "declaration": "$.draft_quantization_om.sources[28].source_file",
+      "path": "tests/test_static_draft_gears.py",
+      "expected_sha256": "034dad3d7f2c0dd3a7bdcc61b623460d40278d2559ba43e404b3edcbd7a1bb8b",
+      "status": "PASS",
+      "actual_sha256": "034dad3d7f2c0dd3a7bdcc61b623460d40278d2559ba43e404b3edcbd7a1bb8b"
+    },
+    {
+      "declaration": "$.draft_optimization_handoff.sources[0].source_file",
+      "path": "docs/OPTIMIZATION.md",
+      "expected_sha256": "9d1c55db89ca2bccda3d96dcfcf0ed0838c3434d00fda0b2616950f0447c4390",
+      "status": "PASS",
+      "actual_sha256": "9d1c55db89ca2bccda3d96dcfcf0ed0838c3434d00fda0b2616950f0447c4390"
+    },
+    {
+      "declaration": "$.draft_optimization_handoff.sources[1].source_file",
+      "path": "framework/custom_ops/draft_quant/workloads.json",
+      "expected_sha256": "63ea33742325206f6ec898d0fb43736f6098d9725e78cb4bb25a221774c5d2f0",
+      "status": "PASS",
+      "actual_sha256": "63ea33742325206f6ec898d0fb43736f6098d9725e78cb4bb25a221774c5d2f0"
+    }
+  ]
+}
