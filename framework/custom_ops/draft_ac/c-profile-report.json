@@ -1,0 +1,136 @@
+{
+  "profiling_status": "NOT_RUN",
+  "scope": "user-reported historical medians; device artifacts not accessible locally",
+  "source": "/home/w00949577/qwen35-dflash-run/ac-draft-full-20261016-071408",
+  "source_status": "USER_REPORTED_NOT_LOCALLY_VERIFIED",
+  "gears": [
+    16,
+    64
+  ],
+  "end_to_end": "NOT_RUN",
+  "cases": [
+    {
+      "gear": 16,
+      "mode": "off",
+      "historical": {
+        "median_ms": 45.7116,
+        "p95_ms": null
+      },
+      "profiling_status": "NOT_RUN"
+    },
+    {
+      "gear": 16,
+      "mode": "a",
+      "historical": {
+        "median_ms": 31.2055,
+        "p95_ms": null
+      },
+      "profiling_status": "NOT_RUN"
+    },
+    {
+      "gear": 16,
+      "mode": "c",
+      "historical": {
+        "median_ms": 55.059,
+        "p95_ms": null
+      },
+      "profiling_status": "NOT_RUN"
+    },
+    {
+      "gear": 16,
+      "mode": "ac",
+      "historical": {
+        "median_ms": 40.5132,
+        "p95_ms": null
+      },
+      "profiling_status": "NOT_RUN"
+    },
+    {
+      "gear": 64,
+      "mode": "off",
+      "historical": {
+        "median_ms": 45.8936,
+        "p95_ms": null
+      },
+      "profiling_status": "NOT_RUN"
+    },
+    {
+      "gear": 64,
+      "mode": "a",
+      "historical": {
+        "median_ms": 32.0814,
+        "p95_ms": null
+      },
+      "profiling_status": "NOT_RUN"
+    },
+    {
+      "gear": 64,
+      "mode": "c",
+      "historical": {
+        "median_ms": 55.2393,
+        "p95_ms": null
+      },
+      "profiling_status": "NOT_RUN"
+    },
+    {
+      "gear": 64,
+      "mode": "ac",
+      "historical": {
+        "median_ms": 41.3948,
+        "p95_ms": null
+      },
+      "profiling_status": "NOT_RUN"
+    }
+  ],
+  "confirmed": [
+    "\u7528\u6237\u62a5\u544a 52+4+8 bitwise PASS\uff1b\u5c1a\u672a\u5728\u672c\u5730\u8bfb\u53d6\u670d\u52a1\u5668\u539f\u59cb\u4ea7\u7269\u3002",
+    "\u7ed9\u5b9a medians \u7684\u56db\u4e2a C \u589e\u91cf\u5747\u7ea6 9.3 ms\uff1b\u8fd9\u4e0d\u662f\u8bbe\u5907 Kernel \u5f52\u56e0\u3002"
+  ],
+  "unconfirmed": [
+    "Native immutable Head \u7684 MatMul/Argmax \u65f6\u95f4\u4e0e\u6743\u91cd\u683c\u5f0f\u5c1a\u672a\u53d6\u5f97\u3002",
+    "Custom C \u5185\u90e8 MatMul\u3001Vector Top1\u3001\u6743\u91cd\u8bfb\u53d6\u3001\u8de8\u6838\u540c\u6b65\u4e0e\u56fe\u8c03\u5ea6\u8d21\u732e\u5c1a\u672a\u786e\u5b9a\u3002",
+    "\u72ec\u7acb runtime-weight Head \u5ef6\u8fdf\u4e0d\u53ef\u76f4\u63a5\u7528\u4e8e\u5206\u89e3 immutable-weight \u6574\u56fe\u65f6\u5ef6\u3002"
+  ],
+  "pairs": [
+    {
+      "gear": 16,
+      "baseline": "off",
+      "candidate": "c",
+      "historical_delta_ms": 9.3474,
+      "root_cause": "UNPROVEN"
+    },
+    {
+      "gear": 16,
+      "baseline": "a",
+      "candidate": "ac",
+      "historical_delta_ms": 9.307699999999997,
+      "root_cause": "UNPROVEN"
+    },
+    {
+      "gear": 64,
+      "baseline": "off",
+      "candidate": "c",
+      "historical_delta_ms": 9.3457,
+      "root_cause": "UNPROVEN"
+    },
+    {
+      "gear": 64,
+      "baseline": "a",
+      "candidate": "ac",
+      "historical_delta_ms": 9.313399999999994,
+      "root_cause": "UNPROVEN"
+    }
+  ],
+  "cross_pair_consistency": [
+    {
+      "gear": 16,
+      "historical_C_cost_difference_ms": 0.0397000000000034,
+      "interpretation": "similar C increments are a hypothesis of shared bottleneck, not proof"
+    },
+    {
+      "gear": 64,
+      "historical_C_cost_difference_ms": 0.032300000000006435,
+      "interpretation": "similar C increments are a hypothesis of shared bottleneck, not proof"
+    }
+  ]
+}

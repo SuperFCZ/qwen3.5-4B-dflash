@@ -396,3 +396,70 @@ bash framework/custom_ops/draft_ac/run_single_graph.sh \
 
 本轮相关 CPU 回归：353 PASS，包括 legacy 钩子受控复现、fullgraph 捕获、写保护不变、
 单图范围、AIR-only 状态、OPP/Runner 篡改拒绝和新进程日志/环境设置。没有本地 CANN/NPU PASS。
+
+### C 完整 Draft 性能回退归因（只读 Profiling）
+
+用户已报告 `ac-draft-full-20261016-071408` 的 52 A + 4 C 单算子图及 8 组完整 Draft
+bitwise PASS。C16 的 c−off / ac−a 分别为 9.3474 / 9.3077 ms；C64 分别为
+9.3457 / 9.3134 ms。这说明 C 的整图增量相近，**尚不能定位到 MatMul、Top1、布局转换
+或调度中的某一项**。独立 runtime-weight Native Head 的 23.3 ms 与 immutable-weight
+整图不是同一实验，不能直接从整图减去独立 Head 时延。
+
+新增 `profile_c.sh`，不调用 Factory，不加载 checkpoint，不导出 AIR、不编译新 OM、
+不重建 OPP/Runner。它只用现有 Runner 加载冻结 OM 并执行相同输入，所有输出在新目录：
+
+- 核验已有 52/4/8 状态、每个选中 OM/AIR/Deployment/Const 审计及哈希、15/11 ABI、
+  冻结输入、Native/候选输出和旧 continuous-v1 5/30 median/p95；各模式必须使用相同输入。
+  复用原隔离 OPP、Loader 环境和已绑定的 C++ Runner，结束后复核原始文件没有变化。
+- msprof 包裹原 Runner，启用 AscendCL、Runtime API、task time、AI CPU、AI Core 和
+  PipeUtilization；可用 `--metrics Memory` 或 `MemoryUB` 做后续独立采集，不把不同指标
+  的采集时间混为同一轮 benchmark。所有 profiled timing 独立保存，不覆盖历史数据。
+- 原 Runner 的 38 次执行为 2 次正确性 + 5 次 warmup + 30 次计时 + 1 次 postcheck。
+  根据同一 Chrome timeline 的 Execute/Sync 配对，严格识别后才选择索引 7..36。
+  38 个窗口不完整、缺硬件轨迹或多个候选 timeline 时，保留原始数据并标记未解决。
+  不简单拿 op_summary 总时间除以 38，也不跨 CSV/JSON 混用不同时间原点。
+- 模型加载、权重上传、poison 和验证读回不在所选 Execute/Sync 窗口内。
+  Host API 时间、Host 同步等待、Device envelope、重叠任务的区间并集及空隙分别报告。
+  Host Sync 与设备计算重叠，不能相加；Pipe 指标也不能直接相加。
+- Native Head 根据完整词表 descriptor/shape 和图中相邻 Argmax/转换定位，不能凭
+  “最大的 MatMul”猜测。C 的 fused Kernel 单独识别；未映射 MatMul/Argmax 明确列出。
+  记录原始 task 行、输入/输出格式、dtype、shape 及可用 Pipe 字段。
+- 流式读取原 `dynamo.pbtxt`，跳过巨大 Const payload，仅保留描述符/属性和边。
+  默认尝试 `atc --mode=1 --om=已有文件 --json=新文件` 查看编译后结构；这是已有 OM
+  的只读结构转换，不是模型重新编译。若版本不支持或输出无法解析，记录 UNAVAILABLE，
+  保留原始日志，不能把 pre-ATC 图误称为执行图。可用 `--skip-om-dump` 显式跳过该检查。
+- Profiling 后所有 11 个输出仍须匹配冻结 Native，guards、输入只读、重复、
+  timed-tail/postcheck 不变。运行成功不自动意味着根因已找到。
+
+在服务器现有 CANN/msprof 环境中，先采集 C16 的四个模式：
+
+```bash
+git pull --ff-only
+bash framework/custom_ops/draft_ac/profile_c.sh \
+  --evidence /home/w00949577/qwen35-dflash-run/ac-draft-full-20261016-071408 \
+  --output-dir /home/w00949577/qwen35-dflash-run/c-draft-profile-$(date +%Y%m%d-%H%M%S) \
+  --gears 16
+```
+
+采集两档用 `--gears 16 64`。附加 `--prepare-only` 时只做文件/图审计并生成 NOT_RUN
+报告，不启动 msprof 或 ATC。新目录包含 `c-profile-report.json`、`c-profile-analysis.md`，
+以及每模式 `profile.log`、`msprof-command.json`、`profiler/`、`inspect/`、`replay/`。
+请回传两份总报告和原始 profiler 导出（至少 op_summary CSV 与 msprof timeline JSON）。
+
+[仓库中的初始报告](c-profile-analysis.md) 仅记录用户提供的 median，p95 未提供；
+[初始 JSON](c-profile-report.json) 的 Profiling 状态为 NOT_RUN。服务器工具会在独立目录
+生成经文件校验的报告，不改写此记录或历史 evidence。
+
+后续仅评估：若同一次设备时间线证明 Native MatMul 明显更快，则比较 C 的 MatMul
+数据流优化与 Native MatMul + 独立 Top1。后者必须保留最终 FP16 logits 舍入和所有
+Top1 特殊值/最小 ID 语义，并计入 M15 logits 的 7,449,600 B 写回、读取及调度成本。
+没有测量前不承诺收益，也不预先认定融合一定更快。C 内部 MatMul/Top1/跨核归约无法
+只凭一个 fused Kernel 时间拆分，本轮不修改 Kernel 来做插桩。
+
+参考：[华为 OM→JSON 参数说明](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900beta1/devaids/atctool/atlasatcparam_16_0009.html)，
+[msprof 数据格式](https://www.hiascend.com/document/detail/en/mindstudio/2610/TITools/msProf/docs/en/user_guide/profile_data_file_references.md)。
+文档版本不代表服务器实际可用能力；以保存的命令、返回码和原始产物为准。
+
+本轮本地新增 CPU 回归：16 PASS（标准库图/时间线解析、38→30 调用选择、B/E 事件、
+重叠去重、缺失或重复导出拒绝归因、文件篡改门槛、只读重放及 prepare-only）。
+没有本地或服务器 Profiling/NPU 性能归因 PASS。
