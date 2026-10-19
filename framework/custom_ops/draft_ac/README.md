@@ -610,3 +610,61 @@ bash framework/custom_ops/draft_ac/profile_c16_diagnostic.sh --diagnostic-only -
 可加 `--prepare-only` 做只读身份检查。所有产物写新目录，原失败状态、Frozen Native、
 历史参考输出、SOURCE_LOCK、FP16 OM 和 W8 Evidence 不变。CPU metrics/流程/假头文件
 语法回归不能代替 CANN/NPU 测试；设备诊断在真实执行前保持 NOT_RUN。
+
+### 恢复 053c25a 已完成的 C16 诊断，只补 W8 Profiling
+
+服务器目录 `fp16-w8-c16-diagnostic-20261019-054822` 已完成双方 5/30 无插桩计时、
+FP16 30 次数值观察及 FP16 msprof。异常原因已用用户提供的结构在 `053c25a` 原解析器
+上复现：TorchAir 的 `dynamo.pbtxt` 用 **单引号字符串**保存另一层 GE TextFormat，
+例如 `s: 'name: "y"\\ndtype: DT_INT64...attr {...}'`。旧 tokenizer 只识别双引号，
+因此把字符串内的花括号及字段误当外层语法，产生 None key，随后在 `redact()` 崩溃。
+这与服务器示例中的 `<class ...torch.SymInt...>` 或 tensor data 字节无关；它们是字符串内容。
+
+新结构解析器按 TextFormat 的字符串/转义、字段、消息、列表和括号层级推进，
+不会创建 None 字典 key；`values()`/`redact()` 遇到非法 key 直接报错，不用 `str(k)`
+掩盖结构失步。超大 tensor 字符串有界读取并省略，不把内部字符串拼进外层图。
+完整且有 dtype/shape 的短 GE TensorDesc 字符串可单独解析为描述符；不完整或普通
+备注文字不能作为 Head shape 证据。图解析异常由独立 metadata helper 记为
+`UNPARSED/UNKNOWN`，不能丢掉已经验证的性能数据，也不能猜测最大的 MatMul 就是 Head。
+
+独立恢复命令：
+
+```bash
+bash framework/custom_ops/draft_ac/recover_c16_profile.sh --source-evidence /home/w00949577/qwen35-dflash-run/fp16-w8-c16-diagnostic-20261019-054822 --expected-fp16-profiler-files 109 --output-dir "/home/w00949577/qwen35-dflash-run/c16-profile-recovered-$(date +%Y%m%d-%H%M%S)"
+```
+
+恢复先检查：
+
+- 原始 `DIAGNOSTIC_ONLY` 报告和 FAIL_REPLAY_CHECKS 身份、两模型/gear/ABI/控制参数。
+- 原始 `source_watch`、联合 OPP、FP16/W8 Runner 源码与二进制 SHA256、所有输入/OM。
+- 已完成阶段的 command/launch、TSV、输入/参考文件、30 次观测及四个边界输出清单。
+- 独立 execution/observation 文件必须与原报告嵌入记录一致；5/30 的 median/p95 从
+  原始样本重新核对（仅允许原 C++ 九位有效数字的序列化差）。
+- FP16 的计时/profiling 边界原始 Token/KV 输出重新计算所有指标，与保存的观测核对；
+  bit count、max_abs、p99 和 Token 精确一致。仅 RMSE 的 CPU float64 vs 原 long-double
+  求和允许 `1e-12` 相对重算差，这不是 NPU tensor 容差，更不会提升 FP16 正确性。
+- FP16 profiler 必须恰有指定的 109 个文件；JSON/CSV/SQLite 做格式/结构检查。
+  缺失、损坏、篡改可检测记录，或 W8 profile 已存在（含部分目录），均在执行前阻断。
+
+**历史完整性限制必须保留：**053c25a 在解析图前崩溃，没有留下采集时的 profiler /
+诊断输出文件 SHA256 清单。恢复会建立新哈希清单并核对结构、嵌入观测、可保留的原始
+输出，但不能倒推证明文件自采集以来从未被改动。30 次独立数值观察本来就未保存
+30 份完整 KV；这部分只能核对观测记录与原报告，不能凭空补 raw outputs。二进制 raw
+profiler 文件标注只做字节快照而未解码。这些限制写入 `recovery`，不伪造历史校验 PASS。
+
+校验后，FP16 profiler **只离线解析**。双方无插桩 latency/sample 数据原样复用；
+只调用一次 msprof，在新目录执行原 W8 A-only Runner。不会运行 FP16 Runner、
+重新计时、Target Prefill、ATC、AIR/OM 导出、Runner/OPP 构建或八组 Draft 验收。
+新 W8 profile 输出仍与它自己的冻结 Native reference 严格比较。
+可加 `--validate-only`，在离线解析后退出，不执行任何设备命令。
+
+输出仍是新目录的 `c16-diagnostic-report.json` / `c16-diagnostic-analysis.md`，包含
+两模型 Kernel 区域、Host launch/sync、device occupancy、UNKNOWN task 比例及
+UNKNOWN 区间 union / 全部 device 区间 union 比例。区域可重叠，比例不能相加当
+wall time 分解；旧 FP16 与新 W8 profile 属于不同采集时段，不混合时间戳或声称因果。
+无插桩延迟差由原始两组 median 计算，不用 profiling 数据替换。
+原目录完整文件树在恢复前后核对，新文件仅写新目录，FP16 失败状态始终保留。
+
+CPU 回归包括真实单引号嵌套描述符、字符串边界、非法 key 拒绝、完整性破坏阻断，
+并以模拟子进程证明只调用一次缺失的 W8 msprof。未在服务器执行的恢复仍为 NOT_RUN。
+TextFormat 语法参考：[Protocol Buffers Text Format](https://protobuf.dev/reference/protobuf/textformat-spec/)。

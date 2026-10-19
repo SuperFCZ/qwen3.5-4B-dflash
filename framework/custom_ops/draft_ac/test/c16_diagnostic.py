@@ -14,8 +14,7 @@ from common import ROOT, sha256, write_json
 from fp16_evidence import deployment, inventory, load, replay_payload
 from single_graph import load_reuse, verify_reuse
 from c_profile import prepare_case, check_outputs
-from fp16_w8_profile import replay_command, graph_regions
-from c_profile_graph import read_pbtxt, read_om_json, summarize
+from fp16_w8_profile import replay_command
 from c_profile_trace import collect, stats, union
 
 
@@ -153,16 +152,22 @@ def region(name,kind,heads,linear):
 def attribute(profile,heads,linear):
     timeline=profile.get('selected_timeline')
     if not timeline:return dict(status='UNKNOWN',reason='no unique measured device timeline; do not divide CSV totals')
-    calls=[]
+    calls=[];unknown=[]
     for call in timeline['iterations']:
         groups={}
         for task in call['tasks']:
-            label=region(task['name'],task['op_type'],heads,linear);task['diagnostic_region']=label
+            label='LM_HEAD' if task.get('label') in ('head_matmul','head_argmax','custom_c') else region(task['name'],task['op_type'],heads,linear)
+            task['diagnostic_region']=label
             groups.setdefault(label,[]).append((task['start_us'],task['start_us']+task['duration_us']))
         calls.append(groups)
+        total=union([interval for items in groups.values() for interval in items]);u=union(groups.get('UNKNOWN',[]))
+        task_count=len(call['tasks'])
+        unknown.append(dict(union_fraction=u/total if total else 0.,task_fraction=len(groups.get('UNKNOWN',[]))/task_count if task_count else 0.))
     labels=sorted({k for c in calls for k in c})
     return dict(status=STATUS,region_union_us={k:stats([union(c.get(k,[])) for c in calls]) for k in labels},
-                host_and_device_metrics=timeline['metrics'],note='Region unions may overlap; never sum them as wall time. Host sync overlaps device work.')
+                host_and_device_metrics=timeline['metrics'],unknown_ratio={k:stats([x[k] for x in unknown]) for k in ('union_fraction','task_fraction')},
+                unknown_definition='Per measured call: union(UNKNOWN)/union(all device tasks), and UNKNOWN task count/all task count. Known/unknown intervals may overlap.',
+                note='Region unions may overlap; never sum them as wall time. Host sync overlaps device work.')
 
 
 def save(report,root):
@@ -185,6 +190,11 @@ def save(report,root):
         t=c.get('unprofiled_latency')
         lines+=['- 诊断性无插桩 median/p95 ms：'+(f"{t['median_ms']:.4f} / {t['p95_ms']:.4f}" if t else 'NOT_RUN'),
                 '- msprof：'+c.get('profile_status','NOT_RUN'),'- 输入控制：'+json.dumps(c['controls'])]
+        attribution=c.get('attribution',{})
+        if attribution.get('region_union_us'):
+            lines+=['- Kernel 区域 union 均值（μs，可重叠）：'+json.dumps({k:v['mean'] for k,v in attribution['region_union_us'].items()},ensure_ascii=False),
+                    '- Host/Sync、device occupancy（μs）：'+json.dumps(attribution['host_and_device_metrics'],ensure_ascii=False),
+                    '- UNKNOWN 比例：'+json.dumps(attribution.get('unknown_ratio',{}),ensure_ascii=False)]
         for phase in ('numerics','timing','profile'):
             observations=c.get(phase,{}).get('observations',[])
             if observations:
@@ -268,22 +278,9 @@ def run(args):
         execute(fp,report['cases'][0],'numerics')
         for c,out in zip(cases,report['cases']):execute(c,out,'timing')
         for c,out in zip(cases,report['cases']):
-            folder=execute(c,out,'profile',True);nodes=[]
-            pb=[p for p in c['payloads'] if p.name=='dynamo.pbtxt']
-            if len(pb)==1:
-                try:nodes=read_pbtxt(pb[0]);out['pre_atc_graph']=summarize(nodes,'pre_atc')
-                except (ValueError,OSError) as e:out['graph_error']=str(e)
-            atc=shutil.which(args.atc)
-            if atc:
-                target=folder/'om.json';cmd=[atc,'--mode=1','--om='+str(c['om']),'--json='+str(target)]
-                write_json(folder/'inspect-command.json',cmd)
-                with (folder/'inspect.log').open('w') as log:
-                    done=subprocess.run(cmd,env={**env,'ASCEND_WORK_PATH':str(folder)},cwd=folder,stdout=log,stderr=subprocess.STDOUT)
-                try:
-                    if done.returncode:raise ValueError('OM inspection unavailable')
-                    nodes=read_om_json(target);out['compiled_graph']=summarize(nodes,'compiled_om')
-                except (ValueError,OSError) as e:out['inspection_error']=str(e)
-            graph,heads,linear=graph_regions(nodes) if nodes else ({},set(),set())
+            folder=execute(c,out,'profile',True)
+            from profile_metadata import inspect
+            graph,heads,linear=inspect(c,out,folder,atc=shutil.which(args.atc),env=env)
             out['profile_trace']=collect(folder/'profiler',graph);out['attribution']=attribute(out['profile_trace'],heads,linear)
             out['profile_status']='COLLECTED';save(report,root)
         report['execution']='COMPLETED';report['device_execution']='EXECUTED_DIAGNOSTIC_ONLY'
