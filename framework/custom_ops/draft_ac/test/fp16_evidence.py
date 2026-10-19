@@ -165,6 +165,13 @@ def replay(base, path, gear):
     if (len(phases) != 2 or {p['phase'] for p in phases} != {'isolated', 'interleaved_prefill'}
         or any(p.get('iterations', 0) < 2 or any(p.get(k) != 0 for k in keys) for p in phases)):
         raise ValueError('FP16 frozen replay must have strict repeat/readonly/full-output checks')
+    return replay_payload(base,path,gear,r)
+
+
+def replay_payload(base,path,gear,r):
+    """Read-only identity/bytes checks; caller owns acceptance status policy."""
+    path=Path(path).resolve();g=base['graph']
+    static64=None if base.get('dynamic') else g['static_gear_oms'][1]['om']['sha256']
     folder = Path(r['input_directory']).resolve()
     om_hash, specs = snapshot_contract((folder/'contract.txt').read_text())
     extra=(folder/'contract.txt').read_text().splitlines()[3]

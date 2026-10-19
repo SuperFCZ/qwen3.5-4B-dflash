@@ -4,6 +4,9 @@
 #include <iostream>
 #include <memory>
 #include <cstring>
+#ifdef DFLASH_C16_DIAGNOSTIC_ONLY
+#include "c16_diagnostic_metrics.h"
+#endif
 #include <sstream>
 using namespace draft_quant_test;
 struct TensorSpec { std::string name; aclDataType dtype; std::vector<int64_t> shape; size_t bytes; };
@@ -124,6 +127,23 @@ int main(int argc,char** argv) {
         for(int g=0;g<2;++g) { if(g) gearReport<<','; gearReport<<'[';
             for(size_t j=0;j<actual[g].dimCount;++j) { if(j) gearReport<<',';gearReport<<actual[g].dims[j]; } gearReport<<']'; }
         gearReport<<"],\"selection_timing\":\"before continuous-v1 measured calls\"}\n"; gearReport.close();
+#ifdef DFLASH_C16_DIAGNOSTIC_ONLY
+        std::string diagnosticPhase; std::ifstream(dir+"/diagnostic-phase.txt")>>diagnosticPhase;
+        if(rows!=16 || (diagnosticPhase!="numerics" && diagnosticPhase!="timing" && diagnosticPhase!="profile"))
+            throw std::runtime_error("diagnostic-only C16 requires an explicit phase");
+        std::ofstream observations(dir+"/observations.jsonl"); observations.exceptions(std::ios::badbit|std::ios::failbit);
+        observations<<std::setprecision(17);
+        int64_t kvStart=-1,kvValid=-1;
+        for(size_t i=0;i<inputs.size();++i) {
+            if(inputs[i].name=="start_position" && originals[i].size()==8) std::memcpy(&kvStart,originals[i].data(),8);
+            if(inputs[i].name=="valid_rows") {
+                if(originals[i].size()==2) { int16_t v; std::memcpy(&v,originals[i].data(),2); kvValid=v; }
+                else if(originals[i].size()==8) std::memcpy(&kvValid,originals[i].data(),8);
+            }
+        }
+        if(kvStart<0 || kvValid<1 || kvValid>16) throw std::runtime_error("diagnostic KV controls");
+        bool repeatEqual=true;
+#endif
         std::vector<std::vector<uint8_t>> first(outputs.size());
         Timing timing; timing.continuous=true; timing.collectPrepare=false; timing.warmup=5; timing.repetitions=30;
         auto verify=[&](const std::string& name) {
@@ -139,13 +159,48 @@ int main(int argc,char** argv) {
                     }
                 }
             }
+#ifdef DFLASH_C16_DIAGNOSTIC_ONLY
+            observations<<"{\"status\":\"DIAGNOSTIC_ONLY\",\"observation\":\""<<name<<"\",\"outputs\":{";
+#endif
             for(size_t i=0;i<outputs.size();++i) {
                 auto value=s.y[i]->CopyOut(); value.resize(outputs[i].bytes);
+#ifdef DFLASH_C16_DIAGNOSTIC_ONLY
+                if(first[i].empty()) first[i]=value; else if(first[i]!=value) repeatEqual=false;
+                auto reference=ReadBytes(dir+"/reference/"+outputs[i].name+".bin",outputs[i].bytes);
+                if(i)observations<<','; observations<<'"'<<outputs[i].name<<"\":";
+                if(outputs[i].name=="draft_top1") c16_diagnostic::Tokens(observations,value,reference);
+                else {
+                    size_t index=0;while(index<inputs.size() && inputs[index].name!=outputs[i].name) ++index;
+                    if(index==inputs.size()) throw std::runtime_error("KV input unavailable for untouched check");
+                    c16_diagnostic::KV(observations,value,reference,originals[index],outputs[i].shape,size_t(kvStart),size_t(kvValid),16);
+                }
+#else
                 if(first[i].empty()) first[i]=value; else if(first[i]!=value) throw std::runtime_error("repeat drift");
+#endif
+#ifdef DFLASH_C16_DIAGNOSTIC_ONLY
+                if(!name.empty() && name.rfind("numerics-",0)!=0) WriteBytes(dir+"/"+outputs[i].name+"-"+name,value);
+#else
                 if(!name.empty()) WriteBytes(dir+"/"+outputs[i].name+"-"+name,value);
+#endif
             }
+#ifdef DFLASH_C16_DIAGNOSTIC_ONLY
+            observations<<"}}\n"; observations.flush();
+#endif
         };
         s.Guards();
+#ifdef DFLASH_C16_DIAGNOSTIC_ONLY
+        if(diagnosticPhase=="numerics") {
+            for(int call=0;call<30;++call) {
+                for(auto& y:s.y) Check(aclrtMemset(y->data,y->bytes,call%2?0xff:0x7f,y->bytes),"diagnostic poison");
+                Check(aclmdlExecuteAsync(s.model,s.inputs,s.outputs,s.stream),"diagnostic execute");
+                Check(aclrtSynchronizeStream(s.stream),"diagnostic sync");
+                verify("numerics-"+std::to_string(call));
+            }
+            std::ofstream report(dir+"/execution.json");
+            report<<"{\"status\":\"DIAGNOSTIC_ONLY\",\"phase\":\"numerics\",\"guards\":true,\"readonly\":true,\"cpu_fallback\":false,\"observed_calls\":30,\"repeat_equal\":"<<(repeatEqual?"true":"false")<<"}\n";
+            return 0;
+        }
+#endif
         RunMeasuredCalls(timing,[](){},[&](){ Check(aclmdlExecuteAsync(s.model,s.inputs,s.outputs,s.stream),"execute"); Check(aclrtSynchronizeStream(s.stream),"sync"); },
             [&](int repeat){ for(auto& y:s.y) Check(aclrtMemset(y->data,y->bytes,repeat%2?0xff:0x7f,y->bytes),"poison"); },verify);
         // Changed-request check on the SAME model/workspace, outside timed calls.
@@ -170,7 +225,11 @@ int main(int argc,char** argv) {
             Check(aclmdlExecuteAsync(s.model,s.inputs,s.outputs,s.stream),"restore execute");
             Check(aclrtSynchronizeStream(s.stream),"restore sync"); verify("restored.bin");
         }
+#ifdef DFLASH_C16_DIAGNOSTIC_ONLY
+        std::ofstream report(dir+"/execution.json"); report<<"{\"status\":\"DIAGNOSTIC_ONLY\",\"guards\":true,\"readonly\":true,\"cpu_fallback\":false,\"observed_calls\":4,\"repeat_equal\":"<<(repeatEqual?"true":"false");
+#else
         std::ofstream report(dir+"/execution.json"); report<<"{\"status\":\"PASS\",\"scope\":\"execution only; numerical comparison separate\",\"guards\":true,\"readonly\":true,\"repeat\":true,\"cpu_fallback\":false";
+#endif
         report<<",\"row_permutation_checked\":"<<(permutable?"true":"false");
         timing.Write(report); report<<"}\n"; return 0;
     } catch(const std::exception& e) { std::cerr<<"FAIL: "<<e.what()<<'\n'; return 1; }

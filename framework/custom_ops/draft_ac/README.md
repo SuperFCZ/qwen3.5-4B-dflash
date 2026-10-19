@@ -549,3 +549,64 @@ Host launch/sync、设备窗口、Linear/LM Head/Attention/Norm/KV/TransData。
 
 API 语义参考：[aclmdlSetInputDynamicDims](https://www.hiascend.com/document/detail/zh/canncommercial/80RC2/apiref/appdevgapi/aclcppdevg_03_0299.html)。
 文档版本不替代 CANN 9.0.0 设备验证；接口使用和 full-shape 校验优先复用仓库现有动态 Runtime。
+
+## C16-only：已知 FP16 KV 差异下的独立性能诊断
+
+`profile_c16_diagnostic.sh --diagnostic-only` 是单独入口，不是正式验收的降级模式。
+它要求原 FP16 C16 报告仍为 `FAIL_REPLAY_CHECKS`，且历史 Token、输入恢复、只读
+检查完整；有效 KV/全输出的不一致计数原样保留。正式 `fp16_w8_profile.py` 仍拒绝
+失败 Replay。共用的新 `replay_payload()` 只读取、验证字节身份，不决定验收状态。
+
+默认只从指定 `private.json` 的相邻 `request.json` 解析哈希绑定的 FP16 Deployment，
+若没有该文件则查找 Draft OM 哈希匹配的 Deployment；多解必须显式指定
+`--fp16-deployment`，不猜 Chunk/MTP。继续验证 SHA-only/带 bytes Manifest、AIR/OM、
+六层 ABI、原快照 `contract.txt`/`sha256.txt`、输入和历史 Native reference 文件。
+后者只是失败 Replay 的原始参考输出，不能被称为已验收 Golden。
+
+诊断构建由独立 CMake target 定义 `DFLASH_C16_DIAGNOSTIC_ONLY`，复用现有动态
+Runner 的 ACL/gear/内存/计时逻辑。正式 target 不定义此宏，仍然在任何输出 repeat
+差异时失败。诊断 target 只把数值差异改为观测记录，**Guard、输入只读、ABI、OM、
+实际 C16/C64 flattened gear 校验错误依然中止**。可用 `--diagnostic-build build.json`
+复用源码与二进制 SHA256 匹配的诊断 Runner；正式 Runner 不能冒充该构建。
+不编译新 AIR/OM/OPP，不重新运行 Target Prefill，也不重复 56 图或八组 Draft。
+
+执行三个互相分开的阶段：
+
+1. FP16 单独执行 30 次未计时数值调用。每次 poison 输出、执行/同步、检查 Guard
+   和输入只读，再读取完整 Token/KV 并计算指标。逐次写 `observations.jsonl`，
+   不保存 30 份大型 KV 二进制。
+2. FP16 和 W8 A-only 各自执行无 msprof 的 continuous-v1，warmup=5、repetitions=30。
+   计时循环不 poison、不读取 KV、不计算误差、不写文件。只观测两次前置输出、
+   最后一个计时输出和一次 postcheck，保存四份原始输出。**其余计时输出未逐次观测，
+   不把独立的 30 次数值观察说成这 30 次计时输出的正确性证明。**
+3. 两模型分别在 msprof 下重放相同 5/30 协议，时间只用于归因，不混入无插桩样本。
+
+每份 FP16 输出记录全部 INT64 Token 的 bitwise 比较及实际 ID；每个 KV 记录
+bit mismatch 数/比例、max_abs、RMSE、nearest-rank p99_abs、双方非有限值数量。
+误差统计明确限定 finite pairs；非有限 pair 单独计数，不被当成零误差。
+同时报告全 tensor、有效前缀 `[0,start+valid_rows)`、本次有效写区和 padding；
+按真实 `[B,H,S,D]` row stride 检查原输入中应保持不变的 `[0,start)` 与
+`[start+16,capacity)`，不把各 head 的有效行误当成一个平坦前缀。空区域指标为 null。
+记录 repeat_equal，但即使 repeat_equal=true 也不代表数值正确。
+
+总报告固定 `status=DIAGNOSTIC_ONLY`、`formal_acceptance=NOT_RUN_NOT_ELIGIBLE`、
+`end_to_end=NOT_RUN`；执行完成与失败由另一个 `execution` 字段表示。W8 复用原严格
+Runner，并继续与自己的冻结 reference 比较；其原始 `execution.json.status=PASS`
+仅表示该 Runner 的执行检查，不能提升本诊断或 FP16 的验收状态。
+
+输出：`c16-diagnostic-report.json`、`c16-diagnostic-analysis.md`，及 `fp16/numerics/`、
+两模型 `timing/`、`profile/` 内日志、观测和 profiler 原始数据。记录独立 OM SHA256、
+模型元数据、输入 SHA256、gear、valid_rows、proposal_count、median/p95、设备环境。
+归因标签包括 W8_LINEAR、FP16_LINEAR、TRANSDATA_LAYOUT、LM_HEAD、ATTENTION、NORM、
+KV_CACHE、OTHER_KNOWN、UNKNOWN，以及 Host launch/sync。各区域 union 时间仍可能相互
+重叠，不相加作为 wall time；无法映射的 MatMul 保持 UNKNOWN。
+
+服务器命令（仓库根目录，更新代码后执行）：
+
+```bash
+bash framework/custom_ops/draft_ac/profile_c16_diagnostic.sh --diagnostic-only --fp16-replay /home/w00949577/qwen35-dflash-run/debug-draft-l1bxgjqh/private.json --w8-evidence /home/w00949577/qwen35-dflash-run/ac-draft-full-20261016-071408 --search-root /home/w00949577/qwen35-dflash-run --output-dir "/home/w00949577/qwen35-dflash-run/fp16-w8-c16-diagnostic-$(date +%Y%m%d-%H%M%S)" --device-id 0
+```
+
+可加 `--prepare-only` 做只读身份检查。所有产物写新目录，原失败状态、Frozen Native、
+历史参考输出、SOURCE_LOCK、FP16 OM 和 W8 Evidence 不变。CPU metrics/流程/假头文件
+语法回归不能代替 CANN/NPU 测试；设备诊断在真实执行前保持 NOT_RUN。
