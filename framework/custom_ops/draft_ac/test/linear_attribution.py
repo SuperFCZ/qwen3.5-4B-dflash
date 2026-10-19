@@ -21,27 +21,50 @@ SHAPES={
 REGIONS=('GATE_UP','DOWN','OTHER_LINEAR','HEAD','OTHER_KNOWN','UNKNOWN')
 
 
-def shapes(value):
+def shapes(value, _depth=0):
+    """Decode CSV JSON strings without accepting partial/malformed dimensions."""
+    if _depth > 8:return []
     if isinstance(value,(list,tuple)):
-        if all(type(x) is int for x in value):return [list(value)] if value else []
-        return [s for item in value for s in shapes(item)]
+        if not value:return []
+        if all(type(x) is int and x>0 for x in value):return [list(value)]
+        parsed=[shapes(x,_depth+1) for x in value]
+        return [s for group in parsed for s in group] if all(parsed) else []
     if not isinstance(value,str):return []
-    try:
-        parsed=json.loads(value)
-        if isinstance(parsed,list):return shapes(parsed)
-    except ValueError:pass
-    if value.strip().startswith(('(', '[')):
-        try:
-            parsed=ast.literal_eval(value)
-            if isinstance(parsed,(list,tuple)):return shapes(parsed)
-        except (ValueError,SyntaxError):pass
-    groups=re.findall(r'\[([^\[\]]+)\]',value) or value.split(';')
+    value=value.strip()
+    if not value:return []
+    if value[0] in ('"', "'", '[', '('):
+        try:parsed=json.loads(value)
+        except ValueError:
+            try:parsed=ast.literal_eval(value)
+            except (ValueError,SyntaxError,RecursionError):return []
+        return shapes(parsed,_depth+1) if isinstance(parsed,(str,list,tuple)) and parsed!=value else []
     result=[]
-    for group in groups:
-        if not re.fullmatch(r'[\s, xX*0-9-]+',group):return []
-        dims=list(map(int,re.findall(r'-?\d+',group)))
-        if dims:result.append(dims)
+    for group in value.split(';'):
+        if not re.fullmatch(r'\s*[1-9][0-9]*(?:\s*[,xX*]\s*[1-9][0-9]*)*\s*',group):return []
+        result.append([int(x) for x in re.split(r'\s*[,xX*]\s*',group.strip())])
     return result
+
+
+def tokens(value):
+    """Formats/dtypes may have the same outer JSON quoting as shapes."""
+    for _ in range(8):
+        if not isinstance(value,str):break
+        try:parsed=json.loads(value)
+        except ValueError:break
+        if parsed==value:break
+        value=parsed
+    return [str(x).strip() for x in value] if isinstance(value,list) else str(value or '').split(';')
+
+
+def logical_matrix(shape,fields,side):
+    """Only ND is inherently logical. NZ requires an exact graph TensorDesc.
+
+    A physical NZ extent cannot distinguish e.g. logical M15 from padded M16.
+    Never reconstruct logical dimensions just by multiplying physical axes.
+    """
+    formats=tokens(fields.get(side+'formats',fields.get(side+'format','')))
+    fmt=norm(formats[0]) if formats else ''
+    return matrix(shape) if fmt in ('','nd','formatnd') else None
 
 
 def matrix(shape):
@@ -51,6 +74,7 @@ def matrix(shape):
 
 def role(task,model):
     kind=norm(task.get('op_type',''))
+    if task.get('graph_shape_conflict'):return 'UNKNOWN','frozen graph vs runtime descriptor conflict/unproven layout'
     if task.get('label') in ('head_matmul','head_argmax','custom_c'):return 'HEAD','profile vocabulary/Head evidence'
     evidence=task.get('shape_evidence',{})
     fields={norm(k):v for k,v in evidence.get('fields',{}).items()}
@@ -58,7 +82,7 @@ def role(task,model):
     y=shapes(fields.get('outputshapes',fields.get('outputshape')))
     if 'matmul' in kind or 'dflashgroupquantlinear' in kind:
         if evidence.get('status')=='AMBIGUOUS':return 'UNKNOWN','conflicting shape metadata'
-        aa=matrix(a[0]) if a else None;yy=matrix(y[0]) if y else None
+        aa=logical_matrix(a[0],fields,'input') if a else None;yy=logical_matrix(y[0],fields,'output') if y else None
         if aa and yy and aa[0]==yy[0]:
             mkn=(aa[0],aa[1],yy[1])
             if mkn==(15,2560,248320):return 'HEAD','actual M/K/N='+str(mkn)
@@ -92,6 +116,7 @@ def graph_shapes(report,model):
     digest=sha256(path)
     if not path.is_relative_to(air.parent) or digest!=records[0]['sha256'] or digest!=watch[str(path)]:raise ValueError('frozen pbtxt changed/escaped')
     def shape(desc):
+        if norm(first(desc.get('layout'),'')) not in ('','nd','formatnd'):return []
         value=first(desc.get('shape'),{})
         return value.get('dim',[]) if isinstance(value,dict) else []
     try:nodes=read_pbtxt(path)
@@ -106,21 +131,45 @@ def graph_shapes(report,model):
             aa=[x for x in node['serialized_descriptors'] if first(x.get('name')) in ('x','x1')]
             yy=[x for x in node['serialized_descriptors'] if first(x.get('name'))=='y']
             if len(aa)==1 and len(yy)==1:inputs,outputs=shape(aa[0]),shape(yy[0])
-        if not inputs or not outputs:continue
+        if not inputs or not outputs or matrix(inputs) is None or matrix(outputs) is None:continue
         if node['name'] in result:duplicates.add(node['name'])
         result[node['name']]=dict(type=node['type'],fields={'Input Shapes':[inputs],'Output Shapes':[outputs]})
     for name in duplicates:result.pop(name,None)
     return result,dict(status='PARSED',path=str(path),sha256=digest,usable_nodes=len(result))
 
 
+def descriptor_matches(actual, logical, fmt):
+    if not actual:return True
+    # Only verify physical storage against an already-known logical descriptor.
+    if actual==logical and norm(fmt) in ('','nd','formatnd','fractalnz','formatfractalnz'):return True
+    if norm(fmt) not in ('fractalnz','formatfractalnz'):return False
+    if matrix(logical) is None or len(actual)<4 or math.prod(actual[:-4])!=1:return False
+    m,n=matrix(logical)
+    return actual[-4:]==[(n+15)//16,(m+15)//16,16,16]
+
+
 def add_graph_shapes(profile,mapping):
     for trace in profile['timelines']:
         for call in trace.get('all_iterations',[]):
             for task in call['tasks']:
-                if task.get('shape_evidence',{}).get('status')!='MISSING':continue
+                evidence=task.get('shape_evidence',{})
                 source=mapping.get(task['name'])
-                if source and norm(source['type'])==norm(task['op_type']):
-                    task['shape_evidence']=dict(status='FROZEN_GRAPH_EXACT_NAME_TYPE',fields=source['fields'])
+                if not source or norm(source['type'])!=norm(task['op_type']) or evidence.get('status')=='AMBIGUOUS':continue
+                fields={norm(k):v for k,v in evidence.get('fields',{}).items()}
+                valid=True
+                for side in ('Input','Output'):
+                    observed=shapes(fields.get(side.lower()+'shapes',fields.get(side.lower()+'shape')))
+                    logical=source['fields'][side+' Shapes'][0]
+                    fmt=tokens(fields.get(side.lower()+'formats',fields.get(side.lower()+'format','')))[0]
+                    dtype=tokens(fields.get(side.lower()+'datatypes',fields.get(side.lower()+'datatype','')))[0]
+                    if observed:
+                        if norm(fmt) in ('fractalnz','formatfractalnz') and norm(dtype) not in ('float16','dtfloat16','fp16'):valid=False
+                        if not descriptor_matches(observed[0],logical,fmt):valid=False
+                    elif evidence.get('status')!='MISSING':valid=False
+                if valid:
+                    task['shape_evidence']=dict(status='FROZEN_GRAPH_EXACT_NAME_TYPE',fields=source['fields'],original=evidence)
+                else:task['graph_shape_conflict']='physical/logical shape, format or dtype unproven; original evidence retained'
+
 
 def intervals_overlap(groups):
     # Per-region unions do not partition time: explicitly retain shared spans.
@@ -150,17 +199,31 @@ def analyze(profile,model):
         iterations.append(dict(index=call['index'],phase=call['phase'],execute_api=call['execute_api'],sync_api=call['sync_api'],
             regions_us={k:union(v) for k,v in groups.items()},counts=counts,tasks=tasks,
             host_window_us=call['host_window_us'],host_launch_api_us=call['host_launch_api_us'],host_sync_api_us=call['host_sync_api_us'],
-            device_occupancy_us=occupied,device_envelope_us=call['device_envelope_us'],device_gap_us=call['device_gap_us'],
+            device_window=call.get('device_window'),device_occupancy_us=occupied,device_envelope_us=call['device_envelope_us'],device_gap_us=call['device_gap_us'],
             task_sum_minus_union_us=duration_sum-occupied,cross_region_overlap_us=intervals_overlap(groups),
             unknown_occupancy_ratio=union(groups['UNKNOWN'])/occupied if occupied else 0.,
             boundary_crossing_tasks=call.get('boundary_crossing_tasks',[])))
     selected=[r for r in iterations if r['phase']=='timed']
     if len(selected)!=30 or [r['index'] for r in selected]!=list(range(7,37)):raise ValueError('not the exact 30 measured calls')
     layers=5 if model=='w8_a' else 6
-    inventory=all(r['counts']['GATE_UP']==layers and r['counts']['DOWN']==layers for r in selected)
+    expected={'GATE_UP':layers,'DOWN':layers,'OTHER_LINEAR':1+3*layers}
+    inventories=[]
+    for row in selected:
+        listing={k:sorted(t['name'] for t in row['tasks'] if t['linear_region']==k) for k in expected}
+        head_mm=[t for t in row['tasks'] if t['linear_region']=='HEAD' and 'matmul' in norm(t['op_type'])]
+        head_arg=[t for t in row['tasks'] if t['linear_region']=='HEAD' and 'argmax' in norm(t['op_type'])]
+        row['head_components']={label:dict(count=len(ts),names=[t['name'] for t in ts],duration_us=union([(t['start_us'],t['start_us']+t['duration_us']) for t in ts])) for label,ts in [('matmul',head_mm),('argmax',head_arg)]}
+        row['linear_node_inventory']=listing
+        inventories.append(listing)
+    stable=all(x==inventories[0] for x in inventories)
+    inventory=stable and all(all(r['counts'][k]==v and len(set(r['linear_node_inventory'][k]))==v for k,v in expected.items()) for r in selected)
+    head_complete=all(r['head_components']['matmul']['count']==1 and r['head_components']['argmax']['count']==1 for r in selected)
+    device=trace.get('device_assignment','UNRESOLVED_DEVICE_ASSIGNMENT')
+    status=('UNRESOLVED_DEVICE_ASSIGNMENT' if device!='DEVICE_STEPS_VERIFIED' else
+            'INCOMPLETE_KERNEL_CLASSIFICATION' if not inventory or not head_complete or any(r['counts']['UNKNOWN'] for r in selected) else 'ATTRIBUTION_VERIFIED')
     keys=('host_window_us','host_launch_api_us','host_sync_api_us','device_occupancy_us','device_envelope_us','device_gap_us',
           'task_sum_minus_union_us','cross_region_overlap_us','unknown_occupancy_ratio')
-    return dict(status='WINDOWS_VERIFIED',device_assignment=trace.get('device_assignment'),ffn_inventory='MATCHES_EXPECTED_LAYERS' if inventory else 'INCOMPLETE_OR_DIFFERENT_SHAPES',
+    return dict(status=status,host_windows='WINDOWS_VERIFIED',device_assignment=device,expected_linear_counts=expected,stable_node_inventory=stable,head_inventory='COMPLETE' if head_complete else 'INCOMPLETE',ffn_inventory='MATCHES_EXPECTED_LAYERS' if inventory else 'INCOMPLETE_OR_DIFFERENT_SHAPES',
                 iterations=iterations,measured_indices=list(range(7,37)),
                 region_statistics_us={k:stats([r['regions_us'][k] for r in selected]) for k in REGIONS},
                 window_statistics={k:stats([r[k] for r in selected]) for k in keys},
@@ -189,7 +252,9 @@ def run(args):
             mapping,mapping_report=graph_shapes(old,model)
             profile=collect(path,graph);add_graph_shapes(profile,mapping);analysis=analyze(profile,model)
             result['models'][model]=dict(profiler=str(path),unprofiled_latency=rows[model]['unprofiled_latency'],graph_shape_evidence=mapping_report,profile=profile,analysis=analysis)
-        result['analysis_status']='WINDOWS_VERIFIED' if all(v['analysis']['status']=='WINDOWS_VERIFIED' for v in result['models'].values()) else 'UNRESOLVED_WINDOWS'
+        statuses={v['analysis']['status'] for v in result['models'].values()}
+        result['analysis_status']=next((s for s in ('UNRESOLVED_WINDOWS','UNRESOLVED_DEVICE_ASSIGNMENT','INCOMPLETE_KERNEL_CLASSIFICATION') if s in statuses),'ATTRIBUTION_VERIFIED')
+        result['host_windows']='WINDOWS_VERIFIED' if all(v['analysis'].get('host_windows')=='WINDOWS_VERIFIED' for v in result['models'].values()) else 'UNRESOLVED_WINDOWS'
     except Exception as error:result['analysis_status']='FAILED';result['error']=str(error);raise
     finally:
         try:
@@ -203,8 +268,10 @@ def run(args):
             for model,r in result['models'].items():
                 lines+=[f'## {model}','',json.dumps(r['analysis'].get('region_statistics_us',{}),ensure_ascii=False),
                         json.dumps(r['analysis'].get('window_statistics',{}),ensure_ascii=False),
-                        'FFN 节点数核对：'+r['analysis'].get('ffn_inventory','UNKNOWN')]
-            lines+=['','逐轮 API 原始名、时间戳、connection_id、Kernel 分类依据及重叠见 JSON。UNKNOWN 不能凭耗时/顺序改成 Gate/Up；各区域 union 之和不是 wall time。']
+                        'FFN/其他 Linear 节点数核对：'+r['analysis'].get('ffn_inventory','UNKNOWN'),
+                        '设备归属：'+r['analysis'].get('device_assignment','UNKNOWN')+'；Head：'+r['analysis'].get('head_inventory','UNKNOWN')]
+            lines+=['','Host 窗口通过不代表设备归属通过。Step Trace 仅作为范围证据，不计入 occupancy；跨 Host 边界 Kernel 保留完整区间。',
+                    '逐轮 API 原始名、时间戳、connection_id、Kernel 分类依据及重叠见 JSON。UNKNOWN 不能凭耗时/顺序改成 Gate/Up；各区域 union 之和不是 wall time。']
             (root/'linear-analysis.md').write_text('\n'.join(lines)+'\n')
     print(result['analysis_status']+': '+str(root/'linear-timeline.json'))
 

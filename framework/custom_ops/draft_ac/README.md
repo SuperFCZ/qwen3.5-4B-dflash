@@ -700,3 +700,48 @@ FFN 数量另行核对。文件 SHA256 与原恢复清单核对，旧 report/pro
 当前离线工具未在本地读取服务器原始文件，真实 30 窗口/区域结果待回传。
 源码瓶颈账本、同语义 Native W8 比较要求及两个最小 Gate/Up 候选见
 [量化 A5.1 分析追加](../draft_quant/A5_1.md#2026-10-19c16-整图诊断后的-gateup-优化分析本轮未改-kernel)。
+
+### C16 离线归因修订：Host 窗口与设备迭代分开验证
+
+服务器回传的原始事件确认：`Iteration N` 的 `cat=Iteration Time`，所在线程为
+`Step Trace(Model ID:1)`，包含 `Iteration ID` / `Iteration End`；实际 Kernel 在
+`Stream 0`，携带 `Model Id`、`Physic Stream Id`、`Task Id`。设备 connection_id 在
+多次调用中重复（例如 FP16 Head 为 560），不是 Host Execute 的 connection_id，
+不能用它直接连接 Host 与 Device。FP16 的 Head、W8 的 ArgMax 确实可能跨 Host Sync
+结束位置，但完整落在对应的设备 Step Trace 内。此观察不代表可以平移任意时间戳。
+
+`linear_attribution.py` 现在使用以下可审计规则（仍完全离线）：
+
+- 继续核对 38 个同线程 Execute/Sync，计时索引保持 7..36。
+- Step Trace 必须同时满足事件名/Iteration ID、cat、线程名/Model ID。共 38 个唯一、
+  连续、互不重叠的设备迭代，每个起点必须在**唯一一个** Execute 返回至 Sync 返回
+  的范围内，每个 Host 调用必须恰有一个 Step。由起点实际位置建立对应，不使用
+  `Iteration ID - 1` 或任务列表下标强行分配。
+- `Iteration End` 与 ts+dur 按其原始时间戳的小数位核对序列化一致性；任务包含检查
+  不增加时间容差，不裁剪区间，不平移时钟。范围标记不计入 Kernel occupancy。
+- Kernel 必须有 Model/Task/物理 Stream 身份，且其完整区间只落在同 Model 的一个
+  Step 内。一轮内重复的 Task/Stream/Batch/Subtask 身份拒绝归属。每个原始事件有
+  `event_index`，最多一个 owner；边界列表可以引用同一事件，但统计只计算 owner 一次。
+- 缺少或冲突的 Step/任务单独保存到 `assignment_evidence`，状态为
+  `UNRESOLVED_DEVICE_ASSIGNMENT`。旧式 Host 包含统计仅为 provisional，不能升级为
+  完整设备归因。没有任何按耗时、出现顺序或数量凑齐 30 轮的补救路径。
+
+Shape 解析接受 CSV 中额外 JSON 引号层，拒绝部分解析、未知维度和非法结构。
+CSV/trace 同时保留 shape、format、dtype。FP16 物理 NZ Shape **不能单独证明逻辑维度**，
+尤其不能把 padded M16 当成 Head M15。仅精确同名同类型的哈希绑定冻结图 TensorDesc
+可提供逻辑维度；CSV 明确为 FP16/FRACTAL_NZ 时，还核对标准
+`[ceil(N/16),ceil(M/16),16,16]` 物理 extent。缺少精确节点或布局证据时仍为 UNKNOWN，
+不删除 `_ascend_mbatch_batch_0` 后缀猜节点。ND descriptor 与运行时冲突也会保留 UNKNOWN。
+
+报告逐轮验证不同 checkpoint 的清单：FP16 6 Gate/Up + 6 Down + 19 其他 Linear；
+W8 5 Gate/Up + 5 Down + 16 其他 Linear。要求 30 轮节点集合稳定，每轮完整 Head
+MatMul 和 ArgMax 各一个。输出 `head_components`、`linear_node_inventory`、完整 Kernel
+区间、region union、设备 occupancy/gap、跨区域重叠及 UNKNOWN；区域 union 不可相加
+作为 Host wall time。`WINDOWS_VERIFIED` 仅出现在 Host 字段，归因另有
+`UNRESOLVED_DEVICE_ASSIGNMENT` / `INCOMPLETE_KERNEL_CLASSIFICATION` / `ATTRIBUTION_VERIFIED`。
+最后一个状态只是离线证据解析完整，**不是 FP16 数值或端到端 PASS**。
+
+复测仍使用上面的单条 `linear_attribution.py --report ... --output-dir ...` 命令，
+必须创建新目录。原报告、profiler、冻结图 SHA256 前后核对；不执行 msprof、Runner、
+ATC 或 NPU。完整服务器离线重分析尚未执行；真实设备性能与 FP16 FAIL_REPLAY_CHECKS
+不变。回传新目录的 `linear-timeline.json` 和 `linear-analysis.md` 即可定位剩余 UNKNOWN。

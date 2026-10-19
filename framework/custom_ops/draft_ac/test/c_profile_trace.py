@@ -8,6 +8,7 @@ import re
 import statistics
 from decimal import Decimal, InvalidOperation
 from c_profile_graph import category
+from profile_device_assignment import assign
 
 
 def norm(value): return re.sub('[^a-z0-9]','',str(value).lower())
@@ -69,8 +70,8 @@ def event_label(event,metadata,head_names):
     args={norm(k):v for k,v in event.get('args',{}).items()}
     name=str(args.get('opname',event.get('name','')))
     matches=metadata.get(('name',name),[])
-    if not matches and args.get('streamid') is not None and args.get('taskid') is not None:
-        matches=metadata.get(('task',str(args['streamid']),str(args['taskid'])),[])
+    if not matches and args.get('physicstreamid',args.get('streamid')) is not None and args.get('taskid') is not None:
+        matches=metadata.get(('task',str(args.get('physicstreamid',args.get('streamid'))),str(args['taskid'])),[])
     identities={(r['op_name'],r['op_type'],classify(r['op_name'],r['op_type'],r['fields'],head_names)) for r in matches}
     if len(identities)==1:
         op,kind,label=next(iter(identities)); return label,op,kind
@@ -106,7 +107,7 @@ def relative_clock(events):
     origin=min(valid) if valid else Decimal(0)
     converted=[]
     for e in events:
-        item=dict(e)
+        item=dict(e, event_index=len(converted))
         try:
             value=Decimal(str(e['ts']))
             if value.is_finite() and value>=0:item.update(ts=float(value-origin),raw_timestamp_us=str(e['ts']))
@@ -119,15 +120,15 @@ def task_shapes(event,metadata):
     args={norm(k):v for k,v in event.get('args',{}).items()}
     name=str(args.get('opname',event.get('name','')))
     rows=metadata.get(('name',name),[])
-    if not rows and args.get('streamid') is not None and args.get('taskid') is not None:
-        rows=metadata.get(('task',str(args['streamid']),str(args['taskid'])),[])
-    shapes=[{k:v for k,v in row['fields'].items() if k and 'shape' in norm(k)} for row in rows]
+    if not rows and args.get('physicstreamid',args.get('streamid')) is not None and args.get('taskid') is not None:
+        rows=metadata.get(('task',str(args.get('physicstreamid',args.get('streamid'))),str(args['taskid'])),[])
+    shapes=[{k:v for k,v in row['fields'].items() if k and any(tag in norm(k) for tag in ('shape','format','datatype'))} for row in rows]
     empty=('', 'n/a', 'none', 'null', '[]', '-')
-    shapes=[x for x in shapes if any(str(v).strip().lower() not in empty for v in x.values())]
+    shapes=[x for x in shapes if any(str(v).strip().lower() not in empty for k,v in x.items() if 'shape' in norm(k))]
     unique={json.dumps(x,sort_keys=True) for x in shapes}
     if len(unique)>1:return dict(status='AMBIGUOUS',fields={})
     if len(unique)==1:return dict(status='CSV',fields=shapes[0])
-    fields={k:v for k,v in event.get('args',{}).items() if 'shape' in norm(k)}
+    fields={k:v for k,v in event.get('args',{}).items() if any(tag in norm(k) for tag in ('shape','format','datatype'))}
     return dict(status='TRACE' if fields else 'MISSING',fields=fields)
 
 def parse_timeline(path,metadata,head_names):
@@ -162,7 +163,7 @@ def parse_timeline(path,metadata,head_names):
         result['reason']='ExecuteAsync spans multiple host processes/threads';return result
     used_syncs=set()
     tasks=[e for e in complete if e.get('pid') in hardware]
-    all_calls=[]
+    windows=[]
     for index,launch in enumerate(executes):
         start=float(launch['ts']);launch_end=start+float(launch['dur'])
         next_start=float(executes[index+1]['ts']) if index+1<len(executes) else math.inf
@@ -172,23 +173,28 @@ def parse_timeline(path,metadata,head_names):
             result['reason']=f'no matching same-thread Sync after execution {index}';return result
         sync=following[0];used_syncs.add(id(sync));end=float(sync['ts'])+float(sync['dur'])
         if end>next_start: return result
-        selected=[e for e in tasks if start<=float(e['ts']) and float(e['ts'])+float(e['dur'])<=end]
-        crossing=[dict(name=e.get('name'),start_us=float(e['ts']),duration_us=float(e['dur']),classification='UNKNOWN_BOUNDARY') for e in tasks
+        windows.append(dict(start=start,end=end,launch_end=launch_end,launch=launch,sync=sync))
+    owners,proof,assignment,tasks=assign(events,tasks,windows,origin)
+    result['assignment_evidence']=assignment
+    all_calls=[]
+    for index,w in enumerate(windows):
+        start,end,launch,sync=w['start'],w['end'],w['launch'],w['sync']
+        selected=[e for e in tasks if owners.get(e['event_index'])==index]
+        crossing=[dict(event_index=e['event_index'],name=e.get('name'),pid=e.get('pid'),tid=e.get('tid'),cat=e.get('cat'),args=e.get('args',{}),start_us=float(e['ts']),duration_us=float(e['dur']),owner=owners.get(e['event_index']),classification='RESOLVED_STEP' if e['event_index'] in owners else 'UNRESOLVED_DEVICE_ASSIGNMENT') for e in tasks
                   if float(e['ts'])<end and float(e['ts'])+float(e['dur'])>start and
                   not (start<=float(e['ts']) and float(e['ts'])+float(e['dur'])<=end)]
-        if not selected: return result
         intervals=[];head=[];groups=collections.defaultdict(list);details=[]
         for e in selected:
             interval=(float(e['ts']),float(e['ts'])+float(e['dur']));intervals.append(interval)
             label,name,kind=event_label(e,metadata,head_names)
             if label=='custom_c' or label.startswith('head_'): head.append(interval)
             groups[label].append(float(e['dur']))
-            details.append(dict(name=name,op_type=kind,label=label,stream=e.get('tid'),start_us=interval[0],duration_us=float(e['dur']),args=e.get('args',{}),shape_evidence=task_shapes(e,metadata)))
-        occupancy=union(intervals);head_time=union(head);span=max(t[1] for t in intervals)-min(t[0] for t in intervals)
+            details.append(dict(event_index=e['event_index'],raw_name=e.get('name'),pid=e.get('pid'),tid=e.get('tid'),cat=e.get('cat'),assignment=proof[e['event_index']],name=name,op_type=kind,label=label,stream=e.get('tid'),start_us=interval[0],duration_us=float(e['dur']),args=e.get('args',{}),shape_evidence=task_shapes(e,metadata)))
+        occupancy=union(intervals);head_time=union(head);span=max(t[1] for t in intervals)-min(t[0] for t in intervals) if intervals else 0.
         all_calls.append(dict(index=index,phase='correctness_before' if index<2 else 'warmup' if index<7 else 'timed' if index<37 else 'postcheck',
             execute_api=dict(name=launch['name'],timestamp_us=launch.get('raw_timestamp_us'),relative_start_us=start,connection_id=launch.get('args',{}).get('connection_id')),
             sync_api=dict(name=sync['name'],timestamp_us=sync.get('raw_timestamp_us'),relative_start_us=float(sync['ts']),connection_id=sync.get('args',{}).get('connection_id')),
-            host_window_us=end-start,host_launch_api_us=float(launch['dur']),host_sync_api_us=float(sync['dur']),
+            device_window=assignment['device_windows'].get(str(index)),host_window_us=end-start,host_launch_api_us=float(launch['dur']),host_sync_api_us=float(sync['dur']),
             device_envelope_us=span,device_occupancy_us=occupancy,head_occupancy_us=head_time,
             other_exclusive_occupancy_us=occupancy-head_time,device_gap_us=span-occupancy,boundary_crossing_tasks=crossing,
             task_duration_sums_us={k:sum(v) for k,v in groups.items()},tasks=details))
@@ -199,7 +205,7 @@ def parse_timeline(path,metadata,head_names):
                   metrics={k:stats([c[k] for c in measured]) for k in metrics},iterations=measured,all_iterations=all_calls,
                   unpaired_syncs=[dict(name=e['name'],timestamp_us=e.get('raw_timestamp_us'),relative_start_us=float(e['ts']),pid=e.get('pid'),tid=e.get('tid')) for e in syncs if id(e) not in used_syncs],
                   partition_note='Head union + other exclusive occupancy + gaps = device envelope per call; not causal decomposition. Sync overlaps kernels.')
-    result['device_assignment']='INCOMPLETE_BOUNDARY_EVENTS' if any(c['boundary_crossing_tasks'] for c in measured) else 'ENCLOSED_TASKS'
+    result['device_assignment']=assignment['status']
     complete_head=True
     for call in measured:
         labels={t['label'] for t in call['tasks']}
