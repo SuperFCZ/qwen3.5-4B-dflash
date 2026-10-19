@@ -463,3 +463,56 @@ Top1 特殊值/最小 ID 语义，并计入 M15 logits 的 7,449,600 B 写回、
 本轮本地新增 CPU 回归：16 PASS（标准库图/时间线解析、38→30 调用选择、B/E 事件、
 重叠去重、缺失或重复导出拒绝归因、文件篡改门槛、只读重放及 prepare-only）。
 没有本地或服务器 Profiling/NPU 性能归因 PASS。
+
+## 独立 FP16 六层 vs W8 A-only 五层对比
+
+`profile_fp16_w8.sh` 只读复用冻结 OM、输入、Golden、联合 OPP 和原
+`ac_om_runner`，不加载模型、不导出 AIR、不编译 OM/Runner、不执行 Target/Verify。
+W8 必须来自已通过八组 Draft 验收的 evidence，且只重放 `a` 模式。
+FP16 必须有自己的六层 17 输入/13 输出 ABI、Deployment→AIR→OM 哈希绑定、
+C16/C64 冻结 replay 和完整输出 Golden。发现多个匹配产物时不自动选择最新目录。
+
+入口会在指定 `--search-root` 下最多六级扫描小型 JSON 元数据，查找历史 FP16
+Deployment 和 `PASS_REPLAY_CHECKS` 报告。也可显式传入 `--fp16-deployment`、
+`--fp16-c16-replay`、`--fp16-c64-replay` 排除歧义。缺失、篡改、跨 OM/gear、
+模拟数据或不完整 repeat/只读/全输出检查都会阻断，并在新目录生成带原因的报告。
+**尚未确认服务器上存在符合条件的 FP16 产物，不填造默认 FP16 路径。**
+
+现有 `ac_om_runner` 仅支持静态 OM，因此 FP16 Deployment 必须已包含合法的
+`static_gear_oms` C16/C64 记录及匹配的 ATC 输入形状。若历史 FP16 只有动态 OM，
+报告 `FP16_DYNAMIC_OM_UNSUPPORTED_BY_REUSED_RUNNER`，设备测试保持 NOT_RUN。
+不能用静态 Runner 猜测动态 gear。原 `tools/profile_om.py` 的生成入口和
+`debug_draft_om.py` 的 replay 都会触发 Prefill，不是本任务允许的纯冻结 Draft 重放；
+本入口记录该工具 SHA256，复用 msprof CLI 采集方式及已有图/时间线分析器，
+而不调用生成路径。此限制不意味着历史 FP16 OM 不正确，也不触发自动重建。
+
+执行顺序：所有四组先运行**无 Profiling**的正式计时，再单独运行四组 msprof。
+同一设备 ID、Runner、OPP/动态库环境；每次均为 continuous-v1、warmup=5、
+repetitions=30，保留 Guard、只读、repeat、timed-tail/postcheck。每个模型只与自身
+Frozen Golden 做全部 Token/KV bitwise 比较，绝不要求 FP16 与 W8 输出相同。
+历史 FP16 输入保存最大 features allocation 时，仅在新目录复制所选 gear 的合法
+连续前缀，原始快照不变；源数据及实际输入的 SHA256 分别记录。
+
+输出目录必须新建，且不在原始 evidence、FP16 bundle/replay 或 Native Base 内。
+`--prepare-only` 只检查文件，不运行设备。正常入口示例：
+
+```bash
+bash framework/custom_ops/draft_ac/profile_fp16_w8.sh --w8-evidence /home/w00949577/qwen35-dflash-run/ac-draft-full-20261016-071408 --search-root /home/w00949577/qwen35-dflash-run --output-dir "/home/w00949577/qwen35-dflash-run/fp16-vs-w8-a-$(date +%Y%m%d-%H%M%S)" --device-id 0
+```
+
+产物：`fp16-w8-report.json`、`fp16-w8-analysis.md`，每模型/gear 下的
+`formal/`、`formal.log`、`profiled/`、`profile.log`、`profiler/`、可用时的
+`om-graph.json`（ATC mode=1 只读检查，不编译）。记录 npu-smi、msprof 版本、环境、
+可用的 toolkit version 文件、来源 SHA256、两套 ABI 和原始样本。
+
+报告分开列出正式 median/p95、插桩的 Host launch/sync、设备窗口、各 Kernel 和
+Linear/LM Head/Attention/Norm/KV Cache/TransData 分类。未映射 MatMul 保留 unknown；
+各区域时间可能重叠，不相加当墙钟时间。四组正式计时不从历史数据或 msprof 时间代填。
+FP16 与 W8 的层数、checkpoint、feature width 和请求不同，所以比值仅是两个系统
+在各自合法冻结输入下的延迟对照，不能归因成纯量化加速，也不代表端到端生成收益。
+优化优先级依据可识别的设备 occupancy 提出核查方向，不承诺未测得的收益。
+
+本地 CPU 回归覆盖身份篡改/缺失、动态 OM 明确阻断、歧义拒绝、独立 Golden、
+输入前缀复制、计时与 Profiling 分离、重叠区间及只读复用。服务器正式计时和
+Profiling 在实际执行前均为 **NOT_RUN**。回传两份报告以及失败日志；归因还需
+`profiler/` 原始 CSV/JSON。不修改冻结 A/C、SOURCE_LOCK 或历史验收结果。
