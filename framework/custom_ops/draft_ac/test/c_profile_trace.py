@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 import re
 import statistics
+from decimal import Decimal, InvalidOperation
 from c_profile_graph import category
 
 
@@ -77,10 +78,63 @@ def event_label(event,metadata,head_names):
     return classify(name,kind,event.get('args',{}),head_names),name,kind
 
 
+
+API_NAMES={'aclmdlexecuteasync':'execute','aclrtsynchronizestream':'sync','aclrtsynchronizestreamwithtimeout':'sync'}
+
+def api_event(event):
+    """Observed CANN9 AscendCL@ spelling + bare spelling; no fuzzy Execute match."""
+    name=event.get('name','');name=name if isinstance(name,str) else ''
+    normalized=name[len('AscendCL@'):] if name.startswith('AscendCL@') else name
+    named=normalized.casefold() if isinstance(normalized,str) else ''
+    args={norm(k):v for k,v in event.get('args',{}).items()}
+    identified=str(args.get('id','')).casefold() if str(args.get('level','')).casefold()=='acl' else ''
+    candidates={x for x in (named,identified) if x in API_NAMES}
+    if len(candidates)>1 or (named in API_NAMES and identified and named!=identified):raise ValueError('conflicting AscendCL name and args.id: '+repr(name))
+    canonical=next(iter(candidates)) if candidates else None
+    return API_NAMES.get(canonical),canonical
+
+
+def relative_clock(events):
+    """Subtract a Decimal origin BEFORE float conversion (epoch us ~1.8e15)."""
+    valid=[]
+    for event in events:
+        if event.get('ph') not in ('X','B','E'):continue
+        try:
+            value=Decimal(str(event['ts']))
+            if value.is_finite() and value>=0:valid.append(value)
+        except (KeyError,InvalidOperation):continue
+    origin=min(valid) if valid else Decimal(0)
+    converted=[]
+    for e in events:
+        item=dict(e)
+        try:
+            value=Decimal(str(e['ts']))
+            if value.is_finite() and value>=0:item.update(ts=float(value-origin),raw_timestamp_us=str(e['ts']))
+        except (KeyError,InvalidOperation):pass
+        converted.append(item)
+    return converted,str(origin)
+
+
+def task_shapes(event,metadata):
+    args={norm(k):v for k,v in event.get('args',{}).items()}
+    name=str(args.get('opname',event.get('name','')))
+    rows=metadata.get(('name',name),[])
+    if not rows and args.get('streamid') is not None and args.get('taskid') is not None:
+        rows=metadata.get(('task',str(args['streamid']),str(args['taskid'])),[])
+    shapes=[{k:v for k,v in row['fields'].items() if k and 'shape' in norm(k)} for row in rows]
+    empty=('', 'n/a', 'none', 'null', '[]', '-')
+    shapes=[x for x in shapes if any(str(v).strip().lower() not in empty for v in x.values())]
+    unique={json.dumps(x,sort_keys=True) for x in shapes}
+    if len(unique)>1:return dict(status='AMBIGUOUS',fields={})
+    if len(unique)==1:return dict(status='CSV',fields=shapes[0])
+    fields={k:v for k,v in event.get('args',{}).items() if 'shape' in norm(k)}
+    return dict(status='TRACE' if fields else 'MISSING',fields=fields)
+
 def parse_timeline(path,metadata,head_names):
     if Path(path).stat().st_size>512*1024*1024: raise ValueError('timeline exceeds 512 MiB analysis limit')
     data=json.loads(Path(path).read_text()); events=data.get('traceEvents',[]) if isinstance(data,dict) else data
-    if not isinstance(events,list): raise ValueError('not Chrome trace events')
+    if not isinstance(events,list) or any(not isinstance(e,dict) for e in events): raise ValueError('not Chrome trace events')
+    events,origin=relative_clock(events)
     hardware=set()
     for e in events:
         if e.get('ph')=='M' and e.get('name')=='process_name' and 'ascendhardware' in norm(e.get('args',{}).get('name','')):
@@ -94,11 +148,19 @@ def parse_timeline(path,metadata,head_names):
             begin=stacks[key].pop();start=finite(begin.get('ts'));stop=finite(e.get('ts'))
             if start is not None and stop is not None and stop>=start:
                 complete.append({**begin,'ph':'X','dur':stop-start})
-    executes=sorted((e for e in complete if e.get('name')=='aclmdlExecuteAsync'),key=lambda e:float(e['ts']))
-    syncs=sorted((e for e in complete if e.get('name') in ('aclrtSynchronizeStream','aclrtSynchronizeStreamWithTimeout')),key=lambda e:(float(e['ts']),-float(e['dur'])))
+    api=[(e,*api_event(e)) for e in complete if e.get('pid') not in hardware]
+    executes=sorted((e for e,kind,_ in api if kind=='execute'),key=lambda e:float(e['ts']))
+    syncs=sorted((e for e,kind,_ in api if kind=='sync'),key=lambda e:(float(e['ts']),-float(e['dur'])))
     result=dict(status='UNRESOLVED_WINDOWS',file=str(path),execute_count=len(executes),hardware_pids=sorted(hardware,key=str),
-                clock_policy='Chrome trace ts/dur in us; never mix op_summary clocks',iterations=[])
-    if len(executes)!=38 or not hardware: return result
+                clock_policy='Decimal epoch origin subtracted before float; ts/dur in us; never mix CSV clocks',timestamp_origin_us=origin,
+                api_event_names=dict(collections.Counter(e.get('name','') for e,kind,_ in api if kind)),
+                acl_api_inventory=dict(collections.Counter(e.get('name','') for e,_,_ in api if str(e.get('args',{}).get('level','')).lower()=='acl' or 'ascendcl' in str(e.get('name','')).lower())),
+                sync_count=len(syncs),iterations=[],all_iterations=[])
+    if len(executes)!=38 or not hardware:
+        result['reason']='requires exactly 38 public ExecuteAsync events and hardware process metadata';return result
+    if len({(e.get('pid'),e.get('tid')) for e in executes})!=1:
+        result['reason']='ExecuteAsync spans multiple host processes/threads';return result
+    used_syncs=set()
     tasks=[e for e in complete if e.get('pid') in hardware]
     all_calls=[]
     for index,launch in enumerate(executes):
@@ -106,10 +168,14 @@ def parse_timeline(path,metadata,head_names):
         next_start=float(executes[index+1]['ts']) if index+1<len(executes) else math.inf
         following=[s for s in syncs if (s.get('pid'),s.get('tid'))==(launch.get('pid'),launch.get('tid'))
                    and float(s['ts'])>=launch_end and float(s['ts'])<next_start]
-        if not following: return result
-        sync=following[0];end=float(sync['ts'])+float(sync['dur'])
+        if not following:
+            result['reason']=f'no matching same-thread Sync after execution {index}';return result
+        sync=following[0];used_syncs.add(id(sync));end=float(sync['ts'])+float(sync['dur'])
         if end>next_start: return result
         selected=[e for e in tasks if start<=float(e['ts']) and float(e['ts'])+float(e['dur'])<=end]
+        crossing=[dict(name=e.get('name'),start_us=float(e['ts']),duration_us=float(e['dur']),classification='UNKNOWN_BOUNDARY') for e in tasks
+                  if float(e['ts'])<end and float(e['ts'])+float(e['dur'])>start and
+                  not (start<=float(e['ts']) and float(e['ts'])+float(e['dur'])<=end)]
         if not selected: return result
         intervals=[];head=[];groups=collections.defaultdict(list);details=[]
         for e in selected:
@@ -117,18 +183,23 @@ def parse_timeline(path,metadata,head_names):
             label,name,kind=event_label(e,metadata,head_names)
             if label=='custom_c' or label.startswith('head_'): head.append(interval)
             groups[label].append(float(e['dur']))
-            details.append(dict(name=name,op_type=kind,label=label,stream=e.get('tid'),start_us=interval[0],duration_us=float(e['dur']),args=e.get('args',{})))
+            details.append(dict(name=name,op_type=kind,label=label,stream=e.get('tid'),start_us=interval[0],duration_us=float(e['dur']),args=e.get('args',{}),shape_evidence=task_shapes(e,metadata)))
         occupancy=union(intervals);head_time=union(head);span=max(t[1] for t in intervals)-min(t[0] for t in intervals)
-        all_calls.append(dict(index=index,host_window_us=end-start,host_launch_api_us=float(launch['dur']),host_sync_api_us=float(sync['dur']),
+        all_calls.append(dict(index=index,phase='correctness_before' if index<2 else 'warmup' if index<7 else 'timed' if index<37 else 'postcheck',
+            execute_api=dict(name=launch['name'],timestamp_us=launch.get('raw_timestamp_us'),relative_start_us=start,connection_id=launch.get('args',{}).get('connection_id')),
+            sync_api=dict(name=sync['name'],timestamp_us=sync.get('raw_timestamp_us'),relative_start_us=float(sync['ts']),connection_id=sync.get('args',{}).get('connection_id')),
+            host_window_us=end-start,host_launch_api_us=float(launch['dur']),host_sync_api_us=float(sync['dur']),
             device_envelope_us=span,device_occupancy_us=occupancy,head_occupancy_us=head_time,
-            other_exclusive_occupancy_us=occupancy-head_time,device_gap_us=span-occupancy,
+            other_exclusive_occupancy_us=occupancy-head_time,device_gap_us=span-occupancy,boundary_crossing_tasks=crossing,
             task_duration_sums_us={k:sum(v) for k,v in groups.items()},tasks=details))
     measured=all_calls[7:37] # 2 correctness + 5 warmup, then 30 measured; last postcheck excluded.
     metrics=('host_window_us','host_launch_api_us','host_sync_api_us','device_envelope_us','device_occupancy_us',
              'head_occupancy_us','other_exclusive_occupancy_us','device_gap_us')
     result.update(status='WINDOWS_IDENTIFIED',selection='38 exact Execute/Sync pairs; zero-based measured calls 7..36',
-                  metrics={k:stats([c[k] for c in measured]) for k in metrics},iterations=measured,
+                  metrics={k:stats([c[k] for c in measured]) for k in metrics},iterations=measured,all_iterations=all_calls,
+                  unpaired_syncs=[dict(name=e['name'],timestamp_us=e.get('raw_timestamp_us'),relative_start_us=float(e['ts']),pid=e.get('pid'),tid=e.get('tid')) for e in syncs if id(e) not in used_syncs],
                   partition_note='Head union + other exclusive occupancy + gaps = device envelope per call; not causal decomposition. Sync overlaps kernels.')
+    result['device_assignment']='INCOMPLETE_BOUNDARY_EVENTS' if any(c['boundary_crossing_tasks'] for c in measured) else 'ENCLOSED_TASKS'
     complete_head=True
     for call in measured:
         labels={t['label'] for t in call['tasks']}

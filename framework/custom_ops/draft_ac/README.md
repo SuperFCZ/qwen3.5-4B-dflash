@@ -668,3 +668,35 @@ wall time 分解；旧 FP16 与新 W8 profile 属于不同采集时段，不混�
 CPU 回归包括真实单引号嵌套描述符、字符串边界、非法 key 拒绝、完整性破坏阻断，
 并以模拟子进程证明只调用一次缺失的 W8 msprof。未在服务器执行的恢复仍为 NOT_RUN。
 TextFormat 语法参考：[Protocol Buffers Text Format](https://protobuf.dev/reference/protobuf/textformat-spec/)。
+
+### 2026-10-19：只读解析现有 C16 的 38/30 窗口和 Linear 热点
+
+服务器实际事件是 `AscendCL@aclmdlExecuteAsync` / `AscendCL@aclrtSynchronizeStream`，
+并在 `args.level=acl`、`args.id` 提供 API 名称。解析器显式支持这两种拼写及原裸名称，
+拒绝名称/id 冲突，不模糊匹配内部 runtime Execute。FP16 是 38 Execute / 40 Sync，
+W8 是 38 / 39：按同 PID/TID、Execute 返回后且下一 Execute 之前的第一个 Sync 配对，
+记录初始化/析构等额外 Sync，不能按两个列表的相同下标配对。
+
+绝对时间戳约 1.79e15 μs，先用 Decimal 减去统一 origin，再转 float，避免先转换 epoch
+丢失亚微秒 API 间隔。严格验证 38 个窗口，并选零起始 7..36 的 30 个计时调用；其余
+2 次正确性、5 次 warmup、1 次 postcheck 单独保留。边界交叉的设备事件显式记录，
+不能被悄悄划进某个完整窗口。38 次不完整或线程/配对歧义则保持 UNRESOLVED_WINDOWS。
+
+以下命令**只读已有 profiler 和冻结图元数据**，不调用 msprof、ATC、Runner 或模型：
+
+```bash
+python -B framework/custom_ops/draft_ac/test/linear_attribution.py --report /home/w00949577/qwen35-dflash-run/c16-profile-recovered-20261019-070652/c16-diagnostic-report.json --output-dir "/home/w00949577/qwen35-dflash-run/c16-linear-offline-$(date +%Y%m%d-%H%M%S)"
+```
+
+输出 `linear-timeline.json` / `linear-analysis.md`：两模型 38 轮 API 配对、30 轮区域
+统计、逐 Kernel 来源、Gate/Up、Down、其他 Linear、Head、OTHER_KNOWN、UNKNOWN，及
+region union、device occupancy/gap、task-sum 减 union、跨区域重叠。API 和任务时间
+只用同一 Chrome trace 时钟；CSV 仅提供 name/type/shape 元数据，不混用其时间戳。
+分类依赖实际 logical M/K/N；CSV 缺失 shape 时，可用哈希绑定的图中**同名同类型**节点
+的明确 input/output TensorDesc。仍无法匹配时保留 UNKNOWN，不用 Kernel 耗时或出现顺序猜。
+FP16 Gate/Up/Down 使用其实际 9216 intermediate，与 W8 的 9728 分开；每轮 6/5 层的
+FFN 数量另行核对。文件 SHA256 与原恢复清单核对，旧 report/profiler 均不修改。
+
+当前离线工具未在本地读取服务器原始文件，真实 30 窗口/区域结果待回传。
+源码瓶颈账本、同语义 Native W8 比较要求及两个最小 Gate/Up 候选见
+[量化 A5.1 分析追加](../draft_quant/A5_1.md#2026-10-19c16-整图诊断后的-gateup-优化分析本轮未改-kernel)。
