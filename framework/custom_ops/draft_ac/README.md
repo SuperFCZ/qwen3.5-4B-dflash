@@ -714,7 +714,7 @@ FFN 数量另行核对。文件 SHA256 与原恢复清单核对，旧 report/pro
 
 - 继续核对 38 个同线程 Execute/Sync，计时索引保持 7..36。
 - Step Trace 必须同时满足事件名/Iteration ID、cat、线程名/Model ID。共 38 个唯一、
-  连续、互不重叠的设备迭代，每个起点必须在**唯一一个** Execute 返回至 Sync 返回
+  连续、互不重叠的设备迭代，每个起点必须在**唯一一个** Execute 开始至 Sync 返回
   的范围内，每个 Host 调用必须恰有一个 Step。由起点实际位置建立对应，不使用
   `Iteration ID - 1` 或任务列表下标强行分配。
 - `Iteration End` 与 ts+dur 按其原始时间戳的小数位核对序列化一致性；任务包含检查

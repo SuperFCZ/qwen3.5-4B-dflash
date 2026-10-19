@@ -283,3 +283,14 @@ def test_untrusted_iteration_name_is_quarantined_not_counted_as_kernel(tmp_path,
     assert r['device_assignment']=='UNRESOLVED_DEVICE_ASSIGNMENT'
     assert all(not t['name'].startswith('Iteration ') for c in r['iterations'] for t in c['tasks'])
     assert r['metrics']['device_occupancy_us']['median']==2500
+
+
+def test_device_step_may_start_before_async_execute_returns(tmp_path,monkeypatch):
+    _,trace,_=modules(monkeypatch)
+    p=tmp_path/'msprof.json';events,meta=step_timeline(p)
+    launch=next(e for e in events if e['name']=='AscendCL@aclmdlExecuteAsync')
+    sync=next(e for e in events if e['name']=='AscendCL@aclrtSynchronizeStream')
+    launch['dur']=500
+    sync['ts']=str(Decimal(launch['ts'])+501);sync['dur']=19489
+    p.write_text(json.dumps(events));r=trace.parse_timeline(p,meta,set())
+    assert r['status']=='WINDOWS_IDENTIFIED' and r['device_assignment']=='DEVICE_STEPS_VERIFIED'

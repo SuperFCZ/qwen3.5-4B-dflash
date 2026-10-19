@@ -55,7 +55,7 @@ def assign(events, hardware_events, windows, origin):
                 begin=float(start-Decimal(origin));end=float(stop-Decimal(origin))
             except (KeyError,InvalidOperation,ValueError) as error:
                 result['errors'].append(dict(marker=info,reason=str(error)));continue
-            hits=[i for i,w in enumerate(windows) if w['launch_end']<=begin<w['end']]
+            hits=[i for i,w in enumerate(windows) if w['start']<=begin<w['end']]
             info.update(start_us=begin,end_us=end,host_candidates=hits)
             if len(hits)!=1:result['errors'].append(dict(marker=info,reason='Step start has no unique Host call'));continue
             call=hits[0]
