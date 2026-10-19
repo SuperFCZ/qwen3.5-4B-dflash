@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.16)
+project(fp16_dynamic_replay LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_library(ACL_LIBRARY ascendcl PATHS "${CANN_ROOT}/lib64" "${CANN_ROOT}/aarch64-linux/lib64" "${CANN_ROOT}/x86_64-linux/lib64" NO_DEFAULT_PATH REQUIRED)
+add_executable(fp16_dynamic_runner ../fp16_dynamic_runner.cpp)
+target_include_directories(fp16_dynamic_runner PRIVATE "${CANN_ROOT}/include")
+target_link_libraries(fp16_dynamic_runner PRIVATE "${ACL_LIBRARY}")

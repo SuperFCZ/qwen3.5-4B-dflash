@@ -466,53 +466,86 @@ Top1 特殊值/最小 ID 语义，并计入 M15 logits 的 7,449,600 B 写回、
 
 ## 独立 FP16 六层 vs W8 A-only 五层对比
 
-`profile_fp16_w8.sh` 只读复用冻结 OM、输入、Golden、联合 OPP 和原
-`ac_om_runner`，不加载模型、不导出 AIR、不编译 OM/Runner、不执行 Target/Verify。
-W8 必须来自已通过八组 Draft 验收的 evidence，且只重放 `a` 模式。
-FP16 必须有自己的六层 17 输入/13 输出 ABI、Deployment→AIR→OM 哈希绑定、
-C16/C64 冻结 replay 和完整输出 Golden。发现多个匹配产物时不自动选择最新目录。
+`profile_fp16_w8.sh` 不更改历史 AIR/OM、SOURCE_LOCK、A/C Kernel、Target/Verify
+或 W8 Evidence。FP16 与 W8 checkpoint、层数及 feature width 不同，分别用自己的
+冻结输入和 Golden；比值是系统延迟对照，不能直接归因成纯量化收益。
 
-入口会在指定 `--search-root` 下最多六级扫描小型 JSON 元数据，查找历史 FP16
-Deployment 和 `PASS_REPLAY_CHECKS` 报告。也可显式传入 `--fp16-deployment`、
-`--fp16-c16-replay`、`--fp16-c64-replay` 排除歧义。缺失、篡改、跨 OM/gear、
-模拟数据或不完整 repeat/只读/全输出检查都会阻断，并在新目录生成带原因的报告。
-**尚未确认服务器上存在符合条件的 FP16 产物，不填造默认 FP16 路径。**
-
-现有 `ac_om_runner` 仅支持静态 OM，因此 FP16 Deployment 必须已包含合法的
-`static_gear_oms` C16/C64 记录及匹配的 ATC 输入形状。若历史 FP16 只有动态 OM，
-报告 `FP16_DYNAMIC_OM_UNSUPPORTED_BY_REUSED_RUNNER`，设备测试保持 NOT_RUN。
-不能用静态 Runner 猜测动态 gear。原 `tools/profile_om.py` 的生成入口和
-`debug_draft_om.py` 的 replay 都会触发 Prefill，不是本任务允许的纯冻结 Draft 重放；
-本入口记录该工具 SHA256，复用 msprof CLI 采集方式及已有图/时间线分析器，
-而不调用生成路径。此限制不意味着历史 FP16 OM 不正确，也不触发自动重建。
-
-执行顺序：所有四组先运行**无 Profiling**的正式计时，再单独运行四组 msprof。
-同一设备 ID、Runner、OPP/动态库环境；每次均为 continuous-v1、warmup=5、
-repetitions=30，保留 Guard、只读、repeat、timed-tail/postcheck。每个模型只与自身
-Frozen Golden 做全部 Token/KV bitwise 比较，绝不要求 FP16 与 W8 输出相同。
-历史 FP16 输入保存最大 features allocation 时，仅在新目录复制所选 gear 的合法
-连续前缀，原始快照不变；源数据及实际输入的 SHA256 分别记录。
-
-输出目录必须新建，且不在原始 evidence、FP16 bundle/replay 或 Native Base 内。
-`--prepare-only` 只检查文件，不运行设备。正常入口示例：
+### 先运行轻量兼容检查
 
 ```bash
-bash framework/custom_ops/draft_ac/profile_fp16_w8.sh --w8-evidence /home/w00949577/qwen35-dflash-run/ac-draft-full-20261016-071408 --search-root /home/w00949577/qwen35-dflash-run --output-dir "/home/w00949577/qwen35-dflash-run/fp16-vs-w8-a-$(date +%Y%m%d-%H%M%S)" --device-id 0
+bash framework/custom_ops/draft_ac/profile_fp16_w8.sh --w8-evidence /home/w00949577/qwen35-dflash-run/ac-draft-full-20261016-071408 --search-root /home/w00949577/qwen35-dflash-run --output-dir "/home/w00949577/qwen35-dflash-run/fp16-prepare-$(date +%Y%m%d-%H%M%S)" --prepare-only
 ```
 
-产物：`fp16-w8-report.json`、`fp16-w8-analysis.md`，每模型/gear 下的
+这一步不加载 torch/NPU、不调用 msprof、不构建 Runner/OPP/OM、不采集数据，
+也不重复整套 W8 Evidence 重哈希。输出 `fp16-w8-report.json` 中的 `fp16_preflight`：
+每份候选 Deployment 的路径、Manifest 校验、动态/静态契约、逐文件原始 SHA256、
+实测大小、原始 `bytes` 是否存在、C16/C64 Replay 和采集来源缺失项。
+存在 Chunk/MTP 多份候选时不猜选；后续用 `--fp16-deployment` 显式选择。
+未满足重放条件则 `status=BLOCKED`、退出码 2；所有设备项仍为 NOT_RUN。
+轻量检查成功也仅代表 FP16 文件契约，不代表 W8 或实际设备 gear 已验收。
+
+旧 Manifest 缺少 `bytes` 时，FP16 专用读取器验证 SHA256、非空普通文件、读取前后
+size/mtime/inode 一致，并记录 `actual_bytes`；有 `bytes` 时仍严格相等。
+拒绝绝对 artifact 路径、`..`、symlink 逃逸、缺失/篡改/空文件。不补写历史 Manifest，
+也不修改共用 `checked_file()` 或 W8 检查行为。
+
+### 动态 OM 与冻结输入
+
+`static_gear_oms=[]` 不再直接报“不支持”。校验历史 ATC 的 `--dynamic_dims=16;64`、
+`--input_format=ND`、完整 Data 端口/shape、仅 features axis 1 动态，以及原
+incremental_contract。实际设备 gear 尚不能由 CPU Preflight 证明，明确标记 NOT_RUN。
+
+若已有完整 FP16 Replay，传 `--fp16-c16-replay` / `--fp16-c64-replay` 直接复用。
+如果只有 W8 Replay，不能混用。显式 `--capture-fp16` 才会创建新 FP16 输入/Golden：
+
+- 必须指定 FP16 Deployment，以及 `--fp16-c16-request` / `--fp16-c64-request`。
+  每个参数是原 FP16 `tools/profile_om.py` 的 `profile-request.json` 或
+  `tools/debug_draft_om.py` 的 `request.json`，旁边必须有原 `plan.txt`。
+- 核对 request 内 Deployment/Runner 绝对路径与 SHA256、plan 所有 Graph OM 的
+  SHA256、AIR/Deployment 元数据及完整 ABI；不创建替代历史计划，不改变 Target。
+- 使用原 request 的 token IDs、padding、EOS。原 prompt 最后一个 64-token chunk
+  的有效长度必须选到请求的 C16/C64 gear，且满足原 capacity/vocab；不生成伪 hidden。
+- 调用原 C++ Runner 的 `--debug-draft-replay 20 --debug-draft-workspace private`。
+  该原流程会执行原 FP16 Target Prefill 来产生真实 features，然后进行 isolated /
+  interleaved-prefill 两阶段重放，生成完整输入及全部 Token/KV Golden。**采集需要
+  原 Runner 和原 OPP 环境确实可运行**；失败即保留日志，不用 Python/eager 回退。
+- 新文件只写本次输出目录的 `fp16-capture/`，检查 fake_acl=false、设备、prompt、
+  gear、所有输入/输出 SHA256、完整输出重复一致与只读门槛。采集不是正式计时，
+  也不代表 Target/Verify 或端到端验收。
+
+尚未确认原 FP16 Runner、两种 prompt 请求的真实路径，不硬编码或伪造这些路径。
+如果旧 profile-request 只有 C64，需要提供原 FP16 路径的合法 C16 请求及其原计划；
+工具不会截断 W8 features、复制 W8 Golden 或猜造请求元数据来让检查通过。
+
+### 5/30 动态重放与 Profiling
+
+原完整 C++ Runtime 支持动态 gear 和捕获，但 debug replay 夹有状态恢复/读回，
+不是 continuous-v1 5/30 benchmark。为保持正式计时可比，在独立目录构建小型
+`fp16_dynamic_runner`（仅 C++ 应用，不编译新 OM/OPP）。也可通过
+`--fp16-dynamic-build /path/to/build.json` 复用源码/二进制 SHA256 匹配的适配器。
+原历史 Runtime、A/C 静态 Runner 和原动态 FP16 OM 均不改写。
+
+动态适配器沿用仓库 `acl_chunk.cpp` 的 gear 查询方式：读取动态控制输入索引、
+查询恰好两个 gear，将全 17 个输入的 flattened shape 与 C16/C64 逐项匹配，
+再调用 `aclmdlSetInputDynamicDims`。保留最大 C64 输入 allocation 及原快照字节，
+只由 SDK 选择 gear；绝不当静态 OM 运行。`dynamic-gear.json` 保存实际 gear 和选择。
+动态控制 buffer 由 SDK 管理，前后 Guard 同样校验；17 个公开输入保持逐字节只读。
+
+所有四组先跑无 Profiling 的正式 5 warmup / 30 repetitions，再单独跑 msprof，
+使用相同设备 ID、OPP/动态库环境和 `runner_common.h` continuous-v1 调度。
+gear 选择和模型加载在计时外；保留两次正确性输出、repeat、Guard、输入只读、
+timed-tail/postcheck 与各自 Golden 的全部 Token/KV bitwise 校验。
+W8 A-only 继续使用已验收的原静态 Runner，不重建 56 个单算子或八组 Draft OM。
+
+产物为 `fp16-w8-report.json`、`fp16-w8-analysis.md`，以及各模型/gear 的
 `formal/`、`formal.log`、`profiled/`、`profile.log`、`profiler/`、可用时的
-`om-graph.json`（ATC mode=1 只读检查，不编译）。记录 npu-smi、msprof 版本、环境、
-可用的 toolkit version 文件、来源 SHA256、两套 ABI 和原始样本。
+`om-graph.json`（ATC mode=1 只读检查）。分别报告正式 median/p95 与插桩后的
+Host launch/sync、设备窗口、Linear/LM Head/Attention/Norm/KV/TransData。
+不把未知 MatMul 强归类为 Linear，也不将重叠 Pipe/Kernel 时间相加当墙钟时间。
 
-报告分开列出正式 median/p95、插桩的 Host launch/sync、设备窗口、各 Kernel 和
-Linear/LM Head/Attention/Norm/KV Cache/TransData 分类。未映射 MatMul 保留 unknown；
-各区域时间可能重叠，不相加当墙钟时间。四组正式计时不从历史数据或 msprof 时间代填。
-FP16 与 W8 的层数、checkpoint、feature width 和请求不同，所以比值仅是两个系统
-在各自合法冻结输入下的延迟对照，不能归因成纯量化加速，也不代表端到端生成收益。
-优化优先级依据可识别的设备 occupancy 提出核查方向，不承诺未测得的收益。
+本地 CPU 测试及 fake ACL 头文件的 C++ 语法检查不是 CANN/NPU 验收。实际动态 gear、
+新 FP16 capture、正式延迟与 msprof 在服务器执行前均为 **NOT_RUN**。
+原 FP16 动态 OM 若存在真实 SDK 限制，则明确 BLOCKED；当前没有自动重编静态 OM 的回退。
 
-本地 CPU 回归覆盖身份篡改/缺失、动态 OM 明确阻断、歧义拒绝、独立 Golden、
-输入前缀复制、计时与 Profiling 分离、重叠区间及只读复用。服务器正式计时和
-Profiling 在实际执行前均为 **NOT_RUN**。回传两份报告以及失败日志；归因还需
-`profiler/` 原始 CSV/JSON。不修改冻结 A/C、SOURCE_LOCK 或历史验收结果。
+API 语义参考：[aclmdlSetInputDynamicDims](https://www.hiascend.com/document/detail/zh/canncommercial/80RC2/apiref/appdevgapi/aclcppdevg_03_0299.html)。
+文档版本不替代 CANN 9.0.0 设备验证；接口使用和 full-shape 校验优先复用仓库现有动态 Runtime。

@@ -109,7 +109,7 @@ def test_missing_ambiguous_and_dynamic_report_blockers(tmp_path,monkeypatch):
     with pytest.raises(ValueError,match='found 2'):ev.resolve(tmp_path)
     assert len(ev.resolve(tmp_path,dep,replays)[0])==2
     value=ev.load(dep);del value['graphs'][0]['static_gear_oms'];dep.write_text(json.dumps(value))
-    with pytest.raises(ValueError,match='DYNAMIC_OM_UNSUPPORTED'):ev.deployment(dep)
+    with pytest.raises((ValueError,KeyError)):ev.deployment(dep)
 
 
 def test_regions_do_not_call_attention_matmul_linear(monkeypatch):
@@ -147,7 +147,7 @@ def test_report_separates_fresh_formal_and_profiled_times(tmp_path,monkeypatch):
 
 def test_blocked_run_writes_not_run_without_launch(tmp_path,monkeypatch):
     ev,p=tools(monkeypatch);source=tmp_path/'old';source.mkdir()
-    args=SimpleNamespace(output_dir=tmp_path/'new',w8_evidence=source,search_root=tmp_path,device_id=0)
+    args=SimpleNamespace(output_dir=tmp_path/'new',w8_evidence=source,search_root=tmp_path,device_id=0,prepare_only=False)
     def blocked(*a):raise ValueError('missing accepted artifacts')
     monkeypatch.setattr(p,'load_reuse',blocked)
     monkeypatch.setattr(p.subprocess,'run',lambda *a,**k:pytest.fail('must not launch'))
@@ -157,10 +157,14 @@ def test_blocked_run_writes_not_run_without_launch(tmp_path,monkeypatch):
 
 
 @pytest.mark.parametrize('prepare_only',[True,False])
-def test_four_case_entry_uses_own_goldens_and_separates_launches(tmp_path,monkeypatch,prepare_only):
+@pytest.mark.parametrize('dynamic',[False,True])
+def test_four_case_entry_uses_own_goldens_and_separates_launches(tmp_path,monkeypatch,prepare_only,dynamic):
     import shlex, subprocess
     ev,p=tools(monkeypatch);_,_,old=modules(monkeypatch)
-    dep,replays=fp16_fixture(tmp_path/'fp16',ev)
+    if dynamic:
+        from test_draft_ac_fp16_legacy import dynamic_fixture
+        dep,replays=dynamic_fixture(tmp_path,ev)
+    else: dep,replays=fp16_fixture(tmp_path/'fp16',ev)
     # FP16 token IDs deliberately differ from W8; only within-model equality is legal.
     for rp in replays.values():
         r=ev.load(rp);gold=Path(r['input_directory']).parent/'outputs/reference/draft_top1.bin'
@@ -176,14 +180,22 @@ def test_four_case_entry_uses_own_goldens_and_separates_launches(tmp_path,monkey
     monkeypatch.setattr(p,'load_reuse',lambda s:(SimpleNamespace(native_base=tmp_path/'native'),reuse))
     monkeypatch.setattr(p,'verify_reuse',lambda r:None)
     monkeypatch.setattr(p.shutil,'which',lambda n:'/existing/msprof' if n=='msprof' else None)
+    dynamic_binary=tmp_path/'dynamic-runner';dynamic_binary.write_bytes(b'CPU dynamic adapter fixture')
+    dynamic_module=importlib.import_module('fp16_dynamic')
+    monkeypatch.setattr(dynamic_module,'runner',lambda *a:(dynamic_binary,dict(status='CPU_TEST_DOUBLE')))
     launches=[]
     def execute(command,**kwargs):
         if command[0]=='npu-smi' or command[-1]=='--version':return subprocess.CompletedProcess(command,0)
         profile=command[0]=='/existing/msprof'
         if profile:
             command=shlex.split(next(x.split('=',1)[1] for x in command if x.startswith('--application=')))
-        assert command[0]==str(runner) and kwargs['env']['ASCEND_CUSTOM_OPP_PATH']=='accepted-joint-opp'
         output=Path(command[3]);model,gear=output.parent.name.split('-c');gear=int(gear)
+        assert command[0]==str(dynamic_binary if dynamic and model=='fp16' else runner)
+        assert kwargs['env']['ASCEND_CUSTOM_OPP_PATH']=='accepted-joint-opp'
+        if dynamic and model=='fp16':
+            abi=ev.deployment(dep)['graph']['metadata']['tensor_abi']
+            gears=[[dim if t['name']!='features' or j!=1 else rows for t in abi['inputs'] for j,dim in enumerate(t['shape'])] for rows in (16,64)]
+            (output/'dynamic-gear.json').write_text(json.dumps(dict(status='PASS',selected_rows=gear,actual_gears=gears)))
         launches.append((model,gear,profile))
         if model=='fp16':
             r=ev.load(replays[gear]);gold=Path(r['input_directory']).parent/'outputs/reference'
@@ -204,7 +216,7 @@ def test_four_case_entry_uses_own_goldens_and_separates_launches(tmp_path,monkey
         fp16_deployment=dep,fp16_c16_replay=replays[16],fp16_c64_replay=replays[64],prepare_only=prepare_only,msprof='msprof',atc='atc')
     p.run(args)
     report=ev.load(args.output_dir/'fp16-w8-report.json')
-    assert len(report['cases'])==4
+    assert len(report['cases'])==(0 if prepare_only else 4)
     if prepare_only:
         assert not launches and report['device_status']=='NOT_RUN' and report['status']=='PREFLIGHT_ONLY'
     else:

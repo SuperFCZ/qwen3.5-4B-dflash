@@ -17,7 +17,8 @@ from single_graph import load_reuse, verify_reuse
 from c_profile import load, prepare_case, timing
 from c_profile_graph import read_pbtxt, read_om_json, summarize, edge_name, category
 from c_profile_trace import collect, stats, union
-from fp16_evidence import resolve
+from fp16_evidence import resolve, deployment
+from fp16_capture import inspect as inspect_fp16, capture as capture_fp16
 
 WIDTHS={'float16':2,'int16':2,'int64':8,'float32':4}
 
@@ -72,6 +73,12 @@ def attribution(profile, heads, linear):
 
 def validate_outputs(case, output):
     report=load(output/'execution.json');t=timing(report)
+    if case.get('dynamic'):
+        gear=load(output/'dynamic-gear.json')
+        expected=[[dim if t['name']!='features' or j!=1 else rows for t in case['abi']['inputs'] for j,dim in enumerate(t['shape'])] for rows in (16,64)]
+        if gear.get('status')!='PASS' or gear.get('selected_rows')!=case['gear'] or sorted(gear.get('actual_gears',[]))!=sorted(expected):
+            raise ValueError('actual NPU dynamic gear evidence differs')
+        report['dynamic_gear']=gear
     if any(not isinstance(x,(float,int)) or not math.isfinite(x) or x<=0 for x in t['samples_ms']):
         raise ValueError('nonfinite/nonpositive timing samples')
     if report.get('row_permutation_checked') is not False: raise ValueError('full Draft runner scope differs')
@@ -86,6 +93,7 @@ def validate_outputs(case, output):
 
 def replay_command(case, folder, runner, device):
     folder.mkdir();inputs=folder/'inputs';inputs.mkdir()
+    if case.get('dynamic'): (folder/'gear.txt').write_text(str(case['gear'])+'\n')
     for side in ('inputs','outputs'):
         (folder/(side+'.tsv')).write_text(''.join(t['name']+' '+t['dtype']+' '+' '.join(map(str,t['shape']))+'\n' for t in case['abi'][side]))
     for t in case['abi']['inputs']:
@@ -136,6 +144,14 @@ def finish(report, root):
         t=c.get('formal_latency');value=f"{t['median_ms']:.4f} / {t['p95_ms']:.4f}" if t else 'NOT_RUN'
         lines.append(f"| {c['model']} | C{c['gear']} | {value} | {c.get('profiling_status','NOT_RUN')} |")
     if report.get('error'): lines+=['','阻塞/错误：`'+report['error']+'`']
+    if report.get('fp16_preflight'):
+        lines+=['','## 轻量 FP16 兼容检查（设备未执行）','']
+        for c in report['fp16_preflight']['candidates']:
+            lines+=['- '+c['path']+': '+c['status']+'；Manifest '+c.get('manifest_status','BLOCKED')+'；shape '+c.get('shape_mode','UNKNOWN')]
+            if c.get('error'): lines+=['  错误：'+c['error']]
+            lines+=['  Replay：'+json.dumps(c.get('replays',{}),ensure_ascii=False),
+                    '  采集来源：'+json.dumps(c.get('capture_requests',{}),ensure_ascii=False),
+                    '  待验证历史请求候选：'+json.dumps(c.get('possible_original_requests',[]),ensure_ascii=False)]
     for comparison in report['comparisons']:
         lines+=['', '- '+json.dumps(comparison,ensure_ascii=False)]
     lines+=['','## 设备归因与优化优先级','',
@@ -149,7 +165,7 @@ def finish(report, root):
             lines+=['',f"### {c['model']} C{c['gear']} 插桩区间 occupancy 均值（μs）",'']
             lines+=['- '+k+': '+f"{v['mean']:.3f}" for k,v in a.items()]
     lines+=['','`tools/profile_om.py` 使用生成路径/首次 stage 窗口。此入口沿用 msprof CLI 采集方式和工具 provenance，但不调用该生成入口，避免重新运行 Target/Prefill 或将采集开销当正式延迟。',
-        '若只有动态 FP16 OM，现有 static multi-IO Runner 无法合法回放；明确 BLOCKED，不能静默套用 C16、重编译或替换输入。']
+        '动态 FP16 使用独立 C++ gear adapter 查询并验证实际 C16/C64 档位，原 OM 不重编译。新输入/Golden 仅可来自原 FP16 Runner 的真实 Prefill/DebugDraftReplay；缺失来源时 BLOCKED。']
     (root/'fp16-w8-analysis.md').write_text('\n'.join(lines)+'\n')
 
 
@@ -166,6 +182,15 @@ def run(args):
     try:
         if os.environ.get('ASCEND310P_SIMULATION_ONLY')=='1' or os.environ.get('PROFILING_MODE') not in (None,'','false'):
             raise ValueError('formal latency requires real NPU and no inherited profiling wrapper')
+        requests={g:p for g,p in ((16,getattr(args,'fp16_c16_request',None)),(64,getattr(args,'fp16_c64_request',None))) if p}
+        if args.prepare_only:
+            report['fp16_preflight']=inspect_fp16(search,args.fp16_deployment,requests)
+            candidates=report['fp16_preflight']['candidates']
+            ready=len(candidates)==1 and candidates[0]['status']=='READY_FOR_REPLAY'
+            report['status']='PREFLIGHT_ONLY' if ready else 'BLOCKED'
+            report['w8_preflight']='NOT_RUN: lightweight FP16 compatibility inspection only'
+            print('FP16 preflight: '+report['status']+'; see '+str(root/'fp16-w8-report.json'),flush=True)
+            return ready
         old,reuse=load_reuse(source)
         if root.is_relative_to(Path(old.native_base).resolve()): raise ValueError('output overlaps Native Base')
         report['reuse']=reuse
@@ -178,7 +203,17 @@ def run(args):
             raise ValueError('need frozen accepted eight-mode W8 evidence')
         watch.update({str(source/n):sha256(source/n) for n in ('suite.json','draft-suite.json')})
         runner=Path(reuse['runner']);cases=[]
-        fp16,discovery=resolve(search,args.fp16_deployment,{g:p for g,p in ((16,args.fp16_c16_replay),(64,args.fp16_c64_replay)) if p})
+        replay_paths={g:p for g,p in ((16,args.fp16_c16_replay),(64,args.fp16_c64_replay)) if p}
+        if getattr(args,'capture_fp16',False):
+            if not args.fp16_deployment or set(requests)!={16,64}:
+                raise ValueError('capture requires explicit FP16 Deployment and original C16/C64 request.json/profile-request.json')
+            if replay_paths: raise ValueError('capture and reuse replay inputs are mutually exclusive')
+            base=deployment(args.fp16_deployment)
+            report['fp16_capture']='RUNNING';finish(report,root)
+            replay_paths=capture_fp16(base,requests,root/'fp16-capture',args.device_id,{**os.environ,**reuse['environment']})
+            report['fp16_capture']='PASS';report['target_prefill_for_capture']='EXECUTED_ORIGINAL_OM; not Target/Verify acceptance'
+            for req in load(root/'fp16-capture/requests.json').values(): watch.update(req['watch'])
+        fp16,discovery=resolve(search,args.fp16_deployment,replay_paths)
         for c in fp16:
             if any(root.is_relative_to(Path(c['identity'][k]).parent) for k in ('deployment','replay')):
                 raise ValueError('output must be outside FP16 deployment/replay directories')
@@ -192,7 +227,7 @@ def run(args):
             cases.append(c)
         for c in cases:
             for p in c['watch']:
-                if Path(p).is_relative_to(root): raise ValueError('output overlaps source artifact')
+                if Path(p).is_relative_to(root) and not Path(p).is_relative_to(root/'fp16-capture'): raise ValueError('output overlaps source artifact')
             watch.update(c['watch'])
         report['source_watch']=watch
         env=os.environ.copy();env.update(reuse['environment'])
@@ -206,8 +241,6 @@ def run(args):
                 input_sha256={n:sha256(p) for n,p in c['inputs'].items()},
                 historical_latency=c.get('historical'),formal_status='NOT_RUN',profiling_status='NOT_RUN'))
         finish(report,root)
-        if args.prepare_only:
-            report['status']='PREFLIGHT_ONLY';return
         for label,command in (('npu-smi',['npu-smi','info']),('msprof-version',[args.msprof,'--version'])):
             with (root/(label+'.log')).open('w') as log:
                 result=subprocess.run(command,env=env,cwd=root,stdout=log,stderr=subprocess.STDOUT)
@@ -220,9 +253,14 @@ def run(args):
                 p=Path(env[key])/rel
                 if p.is_file() and p.stat().st_size<1024*1024:
                     report['environment']['toolkit_versions'].append(dict(path=str(p.resolve()),sha256=sha256(p),text=p.read_text(errors='replace')))
+        dynamic_runner=None
+        if any(c.get('dynamic') for c in cases):
+            from fp16_dynamic import runner as dynamic_build
+            dynamic_runner,build=dynamic_build(root/'fp16-runner',env,getattr(args,'fp16_dynamic_build',None))
+            report['fp16_dynamic_build']=build;watch[str(dynamic_runner)]=sha256(dynamic_runner)
         for c,out in zip(cases,report['cases']):
             folder=root/f"{c['model']}-c{c['gear']}";folder.mkdir()
-            command=replay_command(c,folder/'formal',runner,args.device_id)
+            command=replay_command(c,folder/'formal',dynamic_runner if c.get('dynamic') else runner,args.device_id)
             out['formal_status']='RUNNING';out['formal_started_utc']=datetime.now(timezone.utc).isoformat()
             report['device_status']='RUNNING';finish(report,root)
             with (folder/'formal.log').open('w') as log:
@@ -249,7 +287,7 @@ def run(args):
                 except (ValueError,OSError) as error: out['compiled_graph']=dict(status='UNAVAILABLE',error=str(error))
             graph,heads,linear=graph_regions(nodes) if nodes else ({},set(),set())
             out['region_mapping']=dict(head_names=sorted(heads),linear_names=sorted(linear),source='compiled_om' if out.get('compiled_graph',{}).get('status')=='PARSED' else 'pre_atc_or_missing')
-            command=replay_command(c,folder/'profiled',runner,args.device_id)
+            command=replay_command(c,folder/'profiled',dynamic_runner if c.get('dynamic') else runner,args.device_id)
             launch=[profiler,'--ascendcl=on','--runtime-api=on','--task-time=on','--aicpu=on','--ai-core=on',
                 '--aic-mode=task-based','--aic-metrics=PipeUtilization','--output='+str(folder/'profiler'),'--application='+shlex.join(command)]
             write_json(folder/'msprof-command.json',launch)
@@ -263,6 +301,7 @@ def run(args):
     except Exception as error:
         report['status']='BLOCKED' if report['device_status']=='NOT_RUN' else 'FAIL'
         report['error']=f'{type(error).__name__}: {error}'
+        if report.get('fp16_capture')=='RUNNING': report['fp16_capture']='FAIL'
         for c in report['cases']:
             for key in ('formal_status','profiling_status'):
                 if c[key]=='RUNNING': c[key]='FAIL'
@@ -285,9 +324,12 @@ def main():
     p.add_argument('--fp16-c16-replay',type=Path);p.add_argument('--fp16-c64-replay',type=Path)
     p.add_argument('--device-id',type=int,default=0);p.add_argument('--msprof',default='msprof');p.add_argument('--atc',default='atc')
     p.add_argument('--prepare-only',action='store_true')
+    p.add_argument('--capture-fp16',action='store_true',help='explicitly run original FP16 Prefill/DebugDraftReplay to create new snapshots')
+    p.add_argument('--fp16-c16-request',type=Path);p.add_argument('--fp16-c64-request',type=Path)
+    p.add_argument('--fp16-dynamic-build',type=Path,help='reuse matching adapter build.json; otherwise build only the isolated C++ adapter')
     args=p.parse_args()
     if args.device_id<0: p.error('device must be nonnegative')
-    run(args)
+    if run(args) is False: raise SystemExit(2)
 
 
 if __name__=='__main__': main()
