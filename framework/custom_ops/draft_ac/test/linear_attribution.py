@@ -270,6 +270,13 @@ def run(args):
                         json.dumps(r['analysis'].get('window_statistics',{}),ensure_ascii=False),
                         'FFN/其他 Linear 节点数核对：'+r['analysis'].get('ffn_inventory','UNKNOWN'),
                         '设备归属：'+r['analysis'].get('device_assignment','UNKNOWN')+'；Head：'+r['analysis'].get('head_inventory','UNKNOWN')]
+                audit=(r['profile'].get('selected_timeline') or {}).get('assignment_evidence',{})
+                lines+=['', 'Step 时间戳序列化检查：'+json.dumps(audit.get('step_time_summary',{}),ensure_ascii=False),
+                        '剩余失败原因：'+json.dumps(audit.get('remaining_failure_reasons',{}),ensure_ascii=False),
+                        '', '| Iteration | Duration − (End − Start), μs | 允许误差区间, μs | 状态 |',
+                        '| --- | --- | --- | --- |']
+                for check in audit.get('step_time_checks',[]):
+                    lines.append(f"| {check['iteration_id']} | {check.get('signed_error_us','UNKNOWN')} | [{check.get('allowed_error_min_us','UNKNOWN')}, {check.get('allowed_error_max_us','UNKNOWN')}] | {check['status']} |")
             lines+=['','Host 窗口通过不代表设备归属通过。Step Trace 仅作为范围证据，不计入 occupancy；跨 Host 边界 Kernel 保留完整区间。',
                     '逐轮 API 原始名、时间戳、connection_id、Kernel 分类依据及重叠见 JSON。UNKNOWN 不能凭耗时/顺序改成 Gate/Up；各区域 union 之和不是 wall time。']
             (root/'linear-analysis.md').write_text('\n'.join(lines)+'\n')

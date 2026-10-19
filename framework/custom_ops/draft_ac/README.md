@@ -717,8 +717,9 @@ FFN 数量另行核对。文件 SHA256 与原恢复清单核对，旧 report/pro
   连续、互不重叠的设备迭代，每个起点必须在**唯一一个** Execute 开始至 Sync 返回
   的范围内，每个 Host 调用必须恰有一个 Step。由起点实际位置建立对应，不使用
   `Iteration ID - 1` 或任务列表下标强行分配。
-- `Iteration End` 与 ts+dur 按其原始时间戳的小数位核对序列化一致性；任务包含检查
-  不增加时间容差，不裁剪区间，不平移时钟。范围标记不计入 Kernel occupancy。
+- `Iteration End`、Start、Duration 按各自原始小数分辨率检查独立舍入的一致性（详见
+  下节）；任务包含检查不增加时间容差，不裁剪区间，不平移时钟。范围标记不计入
+  Kernel occupancy。
 - Kernel 必须有 Model/Task/物理 Stream 身份，且其完整区间只落在同 Model 的一个
   Step 内。一轮内重复的 Task/Stream/Batch/Subtask 身份拒绝归属。每个原始事件有
   `event_index`，最多一个 owner；边界列表可以引用同一事件，但统计只计算 owner 一次。
@@ -745,3 +746,36 @@ MatMul 和 ArgMax 各一个。输出 `head_components`、`linear_node_inventory`
 必须创建新目录。原报告、profiler、冻结图 SHA256 前后核对；不执行 msprof、Runner、
 ATC 或 NPU。完整服务器离线重分析尚未执行；真实设备性能与 FP16 FAIL_REPLAY_CHECKS
 不变。回传新目录的 `linear-timeline.json` 和 `linear-analysis.md` 即可定位剩余 UNKNOWN。
+
+
+### Step 时间戳独立舍入修复（基于 444aef8）
+
+Start 和 End 各自序列化到 0.001 μs，不能把已舍入的 Start 加高精度 Duration 后，
+只按 End 的精度舍入并要求相等。设三字段末位分辨率为 qS、qE、qD，独立十进制
+舍入的一致性条件为：
+
+`abs(Duration - (End - Start)) <= (qS + qE + qD) / 2`
+
+q 来自原始 Decimal 的 exponent，保留尾随零和科学计数法精度，不使用固定容差。
+JSON 小数 token 先读成原始字符串，防止 epoch 或 Duration 先经 float 丢失末位。
+差值及界限以独立的高精度 Decimal context 计算。仅在减掉 epoch origin 后，才为
+现有时间线统计转换为相对 float；设备归属仍使用原记录的 Start/End，不扩大边界。
+
+用户回传的两个真实 Step 的 CPU 回归结果：
+
+| 样本 | Duration − (End − Start), μs | 推导误差上界, μs |
+| --- | --- | --- |
+| FP16 Iteration 5 | +0.000730546107 | 0.0010000000005 |
+| W8 Iteration 5 | −0.00071373418 | 0.001000000005 |
+
+两者符合独立舍入的范围；超出推导上界的正/负差值必须拒绝。CPU 回归还覆盖不同字段
+精度、较细时间戳不继承 0.001 的宽容差、调用方 Decimal 精度变化、numeric epoch
+JSON token、38 个 Step 全部记录及任一越界导致归属失败。38 Step、唯一 Host 归属、
+Model/Task/物理 Stream、重复任务和不重叠检查均不变。
+
+`linear-timeline.json` 的 `assignment_evidence.step_time_checks` 保存逐 Step 原始
+三字段、分辨率、带符号/绝对误差、允许误差区间和判定；`step_time_summary` 汇总
+38 个 Step 的误差 min/max、界限范围和拒绝数；`remaining_failure_reasons` 保留
+后续归属阻塞原因。`linear-analysis.md` 同时输出每个 Step 的表格和失败原因。
+序列化检查通过不等同于 DEVICE_STEPS_VERIFIED，更不等同于 ATTRIBUTION_VERIFIED。
+完整服务器离线重分析仍待运行；未运行 NPU、不修改任何历史产物。

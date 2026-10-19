@@ -294,3 +294,77 @@ def test_device_step_may_start_before_async_execute_returns(tmp_path,monkeypatch
     sync['ts']=str(Decimal(launch['ts'])+501);sync['dur']=19489
     p.write_text(json.dumps(events));r=trace.parse_timeline(p,meta,set())
     assert r['status']=='WINDOWS_IDENTIFIED' and r['device_assignment']=='DEVICE_STEPS_VERIFIED'
+
+
+@pytest.mark.parametrize('start,end,duration,error',[
+    ('1792389259256540.654','1792389259273714.168','17173.514730546107','0.000730546107'),
+    ('1792393692346935.494','1792393692378239.191','31303.69628626582','-0.00071373418'),
+])
+def test_independently_serialized_real_step_endpoints(monkeypatch,start,end,duration,error):
+    modules(monkeypatch);m=importlib.import_module('profile_device_assignment')
+    event={'raw_timestamp_us':start,'dur':duration,'args':{'Iteration End':end}}
+    check=m.step_time_check(event)
+    assert check['status']=='CONSISTENT_WITH_SERIALIZED_PRECISION'
+    assert Decimal(check['signed_error_us'])==Decimal(error)
+    assert check['resolution_us']['start']=='0.001' and check['resolution_us']['end']=='0.001'
+    assert Decimal(check['endpoint_rounding_bound_us'])==Decimal('0.001')
+    assert Decimal(check['allowed_error_max_us'])==Decimal('0.001')+Decimal(1).scaleb(Decimal(duration).as_tuple().exponent)/2
+    # Both real examples were rejected by the old one-endpoint quantization.
+    from decimal import localcontext
+    with localcontext() as context:
+        context.prec=50
+        assert (Decimal(start)+Decimal(duration)).quantize(Decimal('0.001'))!=Decimal(end)
+        for delta in ('0.001000001','-0.001000001'):
+            changed={**event,'dur':str(Decimal(end)-Decimal(start)+Decimal(delta))}
+            rejected=m.step_time_check(changed)
+            assert rejected['status']=='REJECTED' and 'serialized precision bound' in rejected['reason']
+
+
+@pytest.mark.parametrize('start,end,duration,expected_bound,accepted',[
+    ('100.000','101.000','1.001000000','0.0010000005',True),
+    ('100.000','101.000','0.999000000','0.0010000005',True),
+    ('100.000','101.000','1.001000001','0.0010000005',False),
+    ('100.000','101.000','0.998999999','0.0010000005',False),
+    ('100.00','101.000','1.0054000','0.00550005',True),
+    ('100.00','101.000','1.0056000','0.00550005',False),
+    ('100.0000','101.0000','1.0004000','0.00010005',False),
+])
+def test_precision_bound_derived_per_field_not_fixed_tolerance(monkeypatch,start,end,duration,expected_bound,accepted):
+    modules(monkeypatch);m=importlib.import_module('profile_device_assignment')
+    from decimal import localcontext
+    with localcontext() as context:
+        context.prec=6 # Caller precision cannot change validation or the error bound.
+        c=m.step_time_check({'raw_timestamp_us':start,'dur':duration,'args':{'Iteration End':end}})
+    assert Decimal(c['allowed_error_max_us'])==Decimal(expected_bound)
+    assert (c['status']=='CONSISTENT_WITH_SERIALIZED_PRECISION') is accepted
+
+
+@pytest.mark.parametrize('damage',[None,'out_of_bound'])
+def test_all_38_time_checks_preserve_json_precision_and_report_failures(tmp_path,monkeypatch,damage):
+    _,trace,_=modules(monkeypatch)
+    p=tmp_path/'msprof.json';events,meta=step_timeline(p)
+    # The high precision duration must not be rounded by JSON -> binary float.
+    for e in events:
+        if e.get('cat')=='Iteration Time':e['dur']='19900.0007305461070001'
+    if damage:next(e for e in events if e['name']=='Iteration 5')['dur']='19900.0010000010001'
+    text=json.dumps(events).replace('"19900.0007305461070001"','19900.0007305461070001').replace('"19900.0010000010001"','19900.0010000010001')
+    # Also cover numeric epoch timestamp tokens, not only JSON strings.
+    import re
+    text=re.sub(r'"(1792389[0-9]+\.\d+)"',r'\1',text)
+    p.write_text(text);r=trace.parse_timeline(p,meta,set());audit=r['assignment_evidence']
+    assert len(audit['step_time_checks'])==38
+    assert audit['step_time_checks'][0]['raw_duration_us']=='19900.0007305461070001'
+    assert audit['step_time_checks'][0]['raw_start_us']=='1792389259308575.990'
+    assert audit['step_time_summary']['marker_count']==38
+    assert audit['step_time_summary']['consistent_count']==(37 if damage else 38)
+    assert audit['step_time_summary']['rejected_count']==int(bool(damage))
+    if damage:
+        assert r['device_assignment']=='UNRESOLVED_DEVICE_ASSIGNMENT'
+        assert any('serialized precision bound' in reason for reason in audit['remaining_failure_reasons'])
+        assert all(not c['tasks'] for c in r['iterations'])
+    else:
+        assert r['device_assignment']=='DEVICE_STEPS_VERIFIED'
+        assert audit['remaining_failure_reasons']=={}
+        # No extension/clipping of Step or Kernel bounds to consume the error.
+        assert r['all_iterations'][0]['device_window']=={'start_us':300.,'end_us':20200.}
+        assert next(t for t in r['all_iterations'][0]['tasks'] if t['name']=='head')['duration_us']==7100.

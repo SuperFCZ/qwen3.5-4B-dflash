@@ -133,7 +133,8 @@ def task_shapes(event,metadata):
 
 def parse_timeline(path,metadata,head_names):
     if Path(path).stat().st_size>512*1024*1024: raise ValueError('timeline exceeds 512 MiB analysis limit')
-    data=json.loads(Path(path).read_text()); events=data.get('traceEvents',[]) if isinstance(data,dict) else data
+    # Preserve original decimal tokens (including trailing zeros) for Step checks.
+    data=json.loads(Path(path).read_text(),parse_float=str); events=data.get('traceEvents',[]) if isinstance(data,dict) else data
     if not isinstance(events,list) or any(not isinstance(e,dict) for e in events): raise ValueError('not Chrome trace events')
     events,origin=relative_clock(events)
     hardware=set()

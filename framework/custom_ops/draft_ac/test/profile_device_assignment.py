@@ -1,6 +1,6 @@
 """Observed CANN9 Step Trace attribution, independent of Host wall-time clipping."""
 from collections import defaultdict, Counter
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 import re
 
 
@@ -24,6 +24,50 @@ def step_marker(event, threads):
     return None
 
 
+def step_time_check(event):
+    """Independent decimal rounding of S, E, D: |D-(E-S)| <= (qS+qE+qD)/2.
+
+    This checks serialization consistency only. It never expands or corrects
+    the recorded device interval used to assign tasks. JSON numeric tokens must
+    arrive as strings, before any binary float conversion.
+    """
+    check=dict(status='REJECTED',raw_start_us=event.get('raw_timestamp_us'),
+               raw_end_us=args(event).get('iterationend'),raw_duration_us=str(event.get('dur')))
+    try:
+        start=Decimal(check['raw_start_us']);stop=Decimal(str(check['raw_end_us']))
+        duration=Decimal(check['raw_duration_us'])
+        if not all(x.is_finite() for x in (start,stop,duration)) or start<0 or stop<=start or duration<0:
+            raise ValueError('invalid Step timestamp/duration')
+        # Enough decimal digits for cancellation of the epoch and the finest
+        # source field; do not depend on the process-wide Decimal precision.
+        precision=max(50,max(x.adjusted() for x in (start,stop,duration))-min(x.as_tuple().exponent for x in (start,stop,duration))+8)
+        with localcontext() as context:
+            context.prec=precision
+            quanta=[Decimal(1).scaleb(x.as_tuple().exponent) for x in (start,stop,duration)]
+            elapsed=stop-start;error=duration-elapsed;bound=sum(quanta)/2
+            check.update(resolution_us={k:str(q) for k,q in zip(('start','end','duration'),quanta)},
+                         endpoint_elapsed_us=str(elapsed),signed_error_us=str(error),absolute_error_us=str(abs(error)),
+                         allowed_error_min_us=str(-bound),allowed_error_max_us=str(bound),
+                         endpoint_rounding_bound_us=str((quanta[0]+quanta[1])/2),
+                         duration_rounding_bound_us=str(quanta[2]/2),
+                         bound_rule='(start_resolution + end_resolution + duration_resolution) / 2; independent decimal rounding')
+            if abs(error)>bound:raise ValueError('inconsistent Iteration End/duration: exceeds serialized precision bound')
+        check['status']='CONSISTENT_WITH_SERIALIZED_PRECISION'
+    except (KeyError,TypeError,InvalidOperation,ValueError) as error:
+        check['reason']=str(error)
+    return check
+
+
+def time_check_summary(checks):
+    valid=[c for c in checks if 'signed_error_us' in c]
+    def extent(key):
+        values=[Decimal(c[key]) for c in valid]
+        return dict(min=str(min(values)),max=str(max(values))) if values else None
+    return dict(marker_count=len(checks),consistent_count=sum(c['status']=='CONSISTENT_WITH_SERIALIZED_PRECISION' for c in checks),
+                rejected_count=sum(c['status']=='REJECTED' for c in checks),signed_error_us=extent('signed_error_us'),
+                absolute_error_us=extent('absolute_error_us'),allowed_positive_bound_us=extent('allowed_error_max_us'))
+
+
 def assign(events, hardware_events, windows, origin):
     threads=defaultdict(set)
     for e in events:
@@ -37,7 +81,7 @@ def assign(events, hardware_events, windows, origin):
         else:tasks.append(e)
     result=dict(rule='CANN9 Step Trace start anchored to unique Host Execute/Sync; full task interval contained in same-model device iteration',
                 metadata=metadata,excluded_iteration_markers=[],unconfirmed_markers=quarantine,
-                unresolved_tasks=[],outside_host_tasks=[],errors=[],status='UNRESOLVED_DEVICE_ASSIGNMENT')
+                unresolved_tasks=[],outside_host_tasks=[],errors=[],step_time_checks=[],status='UNRESOLVED_DEVICE_ASSIGNMENT')
     owners={};proof={};bounds={};marker_by_call={}
     # A repeated connection_id/Task Id describes a graph task, not a call ID.
     result['task_connection_ids']=dict(Counter(str(args(t).get('connectionid')) for t in tasks))
@@ -46,15 +90,15 @@ def assign(events, hardware_events, windows, origin):
         for m in markers:
             e=m['event'];info={**raw(e),**{k:m[k] for k in ('model_id','iteration_id')}}
             result['excluded_iteration_markers'].append(info)
-            try:
-                start=Decimal(e['raw_timestamp_us']);stop=Decimal(str(args(e)['iterationend']))
-                # Check only the declared timestamp's decimal serialization precision.
-                # This is NOT a task assignment tolerance; intervals are never expanded.
-                quantum=Decimal(1).scaleb(stop.as_tuple().exponent)
-                if (start+Decimal(str(e['dur']))).quantize(quantum)!=stop or stop<=start:raise ValueError('inconsistent Iteration End/duration')
-                begin=float(start-Decimal(origin));end=float(stop-Decimal(origin))
-            except (KeyError,InvalidOperation,ValueError) as error:
-                result['errors'].append(dict(marker=info,reason=str(error)));continue
+            check=step_time_check(e)
+            result['step_time_checks'].append(dict(iteration_id=m['iteration_id'],model_id=m['model_id'],event_index=e['event_index'],**check))
+            info['time_consistency']=check
+            if check['status']=='REJECTED':
+                result['errors'].append(dict(marker=info,reason=check['reason']));continue
+            with localcontext() as context:
+                context.prec=50
+                begin=float(Decimal(check['raw_start_us'])-Decimal(origin))
+                end=float(Decimal(str(check['raw_end_us']))-Decimal(origin))
             hits=[i for i,w in enumerate(windows) if w['start']<=begin<w['end']]
             info.update(start_us=begin,end_us=end,host_candidates=hits)
             if len(hits)!=1:result['errors'].append(dict(marker=info,reason='Step start has no unique Host call'));continue
@@ -106,6 +150,8 @@ def assign(events, hardware_events, windows, origin):
     if markers and (result['errors'] or quarantine):
         owners.clear();proof.clear()
         result['unresolved_tasks']=[dict(event=raw(e),reason='invalid Step/Host mapping') for e in tasks]
+    result['step_time_summary']=time_check_summary(result['step_time_checks'])
+    result['remaining_failure_reasons']=dict(Counter([x['reason'] for x in result['errors']]+[x['reason'] for x in result['unresolved_tasks']]+['unconfirmed Iteration marker']*len(quarantine)))
     result['assigned_task_count']=len(owners);result['real_event_count']=len(tasks)
     result['device_windows']={str(i):dict(start_us=lo,end_us=hi) for i,(lo,hi) in bounds.items()}
     return owners,proof,result,tasks
