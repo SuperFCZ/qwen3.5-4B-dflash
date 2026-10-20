@@ -221,15 +221,21 @@ template <typename T> void DataCopy(Tensor<T> dst, Tensor<T> src, uint32_t count
     ++cpuMetrics.copies;
 }
 template <typename T> void DataCopy(Tensor<T> dst, Tensor<T> src, const DataCopyParams &params) {
-    static_assert(sizeof(T) == 2);
-    assert(params.blockCount == 80 && params.blockLen == 8 && params.srcStride == 152 && params.dstStride == 0);
+    const bool stageA = sizeof(T)==2 && params.blockCount==80;
+    if (stageA) assert(params.blockLen==8 && params.srcStride==152 && params.dstStride==0);
+    else assert((sizeof(T)==1 && params.blockCount==8 && params.blockLen==64 && params.srcStride==19392 && params.dstStride==0) ||
+                (sizeof(T)==2 && params.blockCount==2 && params.blockLen==4 && params.srcStride==1212 && params.dstStride==0));
+    assert(params.blockCount>0 && params.blockCount<=4095 && params.blockLen>0);
     const auto count = params.blockLen * 32 / sizeof(T);
     for (uint32_t row = 0; row < params.blockCount; ++row)
         DataCopy(dst[row * (params.blockLen + params.dstStride) * 32 / sizeof(T)],
                  src[row * (params.blockLen + params.srcStride) * 32 / sizeof(T)], count);
-    cpuMetrics.copies -= params.blockCount; // raw q/scale counter stays separate
-    ++cpuMetrics.aStageCalls;
-    cpuMetrics.aStageBytes += params.blockCount * params.blockLen * 32;
+    cpuMetrics.copies -= params.blockCount;
+    if (stageA) {
+        ++cpuMetrics.aStageCalls;
+        cpuMetrics.aStageBytes += params.blockCount * params.blockLen * 32;
+    } else ++cpuMetrics.copies; // one raw DMA instruction, same byte writes/fences
+
 }
 template <typename D, typename S> void Cast(Tensor<D> dst, Tensor<S> src, RoundMode, uint32_t count) {
     ++cpuMetrics.castCalls;

@@ -47,4 +47,12 @@
 // Host leaves the entire final 8 KiB unallocated by TPipe/Matmul.
 #define DFLASH_GROUP_QUANT_BROADCAST_RESERVED_BYTES 8192U
 
+// Gate-only DMA experiment. Default preserves the accepted A5.1 instruction loop.
+#ifndef DFLASH_GROUP_QUANT_GATE_COPY_MODE
+#define DFLASH_GROUP_QUANT_GATE_COPY_MODE 0U
+#endif
+#define DFLASH_GROUP_QUANT_GATE_COPY(m, k, n, tile) \
+    (DFLASH_GROUP_QUANT_GATE_COPY_MODE == 1U && (m) == 16U && (k) == 2560U && \
+     (n) == 19456U && (tile) == 256U)
+
 #endif

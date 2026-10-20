@@ -104,7 +104,8 @@ static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_
             const auto chunks = owned * (k / tileK);
             assert(cpuMetrics.aStageCalls == (stageA ? chunks : 0));
             assert(cpuMetrics.aStageBytes == (stageA ? chunks * 20480ULL : 0));
-            assert(cpuMetrics.copies == chunks * (tileK / 32 + tileK / 128));
+            const bool gateCopy = DFLASH_GROUP_QUANT_GATE_COPY_MODE==1 && m==16 && k==2560 && n==19456 && tileK==256;
+            assert(cpuMetrics.copies == chunks * (gateCopy ? 2 : tileK / 32 + tileK / 128));
             assert(cpuMetrics.eventAllocations == (owned && prefetch ? 2U : 0U));
             assert(cpuMetrics.libraryWithPendingSignals == (prefetch ? owned * (k / tileK - 1) : 0));
             assert(cpuMetrics.castsWithPendingDma == (prefetch ? owned * (k / tileK - 1) * (tileK / 32) : 0));

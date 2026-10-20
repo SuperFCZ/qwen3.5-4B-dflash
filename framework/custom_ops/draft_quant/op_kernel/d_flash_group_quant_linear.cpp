@@ -12,6 +12,11 @@ static_assert(DFLASH_GROUP_QUANT_SCALE_MODE == 0U || DFLASH_GROUP_QUANT_DEQUANT_
 static_assert(DFLASH_GROUP_QUANT_PIPELINE_MODE == 0U || DFLASH_GROUP_QUANT_DEQUANT_MODE == 1U,
               "raw prefetch requires batched dequantization");
 
+static_assert(DFLASH_GROUP_QUANT_GATE_COPY_MODE <= 1U, "unsupported Gate copy mode");
+static_assert(DFLASH_GROUP_QUANT_GATE_COPY_MODE == 0U ||
+              (DFLASH_GROUP_QUANT_K_TILE == 256U && DFLASH_GROUP_QUANT_SCALE_MODE == 1U &&
+               DFLASH_GROUP_QUANT_DEQUANT_MODE == 1U), "Gate 2D copy requires A5.1 K256 broadcast baseline");
+
 using namespace matmul;
 
 namespace {
@@ -23,8 +28,21 @@ constexpr uint32_t kNzN0 = 16;
 __aicore__ inline void CopyRawTile(AscendC::LocalTensor<int8_t> qLocal,
     AscendC::LocalTensor<half> sLocal, AscendC::GlobalTensor<int8_t> qGm,
     AscendC::GlobalTensor<half> sGm, uint32_t globalN, uint32_t tileK,
-    uint32_t nBegin, uint32_t kBegin)
+    uint32_t nBegin, uint32_t kBegin, bool gateCopy = false)
 {
+#if DFLASH_GROUP_QUANT_GATE_COPY_MODE == 1
+    if (gateCopy) {
+        // Basic DataCopy: blockLen and gap are 32B units (not DataCopyPad bytes).
+        // Eight K32 NZ planes -> the same contiguous [8,64,32] UB payload.
+        const AscendC::DataCopyParams qCopy{8, 64, 19392, 0};
+        const AscendC::DataCopyParams sCopy{2, 4, 1212, 0};
+        const uint32_t src = (kBegin / kNzK0 * (globalN / kNzN0) +
+                              nBegin / kNzN0) * kNzN0 * kNzK0;
+        AscendC::DataCopy(qLocal, qGm[src], qCopy);
+        AscendC::DataCopy(sLocal, sGm[(kBegin / kGroup) * globalN + nBegin], sCopy);
+        return;
+    }
+#endif
     // NZ's K32 planes have globalN/16 channel blocks. A 64-column
     // slice is contiguous within a plane, but successive planes are not.
     for (uint32_t k1 = 0; k1 < tileK / kNzK0; ++k1) {
@@ -130,7 +148,8 @@ __aicore__ inline void RunGroupQuantLinear(
                     AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(inputVector);
                 }
             } else {
-                CopyRawTile(qLocal, sLocal, qGm, sGm, globalN, tileK, nBegin, kBegin);
+                CopyRawTile(qLocal, sLocal, qGm, sGm, globalN, tileK, nBegin, kBegin,
+                    DFLASH_GROUP_QUANT_GATE_COPY(globalM, globalK, globalN, tileK));
                 if constexpr (StageA) {
                     // KV M80 only: one 2-D GM->UB instruction, 80 rows of
                     // 256 contiguous bytes; skip 4864 bytes between GM rows.

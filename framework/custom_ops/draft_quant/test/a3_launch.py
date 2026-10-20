@@ -59,7 +59,7 @@ def core_limit(value):
     return result
 
 
-def configure_build(header, report, limit, mode="batched", kernel_header=None, pipeline_mode="serial", kv_m80_mode="baseline", scale_mode="scalar", k_tile=128):
+def configure_build(header, report, limit, mode="batched", kernel_header=None, pipeline_mode="serial", kv_m80_mode="baseline", scale_mode="scalar", k_tile=128, gate_copy_mode="loop"):
     limit = core_limit(limit)
     header, report = Path(header).resolve(), Path(report).resolve()
     if header == CONFIG.resolve():
@@ -97,6 +97,11 @@ def configure_build(header, report, limit, mode="batched", kernel_header=None, p
                                     f"#define DFLASH_GROUP_QUANT_SCALE_MODE {SCALE_MODES[scale_mode]}U")
     selected_k_tile((16,512,64),k_tile)
     configured = configured.replace("#define DFLASH_GROUP_QUANT_K_TILE 128U", f"#define DFLASH_GROUP_QUANT_K_TILE {k_tile}U")
+    if gate_copy_mode not in ("loop","2d") or (gate_copy_mode=="2d" and (k_tile!=256 or mode!="batched" or scale_mode!="broadcast")):
+        raise ValueError("Gate copy requires loop/2d and A5.1 K256/batched/broadcast")
+    if original.count("#define DFLASH_GROUP_QUANT_GATE_COPY_MODE 0U")!=1:
+        raise ValueError("unexpected Gate copy declaration")
+    configured = configured.replace("#define DFLASH_GROUP_QUANT_GATE_COPY_MODE 0U", f"#define DFLASH_GROUP_QUANT_GATE_COPY_MODE {int(gate_copy_mode=='2d')}U")
     header.write_text(configured)
     if kernel_header is not None:
         kernel_header = Path(kernel_header).resolve()
@@ -108,8 +113,10 @@ def configure_build(header, report, limit, mode="batched", kernel_header=None, p
                HERE / "op_kernel/d_flash_group_quant_linear_build_config.h",
                HERE / "test/main.cpp", HERE / "test/native_om.cpp", HERE / "test/runner_common.h"]
     sources += [HERE / "test" / name for name in ("a3_launch.py", "run_a2.py", "run_a4.py", "run_a41.py", "a4_contract.py", "compare_a5.py", "run_a5.py", "profile_a31.py", "run_a51.py", "run_a51_pair.py", "compare_a51.py", "run_suite.py", "reference.py", "a2_common.py", "a51_fallback.py")]
+    sources += [HERE / "test" / name for name in ("run_gate_copy.py", "run_gate_copy_pair.py", "gate_copy_sdk.py")]
+    sources += [HERE / "run_server.sh", HERE / "run_gate_copy.sh"]
     write_json(report, {"abi": "dflash-group-quant-linear-build-v5", "policy": POLICY,
-                        "kv_m80_mode": kv_m80_mode, "scale_mode": scale_mode, "k_tile": k_tile, "k_tile_policy": K_TILE_POLICY,
+                        "gate_copy_mode": gate_copy_mode, "kv_m80_mode": kv_m80_mode, "scale_mode": scale_mode, "k_tile": k_tile, "k_tile_policy": K_TILE_POLICY,
                         "tiling_abi": "full-m-v2", "launch_version": 5,
                         "pipeline_mode": pipeline_mode,
                         "dequant_mode": mode, "kernel_header": str(kernel_header) if kernel_header else None,
@@ -164,6 +171,12 @@ def load_build_config(path):
             raise ValueError("generated K tile differs from build configuration")
     if config.get("k_tile_policy",K_TILE_POLICY)!=K_TILE_POLICY:
         raise ValueError("unsupported K tile policy")
+    if "gate_copy_mode" in config:
+        mode=config["gate_copy_mode"]
+        if mode not in ("loop","2d") or f"#define DFLASH_GROUP_QUANT_GATE_COPY_MODE {int(mode=='2d')}U" not in header.read_text():
+            raise ValueError("Gate copy configuration/header mismatch")
+        if mode=="2d" and (config.get("k_tile")!=256 or config.get("scale_mode")!="broadcast" or config.get("dequant_mode")!="batched"):
+            raise ValueError("Gate copy requires K256/batched/broadcast")
     return config
 
 
@@ -274,11 +287,12 @@ def main():
     parser.add_argument("--kv-m80-mode", choices=tuple(KV_M80_MODES), default="baseline")
     parser.add_argument("--k-tile",type=int,choices=(128,256),default=128)
     parser.add_argument("--scale-mode", choices=tuple(SCALE_MODES), default="scalar")
+    parser.add_argument("--gate-copy-mode", choices=("loop","2d"), default="loop")
     parser.add_argument("--kernel-header", type=Path)
     parser.add_argument("--header", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
-    configure_build(args.header, args.report, args.core_limit, args.dequant_mode, args.kernel_header, args.pipeline_mode, args.kv_m80_mode, args.scale_mode, args.k_tile)
+    configure_build(args.header, args.report, args.core_limit, args.dequant_mode, args.kernel_header, args.pipeline_mode, args.kv_m80_mode, args.scale_mode, args.k_tile, args.gate_copy_mode)
 
 
 if __name__ == "__main__":

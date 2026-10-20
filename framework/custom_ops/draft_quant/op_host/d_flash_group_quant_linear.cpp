@@ -264,6 +264,9 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
                  static_cast<long long>(m), static_cast<long long>(k), static_cast<long long>(n), static_cast<long long>(tileK),
                  availableCores, coreLimit, blockDim, static_cast<long long>(n / kTileN),
                  context->GetWorkspaceSizes(1)[0]);
+    std::fprintf(stdout, "DFLASH_GROUP_QUANT_GATE_COPY {\"version\":1,\"mode\":\"%s\",\"selected\":\"%s\"}\n",
+                 DFLASH_GROUP_QUANT_GATE_COPY_MODE == 1 ? "2d" : "loop",
+                 DFLASH_GROUP_QUANT_GATE_COPY(m,k,n,tileK) ? "2d" : "loop");
     std::fprintf(stdout, "DFLASH_GROUP_QUANT_SCALE {\"version\":1,\"scale_mode\":\"%s\","
                          "\"selected_scale\":\"%s\",\"broadcast_bytes\":%llu,\"sdk_reserved_bytes\":%llu}\n",
                  DFLASH_GROUP_QUANT_SCALE_MODE == 1 ? "broadcast" : "scalar",

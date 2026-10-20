@@ -230,3 +230,11 @@ owner 和只写一次。A3.2 新增延迟 DMA 与事件生命周期检查；模�
 A1 结果只验收本页的合成形状。报告中原生 OM、真实模型投影、完整 Draft 和性能仍为
 `NOT_RUN`。A2 的独立验证入口见 [A2.md](A2.md)，M32/M64/M80 的新验收见 [A4.md](A4.md)；后续还需 custom 图接入以及
 [OPTIMIZATION.md](../../../docs/OPTIMIZATION.md) 规定的同输入原生 OM 和完整模型验收。
+
+## Gate/Up 二维搬运独立实验
+
+[Gate copy 2D 方案与验收](GATE_COPY_2D.md) 只对 M16/K2560/N19456 的 N64/K256 Gate/Up
+启用 opt-in 的 8→1 INT8、2→1 Scale DataCopy。默认 A5.1 loop 保留；不改其余投影、
+buffer、数学、同步或生产 Draft。最小入口 `run_gate_copy.sh` 复用既有 A5.1 C16
+Capture/Native OM，先无计时 bitwise 验证，再运行同口径 5/30 的 A/B。
+CANN 编译、NPU 正确性/性能、完整 Draft Token/KV 在服务器执行前均为 NOT_RUN。

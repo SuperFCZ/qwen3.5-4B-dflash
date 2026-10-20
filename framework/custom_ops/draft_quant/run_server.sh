@@ -11,12 +11,12 @@ dequant_mode=${DFLASH_DEQUANT_MODE:-batched}
 pipeline_mode=${DFLASH_PIPELINE_MODE:-serial}
 k_tile=${DFLASH_K_TILE:-128}
 if [[ "$k_tile" != 128 && "$k_tile" != 256 ]]; then echo 'DFLASH_K_TILE must be 128 or 256' >&2; exit 1; fi
-if [[ "$k_tile" == 256 && "$suite" != a51 ]]; then echo 'K256 requires the staged a51 suite' >&2; exit 1; fi
+if [[ "$k_tile" == 256 && "$suite" != a51 && "$suite" != gate-copy ]]; then echo 'K256 requires the staged a51 suite' >&2; exit 1; fi
 scale_mode=${DFLASH_SCALE_MODE:-scalar}
 if [[ "$scale_mode" != scalar && "$scale_mode" != broadcast ]]; then
     echo "DFLASH_SCALE_MODE must be scalar or broadcast" >&2; exit 1
 fi
-if [[ "$scale_mode" == broadcast && ( "$dequant_mode" != batched || ( "$suite" != a4 && "$suite" != a51 ) ) ]]; then
+if [[ "$scale_mode" == broadcast && ( "$dequant_mode" != batched || ( "$suite" != a4 && "$suite" != a51 && "$suite" != gate-copy ) ) ]]; then
     echo "A5 broadcast requires batched dequantization and the full a4 suite" >&2; exit 1
 fi
 kv_m80_mode=${DFLASH_KV_M80_MODE:-baseline}
@@ -42,7 +42,7 @@ if [[ ! "$core_limit" =~ ^(0|[1-9][0-9]{0,4})$ ]] || (( core_limit > 65535 )); t
     echo "DFLASH_CORE_LIMIT must be 0..65535 (0=auto, 1=single-core control)" >&2
     exit 1
 fi
-if [[ "$suite" != a1 && "$suite" != tiny && "$suite" != a2 && "$suite" != a3 && "$suite" != a31 && "$suite" != a32 && "$suite" != a4 && "$suite" != a41 && "$suite" != a51 ]]; then
+if [[ "$suite" != a1 && "$suite" != tiny && "$suite" != a2 && "$suite" != a3 && "$suite" != a31 && "$suite" != a32 && "$suite" != a4 && "$suite" != a41 && "$suite" != a51 && "$suite" != gate-copy ]]; then
     echo "DFLASH_SUITE must be a1, tiny, a2, a3, a31, a32, a4 or a41" >&2
     exit 1
 fi
@@ -63,6 +63,16 @@ if [[ "$suite" == a4 || "$suite" == a41 || "$suite" == a51 ]]; then
             echo "a4 requires $name pointing to the corresponding C16/C64 capture or native OM manifest; see A4.md" >&2
             exit 1
         fi
+    done
+fi
+
+gate_copy_mode=${DFLASH_GATE_COPY_MODE:-loop}
+if [[ "$gate_copy_mode" != loop && "$gate_copy_mode" != 2d ]]; then echo 'DFLASH_GATE_COPY_MODE must be loop or 2d' >&2; exit 1; fi
+if [[ "$gate_copy_mode" == 2d && "$suite" != gate-copy ]]; then echo '2d Gate copy is restricted to gate-copy experiment' >&2; exit 1; fi
+if [[ "$suite" == gate-copy ]]; then
+    if [[ "$k_tile" != 256 || "$scale_mode" != broadcast || "$dequant_mode" != batched ]]; then echo 'gate-copy requires K256/broadcast/batched' >&2; exit 1; fi
+    for name in A4_C16_BUNDLE A4_C16_NATIVE_OM_MANIFEST GATE_GOLDEN_SUITE; do
+        if [[ ! -f "${!name:-}" ]]; then echo "gate-copy requires $name" >&2; exit 1; fi
     done
 fi
 
@@ -108,6 +118,10 @@ git -C "$here" rev-parse HEAD > "$run_root/source-commit.txt"
 phase=path_preflight
 "$python_bin" "$here/test/opp_preflight.py" --root "$build_root" --report "$run_root/path-preflight.json"
 
+if [[ "$suite" == gate-copy ]]; then
+    phase=sdk_copy_preflight
+    "$python_bin" "$here/test/gate_copy_sdk.py" --cann-root "$cann_root" --report "$run_root/sdk-copy.json"
+fi
 phase=msopgen
 msopgen gen -i "$here/DFlashGroupQuantLinear.json" -c ai_core-Ascend310P3 -lan cpp -out "$op_project"
 if [[ ! -f "$op_project/op_kernel/d_flash_group_quant_linear.cpp" ]]; then
@@ -120,7 +134,7 @@ cp "$here/op_host/d_flash_group_quant_linear.cpp" \
 cp "$here/op_kernel/d_flash_group_quant_linear.cpp" "$op_project/op_kernel/"
 phase=configure_core_limit
 "$python_bin" "$here/test/a3_launch.py" --core-limit "$core_limit" --dequant-mode "$dequant_mode" \
-    --pipeline-mode "$pipeline_mode" --kv-m80-mode "$kv_m80_mode" --scale-mode "$scale_mode" --k-tile "$k_tile" \
+    --pipeline-mode "$pipeline_mode" --kv-m80-mode "$kv_m80_mode" --scale-mode "$scale_mode" --k-tile "$k_tile" --gate-copy-mode "$gate_copy_mode" \
     --header "$op_project/op_host/d_flash_group_quant_linear_build_config.h" \
     --kernel-header "$op_project/op_kernel/d_flash_group_quant_linear_build_config.h" \
     --report "$run_root/build-config.json"
@@ -158,7 +172,13 @@ phase=build_runner
 cmake -S "$here/test" -B "$build_root/test" -DCANN_ROOT="$cann_root" -DASCEND_OPP_PATH="$install_dir" -DDFLASH_K_TILE="$k_tile"
 cmake --build "$build_root/test" --parallel
 phase=correctness_suite
-if [[ "$suite" == a4 || "$suite" == a41 || "$suite" == a51 ]]; then
+if [[ "$suite" == gate-copy ]]; then
+    IFS=',' read -r -a gate_layers <<< "${GATE_LAYERS:-0}"
+    "$python_bin" "$here/test/run_gate_copy.py" --build-config "$run_root/build-config.json" \
+        --bundle "$A4_C16_BUNDLE" --native-om-manifest "$A4_C16_NATIVE_OM_MANIFEST" --golden-suite "$GATE_GOLDEN_SUITE" \
+        --runner "$build_root/test/dflash_group_quant_linear_test" --om-runner "$build_root/test/dflash_native_om_test" \
+        --output-dir "$data_dir" --device-id "$device_id" --layers "${gate_layers[@]}" --warmup 5 --repetitions 30
+elif [[ "$suite" == a4 || "$suite" == a41 || "$suite" == a51 ]]; then
     coordinator=run_a4.py
     extra_args=()
     if [[ "$suite" == a41 ]]; then coordinator=run_a41.py; extra_args=(--stop-after "$stop_after"); fi
