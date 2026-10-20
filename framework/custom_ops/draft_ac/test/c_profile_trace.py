@@ -9,6 +9,7 @@ import statistics
 from decimal import Decimal, InvalidOperation
 from c_profile_graph import category
 from profile_device_assignment import assign
+from profile_step_evidence import load as load_step_evidence
 
 
 def norm(value): return re.sub('[^a-z0-9]','',str(value).lower())
@@ -175,13 +176,14 @@ def parse_timeline(path,metadata,head_names):
         sync=following[0];used_syncs.add(id(sync));end=float(sync['ts'])+float(sync['dur'])
         if end>next_start: return result
         windows.append(dict(start=start,end=end,launch_end=launch_end,launch=launch,sync=sync))
-    owners,proof,assignment,tasks=assign(events,tasks,windows,origin)
+    owners,proof,assignment,tasks=assign(events,tasks,windows,origin,load_step_evidence(Path(path).parent))
     result['assignment_evidence']=assignment
     all_calls=[]
     for index,w in enumerate(windows):
         start,end,launch,sync=w['start'],w['end'],w['launch'],w['sync']
-        selected=[e for e in tasks if owners.get(e['event_index'])==index]
-        crossing=[dict(event_index=e['event_index'],name=e.get('name'),pid=e.get('pid'),tid=e.get('tid'),cat=e.get('cat'),args=e.get('args',{}),start_us=float(e['ts']),duration_us=float(e['dur']),owner=owners.get(e['event_index']),classification='RESOLVED_STEP' if e['event_index'] in owners else 'UNRESOLVED_DEVICE_ASSIGNMENT') for e in tasks
+        selected=[e for e in tasks if owners.get(e['event_index'])==index and proof[e['event_index']]['method']!='PRE_STEP_TRANSFER']
+        transfers=[t for t in assignment['pre_step_transfers'] if t['call_index']==index]
+        crossing=[dict(event_index=e['event_index'],name=e.get('name'),pid=e.get('pid'),tid=e.get('tid'),cat=e.get('cat'),args=e.get('args',{}),start_us=float(e['ts']),duration_us=float(e['dur']),owner=owners.get(e['event_index']),classification=proof[e['event_index']]['method'] if e['event_index'] in owners else 'UNRESOLVED_DEVICE_ASSIGNMENT') for e in tasks
                   if float(e['ts'])<end and float(e['ts'])+float(e['dur'])>start and
                   not (start<=float(e['ts']) and float(e['ts'])+float(e['dur'])<=end)]
         intervals=[];head=[];groups=collections.defaultdict(list);details=[]
@@ -195,6 +197,7 @@ def parse_timeline(path,metadata,head_names):
         all_calls.append(dict(index=index,phase='correctness_before' if index<2 else 'warmup' if index<7 else 'timed' if index<37 else 'postcheck',
             execute_api=dict(name=launch['name'],timestamp_us=launch.get('raw_timestamp_us'),relative_start_us=start,connection_id=launch.get('args',{}).get('connection_id')),
             sync_api=dict(name=sync['name'],timestamp_us=sync.get('raw_timestamp_us'),relative_start_us=float(sync['ts']),connection_id=sync.get('args',{}).get('connection_id')),
+            pre_step_transfers=transfers,pre_step_transfer_count=len(transfers),pre_step_transfer_duration_us=sum(t['duration_us'] for t in transfers),
             device_window=assignment['device_windows'].get(str(index)),host_window_us=end-start,host_launch_api_us=float(launch['dur']),host_sync_api_us=float(sync['dur']),
             device_envelope_us=span,device_occupancy_us=occupancy,head_occupancy_us=head_time,
             other_exclusive_occupancy_us=occupancy-head_time,device_gap_us=span-occupancy,boundary_crossing_tasks=crossing,

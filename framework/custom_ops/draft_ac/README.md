@@ -779,3 +779,59 @@ Model/Task/物理 Stream、重复任务和不重叠检查均不变。
 后续归属阻塞原因。`linear-analysis.md` 同时输出每个 Step 的表格和失败原因。
 序列化检查通过不等同于 DEVICE_STEPS_VERIFIED，更不等同于 ATTRIBUTION_VERIFIED。
 完整服务器离线重分析仍待运行；未运行 NPU、不修改任何历史产物。
+
+### 2026-10-20：Step 前搬运与 Duration 元数据异常
+
+新增 `PRE_STEP_TRANSFER` 的独立归属/统计，不扩大任何 Step 或 Host 窗口：
+
+- 只处理明确 `Task Type=MEMCPY_ASYNC`、带有效 Model/Task/物理 Stream ID 的任务。
+- 任务完整落在唯一 Host Execute/Sync 内，且完整位于前一设备 Step 结束至本轮
+  Step 开始之间；Model 和设备 PID 必须匹配。首轮不虚构前一 Step。
+- 每个搬运的 connection_id 必须精确匹配唯一 Host Execute，且与时间/Model 归属
+  一致。Model/物理 Stream/Batch/Subtask/名称组合在 38 轮各出现一次；Task ID 可随
+  轮次变化，仍检查每轮冲突。数量相同本身不足以通过：同时核对各轮区间和流上前后
+  任务不重叠，并保存相邻流事件、本轮第一
+  个 Step 任务、前轮最后一个任务及原始 args。没有满足条件的项仍为 unresolved。
+- 仍执行每轮跨阶段的 Task 身份去重；同一个事件只能有一个 owner。
+- 每轮 `pre_step_transfers` / count / duration 独立输出，不混入 `tasks`、Kernel
+  occupancy、Head/Linear/UNKNOWN 时间。搬运 payload/用途无法从时间线证明，不声称
+  它是权重加载或某个输入搬运。`event_accounting` 保留 Step / pre-Step / unresolved /
+  outside 四类数量，范围外事件原始内容仍保留。
+
+W8 Iteration 23 的真实差值 `-0.001128336504 μs` **仍拒绝原序列化一致性检查**，
+原精度上界 `0.0010000000005 μs` 不变。工具读取当前 msprof JSON 同目录既有的
+`step_trace*.csv`，保存路径、SHA256、表头、原始行和时间字段的 Decimal 差值。
+不重新解析原始 profiler 二进制或执行 msprof。
+
+仅当同一 CSV 唯一行有明确 Model/Iteration ID、独立存储且明确为 μs 的 Start/End，
+与 JSON 两个端点精确一致时，才允许继续检查 38 个 Host/Step 对应、非重叠、Model、
+Task、Stream 和完整 Kernel 区间。支持显式 `Iteration Start(us)`/`Start Time(us)`、
+`Iteration End(us)`/`End Time(us)`；未知单位或缺失字段不猜测。若 CSV 只有 End 和
+Duration，绝不能通过相减构造“独立 Start”；`FP Start(us)` 也不会自动视为 Step Start。
+跨产物一致只代表不依赖 Duration 的端点旁证，不代表独立硬件采集。
+
+即便上述归属检查成功，状态仍明确为 `DURATION_METADATA_INCONSISTENT`，不会输出
+`ATTRIBUTION_VERIFIED`。端点旁证不足则保持 `UNRESOLVED_DEVICE_ASSIGNMENT`，原始
+错误、CSV 不支持原因和全部任务保留。异常产生于 profiler 哪一层仍是 `UNPROVEN`。
+FP16 Down 缺少逻辑 NZ Shape 的 UNKNOWN 规则未变。
+
+官方 [msprof 文件参考](https://github.com/mindstudio-docs/master/blob/master/msprof/docs/zh/user_guide/profile_data_file_references.md)
+将 step_trace CSV 的 FP Start、Iteration End 和 Iteration Time 分别列出，并说明
+Host/Device 时间同步可能产生显示偏移。这不能证明本例的具体原因，不能据此扩大容差。
+
+继续运行本节前述 `linear_attribution.py` 命令并指定新的目录。输入仍是带 SHA256
+完整性清单的 `c16-profile-recovered-20261019-070652/c16-diagnostic-report.json`；
+不以派生的 `linear-timeline.json` 替代原始 profiler 身份清单。本地只有 CPU 测试，
+完整 38 个 memcpy 的归属和 W8 异常来源仍待服务器全量离线核对。
+
+本轮用户已回传三轮 FP16 原始事件：Task Id=2/7/37 随调用变化，connection_id=
+4018/4259/4547 分别与 Host Execute 一致，Step 开始减搬运结束分别为
+20.937/40.96375/26.87575 μs；这是上述窄范围 MEMCPY 关联规则的依据，不把同样规则
+推广到 connection_id 重复的 Cube Kernel。
+
+W8 实际 `step_trace_20261019070831.csv` 的第 24 行是 Model 1 / Iteration 23，
+End=`1792393692942644.318`、Duration=`31264.060871663496`，均与 JSON 相同；
+FP Start、BP End 为 N/A，CSV 没有独立 Start。本工具会记录两个字段差值为 0，
+并明确拒绝以 `End - Duration` 补造 Start。因此仅凭这份 CSV，W8 仍为
+`UNRESOLVED_DEVICE_ASSIGNMENT`，并保留 `DURATION_METADATA_INCONSISTENT`，不会声称
+根因已确定或完整归因已验证。需要独立起点证据才可解除此阻塞，不要求重新采集。

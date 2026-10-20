@@ -199,6 +199,7 @@ def analyze(profile,model):
         iterations.append(dict(index=call['index'],phase=call['phase'],execute_api=call['execute_api'],sync_api=call['sync_api'],
             regions_us={k:union(v) for k,v in groups.items()},counts=counts,tasks=tasks,
             host_window_us=call['host_window_us'],host_launch_api_us=call['host_launch_api_us'],host_sync_api_us=call['host_sync_api_us'],
+            pre_step_transfers=call.get('pre_step_transfers',[]),pre_step_transfer_count=call.get('pre_step_transfer_count',0),pre_step_transfer_duration_us=call.get('pre_step_transfer_duration_us',0.),
             device_window=call.get('device_window'),device_occupancy_us=occupied,device_envelope_us=call['device_envelope_us'],device_gap_us=call['device_gap_us'],
             task_sum_minus_union_us=duration_sum-occupied,cross_region_overlap_us=intervals_overlap(groups),
             unknown_occupancy_ratio=union(groups['UNKNOWN'])/occupied if occupied else 0.,
@@ -219,10 +220,10 @@ def analyze(profile,model):
     inventory=stable and all(all(r['counts'][k]==v and len(set(r['linear_node_inventory'][k]))==v for k,v in expected.items()) for r in selected)
     head_complete=all(r['head_components']['matmul']['count']==1 and r['head_components']['argmax']['count']==1 for r in selected)
     device=trace.get('device_assignment','UNRESOLVED_DEVICE_ASSIGNMENT')
-    status=('UNRESOLVED_DEVICE_ASSIGNMENT' if device!='DEVICE_STEPS_VERIFIED' else
+    status=('DURATION_METADATA_INCONSISTENT' if device=='DURATION_METADATA_INCONSISTENT' else 'UNRESOLVED_DEVICE_ASSIGNMENT' if device!='DEVICE_STEPS_VERIFIED' else
             'INCOMPLETE_KERNEL_CLASSIFICATION' if not inventory or not head_complete or any(r['counts']['UNKNOWN'] for r in selected) else 'ATTRIBUTION_VERIFIED')
     keys=('host_window_us','host_launch_api_us','host_sync_api_us','device_occupancy_us','device_envelope_us','device_gap_us',
-          'task_sum_minus_union_us','cross_region_overlap_us','unknown_occupancy_ratio')
+          'task_sum_minus_union_us','cross_region_overlap_us','unknown_occupancy_ratio','pre_step_transfer_count','pre_step_transfer_duration_us')
     return dict(status=status,host_windows='WINDOWS_VERIFIED',device_assignment=device,expected_linear_counts=expected,stable_node_inventory=stable,head_inventory='COMPLETE' if head_complete else 'INCOMPLETE',ffn_inventory='MATCHES_EXPECTED_LAYERS' if inventory else 'INCOMPLETE_OR_DIFFERENT_SHAPES',
                 iterations=iterations,measured_indices=list(range(7,37)),
                 region_statistics_us={k:stats([r['regions_us'][k] for r in selected]) for k in REGIONS},
@@ -253,7 +254,7 @@ def run(args):
             profile=collect(path,graph);add_graph_shapes(profile,mapping);analysis=analyze(profile,model)
             result['models'][model]=dict(profiler=str(path),unprofiled_latency=rows[model]['unprofiled_latency'],graph_shape_evidence=mapping_report,profile=profile,analysis=analysis)
         statuses={v['analysis']['status'] for v in result['models'].values()}
-        result['analysis_status']=next((s for s in ('UNRESOLVED_WINDOWS','UNRESOLVED_DEVICE_ASSIGNMENT','INCOMPLETE_KERNEL_CLASSIFICATION') if s in statuses),'ATTRIBUTION_VERIFIED')
+        result['analysis_status']=next((s for s in ('UNRESOLVED_WINDOWS','UNRESOLVED_DEVICE_ASSIGNMENT','DURATION_METADATA_INCONSISTENT','INCOMPLETE_KERNEL_CLASSIFICATION') if s in statuses),'ATTRIBUTION_VERIFIED')
         result['host_windows']='WINDOWS_VERIFIED' if all(v['analysis'].get('host_windows')=='WINDOWS_VERIFIED' for v in result['models'].values()) else 'UNRESOLVED_WINDOWS'
     except Exception as error:result['analysis_status']='FAILED';result['error']=str(error);raise
     finally:
@@ -273,6 +274,9 @@ def run(args):
                 audit=(r['profile'].get('selected_timeline') or {}).get('assignment_evidence',{})
                 lines+=['', 'Step 时间戳序列化检查：'+json.dumps(audit.get('step_time_summary',{}),ensure_ascii=False),
                         '剩余失败原因：'+json.dumps(audit.get('remaining_failure_reasons',{}),ensure_ascii=False),
+                        'Step 前搬运（不计入 Step Kernel 时间）：'+json.dumps(audit.get('pre_step_summary',{}),ensure_ascii=False),
+                        '设备事件清单：'+json.dumps(audit.get('event_accounting',{}),ensure_ascii=False),
+                        'Duration 元数据警告与 CSV 旁证：'+json.dumps(audit.get('metadata_warnings',[]),ensure_ascii=False),
                         '', '| Iteration | Duration − (End − Start), μs | 允许误差区间, μs | 状态 |',
                         '| --- | --- | --- | --- |']
                 for check in audit.get('step_time_checks',[]):

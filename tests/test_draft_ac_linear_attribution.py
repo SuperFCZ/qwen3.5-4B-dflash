@@ -368,3 +368,156 @@ def test_all_38_time_checks_preserve_json_precision_and_report_failures(tmp_path
         # No extension/clipping of Step or Kernel bounds to consume the error.
         assert r['all_iterations'][0]['device_window']=={'start_us':300.,'end_us':20200.}
         assert next(t for t in r['all_iterations'][0]['tasks'] if t['name']=='head')['duration_us']==7100.
+
+
+def with_pre_step_copies(events):
+    copies=[]
+    for marker in [e for e in events if e.get('cat')=='Iteration Time']:
+        copies.append(dict(ph='X',name='MEMCPY_ASYNC',pid=1,tid=2,ts=str(Decimal(marker['ts'])-Decimal('22.864')),dur='2.5',
+                           args={'Model Id':1,'Task Type':'MEMCPY_ASYNC','Physic Stream Id':2,'Task Id':2+5*(marker['args']['Iteration ID']-1),'Batch Id':0,'Subtask Id':4294967295,'connection_id':1000+12*(marker['args']['Iteration ID']-1)}))
+    events.extend(copies);return copies
+
+
+@pytest.mark.parametrize('damage',[None,'missing','wrong_model','wrong_stream','wrong_task','duplicate','cross_step','previous_step','bad_type','overlap_peer'])
+def test_pre_step_transfers_require_full_identity_and_timing_cohort(tmp_path,monkeypatch,damage):
+    _,trace,_=modules(monkeypatch);m=importlib.import_module('linear_attribution')
+    p=tmp_path/'msprof.json';events,meta=step_timeline(p);copies=with_pre_step_copies(events)
+    e=copies[7]
+    if damage=='missing':events.remove(e)
+    elif damage=='wrong_model':e['args']['Model Id']=2
+    elif damage=='wrong_stream':e['args']['Physic Stream Id']=3
+    elif damage=='wrong_task':e['args']['Task Id']=None
+    elif damage=='duplicate':events.append(dict(e))
+    elif damage=='cross_step':e['dur']=30
+    elif damage=='previous_step':e['ts']=str(Decimal(e['ts'])-100)
+    elif damage=='bad_type':e['args']['Task Type']='AI_CORE'
+    elif damage=='overlap_peer':events.append({**e,'name':'another_task','args':{**e['args'],'Task Id':901}})
+    p.write_text(json.dumps(events));r=trace.parse_timeline(p,meta,set());audit=r['assignment_evidence']
+    assert sum(audit['event_accounting'].values())==audit['real_event_count']
+    if damage:
+        assert audit['status']=='UNRESOLVED_DEVICE_ASSIGNMENT'
+        assert not audit['pre_step_transfers']
+    else:
+        assert audit['status']=='DEVICE_STEPS_VERIFIED'
+        assert len(audit['pre_step_transfers'])==38 and audit['pre_step_summary']['duration_sum_us']==95
+        a=m.analyze({'selected_timeline':r},'fp16')
+        assert a['status']=='ATTRIBUTION_VERIFIED'
+        for row in a['iterations'][7:37]:
+            assert row['pre_step_transfer_count']==1 and row['pre_step_transfer_duration_us']==2.5
+            transfer=row['pre_step_transfers'][0]
+            assert transfer['gap_to_step_start_us']==pytest.approx(20.364)
+            assert transfer['stream_previous'] and transfer['stream_next']
+            assert all(t['name']!='MEMCPY_ASYNC' for t in row['tasks'])
+            assert row['device_occupancy_us']==10280 # 31*100 + Head7100 + ArgMax80; no transfer
+        assert len({t['event']['event_index'] for t in audit['pre_step_transfers']})==38
+
+
+def write_step_csv(path,marker,damage=None):
+    import csv
+    fields={'Model ID':'1','Iteration ID':str(marker['args']['Iteration ID']),
+            'Iteration Start(us)':marker['ts'],'Iteration End(us)':marker['args']['Iteration End'],
+            'Iteration Time(us)':str(marker['dur'])}
+    if damage=='no_start':fields.pop('Iteration Start(us)')
+    elif damage=='no_units':fields['Iteration Start']=fields.pop('Iteration Start(us)')
+    elif damage=='wrong_model':fields['Model ID']='2'
+    elif damage=='end_mismatch':fields['Iteration End(us)']=str(Decimal(fields['Iteration End(us)'])+1)
+    elif damage=='start_mismatch':fields['Iteration Start(us)']=str(Decimal(fields['Iteration Start(us)'])+1)
+    with path.open('w',newline='') as f:
+        w=csv.DictWriter(f,fields.keys());w.writeheader();w.writerow(fields)
+        if damage=='duplicate':w.writerow(fields)
+
+
+@pytest.mark.parametrize('csv_case',[None,'absent','no_start','no_units','wrong_model','end_mismatch','start_mismatch','duplicate'])
+def test_duration_metadata_cannot_be_silently_promoted_by_csv(tmp_path,monkeypatch,csv_case):
+    _,trace,_=modules(monkeypatch);m=importlib.import_module('linear_attribution')
+    p=tmp_path/'msprof.json';events,meta=step_timeline(p,'w8_a')
+    marker=next(e for e in events if e['name']=='Iteration 23')
+    marker['dur']='19899.998871663496' # Same signed discrepancy as real W8 Iteration 23.
+    if csv_case!='absent':write_step_csv(tmp_path/'step_trace_fixture.csv',marker,csv_case)
+    p.write_text(json.dumps(events));r=trace.parse_timeline(p,meta,set());audit=r['assignment_evidence']
+    assert audit['step_time_summary']['rejected_count']==1
+    warning=audit['metadata_warnings'][0]
+    assert warning['status']=='DURATION_METADATA_INCONSISTENT'
+    assert Decimal(warning['time_consistency']['signed_error_us'])==Decimal('-0.001128336504')
+    assert Decimal(warning['time_consistency']['allowed_error_max_us'])<Decimal('0.001001')
+    a=m.analyze({'selected_timeline':r},'w8_a')
+    assert a['status']!='ATTRIBUTION_VERIFIED'
+    if csv_case is None:
+        assert r['device_assignment']=='DURATION_METADATA_INCONSISTENT'
+        assert warning['endpoint_evidence']['status']=='EXACT_ENDPOINTS_CORROBORATED'
+        assert len(r['iterations'])==30 and all(row['tasks'] for row in r['all_iterations'])
+        assert a['status']=='DURATION_METADATA_INCONSISTENT'
+        assert r['all_iterations'][22]['device_window']['end_us']-r['all_iterations'][22]['device_window']['start_us']==19900
+    else:
+        assert r['device_assignment']=='UNRESOLVED_DEVICE_ASSIGNMENT'
+        assert all(not row['tasks'] for row in r['all_iterations'])
+    assert sum(audit['event_accounting'].values())==audit['real_event_count']
+
+
+def test_actual_w8_iteration_23_remains_inconsistent(monkeypatch):
+    modules(monkeypatch);m=importlib.import_module('profile_device_assignment')
+    c=m.step_time_check({'raw_timestamp_us':'1792393692911380.256','dur':'31264.060871663496','args':{'Iteration End':'1792393692942644.318'}})
+    assert c['status']=='REJECTED'
+    assert c['signed_error_us']=='-0.001128336504'
+    assert c['allowed_error_max_us']=='0.0010000000005'
+
+
+@pytest.mark.parametrize('damage',['missing_connection','other_execute','reused_host_connection','identity_conflict'])
+def test_pre_step_transfer_requires_unique_actual_execute_link(tmp_path,monkeypatch,damage):
+    _,trace,_=modules(monkeypatch)
+    p=tmp_path/'msprof.json';events,meta=step_timeline(p);copies=with_pre_step_copies(events)
+    if damage=='missing_connection':copies[7]['args'].pop('connection_id')
+    elif damage=='other_execute':copies[7]['args']['connection_id']=copies[6]['args']['connection_id']
+    elif damage=='reused_host_connection':
+        executes=[e for e in events if e['name']=='AscendCL@aclmdlExecuteAsync']
+        executes[6]['args']['connection_id']=executes[7]['args']['connection_id']
+    else:
+        conflict={**copies[7],'name':'different_kernel','ts':str(Decimal(copies[7]['ts'])+200),'args':{**copies[7]['args'],'Task Type':'AI_CORE'}}
+        events.append(conflict)
+    p.write_text(json.dumps(events));r=trace.parse_timeline(p,meta,set())
+    assert r['device_assignment']=='UNRESOLVED_DEVICE_ASSIGNMENT'
+    assert len(r['assignment_evidence']['pre_step_transfers'])<38
+    assert sum(r['assignment_evidence']['event_accounting'].values())==r['assignment_evidence']['real_event_count']
+
+
+@pytest.mark.parametrize('host,host_dur,sync,sync_dur,start,end,duration,copy,copy_dur,task,connection,gap',[
+    ('1792389244461781.740','145.52','1792389244461928.340','18047.52','1792389244462343.976','1792389244479983.376','17639.40012294791','1792389244462321.112','1.927',2,4018,'20.937'),
+    ('1792389251869439.740','180.32000000000002','1792389251869621.650','17340.850000000002','1792389251869859.945','1792389251887080.621','17220.676186423116','1792389251869818.226','0.75525',7,4259,'40.96375'),
+    ('1792389259308275.990','22.32','1792389259308298.790','17320.18','1792389259308646.823','1792389259325857.473','17210.65014527864','1792389259308619.140','0.80725',37,4547,'26.87575'),
+])
+def test_observed_fp16_transfer_links_with_changing_task_ids(tmp_path,monkeypatch,host,host_dur,sync,sync_dur,start,end,duration,copy,copy_dur,task,connection,gap):
+    # First call uses the exact user-supplied sample. Remaining calls repeat its
+    # structure at synthetic intervals; these are not server evidence.
+    _,trace,_=modules(monkeypatch)
+    events=[{'ph':'M','name':'process_name','pid':1,'args':{'name':'Ascend Hardware'}},
+            {'ph':'M','name':'thread_name','pid':1,'tid':99,'args':{'name':'Step Trace(Model ID:1)'}}]
+    for i in range(38):
+        def shift(value):return str(Decimal(value)+i*60000)
+        events.extend([
+            dict(ph='X',name='AscendCL@aclmdlExecuteAsync',pid=2,tid=1,ts=shift(host),dur=host_dur,args={'connection_id':connection+i}),
+            dict(ph='X',name='AscendCL@aclrtSynchronizeStream',pid=2,tid=1,ts=shift(sync),dur=sync_dur),
+            dict(ph='X',name=f'Iteration {i+1}',pid=1,tid=99,ts=shift(start),dur=duration,cat='Iteration Time',args={'Iteration ID':i+1,'Iteration End':shift(end)}),
+            dict(ph='X',name='kernel',pid=1,tid=0,ts=str(Decimal(start)+i*60000+100),dur=100,args={'Model Id':1,'Task Type':'AI_CORE','Physic Stream Id':13,'Task Id':581}),
+            dict(ph='X',name='MEMCPY_ASYNC',pid=1,tid=2,ts=shift(copy),dur=copy_dur,args={'Model Id':1,'Task Type':'MEMCPY_ASYNC','Physic Stream Id':2,'Task Id':task+5*i,'Batch Id':0,'Subtask Id':4294967295,'connection_id':connection+i})])
+    p=tmp_path/'msprof.json';p.write_text(json.dumps(events));r=trace.parse_timeline(p,{},set())
+    audit=r['assignment_evidence']
+    assert audit['status']=='DEVICE_STEPS_VERIFIED' and audit['pre_step_summary']['count']==38
+    first=r['all_iterations'][0]['pre_step_transfers'][0]
+    assert first['gap_to_step_start_us']==pytest.approx(float(gap))
+    assert first['assignment']['connection_id']==connection and first['assignment']['task_id']==task
+    assert r['all_iterations'][0]['device_occupancy_us']==pytest.approx(100,rel=0,abs=1e-10)
+
+
+def test_real_w8_csv_without_start_cannot_corroborate_both_endpoints(tmp_path,monkeypatch):
+    modules(monkeypatch);m=importlib.import_module('profile_step_evidence');d=importlib.import_module('profile_device_assignment')
+    p=tmp_path/'step_trace_20261019070831.csv'
+    p.write_text('Device_id,Iteration ID,FP Start(us),BP End(us),Iteration End(us),Iteration Time(us),FP to BP Time(us),Iteration Refresh(us),Data Aug Bound(us),Model ID\n'
+                 '0,23,N/A,N/A,1792393692942644.318       ,31264.060871663496,N/A,N/A,N/A,1\n')
+    check=d.step_time_check(dict(raw_timestamp_us='1792393692911380.256',dur='31264.060871663496',args={'Iteration End':'1792393692942644.318'}))
+    r=m.corroborate(m.load(tmp_path),'1',23,check)
+    assert r['status']=='UNPROVEN_ENDPOINTS' and r['root_cause']=='UNPROVEN'
+    fields=r['unsupported_rows'][0]['time_field_comparison']
+    assert Decimal(fields['iterationendus']['csv_minus_json_us'])==0
+    assert Decimal(fields['iterationtimeus']['csv_minus_json_us'])==0
+    assert fields['fpstartus']['csv_minus_json_us'] is None
+    assert 'never derive Start' in r['unsupported_rows'][0]['reason']

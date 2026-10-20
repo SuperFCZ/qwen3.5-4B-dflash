@@ -2,6 +2,7 @@
 from collections import defaultdict, Counter
 from decimal import Decimal, InvalidOperation, localcontext
 import re
+from profile_step_evidence import corroborate
 
 
 def args(event):
@@ -68,7 +69,66 @@ def time_check_summary(checks):
                 absolute_error_us=extent('absolute_error_us'),allowed_positive_bound_us=extent('allowed_error_max_us'))
 
 
-def assign(events, hardware_events, windows, origin):
+def pre_step_transfers(tasks, owners, proof, bounds, markers, windows, result):
+    """Recognize an exact repeated model transfer cohort in the inter-Step gap.
+
+    Count alone is insufficient: every transfer must match a unique Execute
+    connection_id, Model/physical stream cohort and nonoverlapping stream peers.
+    Task IDs may change across calls; they remain unique within each call.
+    """
+    streams=defaultdict(list)
+    for e in tasks:
+        a=args(e);stream=a.get('physicstreamid',a.get('streamid'))
+        if stream is not None:streams[e['pid'],str(stream)].append(e)
+    peers={}
+    for stream in streams.values():
+        stream.sort(key=lambda e:float(e['ts']))
+        for j,e in enumerate(stream):peers[e['event_index']]=(stream[j-1] if j else None,stream[j+1] if j+1<len(stream) else None)
+    cohorts=defaultdict(list)
+    connections=defaultdict(list)
+    for i,w in enumerate(windows):
+        connection=args(w['launch']).get('connectionid')
+        if connection is not None:connections[str(connection)].append(i)
+    for e in tasks:
+        a=args(e);uid=e['event_index']
+        if uid in owners or str(a.get('tasktype','')).upper()!='MEMCPY_ASYNC':continue
+        start=float(e['ts']);end=start+float(e['dur'])
+        candidates=[i for i,(lo,_) in bounds.items() if windows[i]['start']<=start and end<=min(lo,windows[i]['end'])
+                    and (i==0 or start>=bounds[i-1][1]) and str(a.get('modelid'))==markers[i]['model_id'] and e['pid']==markers[i]['event']['pid']]
+        before,after=peers.get(uid,(None,None))
+        neighbors_ok=(before is None or float(before['ts'])+float(before['dur'])<=start) and (after is None or end<=float(after['ts']))
+        identity=(e['pid'],str(a.get('modelid')),str(a.get('physicstreamid',a.get('streamid'))),str(a.get('batchid')),str(a.get('subtaskid')),e.get('name'))
+        ids_ok=all(re.fullmatch(r'\d+',str(v)) for v in (a.get('modelid'),a.get('taskid'),a.get('physicstreamid',a.get('streamid'))))
+        connection_hits=connections.get(str(a.get('connectionid')),[])
+        evidence=dict(event=raw(e),host_candidates=candidates,execute_connection_candidates=connection_hits,stream_previous=raw(before) if before else None,stream_next=raw(after) if after else None,
+                      stream_nonoverlap=neighbors_ok,identity_valid=bool(ids_ok),identity=list(identity),status='UNPROVEN_PRE_STEP_TRANSFER')
+        result['pre_step_candidates'].append(evidence)
+        if len(candidates)==1 and connection_hits==candidates and neighbors_ok and ids_ok:
+            i=candidates[0];lo=bounds[i][0]
+            current=[t for t in tasks if owners.get(t['event_index'])==i]
+            previous=[t for t in tasks if i>0 and owners.get(t['event_index'])==i-1]
+            evidence['step_first_task']=raw(min(current,key=lambda t:float(t['ts']))) if current else None
+            evidence['previous_step_last_task']=raw(max(previous,key=lambda t:float(t['ts'])+float(t['dur']))) if previous else None
+            evidence.update(call_index=i,start_us=start,end_us=end,duration_us=float(e['dur']),
+                            gap_to_step_start_us=lo-end,previous_step_end_us=bounds[i-1][1] if i else None,
+                            step_start_us=lo,host_start_us=windows[i]['start'],host_end_us=windows[i]['end'])
+            cohorts[identity].append((e,evidence))
+    for cohort in cohorts.values():
+        indices=[v['call_index'] for _,v in cohort]
+        for _,item in cohort:item['cohort_count']=len(cohort);item['cohort_call_indices']=sorted(indices)
+        if len(cohort)!=38 or sorted(indices)!=list(range(38)):continue
+        for e,v in cohort:
+            uid=e['event_index'];i=v['call_index'];a=args(e)
+            owners[uid]=i
+            proof[uid]=dict(method='PRE_STEP_TRANSFER',basis='unique matching Execute connection_id; same model/physical stream cohort once per each of 38 Host calls; full transfer in inter-Step gap; stream neighbors nonoverlapping',
+                           connection_id=a['connectionid'],iteration_id=markers[i]['iteration_id'],model_id=a['modelid'],task_id=a['taskid'],physical_stream_id=a.get('physicstreamid',a.get('streamid')))
+            v['status']='PRE_STEP_TRANSFER';v['assignment']=proof[uid]
+            result['pre_step_transfers'].append(v)
+    assigned={x['event']['event_index'] for x in result['pre_step_transfers']}
+    result['unresolved_tasks']=[x for x in result['unresolved_tasks'] if x['event']['event_index'] not in assigned]
+
+
+def assign(events, hardware_events, windows, origin, step_evidence=None):
     threads=defaultdict(set)
     for e in events:
         if e.get('ph')=='M' and e.get('name')=='thread_name':threads[e.get('pid'),e.get('tid')].add(str(e.get('args',{}).get('name','')))
@@ -81,7 +141,7 @@ def assign(events, hardware_events, windows, origin):
         else:tasks.append(e)
     result=dict(rule='CANN9 Step Trace start anchored to unique Host Execute/Sync; full task interval contained in same-model device iteration',
                 metadata=metadata,excluded_iteration_markers=[],unconfirmed_markers=quarantine,
-                unresolved_tasks=[],outside_host_tasks=[],errors=[],step_time_checks=[],status='UNRESOLVED_DEVICE_ASSIGNMENT')
+                unresolved_tasks=[],outside_host_tasks=[],errors=[],metadata_warnings=[],step_csv_evidence=step_evidence or dict(status='MISSING',tables=[]),step_time_checks=[],pre_step_transfers=[],pre_step_candidates=[],status='UNRESOLVED_DEVICE_ASSIGNMENT')
     owners={};proof={};bounds={};marker_by_call={}
     # A repeated connection_id/Task Id describes a graph task, not a call ID.
     result['task_connection_ids']=dict(Counter(str(args(t).get('connectionid')) for t in tasks))
@@ -91,10 +151,19 @@ def assign(events, hardware_events, windows, origin):
             e=m['event'];info={**raw(e),**{k:m[k] for k in ('model_id','iteration_id')}}
             result['excluded_iteration_markers'].append(info)
             check=step_time_check(e)
+            if check['status']=='REJECTED' and 'signed_error_us' in check:check['metadata_status']='DURATION_METADATA_INCONSISTENT'
             result['step_time_checks'].append(dict(iteration_id=m['iteration_id'],model_id=m['model_id'],event_index=e['event_index'],**check))
             info['time_consistency']=check
             if check['status']=='REJECTED':
-                result['errors'].append(dict(marker=info,reason=check['reason']));continue
+                if 'signed_error_us' in check:
+                    check['metadata_status']='DURATION_METADATA_INCONSISTENT'
+                    endpoint=corroborate(result['step_csv_evidence'],m['model_id'],m['iteration_id'],check)
+                    info['endpoint_evidence']=endpoint
+                    result['metadata_warnings'].append(dict(iteration_id=m['iteration_id'],status='DURATION_METADATA_INCONSISTENT',time_consistency=check,endpoint_evidence=endpoint))
+                    if endpoint['status']!='EXACT_ENDPOINTS_CORROBORATED':
+                        result['errors'].append(dict(marker=info,reason='DURATION_METADATA_INCONSISTENT: endpoints not independently corroborated; '+check['reason']));continue
+                else:
+                    result['errors'].append(dict(marker=info,reason=check['reason']));continue
             with localcontext() as context:
                 context.prec=50
                 begin=float(Decimal(check['raw_start_us'])-Decimal(origin))
@@ -123,6 +192,7 @@ def assign(events, hardware_events, windows, origin):
                     item=dict(event=raw(e),reason='not a unique same-model task fully inside one device Step',device_candidates=hits)
                     if any(start<hi and end>lo for lo,hi in bounds.values()) or a.get('modelid') is not None:result['unresolved_tasks'].append(item)
                     else:result['outside_host_tasks'].append(item)
+            pre_step_transfers(tasks,owners,proof,bounds,marker_by_call,windows,result)
             # Duplicated Task identity within a single model iteration is ambiguous.
             keys=defaultdict(list)
             for e in tasks:
@@ -133,9 +203,11 @@ def assign(events, hardware_events, windows, origin):
                 if len(duplicate)>1:
                     for e in duplicate:
                         owners.pop(e['event_index']);proof.pop(e['event_index'])
+                        for candidate in result['pre_step_candidates']:
+                            if candidate['event']['event_index']==e['event_index']:candidate['status']='REJECTED_DUPLICATE_TASK'
                         result['unresolved_tasks'].append(dict(event=raw(e),reason='duplicate task identity within device iteration'))
             if len(set(owners.values()))!=38:result['errors'].append(dict(reason='one or more device Steps have no uniquely identified tasks'))
-            if not result['unresolved_tasks'] and not result['errors']:result['status']='DEVICE_STEPS_VERIFIED'
+            if not result['unresolved_tasks'] and not result['errors']:result['status']='DURATION_METADATA_INCONSISTENT' if result['metadata_warnings'] else 'DEVICE_STEPS_VERIFIED'
     else:
         result['errors'].append(dict(reason='no verified CANN9 Step Trace; Host enclosure is provisional only'))
         # Backward-compatible partial statistics for legacy timelines. Never claim
@@ -148,10 +220,15 @@ def assign(events, hardware_events, windows, origin):
             elif any(start<w['end'] and end>w['start'] for w in windows):result['unresolved_tasks'].append(dict(event=raw(e),reason='Host boundary crossing without device Step'))
             else:result['outside_host_tasks'].append(dict(event=raw(e),reason='outside all Host windows'))
     if markers and (result['errors'] or quarantine):
-        owners.clear();proof.clear()
+        owners.clear();proof.clear();result['outside_host_tasks']=[]
+        for candidate in result['pre_step_candidates']:
+            if candidate['status']=='PRE_STEP_TRANSFER':candidate['status']='REVOKED_STEP_MAPPING'
         result['unresolved_tasks']=[dict(event=raw(e),reason='invalid Step/Host mapping') for e in tasks]
+    result['pre_step_transfers']=[t for t in result['pre_step_transfers'] if t['event']['event_index'] in owners]
+    result['pre_step_summary']=dict(count=len(result['pre_step_transfers']),duration_sum_us=sum(t['duration_us'] for t in result['pre_step_transfers']),excluded_from_step_kernel_time=True)
     result['step_time_summary']=time_check_summary(result['step_time_checks'])
-    result['remaining_failure_reasons']=dict(Counter([x['reason'] for x in result['errors']]+[x['reason'] for x in result['unresolved_tasks']]+['unconfirmed Iteration marker']*len(quarantine)))
+    result['remaining_failure_reasons']=dict(Counter([x['reason'] for x in result['errors']]+[x['reason'] for x in result['unresolved_tasks']]+[x['status'] for x in result['metadata_warnings']]+['unconfirmed Iteration marker']*len(quarantine)))
     result['assigned_task_count']=len(owners);result['real_event_count']=len(tasks)
+    result['event_accounting']=dict(step_tasks=len(owners)-len(result['pre_step_transfers']),pre_step_transfers=len(result['pre_step_transfers']),unresolved=len(result['unresolved_tasks']),outside=len(result['outside_host_tasks']))
     result['device_windows']={str(i):dict(start_us=lo,end_us=hi) for i,(lo,hi) in bounds.items()}
     return owners,proof,result,tasks
