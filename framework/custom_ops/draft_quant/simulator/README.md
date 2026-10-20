@@ -179,3 +179,15 @@ bounded 副本身份，不能当作原始算法二进制。
 状态最多为 **BOUNDED_SIMULATOR_DIAGNOSTIC_ONLY**。完整 Gate、NPU、Draft correctness
 和 hardware performance 全部保持 NOT_RUN。现阶段代码/CPU 回归完成，bounded
 真实编译、仿真、局部 bitwise 验收均 NOT_RUN；不以 cycles 推算真机或整网加速。
+
+### tmp_dump 监控竞态处理
+
+预算扫描不再先 `is_file()` 再 `stat()`。每轮使用 `scandir` 枚举、`lstat` 分类，在同一
+扫描内收集逻辑大小、分配块数和最大单文件大小。只允许已枚举子项/子目录的 ENOENT
+被记录后跳过；输出根目录消失、PermissionError、EIO、ENOTDIR 等仍阻断。符号链接
+不计入总量、不遍历其目录，但继续保留原先对链接文件目标的单文件上限检查。
+
+每条命令的 `.budget.json` 保存累计 `scan_diagnostics`（扫描次数、ENOENT 次数和
+最多 20 条路径/操作样本）。子进程正常退出后仍做最终预算检查，报告复用该次扫描
+结果。0.25 秒轮询、RLIMIT_FSIZE、超时和数值/产物验收不变；消失记录不是完整采集
+证明，`COMMAND_COMPLETED` 也不等于 Simulator 数值或 Trace 完整性 PASS。
