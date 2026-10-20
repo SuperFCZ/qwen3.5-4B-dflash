@@ -108,9 +108,12 @@ def preflight(args,root):
         profiler_version='26.0.0 user-reported; simulator --help bound by hash',help=ident(root/'simulator-help.log'))
 
 
-def build(mode,cfg,root,args,env):
+def build(mode,cfg,root,args,env,kernel_adapter=None,command_runner=None):
+    # Optional adapters are confined to this new Simulator project. The normal
+    # entry has neither adapter and still builds the byte-identical algorithm.
+    build_command=command_runner or command
     directory=root/mode;directory.mkdir();project=directory/'CustomOp';opp=directory/'opp';check_root(directory)
-    command(['msopgen','gen','-i',HERE/'DFlashGroupQuantLinear.json','-c','ai_core-Ascend310P3','-lan','cpp','-out',project],directory/'msopgen.log',env,directory)
+    build_command(['msopgen','gen','-i',HERE/'DFlashGroupQuantLinear.json','-c','ai_core-Ascend310P3','-lan','cpp','-out',project],directory/'msopgen.log',env,directory)
     for name in ('d_flash_group_quant_linear.cpp','d_flash_group_quant_linear_contract.h','d_flash_group_quant_linear_tiling.h'):
         shutil.copyfile(HERE/'op_host'/name,project/'op_host'/name)
     shutil.copyfile(HERE/'op_kernel/d_flash_group_quant_linear.cpp',project/'op_kernel/d_flash_group_quant_linear.cpp')
@@ -120,31 +123,37 @@ def build(mode,cfg,root,args,env):
         # The kernel-facing config is generated intentionally; algorithm source is copied byte-for-byte.
         if name.endswith('build_config.h'):continue
         if sha256(project/name)!=sha256(HERE/name):raise ValueError('isolated source copy differs')
+    adaptation=None
+    if kernel_adapter is not None:
+        adaptation=kernel_adapter(project/'op_kernel/d_flash_group_quant_linear.cpp')
+        write_json(directory/'bounded-source.json',adaptation)
+        (directory/'bounded-source.diff').write_text(adaptation['diff'])
     debug_cmake(project/'op_kernel/CMakeLists.txt')
     write_json(directory/'source-map.json',dict(kernel=ident(project/'op_kernel/d_flash_group_quant_linear.cpp'),
                focus_lines=focus_lines(project/'op_kernel/d_flash_group_quant_linear.cpp'),tile_mapping='UNRESOLVED_TILE_MAPPING'))
-    command(['bash','build.sh'],directory/'build.log',env,project,3600)
+    build_command(['bash','build.sh'],directory/'build.log',env,project,3600)
     packages=list((project/'build_out').glob('custom_opp_*.run'))
     if len(packages)!=1:raise ValueError('not exactly one generated OPP package')
-    command(['bash',packages[0],'--install-path='+str(opp)],directory/'install.log',env,directory,600)
+    build_command(['bash',packages[0],'--install-path='+str(opp)],directory/'install.log',env,directory,600)
     installed=check_install(opp);write_json(directory/'opp-preflight.json',installed)
     binary_audit=[]
     for i,k in enumerate(installed['kernels']):
         binary_audit.append(inspect_elf(Path(k['binary']),directory/f'debug-kernel-{i}.log',env,directory,debug=True))
     generated=runner_sources(HERE,directory/'runner-source')
-    command(['cmake','-S',Path(__file__).parent,'-B',directory/'runner-build','-DCANN_ROOT='+str(args.cann_root.resolve()),
+    build_command(['cmake','-S',Path(__file__).parent,'-B',directory/'runner-build','-DCANN_ROOT='+str(args.cann_root.resolve()),
              '-DSIM_LIB='+str(args.sim_lib.resolve()),'-DOPP_ROOT='+str(opp),'-DRUNNER_SOURCE='+str(generated)],directory/'cmake.log',env,directory)
-    command(['cmake','--build',directory/'runner-build','--parallel'],directory/'runner-build.log',env,directory)
+    build_command(['cmake','--build',directory/'runner-build','--parallel'],directory/'runner-build.log',env,directory)
     runner=directory/'runner-build/dflash_gate_simulator'
     inspect_elf(runner,directory/'runner-elf.log',env,directory,host=True)
     vendor=opp/'vendors/customize';sim=args.sim_lib.resolve()
     app_env=dict(env,ASCEND_CUSTOM_OPP_PATH=str(vendor),LD_LIBRARY_PATH=':'.join([str(sim),str(vendor/'op_api/lib'),str(args.cann_root.resolve()/'lib64'),str(args.cann_root.resolve()/'aarch64-linux/lib64'),env.get('LD_LIBRARY_PATH','')]),
                  LD_PRELOAD=str(sim/'libruntime_camodel.so')+':'+str(sim/'libnpu_drv_camodel.so'),
                  DFLASH_PROFILER_ROOT=str(args.msopprof.resolve().parent.parent),DFLASH_SIM_RUNTIME=str(sim/'libruntime_camodel.so'),DFLASH_SIM_DRIVER=str(sim/'libnpu_drv_camodel.so'))
-    command(['ldd',runner],directory/'ldd.log',app_env,directory)
-    command([runner,'--link-check',directory],directory/'link-check.log',app_env,directory)
+    build_command(['ldd',runner],directory/'ldd.log',app_env,directory)
+    build_command([runner,'--link-check',directory],directory/'link-check.log',app_env,directory)
     audit=dict(status='BUILT_NOT_SIMULATED',package=ident(packages[0]),kernels=binary_audit,runner=ident(runner),
                config=ident(directory/'build-config.json'),source_map=record(directory/'source-map.json',directory),
+               simulator_source_adaptation=adaptation,
                runner_sources=[ident(generated),ident(generated.parent/'runner_common.h'),ident(Path(__file__).parent/'runtime_guard.h'),ident(Path(__file__).parent/'CMakeLists.txt')])
     write_json(directory/'build-report.json',audit)
     return runner,app_env,audit

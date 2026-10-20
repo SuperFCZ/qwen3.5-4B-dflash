@@ -116,3 +116,66 @@ Simulator cycles、工具换算时间及 CPU 运行秒数均不是 Ascend310P3 �
 本报告不计算 NPU speedup、不替代既有 bitwise/5-30 真机验收、不改变 adoption 或
 full_draft_token_kv。`SIMULATOR_DIAGNOSTIC_ONLY` 是工具链诊断状态，绝不是性能或
 硬件正确性 PASS。
+
+## Bounded Gate：只执行一个原始 N64 Tile（独立入口）
+
+`44afc78` 的服务器历史结果（用户回传）：Off debug OPP 和 smoke 已完成，smoke
+bitwise=True / Kernel Identity MATCHED / Artifacts COLLECTED；完整 Off Gate 在 20 分钟
+后中止，execution.json=RUNNING，Raw 未执行。部分 core0 trace 约 171 MB，目录约
+6.3 GB。这是 **BLOCKED / 未完成** 的历史仿真，不是完整 Gate 正确性结果。
+历史目录 `gate-simulator-full-20261020-084557` 完全只读保留。
+
+新入口 `run_bounded.sh` 不调用旧的全量 Gate 路径，也不增加超时：
+
+1. 首先只读检查历史报告、smoke 状态、未完成 Gate 的 execution.json、trace/CSV，
+   记录每个文件大小、关键文件 SHA256、CSV 表头与样本、trace 解析结果。截断 JSON
+   允许记录为 UNPARSED_PARTIAL，不变成“完整 trace”。检查结果写到新目录
+   `partial-inspection.json`；源码身份不匹配就禁止构建。Codex 本地无法读取服务器
+   产物，因此尚未确认历史 trace 的实际 PC/指令内容。
+2. 复用既有 Off/Raw 的 Capture/Golden/OPP 配置身份验证，独立构建两个新 debug OPP。
+   **只对新工程的 Kernel 副本插入两段代码**：在 TPipe/事件分配前检查原始 Gate
+   shape 并只放行 `n_tile % blockNum` 的核；在原 cyclic N 循环开头跳过其他 N tile。
+   不修改原 blockDim、不修改 Host、不缩小输入张量或权重、不改变 stride/NZ 寻址。
+3. 原始逻辑 shape 始终 M16/K2560/N19456，N64/K256，20 个 group128。
+   选中 N tile 的 10 次 K256 循环、FP32 累加、最终一次 FP16 写回、Raw 双 bank、
+   首/末预取、Matmul/PIPE_ALL/Event 与异常清理逐字保留；删除两段插入后源码必须
+   恢复原 SHA256。非 owner 核不创建 Matmul，不执行有效计算。
+4. Off/Raw 使用相同完整冻结输入和 Golden 的逐字节拷贝。只比较选中列
+   `[n_tile*64, (n_tile+1)*64)` 的全部 16 行（1,024 个 FP16 位型）；另检查未选列仍
+   为原 Runner 单次调用前写入的 `0x7f7f`，以及全部原 guard、输入只读。
+   任一项失败就阻断，不继续下一模式。
+5. 新 trace 解析所有启动核，完成后从真实 Host Tiling 记录计算 owner。没有用
+   `--core-id` 限制执行；`--launch-count=1` 仍只控制采集次数。真正减少工作量的是
+   审计过的源代码范围限制。每个模式分别保存 trace/热点/指令 CSV；必须匹配新
+   bounded 二进制 SHA256。`bounded-source.diff/json`、`source-map.json`、DWARF
+   与热点文件保留真实源码行号。源代码限定了一个 N tile，但不从调用次数猜测
+   每条指令对应的具体 K tile。
+6. 默认 5 分钟；不自动延长或切换其他芯片。新输出总预算 1 GiB，单文件 256 MiB。
+   子进程继承 RLIMIT_FSIZE；每 0.25 秒检查新目录总量（逻辑大小/分配块取较大值），
+   达到超出条件就停止自己的进程组。总量监测不是硬文件系统 quota，可能短暂超额，
+   报告记录实际大小；不自动删除旧/新证据。超时/限额/缺失产物始终 BLOCKED。
+
+先只检查已有部分产物（不运行 CANN 编译或 Simulator），可用同一入口的
+`--inspect-only`，输出仍要求新目录；也可直接 `python3 simulator/bounded.py` 执行该
+纯离线检查，不要求初始化 CANN。
+
+最小服务器命令（默认 N tile0，默认绑定用户提供的历史目录）：
+
+```bash
+CANN_ROOT=/usr/local/Ascend/cann-9.0.0 bash framework/custom_ops/draft_quant/simulator/run_bounded.sh \
+  --n-tile 0 \
+  --output-dir "/home/w00949577/qwen35-dflash-run/gate-simulator-bounded-$(date +%Y%m%d-%H%M%S)"
+```
+
+可显式指定 `--n-tile 0..303`；Off/Raw 同时使用该值。核数仍由原 Host 决定。
+`--partial-report` 可指定旧的 simulator-report.json；`--max-output-mib` 和
+`--max-file-mib` 明确记录磁盘预算。原始 Kernel、OPP、Runner、Golden 均不写入。
+
+请回传 `bounded-report.json`、`bounded-analysis.md`、`partial-inspection.json` 和
+失败阶段日志（若失败）。成功后每个模式的 `bounded/result.json` 记录局部数值、
+完整性、真实 trace 大小及 artifact 路径；`build-report.json` 同时保存原始来源和
+bounded 副本身份，不能当作原始算法二进制。
+
+状态最多为 **BOUNDED_SIMULATOR_DIAGNOSTIC_ONLY**。完整 Gate、NPU、Draft correctness
+和 hardware performance 全部保持 NOT_RUN。现阶段代码/CPU 回归完成，bounded
+真实编译、仿真、局部 bitwise 验收均 NOT_RUN；不以 cycles 推算真机或整网加速。
