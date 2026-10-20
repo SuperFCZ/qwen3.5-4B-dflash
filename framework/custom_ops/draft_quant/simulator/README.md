@@ -191,3 +191,68 @@ bounded 副本身份，不能当作原始算法二进制。
 最多 20 条路径/操作样本）。子进程正常退出后仍做最终预算检查，报告复用该次扫描
 结果。0.25 秒轮询、RLIMIT_FSIZE、超时和数值/产物验收不变；消失记录不是完整采集
 证明，`COMMAND_COMPLETED` 也不等于 Simulator 数值或 Trace 完整性 PASS。
+
+## 只读指令瓶颈分析（不运行 Simulator）
+
+用户回传 `5f43f65` 的配对目录
+`/home/w00949577/qwen35-dflash-run/gate-simulator-bounded-2g-racefix-20261020-103256`：
+Off/Raw 均完成局部 1024 个 FP16 bitwise、未选列 poison、Kernel identity、采集和预算
+检查。该状态仅是 BOUNDED_SIMULATOR_DIAGNOSTIC_ONLY；完整 Gate/NPU/Draft 不因此升级。
+
+`bottleneck.py` 只读该报告及其绑定文件，不调用 Simulator、msprof、Runner、编译器或
+模型。新输出必须在历史 evidence 目录之外。它重新验证报告嵌套记录、输出/Golden 的
+局部位型及 poison、Guard/readonly 状态、输入 SHA256、Off/Raw 唯一变量、预算结束
+状态、原始/隔离源码 SHA256、可逆 bounded patch 和 diff、安装/采集 ELF SHA256、
+DWARF 段审计，以及报告中的所有 Trace/CSV 大小/哈希。分析结束再次检查读取的证据。
+
+已由用户提供的 26.0.0 receiver 样本确认：
+
+- CSV `code,call_count,cycles,running_time(us)` 和
+  `instr,addr,pipe,call_count,cycles,running_time(us),detail`。
+- CSV `addr` 十进制；Trace `args.pc_addr` 十六进制。关联时要求 PC、指令名、
+  process_name 所标 Pipe 和动态指令次数一致；不根据序列顺序猜 K Tile，也不猜 PC 基址。
+- 只使用报告中绑定的 `core0/core0_code_exe.csv`、`core0/core0_instr_exe.csv` 和同目录
+  `trace.json`；不混入汇总 Trace 或非 owner core。当前入口要求 owner=0。
+- Trace 的 Scalar `dur` 可能为 0，但 CSV cycles 非零。因此零宽事件不是零成本，
+  `displayTimeUnit` 也不能单独证明 Simulator cycle 时钟。
+
+CSV 字段语义参考[官方性能数据说明](https://github.com/Ascend/msopprof/blob/master/docs/en/user_guide/msopprof_simulator_performance_data.md)。
+上游可能更新；不符合已确认完整表头的 CSV 明确标为 UNSUPPORTED，不猜字段别名。
+
+源码归属使用本机已有 `llvm-addr2line` 或 `addr2line`（也可显式 `--addr2line PATH`）
+只读解析已匹配的 ELF，保存工具/ELF SHA、命令和原始输出。只传实际 PC，不推断加载
+偏移；工具不支持该 ELF 或没有行信息时保留 UNMAPPED。只有绝对源码路径、行号与已
+校验的 bounded 源码匹配且操作类别唯一，才能标记 DataCopy/Cast/Brcb/Mul/Matmul/
+PIPE_ALL/Event。SDK 内联代码能通过 DWARF 调用栈关联回已绑定调用行；无此证据不猜。
+Scalar、MTE2、CUBE 等 Pipe 指标单独按原始 CSV/Trace 元数据记录，不强行转成源码类别。
+
+输出包括：
+
+- `bottleneck-analysis.md/json`：Off/Raw 指令 call_count/cycles、按 Pipe 和已证实源码
+  操作分类；未映射部分明确 UNMAPPED。call_count 是动态指令次数，不是 C++ API 次数。
+- 每模式 `instructions.json`、`code-hotspots.json`、`timeline-intervals.json`：保留 PC、
+  原字段、DWARF 栈、源码关联及完整区间。Code 热点可能含内联调用者归属，不与指令
+  表叠加，也不宣称各行 cycles 互斥。
+- Trace 中报告区间并集、同 Pipe 重叠、MTE2 与其他 Pipe 的交集及零宽事件数。数值
+  使用原始 ts/dur 单位；不是 cycles，更不是 NPU ms。交集不能再相加解释总耗时。
+- 如 DWARF 明确映射到 `CopyRawTile(qBanks[(1-bank)...` 的下一 K 预取调用点，记录该
+  调用点的 MTE2 指令区间与计算 Pipe 的重叠；不据此猜每个动态 K ID 或宣称因果收益。
+- `format-evidence.json`：真实表头/样本、顶层字段值、process/thread 元数据、完整
+  指令样本 args、事件名称计数及等待相关名称样本。名称匹配本身不是等待依赖证据。
+
+**边界**：CSV instruction cycles 之和仅是执行周期统计，不能当 Kernel elapsed
+cycles。未获得独立 cycle clock/end-marker 时，Kernel elapsed cycles 差异保持
+UNRESOLVED；可独立比较各 Pipe 的 instruction cycles 差值。关键路径、同步等待
+占比、暴露的 MTE2 等待减少量，以及 PIPE_ALL 是否造成关键路径停顿，缺少可验证
+依赖时均 UNRESOLVED。不能把带等待语义的指令的全部 dur/cycles 当作纯等待。
+
+服务器命令（纯离线；不需重新 source CANN 或执行 NPU）：
+
+```bash
+python3 -B framework/custom_ops/draft_quant/simulator/bottleneck.py \
+  --output-dir "/home/w00949577/qwen35-dflash-run/gate-bottleneck-offline-$(date +%Y%m%d-%H%M%S)"
+```
+
+可加 `--inspect-only` 只提取精简格式证据，连 DWARF 工具也不执行。当前本地 CPU 回归
+不代表已读取服务器 Trace。默认分析状态为 OFFLINE_ANALYSIS_PARTIAL，数值结果必须
+等待服务器离线执行；不会输出新的 Simulator/NPU 或完整 Gate PASS。
