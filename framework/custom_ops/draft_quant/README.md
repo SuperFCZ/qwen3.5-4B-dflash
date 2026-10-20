@@ -246,3 +246,12 @@ CANN 编译、NPU 正确性/性能、完整 Draft Token/KV 在服务器执行前
 默认只做 C16 layer-0；显式 `--layers 0 1 2 3 4` 可运行五层独立验收。每个构建全部所选层
 先通过两次无计时 bitwise gate，再做每层 5/30 A/B；不自动推广或接入完整 Draft。
 历史 2D 候选约 0.36% 收益接近波动，暂不采用，原始用户回传见 [2D 记录](GATE_COPY_2D.md#eb67337-真机结果用户回传2026-10-20-记录)。
+
+## 独立 Simulator 最小入口
+
+[Simulator 审查、隔离构建和分阶段命令](simulator/README.md) 绑定 MindStudio Ops Profiler
+26.0.0 / CANN9.0 / Ascend310P3（实际 simulator lib 为 dav_2002）。先检查已验收
+Off/Raw 二进制、CMake 和库来源，新建 `-g` OPP 与单次 ACLNN 仿真 Runner；默认仅
+运行 M16/K256/N64 工具链 smoke，之后才显式请求完整 C16 layer-0 Gate 仿真。
+不修改 Kernel/Host Tiling/原 Runner/Golden，Simulator cycles 不作为真机 wall-time；
+真实 Simulator 编译和执行在服务器运行前仍为 NOT_RUN。
