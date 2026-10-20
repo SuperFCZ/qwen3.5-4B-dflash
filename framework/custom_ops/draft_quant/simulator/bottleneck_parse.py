@@ -1,6 +1,7 @@
 """Conservative offline parsers. Unknown schemas never imply timing semantics."""
 from collections import Counter,defaultdict
 import csv
+import hashlib
 from decimal import Decimal,InvalidOperation
 import json
 from pathlib import Path
@@ -125,6 +126,53 @@ def instruction_summary(rows,mapping,source,focus):
         cpp_api_call_count='UNRESOLVED',k_tile_assignment='UNRESOLVED_NOT_INFERRED_FROM_ORDER')
 
 
+def source_hotspots(rows,source,focus,expected_sha256):
+    """Independent code-CSV attribution, not an inferred instruction/PC map."""
+    payload=source.read_bytes()
+    if hashlib.sha256(payload).hexdigest()!=expected_sha256:raise ValueError('hotspot source SHA256 mismatch')
+    lines=payload.decode().splitlines();classified=[];groups=defaultdict(list)
+    for index,row in enumerate(rows):
+        item=dict(row,index=index,mapping='UNMAPPED',category='UNMAPPED',reason='unbound source path or invalid code locator')
+        match=re.fullmatch(r'(.+):([1-9][0-9]*)',row['code'])
+        if match and Path(match[1]).is_absolute() and Path(match[1]).resolve()==source.resolve():
+            line=int(match[2])
+            if not 1<=line<=len(lines):raise ValueError('bound source line out of range: '+row['code'])
+            categories=[name for name,numbers in focus.items() if line in numbers]
+            text=lines[line-1]
+            category=categories[0] if len(categories)==1 else 'OtherBoundSource'
+            if re.match(r'\s*RunGroupQuantLinear<(true|false)>\(',text):category='KernelDispatch'
+            item.update(mapping='VERIFIED_SOURCE_LINE',category=category,reason='exact source path, frozen SHA256 and actual line',
+                        line=line,source_text=text)
+        classified.append(item);groups[item['category']].append(item)
+    for entries in groups.values():entries.sort(key=lambda r:decimal(r['cycles']),reverse=True)
+    return dict(status='SOURCE_ROWS_CLASSIFIED' if any(r['mapping']=='VERIFIED_SOURCE_LINE' for r in classified) else 'UNRESOLVED',
+        source_sha256=expected_sha256,source_path=str(source),rows=classified,by_category=dict(groups),
+        verified_rows=sum(r['mapping']=='VERIFIED_SOURCE_LINE' for r in classified),
+        unmapped_rows=sum(r['mapping']=='UNMAPPED' for r in classified),
+        attribution_basis='Profiler code_exe.csv source locators + independently hash-bound source, not independent PC/DWARF symbolization.',
+        aggregation='No sums of code-row cycles or call_count: inline callers/callees may overlap. Never add code rows to instr_exe statistics.',
+        instruction_pc_source_mapping='UNRESOLVED_BY_CODE_CSV_ALONE')
+
+
+def compare_source_hotspots(left,right):
+    if left['source_sha256']!=right['source_sha256']:
+        return dict(status='UNRESOLVED_SOURCE_IDENTITIES_DIFFER',rows=[])
+    def index(rows):
+        result=defaultdict(list)
+        for row in rows:
+            if row['mapping']=='VERIFIED_SOURCE_LINE':result[row['line']].append(row)
+        return result
+    a,b=index(left['rows']),index(right['rows']);result=[];ambiguous=[]
+    for line in sorted(set(a)|set(b)):
+        if len(a[line])!=1 or len(b[line])!=1:ambiguous.append(line);continue
+        x,y=a[line][0],b[line][0]
+        result.append(dict(line=line,category=x['category'],source_text=x['source_text'],off=x,raw=y,
+            cycles_delta=decimal(y['cycles'])-decimal(x['cycles']),
+            call_count_delta=decimal(y['call_count'])-decimal(x['call_count'])))
+    return dict(status='PAIRED_SOURCE_ROWS',rows=result,missing_or_duplicate_lines=ambiguous,
+                aggregation='Per-row Raw minus Off only; no additive category or kernel cycle total.')
+
+
 def union_length(intervals):
     """Generic exact interval arithmetic; used only after a clock is verified."""
     merged=[]
@@ -168,9 +216,17 @@ def trace_analysis(path,rows,mapping,source,focus):
     for r in rows:
         address=pc(r['addr'])
         if address is not None:csv_counts[(address,r['instr'],r['pipe'])]+=int(decimal(r['call_count']))
-    matched=[];unresolved=[];trace_counts=Counter();zero=0;sites=copy_sites(source)
+    matched=[];unresolved=[];cachemiss=[];trace_counts=Counter();zero=0;sites=copy_sites(source)
     for i,e in enumerate(events):
         if e.get('ph')!='X':continue
+        # Official CACHEMISS is its own iCache-miss channel, not an instruction
+        # queue. Require unambiguous process metadata, never substring-filter an
+        # ordinary instruction whose name happens to contain "cachemiss".
+        if process.get(e.get('pid'))=='CACHEMISS' and str(e.get('pid')) not in conflicts:
+            start=decimal(e['ts']);end=start+decimal(e['dur'])
+            cachemiss.append(dict(event=i,start=start,end=end,raw_event=e,
+                                  basis=dict(pid=e.get('pid'),process_name='CACHEMISS')))
+            continue
         args=e.get('args',{});address=pc(args.get('pc_addr',''),trace=True) if isinstance(args,dict) else None
         key=(address,e.get('name'),process.get(e.get('pid')))
         if key not in csv_counts:
@@ -202,11 +258,16 @@ def trace_analysis(path,rows,mapping,source,focus):
         next_copy_compute_intersection=union_length(next_copies)+union_length(compute)-union_length(next_copies+compute),
         source_sites=sites,interpretation='Source-verified next-copy call site only. No per-K numbering or proof of reduced exposed wait.')
     coherent=bool(rows and matched) and not unresolved and not mismatch and not conflicts
+    cache_intervals=[(e['start'],e['end']) for e in cachemiss]
     return dict(status='PC_INSTRUCTION_COUNTS_MATCHED' if coherent else 'UNRESOLVED_TRACE_CORRELATION',
         clock=dict(unit='raw Chrome trace ts/dur units; not cycles or hardware wall-time',
                    displayTimeUnit=data['displayTimeUnit'],profilingType=data['profilingType'],schemaVersion=data['schemaVersion']),
         trace_instruction_span=span,interval_union=union_length(all_intervals),by_pipe={k:stats(v) for k,v in groups.items()},
         by_source_operation={k:stats(v) for k,v in source_groups.items()},mte2_pairwise_intersections=overlaps,
+        cachemiss=dict(**stats(cache_intervals),events=cachemiss,
+            intersection_with_instruction_intervals=union_length(cache_intervals)+union_length(all_intervals)-union_length(cache_intervals+all_intervals),
+            unit='raw trace ts/dur units',semantics='iCache-miss channel; not instruction CSV calls, pipe execution cycles or proven critical-path stall. Kept outside instruction unions/counts.',
+            source_reference='https://github.com/Ascend/msopprof/blob/master/docs/en/user_guide/msopprof_simulator_user_guide.md'),
         prefetch_callsite_overlap=prefetch,zero_duration_events=zero,unresolved_events=unresolved,count_mismatches=mismatch,metadata_conflicts=conflicts,
         intervals=matched,interval_semantics='Observed X-event occupancy, not proof of useful pipe activity. Zero-width events can have nonzero CSV cycles. Pairwise intersections must not be summed.',
         kernel_elapsed_cycles=None,kernel_critical_path='UNRESOLVED_NO_DEPENDENCY_GRAPH',

@@ -145,7 +145,7 @@ def complete_fixture(root):
         entry.dump(bound/'inputs.json',dict(originals=[],copies=copies))
         entry.dump(inputs/'execution.json',dict(status='SIMULATOR_COMPLETED',guards_intact=True,input_readonly=True))
         entry.dump(bound/'simulator.budget.json',dict(status='COMMAND_COMPLETED',final_budget_error=None))
-        code=core/'core0_code_exe.csv';code.write_text('code,call_count,cycles,running_time(us)\n/x:1,1,17,0.01\n')
+        code=core/'core0_code_exe.csv';code.write_text(f"code,call_count,cycles,running_time(us)\n{source}:{focus_lines(source)['DataCopy'][0]},1,17,0.01\n")
         instr=core/'core0_instr_exe.csv'
         with instr.open('w',newline='') as stream:
             w=csv.DictWriter(stream,fieldnames=parse.INSTR);w.writeheader();w.writerow(row('100','copy','MTE2'))
@@ -171,7 +171,9 @@ def test_complete_offline_flow_with_mock_dwarf_and_no_original_writes(tmp_path):
         assert entry.analyze(args)==0;runner.assert_not_called()
     result=json.loads((args.output_dir/'bottleneck-analysis.json').read_text())
     assert result['status']=='OFFLINE_ANALYSIS_PARTIAL'
-    assert result['modes']['off']['instructions']['by_source_operation']['DataCopy']['call_count']==1
+    assert result['modes']['off']['instructions']['by_source_operation']['UNMAPPED']['call_count']==1
+    assert result['modes']['off']['source_hotspots']['status']=='SOURCE_ROWS_CLASSIFIED'
+    assert result['modes']['off']['elf']['trace_pc_correspondence']['status']=='UNRESOLVED_ADDRESS_SPACE'
     assert result['comparison']['kernel_elapsed_cycles'].startswith('UNRESOLVED')
     assert before=={p:entry.digest(p) for p in before}
 

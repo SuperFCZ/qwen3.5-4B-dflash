@@ -256,3 +256,47 @@ python3 -B framework/custom_ops/draft_quant/simulator/bottleneck.py \
 可加 `--inspect-only` 只提取精简格式证据，连 DWARF 工具也不执行。当前本地 CPU 回归
 不代表已读取服务器 Trace。默认分析状态为 OFFLINE_ANALYSIS_PARTIAL，数值结果必须
 等待服务器离线执行；不会输出新的 Simulator/NPU 或完整 Gate PASS。
+
+### CACHEMISS、源码级热点与 ELF 地址空间补充
+
+用户提供的 `950dac0` 服务器离线结果：Off 1914 个 PC / Raw 1966 个 PC 的独立
+DWARF 解析均为 0；未关联 X 事件分别有 106/118 条，属于 CACHEMISS，普通指令没有
+count mismatch。附件显示两份 AI Core ELF 均为 ET_EXEC、Machine `0x1029`，`.text`
+虚拟地址为 0（Off 大小 `0x3e6c`，Raw `0x3e90`），含 `.debug_info/.debug_line`
+及重定位段；运行时 PC 在另一地址区间。**这些字段不能证明应减去 `0x13dcd000`。**
+
+本入口新增以下只读分析，不改原 Trace 或 Kernel：
+
+- 按明确、无冲突的 `process_name=CACHEMISS` 元数据识别独立 iCache-miss 通道。
+  单独保存 `cachemiss-events.json`（完整原事件、args、起止区间和分类依据），报告
+  数量、区间总和/并集以及与普通指令区间的交集。不加入普通指令 CSV 次数/占用统计。
+  仅名称含 cachemiss、缺少通道证据或元数据冲突的事件仍未解决，不能静默排除。
+  依据：[官方通道定义](https://github.com/Ascend/msopprof/blob/master/docs/en/user_guide/msopprof_simulator_user_guide.md)。
+- `code_exe.csv` 的绝对文件路径和行号可独立关联到已校验 SHA256 的 bounded Kernel。
+  输出对应源码文本、行号、类别与**该行原始** call_count/cycles。此状态为
+  SOURCE_ROWS_CLASSIFIED，独立于指令 PC 的 UNRESOLVED。包装源文件/SDK 头文件只有
+  路径，没有历史哈希绑定时保持 UNMAPPED；不会仅凭文件名包含 matmul 就归类。
+- 源码行与内联调用者/被调用者的成本可能重叠。源码热点仅逐行展示，**不汇总类别
+  cycles、不与 instr_exe 叠加**。Off/Raw 只有 bounded 源码 SHA256 相同且行唯一时
+  才逐行比较差值。源码分类不转化成 PC 映射、不猜 K Tile 或同步依赖。
+- 直接读取匹配 ELF 的 ELF64 header、section table 与 LOAD 段，保存 Machine、
+  `.text` 地址/大小、可执行区间和 DWARF 段到 `elf-diagnostic.json`。不执行 ELF。
+  原样 PC 不在可执行节与可执行 LOAD 内时，记录 UNRESOLVED_ADDRESS_SPACE；不调整
+  PC、不搜索“看起来能解析”的偏移，也不反复调用已知无法映射的 host addr2line。
+- 检查 PATH，或经历史 SHA256 核对的 msopprof 安装包目录内已有的 `llvm-symbolizer`；
+  可显式用 `--llvm-symbolizer PATH` 选择已有程序。多个候选不擅自选择。保存工具
+  SHA、版本、调用参数、JSON/错误输出，不下载工具或通过 debuginfod 获取调试文件。
+  只用 ELF 自身 `.text` 的首地址及 +4 做设备格式解码能力探针：探针成功也**不证明
+  运行时 PC 对应关系**，不能将其结果用作运行时指令归属。
+  参考：[LLVM 官方接口](https://llvm.org/docs/CommandGuide/llvm-symbolizer.html)。
+- `visualize_data.bin` 如存在，仅记录当前路径、大小、SHA256，标记未解码、未在历史
+  manifest 中绑定；没有验证其二进制 schema 前不猜内容，不运行 msopprof --export。
+
+机器可读报告保留 `source_hotspots`、`elf`、独立 CACHEMISS 统计及按相同源码行比较的
+`comparison.source_hotspot_rows`。核心指令流水统计与源码热点始终是两套统计。
+同步等待占比、关键路径、Raw Prefetch 具体因果链和 Kernel elapsed cycles 仍可为
+UNRESOLVED；更多 MTE2/VECTOR 交集本身不证明暴露等待减少。
+
+服务器仍执行上一节的同一只读命令，并使用新输出目录。若找不到已有 LLVM 工具，
+源码级热点仍可交付，不以此冒充 PC/DWARF 已解决。本轮本地 CPU 回归不等同于真实
+服务器报告已经重新生成。

@@ -5,13 +5,15 @@ import difflib
 from decimal import Decimal
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 
 from bounded_prepare import bounded_source
 from simulator_prepare import focus_lines
-from bottleneck_parse import csv_table,trace_schema,pc,symbolizer_frames,instruction_summary,trace_analysis
+from bottleneck_parse import csv_table,trace_schema,pc,symbolizer_frames,instruction_summary,trace_analysis,source_hotspots,compare_source_hotspots
+from bottleneck_elf import elf_layout,address_space,llvm_frames
 
 
 def digest(path):
@@ -108,6 +110,7 @@ def load_mode(evidence,report,mode):
     trace=code[0].parent/'trace.json'
     if trace not in paths['trace']:raise ValueError('no hash-bound per-core0 trace; aggregate trace not substituted')
     return dict(source=source,focus=adaptation['focus_lines'],binary=binary,code=code[0],instr=instr[0],trace=trace,
+                source_sha256=adaptation['bounded_sha256'],profile_root=folder/'bounded/profile',
                 inputs={k:v['sha256'] for k,v in inventory['copies'].items()},config=cfg)
 
 
@@ -125,6 +128,75 @@ def symbolize(tool,binary,addresses,out):
     except (ValueError,subprocess.TimeoutExpired,OSError) as error:return {},dict(status='UNRESOLVED',reason=str(error))
 
 
+def discover_llvm(explicit,report,evidence):
+    candidates=[];searched=[]
+    if explicit:
+        candidates=[Path(explicit)];searched=['explicit --llvm-symbolizer']
+    else:
+        found=shutil.which('llvm-symbolizer')
+        if found:candidates=[Path(found)];searched=['PATH']
+        else:
+            tool=report.get('preflight',{}).get('tool')
+            if tool:
+                installed=evidence.absolute(tool,inside=False).parent.parent
+                searched=[str(installed)]
+                # Search only the previously identified installed msopprof
+                # package, not the whole host or another guessed SDK checkout.
+                candidates=list(installed.rglob('llvm-symbolizer'))
+    candidates=sorted({p.resolve() for p in candidates if p.is_file() and os.access(p,os.X_OK)})
+    records=[]
+    for p in candidates:
+        evidence.read(p,inside=False);records.append(evidence.files[str(p)])
+    chosen=candidates[0] if len(candidates)==1 else None
+    return chosen,dict(status='AVAILABLE' if chosen else 'UNAVAILABLE_OR_AMBIGUOUS',searched=searched,candidates=records)
+
+
+def llvm_decode(tool,binary,addresses,out,prefix):
+    if not tool or not addresses:return {},dict(status='UNRESOLVED',reason='no existing LLVM tool or eligible ELF addresses')
+    argv=[str(tool),'--output-style=JSON','--inlines','--demangle','--obj='+str(binary)]
+    request=''.join(f'0x{a:x}\n' for a in sorted(addresses))
+    (out/(prefix+'-input.txt')).write_text(request)
+    dump(out/(prefix+'-command.json'),dict(argv=argv,tool_sha256=digest(tool),binary_sha256=digest(binary),
+         scope='ELF virtual address probe; not a runtime PC translation',addresses=[hex(a) for a in sorted(addresses)]))
+    env=dict(os.environ);env.pop('LLVM_SYMBOLIZER_OPTS',None);env['DEBUGINFOD_URLS']=''
+    try:
+        run=subprocess.run(argv,input=request,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,cwd=out,env=env,timeout=120)
+        (out/(prefix+'-output.json')).write_text(run.stdout);(out/(prefix+'-stderr.txt')).write_text(run.stderr)
+        if run.returncode:raise ValueError('llvm-symbolizer exit '+str(run.returncode))
+        mapping=llvm_frames(run.stdout,addresses)
+        return mapping,dict(status='ELF_DWARF_DECODED' if any(mapping.values()) else 'UNRESOLVED',
+            mapped_pcs=sum(bool(frames) for frames in mapping.values()),pc_count=len(addresses),frames={hex(a):f for a,f in mapping.items()})
+    except (OSError,ValueError,subprocess.TimeoutExpired) as error:return {},dict(status='UNRESOLVED',reason=str(error))
+
+
+def elf_diagnostic(spec,addresses,out,llvm,addr2line):
+    try:layout=elf_layout(spec['binary'])
+    except ValueError as error:layout=dict(status='UNRESOLVED_ELF_LAYOUT',reason=str(error))
+    correspondence=address_space(layout,addresses)
+    audit=dict(layout=layout,trace_pc_correspondence=correspondence,load_bias='UNRESOLVED_NOT_INFERRED')
+    if llvm:
+        try:
+            version=subprocess.run([str(llvm),'--version'],text=True,capture_output=True,timeout=15)
+            (out/'llvm-version.txt').write_text(version.stdout+version.stderr)
+            audit['llvm_version_exit']=version.returncode
+        except (OSError,subprocess.TimeoutExpired) as error:audit['llvm_version_error']=str(error)
+    probes=set()
+    if layout.get('status')=='ELF_LAYOUT_READ':
+        text=layout['text']
+        probes={text['address']+offset for offset in (0,4) if offset<text['bytes']}
+    _,probe=llvm_decode(llvm,spec['binary'],probes,out,'elf-relative-probe')
+    audit['llvm_elf_relative_probe']=probe
+    # Probe success never supplies an offset. The observed device PCs are
+    # outside .text/LOAD; no subtraction or address search is attempted.
+    mapping={};symbols=dict(status='UNRESOLVED',mapped_pcs=0,pc_count=len(addresses),reason='runtime PC/ELF correspondence unverified')
+    if correspondence['status']=='DIRECT_ELF_VIRTUAL_ADDRESSES':
+        if llvm:
+            mapping,symbols=llvm_decode(llvm,spec['binary'],addresses,out,'runtime-pc')
+        else:mapping,symbols=symbolize(addr2line,spec['binary'],addresses,out)
+    dump(out/'elf-diagnostic.json',audit)
+    return mapping,symbols,audit
+
+
 def analyze(args):
     report_path=args.report.resolve();root=report_path.parent;output=args.output_dir.absolute()
     if output.resolve()!=output or output==root or root in output.parents:raise ValueError('use a new output outside original evidence')
@@ -140,6 +212,9 @@ def analyze(args):
         for key in ('source_sha256','core_limit','dequant_mode','pipeline_mode','kv_m80_mode','scale_mode','k_tile','gate_copy_mode'):
             if specs['off']['config'].get(key)!=specs['raw']['config'].get(key):raise ValueError('Off/Raw changes another variable: '+key)
         tool=args.addr2line or shutil.which('llvm-addr2line') or shutil.which('addr2line')
+        llvm=None
+        if not args.inspect_only:
+            llvm,analysis['llvm_symbolizer_availability']=discover_llvm(getattr(args,'llvm_symbolizer',None),report,evidence)
         for mode,spec in specs.items():
             out=output/mode;out.mkdir()
             code_schema,code=csv_table(spec['code'],'code');instr_schema,rows=csv_table(spec['instr'],'instructions')
@@ -147,14 +222,21 @@ def analyze(args):
             formats[mode]=dict(code_path=str(spec['code']),instruction_path=str(spec['instr']),trace_path=str(spec['trace']),
                 code=code_schema,instructions=instr_schema,trace=trace_format)
             if args.inspect_only:continue
-            mapping,symbols=symbolize(tool,spec['binary'],{pc(r['addr']) for r in rows if pc(r['addr']) is not None},out)
+            mapping,symbols,elf=elf_diagnostic(spec,{pc(r['addr']) for r in rows if pc(r['addr']) is not None},out,llvm,tool)
+            code_result=source_hotspots(code,spec['source'],spec['focus'],spec['source_sha256'])
             summary=instruction_summary(rows,mapping,spec['source'],spec['focus'])
             trace=trace_analysis(spec['trace'],rows,mapping,spec['source'],spec['focus'])
             dump(out/'instructions.json',summary.pop('instructions'));dump(out/'timeline-intervals.json',trace.pop('intervals',[]))
+            dump(out/'cachemiss-events.json',trace.get('cachemiss',{}).pop('events',[]))
             # Code CSV line totals can include inline caller attribution; keep
             # them separate and never add them to PC instruction totals.
-            dump(out/'code-hotspots.json',dict(rows=code,interpretation='Raw documented code rows; not a disjoint instruction partition. No additive hotspot-cycle claim.'))
-            analysis['modes'][mode]=dict(csv_schema=instr_schema['status'],dwarf=symbols,instructions=summary,trace=trace)
+            dump(out/'code-hotspots.json',code_result)
+            visualization=[]
+            for path in sorted(spec['profile_root'].rglob('visualize_data.bin')):
+                evidence.read(path)
+                visualization.append(dict(evidence.files[str(path.resolve())],status='CURRENT_HASH_ONLY_NOT_DECODED',historical_manifest_binding='NOT_RECORDED'))
+            analysis['modes'][mode]=dict(csv_schema=instr_schema['status'],dwarf=symbols,elf=elf,
+                source_hotspots=code_result,visualization=visualization,instructions=summary,trace=trace)
         if args.inspect_only:analysis['status']='FORMAT_EVIDENCE_ONLY'
         else:
             analysis['status']='OFFLINE_ANALYSIS_PARTIAL'
@@ -173,6 +255,7 @@ def analyze(args):
                 analysis['comparison']['observed_trace_union_delta_raw_units']=right['interval_union']-left['interval_union']
             else:analysis['comparison']['trace_span_comparison']='UNRESOLVED'
             analysis['comparison']['instruction_cycle_sum_delta']=sum(analysis['comparison']['instruction_cycles_delta'].values(),Decimal(0)) if all(v is not None for v in analysis['comparison']['instruction_cycles_delta'].values()) else None
+            analysis['comparison']['source_hotspot_rows']=compare_source_hotspots(analysis['modes']['off']['source_hotspots'],analysis['modes']['raw']['source_hotspots'])
     except Exception as error:analysis.update(status='BLOCKED',error=f'{type(error).__name__}: {error}')
     finally:
         try:evidence.verify()
@@ -185,7 +268,15 @@ def analyze(args):
             'Trace interval unions/intersections use unconverted Trace ts/dur units, never NPU ms. Zero-width events may still have nonzero instruction cycles.',
             'Critical path, synchronization wait fraction, exposed MTE2 wait and next-K prefetch causality remain UNRESOLVED without dependency evidence.','']
         for mode,result in analysis['modes'].items():
-            lines += [f"{mode}: DWARF={result['dwarf']['status']}; Trace={result['trace']['status']}",'', '| Pipe | Instruction calls | Instruction cycles (not wall-time) |','| --- | ---: | ---: |']
+            lines += [f"{mode}: instruction DWARF={result['dwarf']['status']}; source CSV={result['source_hotspots']['status']}; Trace={result['trace']['status']}",
+                'ELF Machine: '+str(result['elf']['layout'].get('machine_hex'))+'; runtime PC address correspondence: '+result['elf']['trace_pc_correspondence']['status'],'',
+                'Hash-verified source hotspots (individual rows; inclusive costs are NOT summed):','',
+                '| Category | Source line | Reported instruction involvement | Reported cycles |','| --- | ---: | ---: | ---: |']
+            for category,rows in result['source_hotspots']['by_category'].items():
+                if category=='UNMAPPED':continue
+                for row in rows[:8]:lines += [f"| {category} | {row['line']} | {row['call_count']} | {row['cycles']} |"]
+            lines += ['', 'Unbound wrapper/SDK source rows: '+str(result['source_hotspots']['unmapped_rows'])+' (UNMAPPED).',
+                '', '| Pipe | Instruction calls | Instruction cycles (not wall-time) |','| --- | ---: | ---: |']
             for pipe,values in result['instructions']['by_reported_pipe'].items():lines += [f"| {pipe} | {values['call_count']} | {values['instruction_cycles']} |"]
             lines += ['', '| Verified source operation | Instruction calls | Instruction cycles |','| --- | ---: | ---: |']
             for operation,values in result['instructions']['by_source_operation'].items():
@@ -195,11 +286,14 @@ def analyze(args):
                 '- Observed instruction span: '+str(trace.get('trace_instruction_span')),
                 '- Instruction interval union: '+str(trace.get('interval_union')),
                 '- Zero-duration events: '+str(trace.get('zero_duration_events')),
+                '- Independent CACHEMISS channel: '+json.dumps(trace.get('cachemiss',{}),default=str),
                 '- MTE2 pairwise overlap: '+json.dumps(trace.get('mte2_pairwise_intersections',{}),default=str),
                 '- Next-copy source/PC overlap: '+json.dumps(trace.get('prefetch_callsite_overlap',{}),default=str),
                 '', 'Other instructions remain UNMAPPED. C++ API call counts and individual K tile IDs are not inferred.','']
         if analysis.get('comparison'):
-            lines += ['Off/Raw differences (Raw minus Off):',json.dumps(analysis['comparison'],indent=2,default=str),'']
+            comparison={k:v for k,v in analysis['comparison'].items() if k!='source_hotspot_rows'}
+            lines += ['Off/Raw differences (Raw minus Off):',json.dumps(comparison,indent=2,default=str),'',
+                'Per-source-line paired differences are in JSON; source rows are not summed and are independent of instruction statistics.','']
         lines += ['Next evidence needed: supported DWARF reader if PCs remain unresolved; explicit cycle clock/end marker for elapsed cycles; verified wait/producer dependencies for exposed waiting. No Kernel optimization is proposed as proven by this report.','']
         if analysis.get('error'):lines += ['Error: '+analysis['error']]
         lines += ['','See format-evidence.json for original headers, metadata, full sampled args; per-mode files retain PC mappings and intervals.',
@@ -214,6 +308,7 @@ def parse():
     parser.add_argument('--report',type=Path,default=Path('/home/w00949577/qwen35-dflash-run/gate-simulator-bounded-2g-racefix-20261020-103256/bounded-report.json'))
     parser.add_argument('--output-dir',type=Path,required=True)
     parser.add_argument('--addr2line',help='Existing DWARF reader only; no installation, build, or address rebasing')
+    parser.add_argument('--llvm-symbolizer',help='Existing tool path; otherwise inspect PATH and the evidence-bound msopprof installation')
     parser.add_argument('--inspect-only',action='store_true')
     return parser.parse_args()
 
