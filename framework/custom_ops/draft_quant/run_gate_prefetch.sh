@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# --layers 0 1 2 3 4 is explicit opt-in; omission keeps the Python default [0].
 # Separate processes/OPPs for the two builds; the production environment is not edited.
 set -eo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)

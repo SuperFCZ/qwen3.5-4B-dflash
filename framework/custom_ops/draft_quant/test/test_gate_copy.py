@@ -76,7 +76,7 @@ class GateCopyTests(unittest.TestCase):
                 env=kwargs['env'];mode=env['DFLASH_GATE_COPY_MODE'];variants.append(mode)
                 self.assertEqual(env['DFLASH_SUITE'],'gate-copy');self.assertEqual(env['DFLASH_K_TILE'],'256')
                 self.assertEqual(env['GATE_LAYERS'],'0');self.assertEqual(env['GATE_GOLDEN_SUITE'],files['golden'])
-                run=root/mode;data=run/'data';data.mkdir(parents=True);write_json(data/'suite.json',dict(status='PASS'))
+                run=root/mode;data=run/'data';data.mkdir(parents=True);write_json(data/'suite.json',dict(status='PASS',selected_cases=['layer-0-gate_up']))
                 write_json(run/'sdk-copy.json',dict(status='SOURCE_INSPECTED'))
                 write_json(run/'opp-preflight.json',dict(status='PASS'));(run/'source-commit.txt').write_text('CPU fixture')
                 Path(env['DFLASH_SUMMARY_POINTER']).write_text(str(data/'suite.json'))

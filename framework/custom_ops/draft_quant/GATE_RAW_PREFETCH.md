@@ -1,7 +1,9 @@
 # Gate/Up Raw Prefetch：独立首轮实验
 
-当前新候选 CANN 编译、NPU 正确性/性能、完整 Draft Token/KV、Decode 均 **NOT_RUN**。
-只比较 C16 layer-0-gate_up；不自动推广五层，不改完整 Draft 配置、Native Golden 或旧 Evidence。
+历史 6eb4ad3 的 layer-0 两轮真机结果见文末。新五层验收运行的 CANN 编译、NPU
+正确性/性能均 **NOT_RUN**；完整 Draft Token/KV、Decode 始终 **NOT_RUN**。
+默认仍只比较 C16 layer-0-gate_up；允许显式选择五层，不自动推广，不改完整 Draft 配置、
+Native Golden 或旧 Evidence。Kernel / Host Tiling 与 6eb4ad3 完全不变。
 
 ## 最小改动与可复用性
 
@@ -66,8 +68,9 @@ bash framework/custom_ops/draft_quant/run_gate_prefetch.sh --a51-evidence /home/
 自动执行两个独立进程：off 原 A5.1 Loop/K256/Broadcast 与 raw 候选，原 Down 配置
 和 core cap 均继承接受的 A5.1。支持 `--order candidate-first`，便于另建目录反序复测。
 
-每个构建阶段为：SDK 检查 → CANN 编译/隔离安装 → **两次无计时 Custom 对冻结
-Native bitwise** → 仅通过后进行 Native/Custom warmup=5 / repetitions=30。
+每个构建阶段为：SDK 检查 → CANN 编译/隔离安装 → **所有显式选择的层各两次无计时
+Custom 对冻结 Native bitwise** → 该构建全部所选层通过后，才进行每层 Native/Custom
+warmup=5 / repetitions=30。即使最后一层失败，该构建也不进入任何计时。
 保留 guards、输入只读、原始 NZ/Scale 哈希、重复输出、timed-tail/postcheck；
 计时阶段所有输出还须匹配相同冻结 Native。任何正确性失败停止该构建，不计时。
 
@@ -90,3 +93,45 @@ PASS 仅为数值门槛，adoption 仍 NOT_DECIDED。没有明显、可复现的
 
 CPU 模型不能证明 NPU 并发、cache、SDK 内部生命周期或性能；最终采用只依据真实
 Ascend310P3 正确性和相同输入/协议的可复现性能结果。
+
+
+## 6eb4ad3 的两轮 layer-0 真机结果（用户回传）
+
+| 顺序 | Off median / p95 ms | Raw median / p95 ms | Median speedup | bitwise |
+| --- | --- | --- | --- | --- |
+| baseline-first | 2.53748 / 2.54452 | 2.33459 / 2.34124 | 1.0869× | PASS |
+| candidate-first | 2.53500 / 2.53889 | 2.33547 / 2.37939 | 1.0854× | PASS |
+
+用户确认两轮保留同 Capture Native W8、冻结 Golden 和严格 bitwise，收益可复现。
+本地未读取原始 samples；未提供原始 evidence 目录，因此不虚构路径或 SHA256。
+这些是历史 layer-0 的结果，不授予五层验收或完整 Draft PASS，默认实现仍不变。
+
+## 显式五层独立验收
+
+```bash
+bash framework/custom_ops/draft_quant/run_gate_prefetch.sh --a51-evidence /home/w00949577/qwen35-dflash-run/a51-fallback-20261012-063342/suite.json --layers 0 1 2 3 4 --output-dir "/home/w00949577/qwen35-dflash-run/gate-raw-prefetch-five-$(date +%Y%m%d-%H%M%S)"
+```
+
+不传 `--layers` 仍为 `[0]`。选择必须非空、无重复、仅含 0..4，按层号排序；Shell
+原样转发 CLI，协调器核对实际子报告恰好覆盖请求的层，防止被静默截成 layer-0。
+保留 Off/Raw 独立 OPP，唯一变量仍为 Gate Raw Prefetch，2D 始终关闭。
+
+每层新增 `input_identities`：保存所有 Capture 文件（包含 x、INT8 NZ、原始 NK、
+GN group128 scale、eager）、Native OM/AIR/deployment 及冻结 Golden 的路径/大小/SHA256。
+Golden 记录的 Native OM 必须与该层实际 OM 一致；已有完整 A4 Capture/Native ABI、
+NZ 反解和 Manifest 身份校验不变。比较器再次核对 Off/Raw 的逐层绑定及文件哈希，
+拒绝缺层、同形状层间权重/scale/Golden 调换或中途篡改。
+
+每个构建先检查全部所选层，失败时保存失败层比较详情，performance 保持 NOT_RUN。
+通过后复用既有 5/30 continuous-v1 和 repeat/readonly/guards/timed-tail/postcheck，
+计时阶段的全部输出还必须等于相同冻结 Native Golden。
+
+新目录输出 `comparison.json` 与 `comparison.md`：逐层 Native-before/after、Off、Raw
+的 median/p95、原始样本、median/p95 ratio、位型证据与回退标志；`regressions` 单列
+任一 median 或 p95 比 Off 慢的层（点估计标记，不宣称统计显著性）。`summary` 只记录
+**所选独立投影 median 之和及 p95 之和**和相应比值，不是完整 Draft 的时延或顺序运行
+的 median/p95。单层默认也按同一口径报告。
+
+五层报告 PASS 仍仅代表所选投影数值门槛，adoption NOT_DECIDED，
+`full_draft_token_kv=NOT_RUN`、Decode NOT_RUN。原始 Golden / OPP / 历史 evidence 均只读，
+不重跑完整 Draft，不修改 N64/K256、Raw Banks、W16 或 PIPE_ALL。

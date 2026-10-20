@@ -14,6 +14,36 @@ SHAPE=(16,2560,19456)
 COPY_PREFIX='DFLASH_GROUP_QUANT_GATE_COPY '
 
 
+def selected_layers(layers):
+    if not isinstance(layers,(list,tuple)) or not layers or any(type(i) is not int or i not in range(5) for i in layers) or len(set(layers))!=len(layers):
+        raise ValueError('layers must be nonempty, unique integers in 0..4')
+    return tuple(sorted(layers))
+
+
+def selected_cases(layers):
+    return tuple(f'layer-{i}-gate_up' for i in selected_layers(layers))
+
+
+def file_identity(path):
+    path=Path(path).resolve()
+    return dict(path=str(path),bytes=path.stat().st_size,sha256=sha256(path))
+
+
+def layer_identity(case,compiled,golden,bundle_root,native_root,golden_root):
+    # Full capture/native ABI is checked by load_bundle/validate_om_manifest.
+    # Save explicit per-layer binding as well, so a pair cannot swap weights,
+    # Native OMs or Golden between identically shaped Gate projections.
+    files={name:file_identity(checked_file(bundle_root,item)) for name,item in case['files'].items()}
+    native={name:file_identity(checked_file(native_root,compiled[name])) for name in ('om','deployment','air_manifest')}
+    old_om=golden.get('native_om',{})
+    if old_om.get('sha256')!=native['om']['sha256'] or old_om.get('bytes')!=native['om']['bytes']:
+        raise ValueError('frozen Golden Native OM differs for '+case['name'])
+    outputs=golden['outputs']['native_om']+golden['bracket_outputs']['native_om']
+    if len(outputs)!=4:raise ValueError('incomplete per-layer frozen Golden')
+    return dict(name=case['name'],capture_files=files,native=native,
+                golden=[file_identity(checked_file(golden_root,item)) for item in outputs])
+
+
 def copy_evidence(log,mode):
     rows=[json.loads(s.split(COPY_PREFIX,1)[1]) for s in Path(log).read_text().splitlines() if COPY_PREFIX in s]
     expected=dict(version=1,mode=mode,selected=mode)
@@ -41,11 +71,12 @@ def launch_plan(log,config,workspace,experiment):
 
 
 def run(args):
+    names=selected_cases(args.layers)
     root=args.output_dir.resolve();root.mkdir(parents=True,exist_ok=False)
     config=load_build_config(args.build_config)
     experiment=getattr(args,'experiment','copy')
     if experiment not in ('copy','prefetch'):raise ValueError('unknown Gate experiment')
-    if experiment=='prefetch' and (config.get('gate_copy_mode')!='loop' or args.layers!=[0]):raise ValueError('prefetch first stage requires Loop and layer-0 only')
+    if experiment=='prefetch' and config.get('gate_copy_mode')!='loop':raise ValueError('prefetch requires Loop copy')
     if experiment=='copy' and config.get('gate_prefetch_mode','off')!='off':raise ValueError('2D copy/prefetch experiments must be isolated')
     if (config.get('k_tile')!=256 or config.get('scale_mode')!='broadcast' or config.get('dequant_mode')!='batched' or
         config.get('gate_copy_mode') not in ('loop','2d') or args.warmup!=5 or args.repetitions!=30):raise ValueError('requires Gate-only K256/broadcast and 5/30')
@@ -54,9 +85,9 @@ def run(args):
     if (golden.get('status')!='PASS' or golden.get('context_rows')!=16 or bundle['context_rows']!=16 or
         golden.get('bundle_sha256')!=sha256(args.bundle) or golden.get('native_om_manifest_sha256')!=sha256(args.native_om_manifest)):
         raise ValueError('frozen Native output suite does not bind same C16 capture/OM')
-    names=tuple(f'layer-{i}-gate_up' for i in sorted(args.layers))
     report=dict(abi=f'dflash-gate-{experiment}-run-v1',experiment=experiment,status='RUNNING',build=config,build_config_path=str(args.build_config),
-        build_config_sha256=sha256(args.build_config),device_id=args.device_id,selected_cases=names,checks={},
+        build_config_sha256=sha256(args.build_config),device_id=args.device_id,selected_cases=names,checks={},input_identities={},phase='untimed_correctness',
+        inputs={key:file_identity(path) for key,path in (('capture_manifest',args.bundle),('native_manifest',args.native_om_manifest),('golden_suite',args.golden_suite))},
         full_a4_regression='NOT_RUN',full_draft_token_kv='NOT_RUN',decode_performance='NOT_RUN',performance='NOT_RUN')
     summary=root/'suite.json';write_json(summary,report)
     watched={p:sha256(p) for p in (args.bundle,args.native_om_manifest,args.golden_suite,args.build_config,args.runner,args.om_runner)}
@@ -64,8 +95,12 @@ def run(args):
     try:
         for name in names:
             case=next(c for c in bundle['cases'] if c['name']==name);old=next(c for c in golden['cases'] if c['name']==name)
+            report['current_case']=name;write_json(summary,report)
             validate_layout(args.bundle.parent,case,'a4')
             if old['status']!='PASS':raise ValueError('frozen projection failed')
+            if experiment=='prefetch':
+                compiled=next(c for c in native['cases'] if c['name']==name)
+                report['input_identities'][name]=layer_identity(case,compiled,old,args.bundle.parent,args.native_om_manifest.parent,args.golden_suite.parent)
             validate_execution(old['executions']['native_om'],SHAPE,args.device_id,'AscendCL native OM',5,30,'continuous-v1',256)
             outputs=old['outputs']['native_om']+old['bracket_outputs']['native_om']
             if len(outputs)!=4:raise ValueError('frozen native repeat/tail/postcheck incomplete')
@@ -83,13 +118,17 @@ def run(args):
             copy_evidence(directory/'runner.log',config['gate_copy_mode'])
             pre_plan=launch_plan(directory/'runner.log',config,execution['workspace_bytes'],experiment)
             comparisons=[compare(expected,(directory/f'actual-{i}.bin').read_bytes(),SimpleNamespace(m=16,n=19456)) for i in (0,1)]
-            if not all(c['bitwise_equal'] and c['finite'] and c['max_ulp']==0 for c in comparisons):raise ValueError('untimed Gate correctness failed; performance NOT_RUN')
-            report['checks'][name]=dict(status='PASS',golden=dict(path=str(golden_file),sha256=sha256(golden_file),bytes=len(expected)),comparisons=comparisons,launch=pre_plan,execution=record(directory/'execution.json',root))
+            passed=all(c['bitwise_equal'] and c['finite'] and c['max_ulp']==0 for c in comparisons)
+            report['checks'][name]=dict(status='PASS' if passed else 'FAIL',golden=dict(path=str(golden_file),sha256=sha256(golden_file),bytes=len(expected)),comparisons=comparisons,launch=pre_plan,execution=record(directory/'execution.json',root))
             write_json(summary,report)
+            if not passed:raise ValueError('untimed Gate correctness failed; performance NOT_RUN')
+        if tuple(report['checks'])!=names or any(c['status']!='PASS' for c in report['checks'].values()):raise ValueError('all selected layers must pass before timing')
+        report.update(phase='timing',untimed_correctness='PASS');write_json(summary,report)
         child=SimpleNamespace(**vars(args),scope='a4',timing_protocol='continuous-v1',case_filter=names,k_tile=256)
         child.output_dir=root/'timing'
         if run_a2.run(child)!=0:raise ValueError('same-input Native/custom timing bracket correctness failed')
         measured=json.loads((child.output_dir/'suite.json').read_text());plans=[]
+        if tuple(c['name'] for c in measured['cases'])!=names:raise ValueError('timing omitted/reordered selected Gate layers')
         for row in measured['cases']:
             for kind in ('custom','native_om'):
                 for item in row['outputs'][kind]+row['bracket_outputs'][kind]:
@@ -101,7 +140,7 @@ def run(args):
         if any(sha256(p)!=digest for p,digest in watched.items()):raise ValueError('inputs/config/runners changed')
         for case in bundle['cases']:
             for file in case['files'].values():checked_file(args.bundle.parent,file)
-        report.update(status='PASS',performance='MEASURED',timing=record(child.output_dir/'suite.json',root),launches=plans)
+        report.update(status='PASS',phase='complete',performance='MEASURED',timing=record(child.output_dir/'suite.json',root),launches=plans)
     except Exception as error:report.update(status='FAIL',error=f'{type(error).__name__}: {error}')
     write_json(summary,report);print(f"{report['status']}: {summary}; full Draft Token/KV NOT_RUN",flush=True)
     return int(report['status']!='PASS')

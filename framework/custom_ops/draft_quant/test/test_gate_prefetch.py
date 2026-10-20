@@ -92,7 +92,7 @@ class GatePrefetchTests(unittest.TestCase):
                 env=kwargs['env'];mode=env['DFLASH_GATE_PREFETCH_MODE'];calls.append(mode)
                 self.assertEqual(env['DFLASH_GATE_COPY_MODE'],'loop');self.assertEqual(env['DFLASH_SUITE'],'gate-prefetch')
                 self.assertEqual(env['DFLASH_PIPELINE_MODE'],'prefetch');self.assertEqual(env['GATE_LAYERS'],'0')
-                run=root/mode;data=run/'data';data.mkdir(parents=True);write_json(data/'suite.json',dict(status='PASS'))
+                run=root/mode;data=run/'data';data.mkdir(parents=True);write_json(data/'suite.json',dict(status='PASS',selected_cases=['layer-0-gate_up']))
                 for n in ('sdk-copy.json','opp-preflight.json'):write_json(run/n,dict(status='SOURCE_INSPECTED'))
                 (run/'source-commit.txt').write_text('fixture');Path(env['DFLASH_SUMMARY_POINTER']).write_text(str(data/'suite.json'))
             def compare(a,b,out,experiment):
@@ -101,7 +101,7 @@ class GatePrefetchTests(unittest.TestCase):
             with patch.object(pair,'source_evidence',return_value=source),patch.object(pair.subprocess,'run',side_effect=launch),patch.object(pair,'compare_runs',side_effect=compare):self.assertEqual(pair.run(args),0)
             self.assertEqual(calls,['off','raw'])
             result=json.loads((root/'out/suite.json').read_text());self.assertEqual(result['adoption'],'NOT_DECIDED');self.assertEqual(result['full_draft_token_kv'],'NOT_RUN')
-            args.layers=[0,1]
+            args.layers=[0,0]
             with self.assertRaises(ValueError):pair.run(args)
 
     def test_real_launch_log_binds_gate_selection_and_ub(self):

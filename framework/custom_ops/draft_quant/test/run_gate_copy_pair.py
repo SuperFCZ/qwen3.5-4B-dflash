@@ -10,7 +10,7 @@ from a2_common import checked_file,record,sha256,write_json
 from a3_launch import load_build_config
 from compare_a51 import unwrap
 from compare_a5 import load as load_full,projection
-from run_gate_copy import SHAPE,copy_evidence
+from run_gate_copy import SHAPE,copy_evidence,selected_layers,selected_cases
 
 HERE=Path(__file__).resolve().parents[1]
 
@@ -29,8 +29,32 @@ def source_evidence(path):
                 accepted_pair=dict(path=str(path),sha256=sha256(path)),accepted_stage=dict(path=str(single),sha256=sha256(single)))
 
 
+def summarize(rows):
+    if not rows or len({r['name'] for r in rows})!=len(rows):raise ValueError('empty/duplicate Gate summary')
+    result=dict(projection_count=len(rows),selected_cases=[r['name'] for r in rows],
+        interpretation='Sum of selected isolated projection medians/p95s; NOT full Draft latency or the median/p95 of a sequential execution.')
+    for kind in ('baseline','candidate','native_before','native_after'):
+        result[kind]=dict(sum_projection_median_ms=sum(r[kind]['median_ms'] for r in rows),
+                          sum_projection_p95_ms=sum(r[kind]['p95_ms'] for r in rows))
+    result['median_sum_speedup']=result['baseline']['sum_projection_median_ms']/result['candidate']['sum_projection_median_ms']
+    result['p95_sum_ratio']=result['baseline']['sum_projection_p95_ms']/result['candidate']['sum_projection_p95_ms']
+    return result
+
+
+def verify_layer_identities(before,after,names):
+    if tuple(before)!=tuple(names) or tuple(after)!=tuple(names) or before!=after:raise ValueError('paired per-layer capture/Native/Golden identity differs')
+    for name in names:
+        row=before[name]
+        if row['name']!=name:raise ValueError('per-layer identity name differs')
+        if set(row['capture_files'])!={'x.bin','q_nk.bin','w_nz.bin','s_gn.bin','eager-0.bin','eager-1.bin'} or set(row['native'])!={'om','deployment','air_manifest'} or len(row['golden'])!=4:raise ValueError('incomplete per-layer identity inventory')
+        for item in [*row['capture_files'].values(),*row['native'].values(),*row['golden']]:
+            path=Path(item['path'])
+            if not path.is_file() or path.stat().st_size!=item['bytes'] or sha256(path)!=item['sha256']:raise ValueError('per-layer artifact changed: '+str(path))
+
+
 def compare_runs(left,right,output,experiment="copy"):
     if experiment not in ("copy","prefetch"):raise ValueError("unknown Gate experiment")
+    if output.exists() or output.with_suffix('.md').exists():raise FileExistsError('use fresh comparison artifacts')
     rows=[];reports=[];roots=[];configs=[]
     modes=('loop','2d') if experiment=='copy' else ('off','raw')
     field='gate_copy_mode' if experiment=='copy' else 'gate_prefetch_mode'
@@ -51,6 +75,10 @@ def compare_runs(left,right,output,experiment="copy"):
     for key in ('device_id','selected_cases','bundle_sha256','native_om_manifest_sha256','timing_protocol'):
         if reports[0][1].get(key)!=reports[1][1].get(key):raise ValueError('paired timing identity differs: '+key)
     if reports[0][0]['selected_cases']!=reports[1][0]['selected_cases']:raise ValueError('paired selections differ')
+    names=tuple(reports[0][0]['selected_cases'])
+    if not names or len(set(names))!=len(names) or any(n not in selected_cases(list(range(5))) for n in names):raise ValueError('invalid selected Gate inventory')
+    if names!=tuple(n for n in selected_cases(list(range(5))) if n in names):raise ValueError('noncanonical Gate layer order')
+    if experiment=='prefetch':verify_layer_identities(reports[0][0].get('input_identities',{}),reports[1][0].get('input_identities',{}),names)
     for old,new in zip(reports[0][1]['cases'],reports[1][1]['cases']):
         for row in (old,new):
             for execution in row['executions'].values():
@@ -58,20 +86,37 @@ def compare_runs(left,right,output,experiment="copy"):
         row=projection(old,new,*roots,SHAPE,reports[0][0],reports[1][0],False,gate_prefetch=experiment=='prefetch')
         if experiment=='copy' and row['baseline_launch']!=row['candidate_launch']:raise ValueError('Matmul tiling/resources/schedule changed')
         row['copy_plans']=[copy_evidence(root/old['name']/'custom/runner.log',mode) for root,mode in zip(roots,('loop','2d') if experiment=='copy' else ('loop','loop'))]
+        row['p95_speedup']=row['baseline']['p95_ms']/row['candidate']['p95_ms']
+        if experiment=='prefetch':row['input_identity']=reports[0][0]['input_identities'][row['name']]
         rows.append(row)
+        print(f"{row['name']}: {row['status']} median {row['baseline']['median_ms']:.6f}->{row['candidate']['median_ms']:.6f} ms, p95 {row['baseline']['p95_ms']:.6f}->{row['candidate']['p95_ms']:.6f} ms, speedup {row['median_speedup']:.4f}x",flush=True)
     result=dict(experiment=experiment,status='PASS' if rows and all(r['status']=='PASS' for r in rows) else 'FAIL',scope='Gate-only same-Capture Native W8 bitwise; isolated runtime-weight ACLNN versus immutable Native OM',
-                cases=rows,builds=configs,adoption='NOT_DECIDED',full_draft_token_kv='NOT_RUN',full_a4_regression='NOT_RUN',decode_performance='NOT_RUN',
+                cases=rows,summary=summarize(rows),
+                regressions=[dict(name=r['name'],median=r['candidate_slower_median'],p95=r['candidate_slower_p95']) for r in rows if r['candidate_slower_median'] or r['candidate_slower_p95']],
+                builds=configs,adoption='NOT_DECIDED',full_draft_token_kv='NOT_RUN',full_a4_regression='NOT_RUN',decode_performance='NOT_RUN',
                 interpretation='Raw samples/median/p95 are isolated diagnostic timings. No full-Draft or cross-model speedup inference.')
-    write_json(output,result);return result
+    write_json(output,result)
+    lines=['# Gate independent projection comparison','',
+           'Status '+result['status']+' is numerical only; adoption NOT_DECIDED; full_draft_token_kv NOT_RUN.',
+           'Each cell is median / p95 (ms). Raw samples and exact identities are in comparison.json.','',
+           '| Layer | Off/baseline | Raw/candidate | Native-before | Native-after | Median speedup | Regression vs baseline |',
+           '| --- | --- | --- | --- | --- | --- | --- |']
+    for row in rows:
+        cells=[f"{row[k]['median_ms']:.6f} / {row[k]['p95_ms']:.6f}" for k in ('baseline','candidate','native_before','native_after')]
+        flags=','.join(k for k,flag in (('median',row['candidate_slower_median']),('p95',row['candidate_slower_p95'])) if flag) or 'none'
+        lines.append('| '+row['name']+' | '+' | '.join(cells)+f" | {row['median_speedup']:.5f}x | {flags} |")
+    lines+=['',result['summary']['interpretation'],'',json.dumps(result['summary'],indent=2)]
+    output.with_suffix('.md').write_text('\n'.join(lines)+'\n')
+    return result
 
 
 def run(args):
     experiment=getattr(args,'experiment','copy')
     if experiment not in ('copy','prefetch'):raise ValueError('unknown Gate experiment')
     modes=('loop','2d') if experiment=='copy' else ('off','raw')
-    if experiment=='prefetch' and args.layers!=[0]:raise ValueError('Gate prefetch stage is layer-0 only')
+    layers=selected_layers(args.layers);names=selected_cases(layers)
     root=args.output_dir.resolve();root.mkdir(parents=True,exist_ok=False)
-    report=dict(status='RUNNING',abi=f'dflash-gate-{experiment}-pair-v1',experiment=experiment,runs={},full_draft_token_kv='NOT_RUN',decode_performance='NOT_RUN',adoption='NOT_DECIDED')
+    report=dict(status='RUNNING',abi=f'dflash-gate-{experiment}-pair-v1',experiment=experiment,selected_layers=list(layers),selected_cases=names,runs={},full_draft_token_kv='NOT_RUN',decode_performance='NOT_RUN',adoption='NOT_DECIDED')
     summary=root/'suite.json';write_json(summary,report)
     try:
         source=source_evidence(args.a51_evidence.resolve());report['source']=source;cfg=source['config']
@@ -83,10 +128,12 @@ def run(args):
                 DFLASH_GATE_COPY_MODE=mode if experiment=='copy' else 'loop',DFLASH_K_TILE='256',DFLASH_SCALE_MODE='broadcast',DFLASH_DEQUANT_MODE='batched',
                 DFLASH_CORE_LIMIT=str(cfg['core_limit']),DFLASH_PIPELINE_MODE=cfg['pipeline_mode'],DFLASH_KV_M80_MODE=cfg['kv_m80_mode'],
                 A4_C16_BUNDLE=source['bundle'],A4_C16_NATIVE_OM_MANIFEST=source['native'],GATE_GOLDEN_SUITE=source['golden'],
-                GATE_LAYERS=','.join(map(str,args.layers)),DFLASH_SUMMARY_POINTER=str(pointer))
+                GATE_LAYERS=','.join(map(str,layers)),DFLASH_SUMMARY_POINTER=str(pointer))
             report['phase']=mode;write_json(summary,report)
             with (root/f'{mode}.log').open('w') as log:subprocess.run(['bash',str(HERE/'run_server.sh')],env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
             path=Path(pointer.read_text().strip())
+            completed=json.loads(path.read_text())
+            if completed.get('status')!='PASS' or tuple(completed.get('selected_cases',[]))!=names:raise ValueError('run did not validate exactly the requested Gate layers')
             report['runs'][mode]=dict(path=str(path),sha256=sha256(path),sdk=record(path.parent.parent/'sdk-copy.json',path.parent.parent),
                 installed_opp=record(path.parent.parent/'opp-preflight.json',path.parent.parent),
                 source_commit=record(path.parent.parent/'source-commit.txt',path.parent.parent))
