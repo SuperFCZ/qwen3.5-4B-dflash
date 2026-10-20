@@ -93,7 +93,8 @@ static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_
             for (uint32_t tile = 0; tile < n / 64; ++tile) owned += tile % blocks == cpuBlockIdx;
             // Independent of the production selector: this fixture only runs
             // whitelisted shapes; prefetch excludes whole-K256 and gate/up.
-            const bool prefetch = DFLASH_GROUP_QUANT_PIPELINE_MODE == 1 && (k == 512 || k == 1024 || k == 9728);
+            const bool prefetch = (DFLASH_GROUP_QUANT_PIPELINE_MODE == 1 && (k == 512 || k == 1024 || k == 9728)) ||
+                (DFLASH_GROUP_QUANT_GATE_PREFETCH_MODE == 1 && m==16 && k==2560 && n==19456 && tileK==256);
             const uint64_t userUb = 64 * tileK * (prefetch ? 4 : 3) + (tileK/128)*64*2*(prefetch ? 2 : 1);
             const bool broadcast = DFLASH_GROUP_QUANT_SCALE_MODE == 1 && !(m==80 && k==2560 && n==2048);
             assert(cpuMetrics.ubBytes == (owned ? userUb + tiling.matmulUbBytes + (stageA ? 20480 : 0) + (broadcast ? 2304 : 0) : 0));
@@ -107,6 +108,8 @@ static void Check(uint32_t k, uint32_t n, int pattern, const std::vector<uint32_
             const bool gateCopy = DFLASH_GROUP_QUANT_GATE_COPY_MODE==1 && m==16 && k==2560 && n==19456 && tileK==256;
             assert(cpuMetrics.copies == chunks * (gateCopy ? 2 : tileK / 32 + tileK / 128));
             assert(cpuMetrics.eventAllocations == (owned && prefetch ? 2U : 0U));
+            assert(cpuMetrics.eventReleases == cpuMetrics.eventAllocations);
+            assert(cpuMetrics.fullBarriers == owned * ((prefetch ? 1 : 3) * (k / tileK) + 1));
             assert(cpuMetrics.libraryWithPendingSignals == (prefetch ? owned * (k / tileK - 1) : 0));
             assert(cpuMetrics.castsWithPendingDma == (prefetch ? owned * (k / tileK - 1) * (tileK / 32) : 0));
 #if DFLASH_GROUP_QUANT_DEQUANT_MODE == 1

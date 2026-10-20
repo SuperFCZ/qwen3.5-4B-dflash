@@ -1,6 +1,7 @@
 # Gate/Up 二维批量搬运候选
 
-状态：CPU 回归完成；CANN 编译、NPU 单算子正确性、性能、完整 Draft Token/KV 均 **NOT_RUN**。
+eb67337 的 layer-0 真机正确性/性能结果见文末追加，结论为暂不采用。
+最新源码的 CANN 编译与 NPU 复验 **NOT_RUN**；完整 Draft Token/KV 始终 **NOT_RUN**。
 现有 A5.1 和历史 OPP/Evidence 保留。此次仅改变 Gate/Up 的原始数据搬运指令组织；
 没有引入 Raw Prefetch、W 双缓冲、N tile 改动、计算重排或 PIPE_ALL 改动。
 
@@ -83,3 +84,19 @@ Native 是 immutable-weight OM，Custom 为 ACLNN runtime buffers；配对输入
 - 配置默认/opt-in、错误 SDK/架构、配置/hash/log 不匹配、无计时 pre-gate、失败不进入
   timing、两构建隔离与 Token/KV NOT_RUN 等 CPU 回归。
 - CPU 模型没有模拟真实 MTE2/Cube 流水、带宽或 SDK 指令实现，不能据此声称 NPU PASS。
+
+## eb67337 真机结果（用户回传，2026-10-20 记录）
+
+Ascend310P3 的 C16 layer-0-gate_up bitwise PASS。以下为用户提供的实测摘要，
+原始 evidence 目录尚未提供，本地未读取原始 samples；不虚构路径/哈希。
+
+| 实现 | median ms | p95 ms |
+| --- | ---: | ---: |
+| Loop | 2.536365 | 2.546840 |
+| 2D | 2.527310 | 2.544700 |
+
+Median ratio 1.00358×，约减少 0.36%；Native-before/after median 分别为
+4.01461 / 4.02760 ms。收益接近基准波动，**暂不采用**。原报告的
+`adoption=NOT_DECIDED` 与完整 Draft Token/KV NOT_RUN 保留；2D 仍为独立 opt-in。
+后续 Gate Raw Prefetch 实验基于 Loop，强制关闭 2D，不叠加两个变量。
+此历史结果仅属于 eb67337，不冒充后续提交的 NPU 验收。

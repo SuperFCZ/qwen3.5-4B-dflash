@@ -76,7 +76,7 @@ def match_plans(a,b,shape,allow_k_change=False):
         if b['scale']['selected_scale']!='scalar-muls-v1': raise ValueError('KV M80 scale path changed')
 
 
-def projection(old,new,aroot,broot,shape,a,b,allow_k_change=False):
+def projection(old,new,aroot,broot,shape,a,b,allow_k_change=False, *, gate_prefetch=False):
     if old.get('status')!='PASS' or new.get('status')!='PASS': raise ValueError('failed projection')
     protocol=old['executions']['custom']['timing']
     expected=checked_file(aroot,old['outputs']['native_om'][0]).read_bytes()
@@ -93,8 +93,12 @@ def projection(old,new,aroot,broot,shape,a,b,allow_k_change=False):
                 comparisons.append(reference.compare(expected,checked_file(root,item).read_bytes(),SimpleNamespace(m=shape[0],n=shape[2])))
         cfg=report['build']
         plans.append(launch_evidence(root/case['name']/'custom/runner.log',shape,cfg['core_limit'],
-            case['executions']['custom']['workspace_bytes'],cfg['dequant_mode'],cfg['pipeline_mode'],5,cfg['kv_m80_mode'],cfg['scale_mode'],cfg.get('k_tile'),cfg.get('k_tile_policy')))
-    match_plans(*plans,shape,allow_k_change)
+            case['executions']['custom']['workspace_bytes'],cfg['dequant_mode'],cfg['pipeline_mode'],5,cfg['kv_m80_mode'],cfg['scale_mode'],cfg.get('k_tile'),cfg.get('k_tile_policy'),cfg.get('gate_prefetch_mode') if gate_prefetch else None))
+    if gate_prefetch:
+        from gate_prefetch_contract import match_plans as match_gate
+        if tuple(shape)!=(16,2560,19456) or allow_k_change or a['build'].get('gate_copy_mode')!='loop' or b['build'].get('gate_copy_mode')!='loop':raise ValueError('invalid mixed Gate experiment')
+        match_gate(*plans)
+    else:match_plans(*plans,shape,allow_k_change)
     before,after=timings(old['executions']['custom']),timings(new['executions']['custom'])
     native_before,native_after=timings(old['executions']['native_om']),timings(new['executions']['native_om'])
     return dict(name=old['name'],shape=list(shape),status='PASS' if all(c['finite'] and c['bitwise_equal'] and c['max_ulp']==0 for c in comparisons) else 'FAIL',

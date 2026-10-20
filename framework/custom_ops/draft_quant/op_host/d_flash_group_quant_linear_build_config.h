@@ -14,7 +14,8 @@
 
 // A3.2 is opt-in until the server correctness/performance gates pass.
 // 0 is the A3.1 serial control; 1 prefetches raw inputs for down and streamed
-// A1 shapes. Gate/up and the whole-K256 path keep the serial schedule.
+// A1 shapes. Gate/up stays serial unless the separate Gate opt-in below is set;
+// the whole-K256 path always keeps the serial schedule.
 #ifndef DFLASH_GROUP_QUANT_PIPELINE_MODE
 #define DFLASH_GROUP_QUANT_PIPELINE_MODE 0U
 #endif
@@ -53,6 +54,14 @@
 #endif
 #define DFLASH_GROUP_QUANT_GATE_COPY(m, k, n, tile) \
     (DFLASH_GROUP_QUANT_GATE_COPY_MODE == 1U && (m) == 16U && (k) == 2560U && \
+     (n) == 19456U && (tile) == 256U)
+
+// Independent Gate raw-prefetch experiment; never combine with 2D DMA.
+#ifndef DFLASH_GROUP_QUANT_GATE_PREFETCH_MODE
+#define DFLASH_GROUP_QUANT_GATE_PREFETCH_MODE 0U
+#endif
+#define DFLASH_GROUP_QUANT_GATE_PREFETCH(m, k, n, tile) \
+    (DFLASH_GROUP_QUANT_GATE_PREFETCH_MODE == 1U && (m) == 16U && (k) == 2560U && \
      (n) == 19456U && (tile) == 256U)
 
 #endif

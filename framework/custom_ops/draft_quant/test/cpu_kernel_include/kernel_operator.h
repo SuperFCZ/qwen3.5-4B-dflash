@@ -33,7 +33,7 @@ struct CpuMetrics {
     uint32_t castCalls = 0, mulsCalls = 0, vectorBarriers = 0;
     uint32_t brcbCalls = 0, mulCalls = 0;
     uint32_t copies = 0, castsWithPendingDma = 0, eventAllocations = 0, libraryWithPendingSignals = 0;
-    uint32_t aStageCalls = 0;
+    uint32_t aStageCalls = 0, eventReleases = 0, fullBarriers = 0;
     uint64_t aStageBytes = 0;
 };
 inline CpuMetrics cpuMetrics;
@@ -190,6 +190,7 @@ public:
         auto &event = cpuSync.events[static_cast<size_t>(E)].at(id);
         Require(event.reserved && !event.signalled, "release of live/unreserved event");
         event.reserved = false;
+        ++cpuMetrics.eventReleases;
     }
     template <TPosition P> void InitBuffer(TBuf<P> &buffer, uint64_t bytes) {
         assert(bytes % 32 == 0);
@@ -202,6 +203,7 @@ template <int P> void PipeBarrier() {
     cpuSync.vectorAccesses.clear();
     if constexpr (P == PIPE_V) ++cpuMetrics.vectorBarriers;
     else {
+        ++cpuMetrics.fullBarriers;
         DrainDma(cpuSync.dmaIssued);
         cpuSync.scalarReady = cpuSync.vectorReady = cpuSync.dmaIssued;
         cpuSync.vectorScalarReady = cpuSync.vectorIssued;

@@ -126,7 +126,7 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
         return ge::GRAPH_FAILED;
     }
     const int64_t tileK = draft_quant_contract::KTile(k, m, n, DFLASH_GROUP_QUANT_K_TILE);
-    const bool prefetch = DFLASH_GROUP_QUANT_PREFETCH(k, n);
+    const bool prefetch = DFLASH_GROUP_QUANT_PREFETCH(k, n) || DFLASH_GROUP_QUANT_GATE_PREFETCH(m,k,n,tileK);
     const uint32_t rawBanks = prefetch ? 2U : 1U;
     const uint64_t codesBytes = kTileN * tileK * rawBanks;
     const uint64_t scaleBytes = (tileK / kGroup) * kTileN * 2 * rawBanks;
@@ -264,6 +264,9 @@ static ge::graphStatus TilingFunc(gert::TilingContext *context)
                  static_cast<long long>(m), static_cast<long long>(k), static_cast<long long>(n), static_cast<long long>(tileK),
                  availableCores, coreLimit, blockDim, static_cast<long long>(n / kTileN),
                  context->GetWorkspaceSizes(1)[0]);
+    std::fprintf(stdout, "DFLASH_GROUP_QUANT_GATE_PREFETCH {\"version\":1,\"mode\":\"%s\",\"enabled\":%s}\n",
+                 DFLASH_GROUP_QUANT_GATE_PREFETCH_MODE == 1 ? "raw" : "off",
+                 DFLASH_GROUP_QUANT_GATE_PREFETCH(m,k,n,tileK) ? "true" : "false");
     std::fprintf(stdout, "DFLASH_GROUP_QUANT_GATE_COPY {\"version\":1,\"mode\":\"%s\",\"selected\":\"%s\"}\n",
                  DFLASH_GROUP_QUANT_GATE_COPY_MODE == 1 ? "2d" : "loop",
                  DFLASH_GROUP_QUANT_GATE_COPY(m,k,n,tileK) ? "2d" : "loop");

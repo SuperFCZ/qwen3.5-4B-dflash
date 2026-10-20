@@ -238,3 +238,10 @@ A1 结果只验收本页的合成形状。报告中原生 OM、真实模型投�
 buffer、数学、同步或生产 Draft。最小入口 `run_gate_copy.sh` 复用既有 A5.1 C16
 Capture/Native OM，先无计时 bitwise 验证，再运行同口径 5/30 的 A/B。
 CANN 编译、NPU 正确性/性能、完整 Draft Token/KV 在服务器执行前均为 NOT_RUN。
+
+## Gate/Up Raw Prefetch 独立实验
+
+[方案、UB 与同步账本、最小入口](GATE_RAW_PREFETCH.md)：复用既有 Down 的 reserved-event
+双 raw bank 分支，仅对 M16/K2560/N19456 Gate opt-in，2D copy 强制关闭。默认 off；
+只做 C16 layer-0 的两次无计时 bitwise gate，再做 5/30 A/B，不推广五层或接入完整 Draft。
+历史 2D 候选约 0.36% 收益接近波动，暂不采用，原始用户回传见 [2D 记录](GATE_COPY_2D.md#eb67337-真机结果用户回传2026-10-20-记录)。

@@ -17,6 +17,12 @@ static_assert(DFLASH_GROUP_QUANT_GATE_COPY_MODE == 0U ||
               (DFLASH_GROUP_QUANT_K_TILE == 256U && DFLASH_GROUP_QUANT_SCALE_MODE == 1U &&
                DFLASH_GROUP_QUANT_DEQUANT_MODE == 1U), "Gate 2D copy requires A5.1 K256 broadcast baseline");
 
+static_assert(DFLASH_GROUP_QUANT_GATE_PREFETCH_MODE <= 1U, "unsupported Gate prefetch mode");
+static_assert(DFLASH_GROUP_QUANT_GATE_PREFETCH_MODE == 0U ||
+              (DFLASH_GROUP_QUANT_GATE_COPY_MODE == 0U && DFLASH_GROUP_QUANT_K_TILE == 256U &&
+               DFLASH_GROUP_QUANT_SCALE_MODE == 1U && DFLASH_GROUP_QUANT_DEQUANT_MODE == 1U),
+              "Gate prefetch requires Loop/K256/Broadcast/batched baseline");
+
 using namespace matmul;
 
 namespace {
@@ -70,7 +76,8 @@ __aicore__ inline void RunGroupQuantLinear(
     const uint32_t globalK = tilingData.globalK;
     const uint32_t globalN = tilingData.globalN;
     const uint32_t tileK = tilingData.tileK;
-    const bool prefetch = DFLASH_GROUP_QUANT_PREFETCH(globalK, globalN);
+    const bool prefetch = DFLASH_GROUP_QUANT_PREFETCH(globalK, globalN) ||
+        DFLASH_GROUP_QUANT_GATE_PREFETCH(globalM, globalK, globalN, tileK);
     const bool broadcast = !StageA && DFLASH_GROUP_QUANT_BROADCAST(globalM, globalK, globalN);
     const uint32_t rawBanks = prefetch ? 2U : 1U;
     const uint32_t nTiles = globalN / kTileN;

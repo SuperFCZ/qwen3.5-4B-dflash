@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fresh isolated loop/2d OPPs; reuse accepted A5.1 C16 capture and Native OMs."""
+"""Shared isolated Gate A/B driver; one copy OR prefetch variable per run."""
 import argparse
 import json
 import os
@@ -22,19 +22,25 @@ def source_evidence(path):
     if sha256(single)!=item['sha256']:raise ValueError('accepted K256 suite changed')
     stage,full,_=unwrap(single,256)
     config=load_build_config(Path(stage['build_config_path']))
-    if config.get('gate_copy_mode','loop')!='loop':raise ValueError('accepted baseline must be original copy loop')
+    if config.get('gate_copy_mode','loop')!='loop' or config.get('gate_prefetch_mode','off')!='off':raise ValueError('accepted baseline must be original copy loop')
     a4,scopes=load_full(full,'broadcast',256,Path(stage['build_config_path']))
     child,child_root,_=scopes['c16']
     return dict(bundle=child['bundle'],native=child['native_om_manifest'],golden=str(child_root/'suite.json'),config=config,
                 accepted_pair=dict(path=str(path),sha256=sha256(path)),accepted_stage=dict(path=str(single),sha256=sha256(single)))
 
 
-def compare_runs(left,right,output):
+def compare_runs(left,right,output,experiment="copy"):
+    if experiment not in ("copy","prefetch"):raise ValueError("unknown Gate experiment")
     rows=[];reports=[];roots=[];configs=[]
-    for path,mode in ((left,'loop'),(right,'2d')):
+    modes=('loop','2d') if experiment=='copy' else ('off','raw')
+    field='gate_copy_mode' if experiment=='copy' else 'gate_prefetch_mode'
+    for path,mode in zip((left,right),modes):
         r=json.loads(path.read_text());cfg=load_build_config(Path(r['build_config_path']))
-        if r.get('status')!='PASS' or r['build']!=cfg or cfg.get('gate_copy_mode')!=mode or sha256(r['build_config_path'])!=r['build_config_sha256']:
+        if r.get('status')!='PASS' or r['build']!=cfg or cfg.get(field)!=mode or sha256(r['build_config_path'])!=r['build_config_sha256']:
             raise ValueError('failed or mismatched Gate copy build')
+        if experiment=='prefetch' and cfg.get('gate_copy_mode')!='loop':raise ValueError('2D copy must be off in raw-prefetch experiment')
+        if experiment=='copy' and cfg.get('gate_prefetch_mode','off')!='off':raise ValueError('raw-prefetch must be off in 2D experiment')
+        if r.get('experiment','copy')!=experiment:raise ValueError('wrong Gate experiment evidence')
         if not r.get('checks') or tuple(r['checks'])!=tuple(r['selected_cases']) or any(c['status']!='PASS' for c in r['checks'].values()):raise ValueError('untimed correctness gate missing')
         timing_path=checked_file(path.parent,r['timing']);timing=json.loads(timing_path.read_text())
         if timing.get('status')!='PASS' or timing['selected_cases']!=list(r['selected_cases']) or tuple(c['name'] for c in timing['cases'])!=tuple(r['selected_cases']):raise ValueError('incomplete selected timing')
@@ -49,27 +55,32 @@ def compare_runs(left,right,output):
         for row in (old,new):
             for execution in row['executions'].values():
                 if execution['timing']['warmup']!=5 or execution['timing']['repetitions']!=30:raise ValueError('not 5/30')
-        row=projection(old,new,*roots,SHAPE,reports[0][0],reports[1][0],False)
-        if row['baseline_launch']!=row['candidate_launch']:raise ValueError('Matmul tiling/resources/schedule changed')
-        row['copy_plans']=[copy_evidence(root/old['name']/'custom/runner.log',mode) for root,mode in zip(roots,('loop','2d'))]
+        row=projection(old,new,*roots,SHAPE,reports[0][0],reports[1][0],False,gate_prefetch=experiment=='prefetch')
+        if experiment=='copy' and row['baseline_launch']!=row['candidate_launch']:raise ValueError('Matmul tiling/resources/schedule changed')
+        row['copy_plans']=[copy_evidence(root/old['name']/'custom/runner.log',mode) for root,mode in zip(roots,('loop','2d') if experiment=='copy' else ('loop','loop'))]
         rows.append(row)
-    result=dict(status='PASS' if rows and all(r['status']=='PASS' for r in rows) else 'FAIL',scope='Gate-only same-Capture Native W8 bitwise; isolated runtime-weight ACLNN versus immutable Native OM',
+    result=dict(experiment=experiment,status='PASS' if rows and all(r['status']=='PASS' for r in rows) else 'FAIL',scope='Gate-only same-Capture Native W8 bitwise; isolated runtime-weight ACLNN versus immutable Native OM',
                 cases=rows,builds=configs,adoption='NOT_DECIDED',full_draft_token_kv='NOT_RUN',full_a4_regression='NOT_RUN',decode_performance='NOT_RUN',
                 interpretation='Raw samples/median/p95 are isolated diagnostic timings. No full-Draft or cross-model speedup inference.')
     write_json(output,result);return result
 
 
 def run(args):
+    experiment=getattr(args,'experiment','copy')
+    if experiment not in ('copy','prefetch'):raise ValueError('unknown Gate experiment')
+    modes=('loop','2d') if experiment=='copy' else ('off','raw')
+    if experiment=='prefetch' and args.layers!=[0]:raise ValueError('Gate prefetch stage is layer-0 only')
     root=args.output_dir.resolve();root.mkdir(parents=True,exist_ok=False)
-    report=dict(status='RUNNING',abi='dflash-gate-copy-pair-v1',runs={},full_draft_token_kv='NOT_RUN',decode_performance='NOT_RUN',adoption='NOT_DECIDED')
+    report=dict(status='RUNNING',abi=f'dflash-gate-{experiment}-pair-v1',experiment=experiment,runs={},full_draft_token_kv='NOT_RUN',decode_performance='NOT_RUN',adoption='NOT_DECIDED')
     summary=root/'suite.json';write_json(summary,report)
     try:
         source=source_evidence(args.a51_evidence.resolve());report['source']=source;cfg=source['config']
         watched={Path(p):sha256(p) for p in (source['bundle'],source['native'],source['golden'],args.a51_evidence)}
-        for mode in (('loop','2d') if args.order=='baseline-first' else ('2d','loop')):
+        for mode in (modes if args.order=='baseline-first' else tuple(reversed(modes))):
             pointer=root/f'{mode}-summary.txt'
-            env=dict(os.environ,MODEL_PYTHON=sys.executable,DEVICE_ID=str(args.device_id),DFLASH_SUITE='gate-copy',
-                DFLASH_GATE_COPY_MODE=mode,DFLASH_K_TILE='256',DFLASH_SCALE_MODE='broadcast',DFLASH_DEQUANT_MODE='batched',
+            env=dict(os.environ,MODEL_PYTHON=sys.executable,DEVICE_ID=str(args.device_id),DFLASH_SUITE='gate-copy' if experiment=='copy' else 'gate-prefetch',
+                DFLASH_GATE_PREFETCH_MODE=mode if experiment=='prefetch' else 'off',
+                DFLASH_GATE_COPY_MODE=mode if experiment=='copy' else 'loop',DFLASH_K_TILE='256',DFLASH_SCALE_MODE='broadcast',DFLASH_DEQUANT_MODE='batched',
                 DFLASH_CORE_LIMIT=str(cfg['core_limit']),DFLASH_PIPELINE_MODE=cfg['pipeline_mode'],DFLASH_KV_M80_MODE=cfg['kv_m80_mode'],
                 A4_C16_BUNDLE=source['bundle'],A4_C16_NATIVE_OM_MANIFEST=source['native'],GATE_GOLDEN_SUITE=source['golden'],
                 GATE_LAYERS=','.join(map(str,args.layers)),DFLASH_SUMMARY_POINTER=str(pointer))
@@ -80,7 +91,8 @@ def run(args):
                 installed_opp=record(path.parent.parent/'opp-preflight.json',path.parent.parent),
                 source_commit=record(path.parent.parent/'source-commit.txt',path.parent.parent))
         if any(sha256(p)!=h for p,h in watched.items()):raise ValueError('accepted evidence changed')
-        compared=compare_runs(*(Path(report['runs'][mode]['path']) for mode in ('loop','2d')),root/'comparison.json')
+        if experiment=='copy':compared=compare_runs(*(Path(report['runs'][mode]['path']) for mode in modes),root/'comparison.json')
+        else:compared=compare_runs(*(Path(report['runs'][mode]['path']) for mode in modes),root/'comparison.json',experiment='prefetch')
         report.update(status=compared['status'],comparison=record(root/'comparison.json',root),phase='complete')
     except Exception as error:report.update(status='FAIL',error=f'{type(error).__name__}: {error}')
     write_json(summary,report);print(f"{report['status']}: {summary}; full Draft Token/KV NOT_RUN; adoption NOT_DECIDED",flush=True)

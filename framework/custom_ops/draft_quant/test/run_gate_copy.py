@@ -8,6 +8,7 @@ import run_a2
 from a2_common import checked_file,load_bundle,record,sha256,validate_execution,validate_layout,write_json
 from a3_launch import load_build_config,launch_evidence
 from reference import compare
+from gate_prefetch_contract import check_plan
 
 SHAPE=(16,2560,19456)
 COPY_PREFIX='DFLASH_GROUP_QUANT_GATE_COPY '
@@ -31,9 +32,21 @@ def validate_untimed(r,device):
     if t.get('status')!='NOT_RUN' or t.get('warmup')!=0 or t.get('repetitions')!=0:raise ValueError('correctness pre-gate must not benchmark')
 
 
+def launch_plan(log,config,workspace,experiment):
+    mode=config.get('gate_prefetch_mode','off')
+    plan=launch_evidence(log,SHAPE,config['core_limit'],workspace,config['dequant_mode'],config['pipeline_mode'],5,config['kv_m80_mode'],config['scale_mode'],256,config['k_tile_policy'],mode)
+    if experiment=='prefetch':check_plan(plan,mode)
+    elif plan['selected_pipeline']!='serial-v1' or plan['raw_banks']!=1 or mode!='off':raise ValueError('copy experiment must not prefetch Gate')
+    return plan
+
+
 def run(args):
     root=args.output_dir.resolve();root.mkdir(parents=True,exist_ok=False)
     config=load_build_config(args.build_config)
+    experiment=getattr(args,'experiment','copy')
+    if experiment not in ('copy','prefetch'):raise ValueError('unknown Gate experiment')
+    if experiment=='prefetch' and (config.get('gate_copy_mode')!='loop' or args.layers!=[0]):raise ValueError('prefetch first stage requires Loop and layer-0 only')
+    if experiment=='copy' and config.get('gate_prefetch_mode','off')!='off':raise ValueError('2D copy/prefetch experiments must be isolated')
     if (config.get('k_tile')!=256 or config.get('scale_mode')!='broadcast' or config.get('dequant_mode')!='batched' or
         config.get('gate_copy_mode') not in ('loop','2d') or args.warmup!=5 or args.repetitions!=30):raise ValueError('requires Gate-only K256/broadcast and 5/30')
     bundle=load_bundle(args.bundle,'a4');native=run_a2.validate_om_manifest(args.native_om_manifest,args.bundle,bundle,'a4')
@@ -42,7 +55,7 @@ def run(args):
         golden.get('bundle_sha256')!=sha256(args.bundle) or golden.get('native_om_manifest_sha256')!=sha256(args.native_om_manifest)):
         raise ValueError('frozen Native output suite does not bind same C16 capture/OM')
     names=tuple(f'layer-{i}-gate_up' for i in sorted(args.layers))
-    report=dict(abi='dflash-gate-copy-run-v1',status='RUNNING',build=config,build_config_path=str(args.build_config),
+    report=dict(abi=f'dflash-gate-{experiment}-run-v1',experiment=experiment,status='RUNNING',build=config,build_config_path=str(args.build_config),
         build_config_sha256=sha256(args.build_config),device_id=args.device_id,selected_cases=names,checks={},
         full_a4_regression='NOT_RUN',full_draft_token_kv='NOT_RUN',decode_performance='NOT_RUN',performance='NOT_RUN')
     summary=root/'suite.json';write_json(summary,report)
@@ -68,9 +81,10 @@ def run(args):
             with (directory/'runner.log').open('w') as log:subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=args.timeout)
             execution=json.loads((directory/'execution.json').read_text());validate_untimed(execution,args.device_id)
             copy_evidence(directory/'runner.log',config['gate_copy_mode'])
+            pre_plan=launch_plan(directory/'runner.log',config,execution['workspace_bytes'],experiment)
             comparisons=[compare(expected,(directory/f'actual-{i}.bin').read_bytes(),SimpleNamespace(m=16,n=19456)) for i in (0,1)]
             if not all(c['bitwise_equal'] and c['finite'] and c['max_ulp']==0 for c in comparisons):raise ValueError('untimed Gate correctness failed; performance NOT_RUN')
-            report['checks'][name]=dict(status='PASS',golden=dict(path=str(golden_file),sha256=sha256(golden_file),bytes=len(expected)),comparisons=comparisons,execution=record(directory/'execution.json',root))
+            report['checks'][name]=dict(status='PASS',golden=dict(path=str(golden_file),sha256=sha256(golden_file),bytes=len(expected)),comparisons=comparisons,launch=pre_plan,execution=record(directory/'execution.json',root))
             write_json(summary,report)
         child=SimpleNamespace(**vars(args),scope='a4',timing_protocol='continuous-v1',case_filter=names,k_tile=256)
         child.output_dir=root/'timing'
@@ -81,9 +95,9 @@ def run(args):
                 for item in row['outputs'][kind]+row['bracket_outputs'][kind]:
                     if checked_file(child.output_dir,item).read_bytes()!=expected_by_name[row['name']]:raise ValueError('timed outputs differ from frozen Native pre-gate')
             log=child.output_dir/row['name']/'custom/runner.log'
-            plan=launch_evidence(log,SHAPE,config['core_limit'],row['executions']['custom']['workspace_bytes'],config['dequant_mode'],config['pipeline_mode'],5,config['kv_m80_mode'],config['scale_mode'],256,config['k_tile_policy'])
-            if plan['selected_pipeline']!='serial-v1' or plan['raw_banks']!=1:raise ValueError('Gate prefetch forbidden')
-            plans.append(dict(name=row['name'],launch=plan,copy=copy_evidence(log,config['gate_copy_mode'])))
+            plan=launch_plan(log,config,row['executions']['custom']['workspace_bytes'],experiment)
+            if plan!=report['checks'][row['name']]['launch']:raise ValueError('pre-gate/timing launch changed')
+            plans.append(dict(name=row['name'],launch=plan,copy=copy_evidence(log,config['gate_copy_mode']),prefetch_resources=check_plan(plan,config['gate_prefetch_mode']) if experiment=='prefetch' else None))
         if any(sha256(p)!=digest for p,digest in watched.items()):raise ValueError('inputs/config/runners changed')
         for case in bundle['cases']:
             for file in case['files'].values():checked_file(args.bundle.parent,file)
@@ -96,6 +110,7 @@ def run(args):
 if __name__=='__main__':
     p=argparse.ArgumentParser()
     for n in ('build-config','bundle','native-om-manifest','golden-suite','runner','om-runner','output-dir'):p.add_argument('--'+n,type=Path,required=True)
+    p.add_argument('--experiment',choices=('copy','prefetch'),default='copy')
     p.add_argument('--layers',type=int,nargs='+',default=[0],choices=range(5));p.add_argument('--device-id',type=int,default=0)
     p.add_argument('--warmup',type=int,default=5);p.add_argument('--repetitions',type=int,default=30);p.add_argument('--timeout',type=int,default=1800)
     a=p.parse_args()
