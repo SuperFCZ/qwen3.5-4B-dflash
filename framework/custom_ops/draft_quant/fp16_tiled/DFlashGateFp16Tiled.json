@@ -1,0 +1,1 @@
+[{"op":"DFlashGateFp16Tiled","input_desc":[{"name":"x","param_type":"required","format":["ND"],"type":["float16"]},{"name":"w_tiles","param_type":"required","format":["ND"],"type":["float16"]}],"output_desc":[{"name":"y","param_type":"required","format":["ND"],"type":["float16"]}]}]
