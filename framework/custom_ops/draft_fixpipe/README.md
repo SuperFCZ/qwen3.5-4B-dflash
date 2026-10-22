@@ -161,7 +161,7 @@ SHA256 为 `cc1ae46022aa87e2f56774b64b04f93d76fda36a458b40ec67fa2eea69eef92d`。
 元数据通路会：
 
 - 有界读取，保存完整原始 JSON 快照、实际大小及 SHA256；避免生成巨大的单行源码摘录。
-- 严格 UTF-8/JSON 解析，拒绝重复 key、非标准数值等歧义。遍历最多 2,000,000 个节点、64 层；
+- 严格 UTF-8/JSON 文档流解析，拒绝重复 key、非标准数值等歧义。全文件累计遍历最多 2,000,000 个节点、64 层；
   超出任一限制会保存已取得的证据和未完成原因，并阻断完整审查结论。
 - 保留实际字段及 JSON Pointer，区分 tiling、转换/scale、dtype/layout/support 类。
   每类保留最多 128 条样本，并报告完整命中计数和样本截断状态；小标量原值保留，长字符串保留
@@ -180,4 +180,52 @@ SHA256 为 `cc1ae46022aa87e2f56774b64b04f93d76fda36a458b40ec67fa2eea69eef92d`。
 3. 20 个 K128 group 的片上 FP32 累加。
 
 这三项在没有实际源码结论之前保持 `UNRESOLVED`；明确不支持时应停止方案，而不是开发完整 Gate。
-本轮只生成新的审查目录，已有 789 个历史快照、旧报告和 SDK 文件均不修改。
+本轮只生成新的审查目录，已有历史快照、旧报告和 SDK 文件均不修改。
+
+## metadata-only：复用 c40f31f 的 848 个快照
+
+服务器提供的前三行预览各自以对象开始，实际字段含 `shape.A_dtype/B_dtype/C_dtype`、
+`mad_dtype` 等；但预览被截断，不能仅凭 `Extra data` 或前三行断定整份文件为 JSONL。
+修正后的解析器按真实语法边界逐文档解码，并验证至文件末尾，再区分：
+
+- `SINGLE_JSON_DOCUMENT`：一个完整对象/数组（可跨多行）。
+- `JSONL`：全部文档均位于单独的连续物理行，支持 LF/CRLF 及最后一个换行。
+- `JSON_DOCUMENT_SEQUENCE`：完整的多文档序列，例如多行对象、同一行的相邻对象或含空行的序列。
+
+只支持对象/数组作为 Repository 文档；不跳过坏行、注释、RS/BOM 或其他未知包裹。
+重复 key 在**每个对象内**检查，不把不同文档相同字段名视为重复 key。
+后续记录截断、NaN/Infinity 等非法数值、解析失败、节点/深度/文档预算超限都会得到
+`INCOMPLETE_METADATA_REVIEW`，记录失败文档编号和可获得的错误位置，格式判定保持 `UNRESOLVED`。
+
+32 MiB 输入、2,000,000 累计节点和 64 层限制不变；增加最多 32,768 个文档及
+256 MiB 每个 Repository 的逐文档证据文件上限。所有文档均经过解析和遍历；不能仅验证前几行。
+全局样本截断不阻止后续文档验证：每条记录另有字段观察，类别样本各限 128 条并显式标记截断。
+
+新增产物：
+
+- `repository-metadata-*.json`：全流格式、已验证文档数、每条记录的范围和 SHA256、累计计数、失败位置。
+- `repository-documents-*.jsonl`：每条已完成验证的记录一行，含 1-based `document_number`、实际字段值、
+  该文档内的 JSON Pointer、字段命中及截断状态。位置同时记录 UTF-8 字节、字符和行列，结束位置为 exclusive。
+- `priority-evidence.json`：继续保存三个硬件问题索引及未审查项，不从 dtype/support 字段直接推断硬件支持。
+
+离线入口先验证旧报告、848 个快照及引用产物 SHA256，并核对快照与历史 SDK 源文件的 size/hash 绑定。
+**不打开原 SDK 源文件、不重新执行 SDK 全树扫描，也不要求 live SDK 挂载**；SDK 版本仅报告快照里的历史版本证据。
+旧审查器代码已被修复，故不拿当前 checkout 强行匹配历史审查器源码 SHA；该历史身份仍完整保留在旧报告中。
+任何历史快照缺失、被篡改或路径逃逸都会阻断重解析。
+
+只读复测命令（不要运行前面的全 SDK 审查入口）：
+
+```bash
+git pull --ff-only && \
+python3 -B framework/custom_ops/draft_fixpipe/metadata_only.py \
+  --report /home/w00949577/qwen35-dflash-run/fixpipe-repository-audit-20261022-112619/group128-capability.json \
+  --output-dir /home/w00949577/qwen35-dflash-run/fixpipe-metadata-reparse-$(date +%Y%m%d-%H%M%S)
+```
+
+全部目标 metadata 验证完成最多标记 `METADATA_REPARSED_SDK_REVIEW_INCOMPLETE`。
+旧 `.scan` 的 INCOMPLETE 状态和当时未扫描的尾部原样保存在新报告 `historical_scan`；新 `.scan`
+仅记录复用数量并标为 `NOT_RESUMED`，不把旧解析错误误呈现为本次错误。`sdk_scan=NOT_RESUMED`，
+不能把局部修复称为完整 SDK/硬件验收 PASS。三个硬件问题均仍需真实源码审查，CANN/NPU/Simulator 仍 `NOT_RUN`。
+
+回传新目录的 `group128-capability.json`、`priority-evidence.json` 和 `repository-metadata-*.json`。
+逐文档 JSONL 可留在服务器，按文档编号提取需要的条目，不必将大文件整份粘贴。

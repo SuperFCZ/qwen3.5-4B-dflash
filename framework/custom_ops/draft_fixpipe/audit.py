@@ -16,7 +16,7 @@ sys.path.insert(0,str(HERE.parent/'draft_antiquant'))
 from aq_common import identity,verify,write,fresh
 from aq_sdk import reviewed as reviewed_input
 from fixpipe_math import counterexamples,traffic
-from tiling_metadata import MAX_METADATA_BYTES,is_repository,inspect as inspect_metadata
+from tiling_metadata import MAX_METADATA_BYTES,is_repository,inspect_to_file as inspect_metadata
 
 TERMS=re.compile(r'fix_?pipe|FixPipe|Fixpipe|deq[Ss]cale|deqScalar|quantPre|QuantMode|'
                  r'SetAntiQuantVector|MatmulType|Src[AB]?T|'
@@ -191,12 +191,14 @@ def collect_fix(cann,root,scan=None,files=None):
                     if source['bytes']!=len(raw) or source['sha256']!=hashlib.sha256(raw).hexdigest():
                         raise ValueError('repository changed during read: '+str(p))
                     snapshot=folder/(str(len(files))+'-'+name);snapshot.write_bytes(raw)
-                    metadata=inspect_metadata(raw,source)
+                    records_path=root/('repository-documents-'+str(scan['metadata_files'])+'.jsonl')
+                    metadata=inspect_metadata(raw,source,records_path)
+                    metadata['document_records']=identity(records_path)
                     metadata_path=root/('repository-metadata-'+str(scan['metadata_files'])+'.json')
                     write(metadata_path,metadata)
                     files.append(dict(source=source,snapshot=identity(snapshot),role='tiling_metadata',
                         admission_rule=reason,frontend_hints=['matmul_sdk'],hits=[],excerpts=[],
-                        metadata_report=identity(metadata_path),metadata_status=metadata['status'],
+                        metadata_report=identity(metadata_path),document_records=identity(records_path),metadata_status=metadata['status'],
                         content_classification=metadata['classification']))
                     scan['metadata_files']+=1;scan['snapshotted_files']=len(files)
                     verify(source)
@@ -232,6 +234,7 @@ def collect_fix(cann,root,scan=None,files=None):
         for item in files:
             verify(item['source']);verify(item['snapshot'])
             if 'metadata_report' in item:verify(item['metadata_report'])
+            if 'document_records' in item:verify(item['document_records'])
         scan['status']='COMPLETE_WITHIN_DECLARED_SCOPE'
         return files
     except Exception as e:
@@ -295,6 +298,8 @@ def markdown(r):
     scan=r.get('scan',{})
     text += ['## SDK scan coverage','', 'Scan: '+scan.get('status','NOT_RUN'),
              f'Enumerated: {scan.get("enumerated_files",0)}; snapshots: {scan.get("snapshotted_files",0)}; skipped: {scan.get("skipped_files",0)}.']
+    if 'reused_snapshot_count' in scan:
+        text += [f'Reused verified historical snapshots: {scan["reused_snapshot_count"]}; no new SDK scan. Historical state: {r["historical_scan"]["status"]}.']
     text += [f'- {reason}: {entry["count"]}' for reason,entry in scan.get('skipped_by_reason',{}).items()]
     text += [f'- Incomplete: {item["path"]}: {item["reason"]}, bytes={item.get("bytes",item.get("observed_bytes_at_least"))}' for item in scan.get('incomplete',[])]
     text += ['Completion means the declared scan scope only, not verified hardware support.','']
@@ -363,6 +368,7 @@ def run(args):
             for f in report['files']:
                 verify(f['source']);verify(f['snapshot'])
                 if 'metadata_report' in f:verify(f['metadata_report'])
+                if 'document_records' in f:verify(f['document_records'])
             if report['scan']['status']!='NOT_RUN':report['scan_file']=identity(root/'fixpipe-scan.json')
             for item in report['sources']:verify(item)
             for key in ('antiquant_audit','antiquant_review','input_path_evidence'):
