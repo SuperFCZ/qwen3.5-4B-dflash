@@ -12,6 +12,8 @@ spec=importlib.util.spec_from_file_location('group128_fixpipe_audit',ROOT/'audit
 audit=importlib.util.module_from_spec(spec);spec.loader.exec_module(audit)
 from fixpipe_math import counterexamples,evaluate,traffic
 from aq_common import identity,verify
+import tiling_metadata as metadata
+import aq_sdk
 
 
 def test_weight_rounding_move_is_not_bitwise_equivalent():
@@ -97,7 +99,7 @@ def test_collect_does_not_promote_names_to_support_or_import_tik(tmp_path):
 
 def test_tamper_old_sdk_snapshot_and_wrong_root_rejected(tmp_path):
     cann=fixture(tmp_path)
-    with patch('aq_sdk.shutil.which',return_value=None):_,path=audit.collect_input(cann,tmp_path/'input')
+    with patch('aq_sdk.shutil.which',return_value=None):_,path=aq_sdk.collect(cann,tmp_path/'input')
     audit.verify_input(path,cann)
     with pytest.raises(ValueError,match='different SDK'):audit.verify_input(path,tmp_path/'other')
     r=json.loads(path.read_text());f=r['files'][0]
@@ -179,7 +181,7 @@ def test_related_oversized_source_preserves_partial_evidence_and_blocks(tmp_path
     cann=fixture(tmp_path);large=cann/('zzz/fixpipe/oversize'+suffix);large.parent.mkdir(parents=True)
     with large.open('wb') as f:f.truncate(audit.MAX_SOURCE_BYTES+1)
     out=tmp_path/'report';args=SimpleNamespace(cann_root=cann,output_dir=out,antiquant_audit=None,antiquant_review=None)
-    with patch.object(audit,'collect_input') as input_scan:
+    with patch.object(aq_sdk,'collect') as input_scan:
         assert audit.run(args)==1;input_scan.assert_not_called()
     report=json.loads((out/'group128-capability.json').read_text());scan=report['scan']
     assert report['status']=='BLOCKED_AUDIT' and scan['status']=='INCOMPLETE'
@@ -217,3 +219,129 @@ def test_read_failure_keeps_scan_incomplete_and_partial_files(tmp_path):
     assert files and scan['status']=='INCOMPLETE'
     assert scan['error']['phase']=='read' and scan['error']['path']==str(blocked)
     assert json.loads((out/'fixpipe-scan.json').read_text())==scan
+
+
+REPOSITORY='opp/built-in/data/tiling/Ascend310P/repository_Ascend310P3_matmul.json'
+
+
+def metadata_result(tmp_path,value):
+    p=tmp_path/'metadata.json';p.write_bytes(value)
+    return metadata.inspect(value,identity(p))
+
+
+def test_exact_server_size_repository_gets_bounded_structural_review(tmp_path):
+    cann=fixture(tmp_path);p=cann/REPOSITORY;p.parent.mkdir(parents=True)
+    raw=b'{"entries":[{"baseM":16,"baseN":64,"baseK":128},{"singleCoreK":128}]}'
+    p.write_bytes(raw+b' '*(17_029_337-len(raw)));before=identity(p)
+    out=tmp_path/'result';args=SimpleNamespace(cann_root=cann,output_dir=out,antiquant_audit=None,antiquant_review=None)
+    with patch.object(aq_sdk,'collect',side_effect=AssertionError('must not rescan SDK')):
+        assert audit.run(args)==0
+    report=json.loads((out/'group128-capability.json').read_text())
+    f=next(f for f in report['files'] if f['role']=='tiling_metadata')
+    assert f['source']==before and identity(p)==before
+    assert f['snapshot']['sha256']==before['sha256']
+    assert f['excerpts']==[]  # No 17 MB minified line in ordinary source excerpts.
+    result=json.loads(verify(f['metadata_report']).read_text())
+    assert result['status']=='STRUCTURAL_REVIEW_COMPLETE' and result['unparsed']==[]
+    assert result['classification']=='TILING_FIELDS_OBSERVED_NO_CAPABILITY_FIELD_HITS'
+    fields=result['matches']['tiling_related']['fields']
+    assert [x['json_pointer'] for x in fields]==['/entries/0/baseM','/entries/0/baseN','/entries/0/baseK','/entries/1/singleCoreK']
+    assert report['scan']['max_source_bytes']==16*1024*1024
+    assert report['scan']['max_repository_json_bytes']==32*1024*1024
+    assert report['scan']['metadata_files']==1
+    assert all(p['compatibility']=='UNRESOLVED' for p in report['paths'].values())
+    focused=json.loads(verify(report['input_path_evidence']).read_text())
+    assert focused['status']=='FOCUSED_SOURCE_EVIDENCE_ONLY' and focused['versions'] and focused['api_candidates']
+    assert not (out/'input-antiquant').exists()
+    priority=json.loads(verify(report['priority_evidence']).read_text())
+    assert set(priority['questions'])==set(audit.DECISION_PATTERNS)
+    assert all(q['status']=='UNRESOLVED' for q in priority['questions'].values())
+    assert any(e['reason']=='STRUCTURAL_METADATA_ONLY_NOT_HARDWARE_SEMANTICS' for e in priority['unreviewed_evidence'])
+
+
+def test_metadata_observations_preserve_values_and_do_not_claim_support(tmp_path):
+    raw=b'{"tiling":{"baseM":16},"quant":{"scale":0.00097656250000000001,"output_dtype":"float32"},"features":["Fixpipe"],"a/b~":{"supported":false}}'
+    r=metadata_result(tmp_path,raw)
+    assert r['classification']=='CAPABILITY_RELATED_FIELDS_REQUIRE_SOURCE_REVIEW'
+    assert r['compatibility']=='UNRESOLVED'
+    observations=r['matches']['type_layout_support_related']['fields']
+    assert any(f['json_pointer']=='/a~1b~0/supported' and f['observed']['value'] is False for f in observations)
+    assert any(f['json_pointer']=='/features/0' for f in r['matches']['conversion_related']['fields'])
+    scale=next(f for f in r['matches']['conversion_related']['fields'] if f.get('json_pointer')=='/quant/scale')
+    assert scale['observed']['decimal_literal']=='0.00097656250000000001'
+
+
+def test_filename_is_not_a_tiling_classification(tmp_path):
+    r=metadata_result(tmp_path,b'{"entries":[{"unrecognized":"payload"}]}')
+    assert r['status']=='STRUCTURAL_REVIEW_COMPLETE'
+    assert r['classification']=='UNCLASSIFIED_JSON_CONTENT'
+    assert r['unmatched_field_count']==2 and r['semantic_unreviewed']
+
+
+@pytest.mark.parametrize('raw',[b'{"baseM":16,"baseM":32}',b'{"tiling":NaN}',b'{"baseM":',b'"scalar"'])
+def test_invalid_or_ambiguous_json_is_incomplete(tmp_path,raw):
+    r=metadata_result(tmp_path,raw)
+    assert r['status']=='INCOMPLETE_METADATA_REVIEW' and r['unparsed']
+    assert r['compatibility']=='UNRESOLVED'
+
+
+def test_traversal_limits_and_sample_truncation_are_explicit(tmp_path):
+    raw=json.dumps({'entries':[{'baseM':i} for i in range(8)]}).encode()
+    with patch.object(metadata,'MAX_FIELD_SAMPLES',2):r=metadata_result(tmp_path,raw)
+    assert r['status']=='STRUCTURAL_REVIEW_COMPLETE'
+    assert r['matches']['tiling_related']['count']==8
+    assert len(r['matches']['tiling_related']['fields'])==2
+    assert r['matches']['tiling_related']['samples_truncated']
+    for name,value in [('MAX_NODES',3),('MAX_DEPTH',1)]:
+        with patch.object(metadata,name,value):r=metadata_result(tmp_path,raw)
+        assert r['status']=='INCOMPLETE_METADATA_REVIEW' and r['first_unreviewed_location']
+
+
+def test_only_targeted_repository_path_gets_32mib_budget():
+    assert metadata.is_repository(Path(REPOSITORY))
+    assert not metadata.is_repository(Path(REPOSITORY.replace('Ascend310P3','Ascend910B')))
+    assert not metadata.is_repository(Path('include/matmul/repository_Ascend310P3_matmul.json'))
+    assert not metadata.is_repository(Path('opp/built-in/data/tiling/Ascend310P/other_matmul.json'))
+
+
+def test_non_target_repository_is_listed_as_unreviewed_without_read(tmp_path):
+    cann=fixture(tmp_path);p=cann/REPOSITORY.replace('Ascend310P3','Ascend910B').replace('/Ascend310P/','/Ascend910B/')
+    p.parent.mkdir(parents=True)
+    with p.open('wb') as f:f.truncate(40*1024*1024)
+    original=Path.open
+    def guarded(path,*args,**kwargs):
+        assert path!=p,'non-target repository must not be read/hash scanned'
+        return original(path,*args,**kwargs)
+    out=tmp_path/'out';out.mkdir();scan={}
+    with patch.object(Path,'open',guarded):audit.collect_fix(cann,out,scan)
+    assert scan['status']=='COMPLETE_WITHIN_DECLARED_SCOPE'
+    assert scan['unreviewed_repositories']==[dict(path=str(p),reason='NON_TARGET_MATMUL_REPOSITORY_JSON',content='NOT_READ',identity='NOT_HASHED')]
+
+
+def test_focused_input_still_requires_original_version_and_hashes(tmp_path):
+    cann=fixture(tmp_path);out=tmp_path/'out';out.mkdir()
+    (cann/'version.info').write_text('8.5.0')
+    files=audit.collect_fix(cann,out)
+    with pytest.raises(ValueError,match='9.0.0'):audit.focused_input(files,cann)
+    f=next(f for f in files if 'kernel_fixpipe.h' in f['source']['path'])
+    Path(f['snapshot']['path']).write_text('tampered')
+    with pytest.raises(ValueError,match='identity'):audit.focused_input(files,cann)
+
+
+def test_over_32mib_repository_blocks_with_identity(tmp_path):
+    cann=fixture(tmp_path);p=cann/REPOSITORY;p.parent.mkdir(parents=True)
+    with p.open('wb') as f:f.truncate(metadata.MAX_METADATA_BYTES+1)
+    out=tmp_path/'out';out.mkdir();scan={}
+    with pytest.raises(ValueError,match='oversized'):audit.collect_fix(cann,out,scan)
+    assert scan['status']=='INCOMPLETE'
+    assert scan['incomplete'][0]['reason']=='METADATA_SIZE_LIMIT_EXCEEDED'
+    assert scan['incomplete'][0]['source']==identity(p)
+
+
+def test_incomplete_metadata_still_saves_source_and_report(tmp_path):
+    cann=fixture(tmp_path);p=cann/REPOSITORY;p.parent.mkdir(parents=True);p.write_text('{broken')
+    out=tmp_path/'out';out.mkdir();scan={};files=[]
+    with pytest.raises(ValueError,match='metadata incomplete'):audit.collect_fix(cann,out,scan,files)
+    f=next(f for f in files if f['role']=='tiling_metadata')
+    verify(f['source']);verify(f['snapshot']);verify(f['metadata_report'])
+    assert scan['status']=='INCOMPLETE' and f['metadata_status']=='INCOMPLETE_METADATA_REVIEW'

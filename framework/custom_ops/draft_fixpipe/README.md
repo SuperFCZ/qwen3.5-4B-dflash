@@ -98,8 +98,8 @@ FP16 scale 转 FP32 本身是精确的，但量化参数编码及实际乘法精
 
 ## 服务器命令：只读审查
 
-不需要加载模型、Capture 或 OPP。采集三类输出路径，并复用原 AntiQuant 工具采集输入路径证据；
-仅可能运行工具 `--version`/`nm` 取身份，不进行编译或设备调用：
+不需要加载模型、Capture 或 OPP。同一次源码扫描为输入和输出路径提供证据，默认不再调用
+AntiQuant 全树扫描器，不运行工具、编译或设备调用：
 
 ```bash
 git pull --ff-only && \
@@ -113,8 +113,9 @@ python3 -B framework/custom_ops/draft_fixpipe/audit.py \
 即使有效，也最多标 `SOURCE_REVIEWED_K128_ONLY`，不继承任何 Group128×20 或 FixPipe 支持结论。
 如果旧审查发现缺少 AntiQuant API，FixPipe 仍会独立采集；文件/版本/身份有误则审查失败。
 
-回传 `group128-capability.json`、`group128-capability.md` 和相关 `fixpipe-sources/`；
-输入路径新采集的证据在 `input-antiquant/`。源码审查模板 `fixpipe-review-template.json` 绑定完成的
+回传 `group128-capability.json`、`priority-evidence.json`、`repository-metadata-*.json` 和相关源码摘录；
+默认输入路径的版本/源码身份在 `input-path-evidence.json`，不是原 AntiQuant PoC 的构建授权。
+源码审查模板 `fixpipe-review-template.json` 绑定完成的
 报告 SHA256，需逐项记录具体源码行引用；它不是 PoC 编译授权文件，工具不会自动把模板升级为 SUPPORTED。
 
 本地：`python3 -B -m pytest -q framework/custom_ops/draft_fixpipe/test`。
@@ -128,7 +129,7 @@ python3 -B framework/custom_ops/draft_fixpipe/audit.py \
 策略及其他 JSON 不读取、不 stat、不计算哈希，因此无关大文件不会触发源码大小限制。
 有明确相关算子标识的配置即使位于策略目录仍会检查，避免仅凭目录排除关键限制。
 
-**16 MiB 限制保持不变**。相关候选超限则保留路径、大小、以有限缓冲区流式计算的 SHA256，
+**普通源码和普通相关 JSON 的 16 MiB 限制保持不变**（下述指定 Repository 是独立例外）。相关候选超限则保留路径、大小、以有限缓冲区流式计算的 SHA256，
 标记 `SOURCE_SIZE_LIMIT_EXCEEDED`，不解析或复制超限内容、不继续声明完整扫描。
 正常源码的快照字节必须与生成摘要/行号时读取的字节及其 SHA256 一致。
 权限错误、路径逃逸、文件变动等仍会阻断；失败前已采集的源码快照及身份不会从报告中丢失。
@@ -141,5 +142,42 @@ python3 -B framework/custom_ops/draft_fixpipe/audit.py \
 - `COMPLETE_WITHIN_DECLARED_SCOPE` 只表示声明范围扫描完成；异常为 `INCOMPLETE`，总报告仍为
   `BLOCKED_AUDIT`，不会生成可被误认为完整证据的审查模板。
 
-先扫描 FixPipe 可保留其失败细节；最终成功仍必须经过原有 AntiQuant SDK 版本和身份校验。
+先扫描 FixPipe 可保留其失败细节；最终成功仍必须通过实际 CANN 9.0.0 版本、源码与快照身份校验。
+显式复用旧 AntiQuant 报告时继续执行原有严格身份校验；默认复用本次快照，不另扫一次 SDK。
 本工具未证明任何芯片支持结论，CANN 编译、NPU、Simulator、性能仍全部 `NOT_RUN`。
+
+## 310P Matmul Tiling Repository：独立 32 MiB 元数据通路
+
+本次服务器阻塞文件 `repository_Ascend310P3_matmul.json` 为 17,029,337 B，用户提供的
+SHA256 为 `cc1ae46022aa87e2f56774b64b04f93d76fda36a458b40ec67fa2eea69eef92d`。
+本地未读取该文件，不能预先判断里面仅有 tiling 数据还是也有量化约束。
+
+仅对 `opp/.../tiling/Ascend310P/repository_Ascend310P[3]_*matmul*.json` 采用独立
+**32 MiB** 上限。不会把这个上限应用于 `.h/.py` 或所有 JSON。其他产品的 Matmul Repository
+不扩大收集，完整路径列在 `scan.unreviewed_repositories`；既不读取，也不伪称其约束已审查。
+普通源码扫描范围没有扩大；`priority-evidence.json` 优先列出 310P、FixPipe、TIK、Matmul CO1
+相关已采集片段，把其他架构单独标记，不能用其他架构代码证明 310P 支持。
+
+元数据通路会：
+
+- 有界读取，保存完整原始 JSON 快照、实际大小及 SHA256；避免生成巨大的单行源码摘录。
+- 严格 UTF-8/JSON 解析，拒绝重复 key、非标准数值等歧义。遍历最多 2,000,000 个节点、64 层；
+  超出任一限制会保存已取得的证据和未完成原因，并阻断完整审查结论。
+- 保留实际字段及 JSON Pointer，区分 tiling、转换/scale、dtype/layout/support 类。
+  每类保留最多 128 条样本，并报告完整命中计数和样本截断状态；小标量原值保留，长字符串保留
+  前缀/长度/SHA256，容器保留类型/大小并递归检查子字段。数值小数使用 Decimal 避免 float 精度损失。
+- 仅按**实际字段/值**分类：`TILING_FIELDS_OBSERVED_NO_CAPABILITY_FIELD_HITS`、
+  `CAPABILITY_RELATED_FIELDS_REQUIRE_SOURCE_REVIEW` 或 `UNCLASSIFIED_JSON_CONTENT`。
+  第一类也不等于“已证明没有能力约束”：未识别字段及嵌套在字符串里的配置仍列为未完成语义审查。
+- 结构解析完整不等于硬件支持；即使某字段值为 `supported=false`，也必须确认对应芯片、输入类型、
+  格式和模式后，才能形成带源码依据的 `BLOCKED_UNSUPPORTED` 结论，不能孤立地自动推断。
+
+`repository-metadata-*.json` 给出原文件身份、字段位置、分类依据、解析范围、未解析部分和未判定语义。
+`priority-evidence.json` 聚焦以下三项，并列出未审查来源和截断项：
+
+1. FP16×INT8 Cube 输入路径；
+2. N64 Scale 与 scaled FP32 输出；
+3. 20 个 K128 group 的片上 FP32 累加。
+
+这三项在没有实际源码结论之前保持 `UNRESOLVED`；明确不支持时应停止方案，而不是开发完整 Gate。
+本轮只生成新的审查目录，已有 789 个历史快照、旧报告和 SDK 文件均不修改。

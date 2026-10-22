@@ -14,10 +14,12 @@ import sys
 HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(HERE.parent/'draft_antiquant'))
 from aq_common import identity,verify,write,fresh
-from aq_sdk import collect as collect_input,reviewed as reviewed_input
+from aq_sdk import reviewed as reviewed_input
 from fixpipe_math import counterexamples,traffic
+from tiling_metadata import MAX_METADATA_BYTES,is_repository,inspect as inspect_metadata
 
 TERMS=re.compile(r'fix_?pipe|FixPipe|Fixpipe|deq[Ss]cale|deqScalar|quantPre|QuantMode|'
+                 r'SetAntiQuantVector|MatmulType|Src[AB]?T|'
                  r'SetQuantVector|SetDequantType|GetTensorC|enAtomic|enPartialSum|'
                  r'F322F16|F322F32|DEQF16|deqscale|dequant|api_check_support|get_soc_name')
 COMMON={
@@ -51,6 +53,48 @@ def frontend_hints(path,text):
 
 MAX_SOURCE_BYTES=16*1024*1024
 SOURCE_SUFFIXES={'.h','.hpp','.cpp','.cc','.py','.ini'}
+DECISION_PATTERNS={
+    'fp16_int8_cube_input':r'SetAntiQuant|MatmulType|Src[AB]?T|Src[AB]?Type|int8_t|DT_INT8',
+    'n64_scale_and_scaled_fp32':r'Fixpipe|fixpipe|SetQuantVector|SetDequantType|GetTensorC|quantPre|deqScale|F322F32|DEQF16',
+    'twenty_groups_onchip_fp32':r'enPartialSum|GetTensorC|Iterate|CO1|L0C|SetAntiQuant|SetQuantVector',
+}
+
+
+def priority_index(report):
+    """Index existing snapshots only; no new SDK paths or compatibility inference."""
+    questions={name:dict(status='UNRESOLVED',candidate_count=0,candidates=[],sample_limit=64)
+               for name in DECISION_PATTERNS}
+    unreviewed=[]
+    def rank(pair):
+        path=pair[1]['source']['path'].lower()
+        return (0 if any(p in path for p in ('dav_m200','dav_2002','ascend310p')) else
+                1 if 'fixpipe' in path else 2 if 'matmul' in path or '/tik/' in path else 3,pair[0])
+    for index,f in sorted(enumerate(report['files']),key=rank):
+        path=f['source']['path'];parts=Path(path).parts
+        architectures=[p for p in parts if p.startswith('dav_')]
+        if architectures and not any(p in ('dav_m200','dav_2002') for p in architectures):
+            unreviewed.append(dict(source_index=index,reason='OTHER_ARCHITECTURE_NOT_USED_AS_310P_PROOF'))
+            continue
+        if f['role']=='tiling_metadata':
+            unreviewed.append(dict(source_index=index,reason='STRUCTURAL_METADATA_ONLY_NOT_HARDWARE_SEMANTICS',
+                                  metadata_report=f['metadata_report'],classification=f['content_classification']))
+            continue
+        matched=False
+        for name,pattern in DECISION_PATTERNS.items():
+            excerpts=[e for e in f.get('excerpts',[]) if re.search(pattern,e['text'])]
+            if not excerpts:continue
+            matched=True;q=questions[name];q['candidate_count']+=1
+            if len(q['candidates'])<q['sample_limit']:
+                q['candidates'].append(dict(source_index=index,source=f['source'],snapshot=f['snapshot'],
+                    architecture_hint=architectures or ['COMMON_SOURCE_CHIP_DISPATCH_REQUIRES_REVIEW'],
+                    excerpts=excerpts[:4],excerpts_truncated=len(excerpts)>4))
+            else:unreviewed.append(dict(source_index=index,question=name,reason='PRIORITY_INDEX_SAMPLE_LIMIT_FULL_SNAPSHOT_AVAILABLE'))
+        if not matched:unreviewed.append(dict(source_index=index,reason='NO_DECISION_TERM_IN_COLLECTED_EXCERPTS_FULL_SNAPSHOT_AVAILABLE'))
+    for q in questions.values():q['samples_truncated']=q['candidate_count']>len(q['candidates'])
+    return dict(status='SOURCE_REVIEW_REQUIRED',questions=questions,unreviewed_evidence=unreviewed,
+        unreviewed_repositories=report.get('scan',{}).get('unreviewed_repositories',[]),
+        missing_hardware_review=list(questions),
+        rule='Index of source candidates, not proof. Any explicit unsupported verdict needs actual chip/type branch and source citation; never infer from filename, field presence or another architecture.')
 
 
 def scan_rule(relative):
@@ -61,6 +105,8 @@ def scan_rule(relative):
     if suffix!='.json':return False,'NON_SOURCE_SUFFIX'
     parts=[re.sub(r'[^a-z0-9]','',p.lower()) for p in relative.parts]
     stem=re.sub(r'[^a-z0-9]','',relative.stem.lower())
+    if 'tiling' in parts and relative.name.lower().startswith('repository_') and 'matmul' in stem and not is_repository(relative):
+        return False,'NON_TARGET_MATMUL_REPOSITORY_JSON'
     # Explicit operator/feature names can occur in generic configuration files
     # nested under an op directory. Do not exclude those based on directory alone.
     if any(any(token in part for token in ('fixpipe','matmul','quant','dequant')) for part in parts):
@@ -85,11 +131,12 @@ def collect_fix(cann,root,scan=None,files=None):
     """Retain partial evidence on failure; oversized admitted sources still block."""
     if scan is None:scan={}
     if files is None:files=[]
-    scan.update(status='RUNNING',policy='fixpipe-sdk-path-filter-v1',
-        max_source_bytes=MAX_SOURCE_BYTES,enumerated_files=0,admitted_files=0,
+    scan.update(status='RUNNING',policy='fixpipe-sdk-path-filter-v2',
+        max_source_bytes=MAX_SOURCE_BYTES,max_repository_json_bytes=MAX_METADATA_BYTES,
+        metadata_files=0,enumerated_files=0,admitted_files=0,
         read_files=0,snapshotted_files=0,skipped_files=0,skipped_by_reason={},
-        skip_sample_limit_per_reason=20,incomplete=[],excluded_directory_names=['__pycache__','.git'],
-        scope='All .h/.hpp/.cpp/.cc/.py/.ini and version files; JSON admitted by explicit operator/registry/platform paths. Discovery, not full SDK capability proof.')
+        skip_sample_limit_per_reason=20,incomplete=[],unreviewed_repositories=[],excluded_directory_names=['__pycache__','.git'],
+        scope='All .h/.hpp/.cpp/.cc/.py/.ini and version files; JSON admitted by explicit operator/registry/platform paths. Only 310P Matmul repository JSON gets a separate 32 MiB structural review. Discovery, not full SDK capability proof.')
     folder=root/'fixpipe-sources';seen=set();current=None;phase='create_snapshot_directory'
     def skip(reason,path):
         scan['skipped_files']+=1
@@ -97,6 +144,8 @@ def collect_fix(cann,root,scan=None,files=None):
         entry['count']+=1
         if len(entry['samples'])<scan['skip_sample_limit_per_reason']:entry['samples'].append(str(path))
         else:entry['samples_truncated']=True
+        if reason=='NON_TARGET_MATMUL_REPOSITORY_JSON':
+            scan['unreviewed_repositories'].append(dict(path=str(path),reason=reason,content='NOT_READ',identity='NOT_HASHED'))
     def error(e):
         nonlocal current,phase
         current=e.filename;phase='enumerate_directory';raise e
@@ -116,24 +165,46 @@ def collect_fix(cann,root,scan=None,files=None):
                 if actual in seen:
                     skip('DUPLICATE_RESOLVED_SOURCE',p);continue
                 seen.add(actual);phase='stat';size=actual.stat().st_size
-                if size>MAX_SOURCE_BYTES:
+                repository=is_repository(p.relative_to(cann))
+                limit=MAX_METADATA_BYTES if repository else MAX_SOURCE_BYTES
+                if size>limit:
                     # Streaming SHA256 is evidence only; do not parse/copy the
                     # oversized source or silently count it as reviewed.
                     issue=dict(path=str(p),resolved_path=str(actual),bytes=size,
-                        reason='SOURCE_SIZE_LIMIT_EXCEEDED',admission_rule=reason,
-                        limit_bytes=MAX_SOURCE_BYTES,review='NOT_PARSED_OR_SNAPSHOTTED')
+                        reason='METADATA_SIZE_LIMIT_EXCEEDED' if repository else 'SOURCE_SIZE_LIMIT_EXCEEDED',admission_rule=reason,
+                        limit_bytes=limit,review='NOT_PARSED_OR_SNAPSHOTTED')
                     scan['incomplete'].append(issue);phase='hash_oversized_source'
                     issue['source']=identity(actual)
                     phase='size_limit'
-                    raise ValueError(f'oversized SDK source: {p} ({size} bytes; limit {MAX_SOURCE_BYTES})')
+                    raise ValueError(f'oversized SDK source: {p} ({size} bytes; limit {limit})')
                 phase='read'
-                with actual.open('rb') as stream:raw=stream.read(MAX_SOURCE_BYTES+1)
-                if len(raw)>MAX_SOURCE_BYTES:
+                with actual.open('rb') as stream:raw=stream.read(limit+1)
+                if len(raw)>limit:
                     scan['incomplete'].append(dict(path=str(p),resolved_path=str(actual),
-                        bytes_at_stat=size,observed_bytes_at_least=len(raw),limit_bytes=MAX_SOURCE_BYTES,
+                        bytes_at_stat=size,observed_bytes_at_least=len(raw),limit_bytes=limit,
                         reason='SOURCE_GREW_BEYOND_LIMIT',review='NOT_PARSED_OR_SNAPSHOTTED'))
                     raise ValueError('SDK source grew beyond read limit: '+str(p))
                 scan['read_files']+=1
+                if repository:
+                    phase='repository_metadata'
+                    source=identity(actual)
+                    if source['bytes']!=len(raw) or source['sha256']!=hashlib.sha256(raw).hexdigest():
+                        raise ValueError('repository changed during read: '+str(p))
+                    snapshot=folder/(str(len(files))+'-'+name);snapshot.write_bytes(raw)
+                    metadata=inspect_metadata(raw,source)
+                    metadata_path=root/('repository-metadata-'+str(scan['metadata_files'])+'.json')
+                    write(metadata_path,metadata)
+                    files.append(dict(source=source,snapshot=identity(snapshot),role='tiling_metadata',
+                        admission_rule=reason,frontend_hints=['matmul_sdk'],hits=[],excerpts=[],
+                        metadata_report=identity(metadata_path),metadata_status=metadata['status'],
+                        content_classification=metadata['classification']))
+                    scan['metadata_files']+=1;scan['snapshotted_files']=len(files)
+                    verify(source)
+                    if metadata['status']!='STRUCTURAL_REVIEW_COMPLETE':
+                        scan['incomplete'].append(dict(path=str(p),bytes=size,source=source,
+                            reason='METADATA_REVIEW_INCOMPLETE',metadata_report=identity(metadata_path)))
+                        raise ValueError('repository metadata incomplete: '+str(metadata.get('error')))
+                    continue
                 text=raw.decode('utf-8',errors='replace');lines=text.splitlines()
                 hits=[i for i,line in enumerate(lines,1) if TERMS.search(line)]
                 special=name in ('version.info','version.cfg','Ascend310P3.ini')
@@ -158,7 +229,9 @@ def collect_fix(cann,root,scan=None,files=None):
                     excerpts=[dict(start=a,end=b,text='\n'.join(f'{i}: {lines[i-1]}' for i in range(a,b+1))) for a,b in windows]))
                 scan['snapshotted_files']=len(files);verify(source)
         phase='verify_snapshots'
-        for item in files:verify(item['source']);verify(item['snapshot'])
+        for item in files:
+            verify(item['source']);verify(item['snapshot'])
+            if 'metadata_report' in item:verify(item['metadata_report'])
         scan['status']='COMPLETE_WITHIN_DECLARED_SCOPE'
         return files
     except Exception as e:
@@ -180,6 +253,23 @@ def verify_input(path,cann):
     versions=[verify(f['snapshot']).read_text(errors='replace') for f in doc['files'] if f['role']=='version']
     if not any(re.search(r'(?<![\d.])9\.0\.0(?![\d.])',v) for v in versions):raise ValueError('CANN 9.0.0 not established')
     return doc
+
+
+def focused_input(files,cann):
+    """Reuse this scan; no second SDK tree walk or new library/tool discovery."""
+    versions=[];api=[]
+    for index,f in enumerate(files):
+        if f['role']=='tiling_metadata':continue
+        verify(f['source']);text=verify(f['snapshot']).read_text(errors='replace')
+        if f['role']=='version':versions.append(dict(source=f['source'],snapshot=f['snapshot'],text=text))
+        if 'SetAntiQuantVector' in text:api.append(dict(source_index=index,source=f['source'],snapshot=f['snapshot']))
+    if not any(re.search(r'(?<![\d.])9\.0\.0(?![\d.])',v['text']) for v in versions):
+        raise ValueError('CANN 9.0.0 not established by collected version files')
+    return dict(status='FOCUSED_SOURCE_EVIDENCE_ONLY',cann_root=str(cann),versions=versions,
+        api_candidates=api,compatibility='UNRESOLVED',
+        unreviewed=['Actual mixed-type/chip template branch','Group128 refresh and FP32 partial sums',
+                    'Compiler/toolchain instantiation','Native V3/Nz runtime support'],
+        scope='Same collected source snapshots; not a standalone AntiQuant build authorization or a complete SDK audit')
 
 
 def conclusions(input_doc,review=None):
@@ -208,6 +298,11 @@ def markdown(r):
     text += [f'- {reason}: {entry["count"]}' for reason,entry in scan.get('skipped_by_reason',{}).items()]
     text += [f'- Incomplete: {item["path"]}: {item["reason"]}, bytes={item.get("bytes",item.get("observed_bytes_at_least"))}' for item in scan.get('incomplete',[])]
     text += ['Completion means the declared scan scope only, not verified hardware support.','']
+    for f in r['files']:
+        if f['role']=='tiling_metadata':
+            text += [f'- Repository metadata: {f["source"]["path"]}; bytes={f["source"]["bytes"]}; SHA256={f["source"]["sha256"]}; '
+                     f'{f["metadata_status"]}; {f["content_classification"]}.']
+    text += ['', 'Three decision questions and unreviewed evidence: priority-evidence.json. All unresolved pending source review.','']
     for name,route in r.get('paths',{}).items():
         text += ['## '+name,'','Compatibility: '+route['compatibility'],route['explanation'],'']
         for frontend,d in route.get('frontends',{}).items():
@@ -243,29 +338,38 @@ def run(args):
     report['paths']=conclusions({'status':'NOT_RUN'})
     write(root/'group128-capability.json',report)
     try:
-        # Collect first so a relevant oversized source is recorded with partial
-        # snapshots/size/SHA even if the separate input-path scanner would also
-        # reject it. Final success still requires the original version/identity gate.
+        # One scoped scan. Keep the original evidence verifier when reusing an
+        # explicit AntiQuant audit, otherwise bind input-path observations to
+        # these same snapshots/version files rather than walking the SDK again.
         collect_fix(cann,root,report['scan'],report['files'])
         path=args.antiquant_audit
-        if path is None:_,path=collect_input(cann,root/'input-antiquant')
-        doc=verify_input(path,cann);review=None
-        report['antiquant_audit']=identity(path)
+        review=None
+        if path is None:
+            doc=focused_input(report['files'],cann)
+            write(root/'input-path-evidence.json',doc)
+            report['input_path_evidence']=identity(root/'input-path-evidence.json')
+        else:
+            doc=verify_input(path,cann)
+            report['antiquant_audit']=identity(path)
         if args.antiquant_review:
             _,review=reviewed_input(path,args.antiquant_review)
             report['antiquant_review']=identity(args.antiquant_review)
         report['paths']=conclusions(doc,review)
-        verify_input(path,cann)
+        if path is not None:verify_input(path,cann)
         report['status']='EVIDENCE_COLLECTED_COMPATIBILITY_UNRESOLVED'
     except Exception as e:report.update(status='BLOCKED_AUDIT',error=f'{type(e).__name__}: {e}')
     finally:
         try:
-            for f in report['files']:verify(f['source']);verify(f['snapshot'])
+            for f in report['files']:
+                verify(f['source']);verify(f['snapshot'])
+                if 'metadata_report' in f:verify(f['metadata_report'])
             if report['scan']['status']!='NOT_RUN':report['scan_file']=identity(root/'fixpipe-scan.json')
             for item in report['sources']:verify(item)
-            for key in ('antiquant_audit','antiquant_review'):
+            for key in ('antiquant_audit','antiquant_review','input_path_evidence'):
                 if key in report:verify(report[key])
         except Exception as e:report.update(status='BLOCKED_AUDIT',integrity_error=str(e))
+        write(root/'priority-evidence.json',priority_index(report))
+        report['priority_evidence']=identity(root/'priority-evidence.json')
         write(root/'group128-capability.json',report)
         (root/'group128-capability.md').write_text(markdown(report))
         if report['status']=='EVIDENCE_COLLECTED_COMPATIBILITY_UNRESOLVED':
