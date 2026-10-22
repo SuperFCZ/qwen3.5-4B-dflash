@@ -98,7 +98,7 @@ FP16 scale 转 FP32 本身是精确的，但量化参数编码及实际乘法精
 
 ## 服务器命令：只读审查
 
-不需要加载模型、Capture 或 OPP。复用原 AntiQuant 工具采集输入路径证据，再额外采集三类输出路径；
+不需要加载模型、Capture 或 OPP。采集三类输出路径，并复用原 AntiQuant 工具采集输入路径证据；
 仅可能运行工具 `--version`/`nm` 取身份，不进行编译或设备调用：
 
 ```bash
@@ -119,3 +119,27 @@ python3 -B framework/custom_ops/draft_fixpipe/audit.py \
 
 本地：`python3 -B -m pytest -q framework/custom_ops/draft_fixpipe/test`。
 无需 NumPy、torch、torch_npu 或 CANN Python 包；测试只构造临时 SDK 文本和 CPU 算术情景。
+
+## SDK 扫描范围与未完成状态
+
+文件路径筛选发生在 resolve/stat/open 之前。保留全部 `.h/.hpp/.cpp/.cc/.py/.ini` 及版本文件的
+源码扫描；JSON 只接纳明确的 FixPipe/Matmul/量化算子路径、算子注册表（如 `ops-info`、
+`op_info_cfg`）和平台/产品支持配置。没有上述相关标识的普通 `fusion_strategy`、L2 Cache
+策略及其他 JSON 不读取、不 stat、不计算哈希，因此无关大文件不会触发源码大小限制。
+有明确相关算子标识的配置即使位于策略目录仍会检查，避免仅凭目录排除关键限制。
+
+**16 MiB 限制保持不变**。相关候选超限则保留路径、大小、以有限缓冲区流式计算的 SHA256，
+标记 `SOURCE_SIZE_LIMIT_EXCEEDED`，不解析或复制超限内容、不继续声明完整扫描。
+正常源码的快照字节必须与生成摘要/行号时读取的字节及其 SHA256 一致。
+权限错误、路径逃逸、文件变动等仍会阻断；失败前已采集的源码快照及身份不会从报告中丢失。
+
+新增 `fixpipe-scan.json`，同时内嵌到 `group128-capability.json.scan`：
+
+- 枚举、接纳、读取、快照和跳过的文件数量。
+- 每个跳过原因的精确计数及最多 20 条路径示例；示例截断有单独标记。
+- 超限/失败文件、扫描阶段、错误类型及未完成原因。
+- `COMPLETE_WITHIN_DECLARED_SCOPE` 只表示声明范围扫描完成；异常为 `INCOMPLETE`，总报告仍为
+  `BLOCKED_AUDIT`，不会生成可被误认为完整证据的审查模板。
+
+先扫描 FixPipe 可保留其失败细节；最终成功仍必须经过原有 AntiQuant SDK 版本和身份校验。
+本工具未证明任何芯片支持结论，CANN 编译、NPU、Simulator、性能仍全部 `NOT_RUN`。

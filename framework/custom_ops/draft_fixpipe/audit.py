@@ -5,11 +5,11 @@ Never imports SDK Python implementations (TIK files are read as text). Never
 compiles, launches a device operator, runs a simulator, or changes a Golden.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
-import shutil
 import sys
 HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(HERE.parent/'draft_antiquant'))
@@ -49,37 +49,124 @@ def frontend_hints(path,text):
     return out or ['UNCLASSIFIED_SOURCE']
 
 
-def collect_fix(cann,root):
-    folder=root/'fixpipe-sources';folder.mkdir();files=[];seen=set()
-    def error(e):raise e
-    for base,dirs,names in os.walk(cann,followlinks=False,onerror=error):
-        dirs[:]=sorted(d for d in dirs if d not in ('__pycache__','.git'))
-        for name in sorted(names):
-            p=Path(base)/name
-            if p.suffix.lower() not in ('.h','.hpp','.cpp','.cc','.py','.ini','.json') and name not in ('version.info','version.cfg'):
-                continue
-            actual=p.resolve(strict=True)
-            if cann not in actual.parents:raise ValueError('SDK file escapes selected root: '+str(p))
-            if actual in seen:continue
-            seen.add(actual)
-            if actual.stat().st_size>16*1024*1024:raise ValueError('oversized SDK source: '+str(p))
-            text=actual.read_text(errors='replace');lines=text.splitlines()
-            hits=[i for i,line in enumerate(lines,1) if TERMS.search(line)]
-            special=name in ('version.info','version.cfg','Ascend310P3.ini')
-            family=any('fixpipe' in s.lower() or 'matmul' in s.lower() for s in p.relative_to(cann).parts)
-            if not (hits or special or family):continue
-            source=identity(actual);snapshot=folder/(str(len(files))+'-'+name);shutil.copyfile(actual,snapshot)
-            windows=[]
-            for i in hits:
-                lo,hi=max(1,i-12),min(len(lines),i+30)
-                if windows and lo<=windows[-1][1]+1:windows[-1][1]=max(hi,windows[-1][1])
-                else:windows.append([lo,hi])
-            files.append(dict(source=source,snapshot=identity(snapshot),frontend_hints=frontend_hints(p,text),
-                hits=hits,role='version' if name in ('version.info','version.cfg') else 'platform' if special else 'source',
-                excerpts=[dict(start=a,end=b,text='\n'.join(f'{i}: {lines[i-1]}' for i in range(a,b+1))) for a,b in windows]))
-            verify(source)
-    for item in files:verify(item['source']);verify(item['snapshot'])
-    return files
+MAX_SOURCE_BYTES=16*1024*1024
+SOURCE_SUFFIXES={'.h','.hpp','.cpp','.cc','.py','.ini'}
+
+
+def scan_rule(relative):
+    """Path-only admission, before resolve/stat/open. No source-family pruning."""
+    name=relative.name.lower();suffix=relative.suffix.lower()
+    if name in ('version.info','version.cfg') or suffix in SOURCE_SUFFIXES:
+        return True,'SOURCE_OR_VERSION'
+    if suffix!='.json':return False,'NON_SOURCE_SUFFIX'
+    parts=[re.sub(r'[^a-z0-9]','',p.lower()) for p in relative.parts]
+    stem=re.sub(r'[^a-z0-9]','',relative.stem.lower())
+    # Explicit operator/feature names can occur in generic configuration files
+    # nested under an op directory. Do not exclude those based on directory alone.
+    if any(any(token in part for token in ('fixpipe','matmul','quant','dequant')) for part in parts):
+        return True,'RELATED_OPERATOR_JSON'
+    if 'fusionstrategy' in parts:return False,'UNRELATED_FUSION_STRATEGY_JSON'
+    if 'l2cache' in stem:return False,'UNRELATED_L2_CACHE_JSON'
+    # Aggregate op registries and platform/product capability lists may contain
+    # relevant restrictions without naming FixPipe in their filenames.
+    registries=('opsinfo','opinfo','opsconfig','opsupport','opssupport','supportedops',
+                'supportedsoc','supportlist','socinfo','socconfig','platforminfo',
+                'platformconfig','productinfo','productconfig','chipinfo','chipconfig',
+                'capability','capabilities')
+    if any(token in stem for token in registries):return True,'SUPPORT_REGISTRY_JSON'
+    if any(p in ('opinfocfg','opsinfo','opinfo','opsconfig','opsupport','opssupport') for p in parts[:-1]):
+        return True,'OP_REGISTRY_DIRECTORY_JSON'
+    if any(p in ('platformconfig','socconfig','productconfig','chipconfig') for p in parts[:-1]):
+        return True,'PLATFORM_CONFIG_JSON'
+    return False,'JSON_OUTSIDE_DECLARED_SCOPE'
+
+
+def collect_fix(cann,root,scan=None,files=None):
+    """Retain partial evidence on failure; oversized admitted sources still block."""
+    if scan is None:scan={}
+    if files is None:files=[]
+    scan.update(status='RUNNING',policy='fixpipe-sdk-path-filter-v1',
+        max_source_bytes=MAX_SOURCE_BYTES,enumerated_files=0,admitted_files=0,
+        read_files=0,snapshotted_files=0,skipped_files=0,skipped_by_reason={},
+        skip_sample_limit_per_reason=20,incomplete=[],excluded_directory_names=['__pycache__','.git'],
+        scope='All .h/.hpp/.cpp/.cc/.py/.ini and version files; JSON admitted by explicit operator/registry/platform paths. Discovery, not full SDK capability proof.')
+    folder=root/'fixpipe-sources';seen=set();current=None;phase='create_snapshot_directory'
+    def skip(reason,path):
+        scan['skipped_files']+=1
+        entry=scan['skipped_by_reason'].setdefault(reason,dict(count=0,samples=[],samples_truncated=False))
+        entry['count']+=1
+        if len(entry['samples'])<scan['skip_sample_limit_per_reason']:entry['samples'].append(str(path))
+        else:entry['samples_truncated']=True
+    def error(e):
+        nonlocal current,phase
+        current=e.filename;phase='enumerate_directory';raise e
+    try:
+        folder.mkdir()
+        for base,dirs,names in os.walk(cann,followlinks=False,onerror=error):
+            dirs[:]=sorted(d for d in dirs if d not in ('__pycache__','.git'))
+            for name in sorted(names):
+                p=Path(base)/name;current=str(p);phase='path_filter'
+                scan['enumerated_files']+=1
+                admitted,reason=scan_rule(p.relative_to(cann))
+                if not admitted:
+                    skip(reason,p);continue
+                scan['admitted_files']+=1;phase='resolve'
+                actual=p.resolve(strict=True)
+                if cann not in actual.parents:raise ValueError('SDK file escapes selected root: '+str(p))
+                if actual in seen:
+                    skip('DUPLICATE_RESOLVED_SOURCE',p);continue
+                seen.add(actual);phase='stat';size=actual.stat().st_size
+                if size>MAX_SOURCE_BYTES:
+                    # Streaming SHA256 is evidence only; do not parse/copy the
+                    # oversized source or silently count it as reviewed.
+                    issue=dict(path=str(p),resolved_path=str(actual),bytes=size,
+                        reason='SOURCE_SIZE_LIMIT_EXCEEDED',admission_rule=reason,
+                        limit_bytes=MAX_SOURCE_BYTES,review='NOT_PARSED_OR_SNAPSHOTTED')
+                    scan['incomplete'].append(issue);phase='hash_oversized_source'
+                    issue['source']=identity(actual)
+                    phase='size_limit'
+                    raise ValueError(f'oversized SDK source: {p} ({size} bytes; limit {MAX_SOURCE_BYTES})')
+                phase='read'
+                with actual.open('rb') as stream:raw=stream.read(MAX_SOURCE_BYTES+1)
+                if len(raw)>MAX_SOURCE_BYTES:
+                    scan['incomplete'].append(dict(path=str(p),resolved_path=str(actual),
+                        bytes_at_stat=size,observed_bytes_at_least=len(raw),limit_bytes=MAX_SOURCE_BYTES,
+                        reason='SOURCE_GREW_BEYOND_LIMIT',review='NOT_PARSED_OR_SNAPSHOTTED'))
+                    raise ValueError('SDK source grew beyond read limit: '+str(p))
+                scan['read_files']+=1
+                text=raw.decode('utf-8',errors='replace');lines=text.splitlines()
+                hits=[i for i,line in enumerate(lines,1) if TERMS.search(line)]
+                special=name in ('version.info','version.cfg','Ascend310P3.ini')
+                family=any('fixpipe' in s.lower() or 'matmul' in s.lower() for s in p.relative_to(cann).parts)
+                if not (hits or special or family or p.suffix.lower()=='.json'):
+                    skip('NO_RELEVANT_CONTENT_OR_FAMILY',p);continue
+                phase='snapshot'
+                source=identity(actual)
+                # Bind the text used for excerpts to the file being recorded,
+                # including if a source changed after the bounded read.
+                if source['bytes']!=len(raw) or source['sha256']!=hashlib.sha256(raw).hexdigest():
+                    raise ValueError('SDK source changed during read: '+str(p))
+                snapshot=folder/(str(len(files))+'-'+name);snapshot.write_bytes(raw)
+                windows=[]
+                for i in hits:
+                    lo,hi=max(1,i-12),min(len(lines),i+30)
+                    if windows and lo<=windows[-1][1]+1:windows[-1][1]=max(hi,windows[-1][1])
+                    else:windows.append([lo,hi])
+                files.append(dict(source=source,snapshot=identity(snapshot),frontend_hints=frontend_hints(p,text),
+                    admission_rule=reason,hits=hits,
+                    role='version' if name in ('version.info','version.cfg') else 'platform' if special else 'source',
+                    excerpts=[dict(start=a,end=b,text='\n'.join(f'{i}: {lines[i-1]}' for i in range(a,b+1))) for a,b in windows]))
+                scan['snapshotted_files']=len(files);verify(source)
+        phase='verify_snapshots'
+        for item in files:verify(item['source']);verify(item['snapshot'])
+        scan['status']='COMPLETE_WITHIN_DECLARED_SCOPE'
+        return files
+    except Exception as e:
+        scan.update(status='INCOMPLETE',error=dict(path=str(current) if current else None,
+            phase=phase,type=type(e).__name__,message=str(e)))
+        raise
+    finally:
+        write(root/'fixpipe-scan.json',scan)
 
 
 def verify_input(path,cann):
@@ -115,6 +202,12 @@ def conclusions(input_doc,review=None):
 def markdown(r):
     text=['# Group128 input/output scale feasibility audit','', 'Status: '+r['status'],
           'Hardware compile / NPU / Simulator / performance: NOT_RUN. No Kernel/Golden changed.','']
+    scan=r.get('scan',{})
+    text += ['## SDK scan coverage','', 'Scan: '+scan.get('status','NOT_RUN'),
+             f'Enumerated: {scan.get("enumerated_files",0)}; snapshots: {scan.get("snapshotted_files",0)}; skipped: {scan.get("skipped_files",0)}.']
+    text += [f'- {reason}: {entry["count"]}' for reason,entry in scan.get('skipped_by_reason',{}).items()]
+    text += [f'- Incomplete: {item["path"]}: {item["reason"]}, bytes={item.get("bytes",item.get("observed_bytes_at_least"))}' for item in scan.get('incomplete',[])]
+    text += ['Completion means the declared scan scope only, not verified hardware support.','']
     for name,route in r.get('paths',{}).items():
         text += ['## '+name,'','Compatibility: '+route['compatibility'],route['explanation'],'']
         for frontend,d in route.get('frontends',{}).items():
@@ -144,12 +237,16 @@ def run(args):
     root=fresh(args.output_dir,protected)
     report=dict(status='RUNNING',cann_root=str(cann),soc='Ascend310P3',architecture_target='dav_2002',
         cann_compile='NOT_RUN',npu='NOT_RUN',simulator='NOT_RUN',performance='NOT_RUN',full_gate='NOT_RUN',
-        arithmetic=counterexamples(),traffic=traffic(),files=[],
+        arithmetic=counterexamples(),traffic=traffic(),files=[],scan={'status':'NOT_RUN'},
         sources=[identity(p) for p in sorted(HERE.rglob('*')) if p.is_file() and '__pycache__' not in p.parts],
         interpretation='Source discovery and CPU arithmetic only; not permission to replace W8 math or change Golden.')
     report['paths']=conclusions({'status':'NOT_RUN'})
     write(root/'group128-capability.json',report)
     try:
+        # Collect first so a relevant oversized source is recorded with partial
+        # snapshots/size/SHA even if the separate input-path scanner would also
+        # reject it. Final success still requires the original version/identity gate.
+        collect_fix(cann,root,report['scan'],report['files'])
         path=args.antiquant_audit
         if path is None:_,path=collect_input(cann,root/'input-antiquant')
         doc=verify_input(path,cann);review=None
@@ -158,13 +255,13 @@ def run(args):
             _,review=reviewed_input(path,args.antiquant_review)
             report['antiquant_review']=identity(args.antiquant_review)
         report['paths']=conclusions(doc,review)
-        report['files']=collect_fix(cann,root)
         verify_input(path,cann)
         report['status']='EVIDENCE_COLLECTED_COMPATIBILITY_UNRESOLVED'
     except Exception as e:report.update(status='BLOCKED_AUDIT',error=f'{type(e).__name__}: {e}')
     finally:
         try:
             for f in report['files']:verify(f['source']);verify(f['snapshot'])
+            if report['scan']['status']!='NOT_RUN':report['scan_file']=identity(root/'fixpipe-scan.json')
             for item in report['sources']:verify(item)
             for key in ('antiquant_audit','antiquant_review'):
                 if key in report:verify(report[key])
