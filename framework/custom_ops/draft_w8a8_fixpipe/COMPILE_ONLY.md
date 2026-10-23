@@ -13,3 +13,11 @@ After pulling, run `compile_raw.sh --preflight <existing preflight.json> --prefl
 Return `compile-report.json`, `msopgen.log`, `build.log`. New diagnostics stay outside the repository; private SDK excerpts are not committed.
 
 Local CPU tests use simulated command/artifact fixtures; CANN compilation, installation and NPU remain NOT_RUN locally.
+
+## Post-build artifact validation
+
+Kernel candidates are named `DFlashW8A8Accumulator_*.o`; accepted originals must be directly under `CustomOp/build_out/op_kernel/binary/ascend310p/d_flash_w8_a8_accumulator/`. Host candidates use the exact names `liboptiling.so`, `libcust_opmaster_rt2.0.so`, or `libcust_optiling.so`, and must resolve inside `CustomOp/build_out/op_host/`. The isolated directory is newly created and its single raw-op source inventory is checked before build. Other directories, including CPack copies, are reported as excluded and cannot substitute for canonical outputs. Symlink escapes are rejected.
+
+`artifact_checks.kernel` and `.host` independently record discovered/canonical/verified counts, candidate paths, checks and failure reasons. Nonempty canonical files get SHA256 and ELF validation: ELF64 little-endian, version/header/table bounds; Host must be AArch64 ET_DYN. Kernel machine/type/flags are recorded without assuming the AI Core uses the host ISA. This validates artifact format, not execution correctness or instruction semantics.
+
+`commands.msopgen` and `commands.build` retain argv, exact return code (or timeout), and log identity. If build returns zero, `cann_compile=BUILD_RETURNED_ZERO` is saved before checking artifacts. A later validation failure produces `ARTIFACT_CHECK_FAILED_REVIEW_UNRESOLVED`, not a compiler-failure claim. A nonzero build command remains `COMPILE_FAILED_REVIEW_UNRESOLVED` / `FAILED_OR_INCOMPLETE`; consult the preserved log to distinguish compiler, linker or packaging errors. Neither state permits installation or NPU execution. Historical failed reports are never rewritten.
