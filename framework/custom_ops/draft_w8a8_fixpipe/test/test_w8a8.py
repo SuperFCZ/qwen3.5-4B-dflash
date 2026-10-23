@@ -172,7 +172,8 @@ def test_raw_failure_stops_before_quant(tmp_path):
  assert modes==['raw']
 
 
-def test_cpp_runner_syntax_only(tmp_path):
+@pytest.mark.parametrize("raw_only",[False,True])
+def test_cpp_runner_syntax_only(tmp_path,raw_only):
  compiler=shutil.which('c++')
  if not compiler:pytest.skip('no local C++ compiler')
  (tmp_path/'acl').mkdir()
@@ -190,11 +191,12 @@ struct aclTensor;struct aclOpExecutor;
 aclTensor* aclCreateTensor(const int64_t*,uint64_t,int,const int64_t*,int64_t,int,const int64_t*,uint64_t,void*);
 int aclDestroyTensor(const aclTensor*);
 '''
- for op,snake in common.OPS.values():
-  (tmp_path/('aclnn_'+snake+'.h')).write_text(decl+f'''int aclnn{op}GetWorkspaceSize(const aclTensor*,const aclTensor*,const aclTensor*,aclTensor*,uint64_t*,aclOpExecutor**);
+ inputs='const aclTensor*,const aclTensor*,'+('' if raw_only else 'const aclTensor*,')
+ for op,snake in (dict(raw=common.OPS['raw']) if raw_only else common.OPS).values():
+  (tmp_path/('aclnn_'+snake+'.h')).write_text(decl+f'''int aclnn{op}GetWorkspaceSize({inputs}aclTensor*,uint64_t*,aclOpExecutor**);
 int aclnn{op}(void*,uint64_t,aclOpExecutor*,aclrtStream);
 ''')
- result=subprocess.run([compiler,'-std=c++17','-fsyntax-only','-I'+str(tmp_path),'-I'+str(common.QUANT/'test'),str(ROOT/'test/runner.cpp')],capture_output=True,text=True)
+ result=subprocess.run([compiler,'-std=c++17','-fsyntax-only','-I'+str(tmp_path),'-I'+str(common.QUANT/'test'),str(ROOT/('test/raw_runner.cpp' if raw_only else 'test/runner.cpp'))],capture_output=True,text=True)
  assert result.returncode==0,result.stderr
 
 
@@ -279,3 +281,93 @@ def test_new_stage_directory_can_be_sibling_of_readonly_review(tmp_path):
  assert out.is_dir() and review.read_text()=='{}'
  with pytest.raises((ValueError,FileExistsError)):common.fresh(out,[review])
  with pytest.raises(ValueError,match='overlaps'):common.fresh(tmp_path,[review])
+
+
+def test_raw_review_does_not_need_codec_fp16_or_fixpipe(tmp_path):
+ cann=tmp_path/'sdk';cann.mkdir();(cann/'version.info').write_text('9.0.0')
+ (cann/'raw_fixture.h').write_text('// CPU raw source fixture; not hardware evidence\n')
+ out=tmp_path/'preflight';out.mkdir()
+ with patch.object(sdk.shutil,'which',return_value=None):p=sdk.preflight(cann,out,[Path('raw_fixture.h')],raw_only=True)
+ review=json.loads((out/'review-template.json').read_text())
+ assert set(review['common'])==set(sdk.RAW_CLAIMS) and 'codec' not in review['settings']
+ assert 'layouts' not in review and not any('fixpipe' in str(x).lower() for x in sdk.RAW_ASC_FILES)
+ f=p['files'][-1];citation=dict(path=f['source']['path'],sha256=f['source']['sha256'],start=1,end=1,
+                              quote='// CPU raw source fixture; not hardware evidence')
+ for c in review['common'].values():c.update(status='SUPPORTED',citations=[citation])
+ review.update(status='SOURCE_REVIEWED',reviewer='CPU fixture only')
+ rp=tmp_path/'review.json';common.write(rp,review)
+ with patch.object(ref,'check_codec',side_effect=AssertionError('raw must not inspect codec')):
+  sdk.reviewed(out/'preflight.json',rp,'nd',raw_only=True)
+ with pytest.raises(ValueError,match='scope mismatch'):sdk.reviewed(out/'preflight.json',rp,'nd')
+ review['common']['nd_io']['status']='UNRESOLVED';common.write(rp,review)
+ with pytest.raises(ValueError,match='UNRESOLVED: nd_io'):sdk.reviewed(out/'preflight.json',rp,'nd',True)
+ review['common']['nd_io']['status']='UNSUPPORTED';common.write(rp,review)
+ with pytest.raises(ValueError,match='BLOCKED_UNSUPPORTED'):sdk.reviewed(out/'preflight.json',rp,'nd',True)
+ (cann/'raw_fixture.h').write_text('changed')
+ with pytest.raises(ValueError,match='identity changed'):sdk.reviewed(out/'preflight.json',rp,'nd',True)
+
+
+def test_raw_build_plan_has_one_op_two_inputs_no_quant_sources():
+ definition,files,config,ops=run.build_inputs(True,'nd',sdk.RAW_SETTINGS)
+ assert len(definition)==len(ops)==1 and definition[0]['op']=='DFlashW8A8Accumulator'
+ assert [x['name'] for x in definition[0]['input_desc']]==['a','b']
+ assert definition[0]['output_desc'][0]['type']==['int32'] and config is None
+ assert len(files)==4
+ for p in files.values():
+  text=p.read_text()
+  for token in ('SetQuantVector','SetDequantType','W8A8_SCALED_C_DTYPE','DT_FLOAT16','DT_UINT64','DFlashW8A8Fixpipe'):
+   assert token not in text
+ assert 'DataType::DT_INT32' in files['op_host/host_common.h'].read_text()
+ with pytest.raises(ValueError,match='ND K128 only'):run.build_inputs(True,'nz',{})
+
+
+def test_raw_oracle_repeat_mutation_and_no_scale_files(tmp_path):
+ import w8_raw
+ cases=w8_raw.prepare(tmp_path/'data');assert len(cases)==6
+ for c in cases:
+  assert set(c['files'])=={'a.bin','b_nd.bin','acc_int64.bin'}
+  expected=np.fromfile(c['files']['acc_int64.bin']['path'],'<i8')
+  out=expected.astype('<i4').tobytes();r=w8_raw.compare(c,[out,out])
+  assert r['status']=='RAW_INT32_MATCH' and json.loads(json.dumps(r))==r
+  if c['name']=='max_positive':assert (expected==2097152).all()
+  if c['name']=='max_negative':assert (expected==-2080768).all()
+ c=cases[0];out=np.fromfile(c['files']['acc_int64.bin']['path'],'<i8').astype('<i4').tobytes()
+ bad=bytearray(out);bad[0]^=1
+ r=w8_raw.compare(c,[out,bytes(bad)])
+ assert r['status']=='FAIL_NUMERICAL' and not r['repeat_equal'] and r['comparisons'][1]['mismatches']==1
+ with pytest.raises(ValueError,match='4096'):w8_raw.compare(c,[out[:1],out])
+ Path(c['files']['a.bin']['path']).write_bytes(bytes(2048))
+ with pytest.raises(ValueError,match='identity changed'):w8_raw.compare(c,[out,out])
+
+
+def test_raw_smoke_stops_on_first_wrong_integer(tmp_path):
+ import w8_raw
+ args=SimpleNamespace(raw_only=True,layout='nd',device=0,build_report=tmp_path/'build.json')
+ built=dict(status='BUILT_NOT_NPU_VERIFIED',raw_only=True,layout='nd',settings=sdk.RAW_SETTINGS,
+            preflight={},review={},opp=str(tmp_path/'opp'),installed={},cann_compile='fixture')
+ common.write(args.build_report,built);r=dict(settings=sdk.RAW_SETTINGS,preflight={},review={});calls=[]
+ def invoke(case,mode,root,b,args):
+  calls.append((case['name'],mode));p=tmp_path/'wrong';p.write_bytes(bytes(4096));return dict(outputs=[common.identity(p)]*2)
+ with patch.object(run,'installed',return_value={}),patch.object(run,'invoke',side_effect=invoke):
+  with pytest.raises(ValueError,match='raw INT32 mismatch'):run.raw_smoke(args,tmp_path,r)
+ assert calls==[('signed_dense','raw')] and r['cases'][0]['comparison']['status']=='FAIL_NUMERICAL'
+
+
+@pytest.mark.parametrize('extra',[['--layout','nz'],['--dataset','frozen']])
+def test_raw_cli_rejects_automatic_later_stages(tmp_path,extra):
+ result=subprocess.run([sys.executable,'-B',str(ROOT/'w8_run.py'),'smoke','--raw-only','--output-dir',str(tmp_path/'out'),*extra],capture_output=True,text=True)
+ assert result.returncode==2 and 'only synthetic ND K128' in result.stderr
+
+
+def test_raw_success_does_not_start_conversion_or_performance(tmp_path):
+ args=SimpleNamespace(raw_only=True,layout='nd',device=0,build_report=tmp_path/'build.json')
+ built=dict(status='BUILT_NOT_NPU_VERIFIED',raw_only=True,layout='nd',settings=sdk.RAW_SETTINGS,
+            preflight={},review={},opp=str(tmp_path/'opp'),installed={},cann_compile='CPU_FIXTURE_NOT_CANN')
+ common.write(args.build_report,built);r=dict(settings=sdk.RAW_SETTINGS,preflight={},review={});calls=[]
+ def invoke(case,mode,root,b,args):
+  calls.append(mode);root.mkdir(parents=True)
+  p=root/'actual';np.fromfile(case['files']['acc_int64.bin']['path'],'<i8').astype('<i4').tofile(p)
+  return dict(outputs=[common.identity(p)]*2)
+ with patch.object(run,'installed',return_value={}),patch.object(run,'invoke',side_effect=invoke):run.raw_smoke(args,tmp_path,r)
+ assert calls==['raw']*6 and r['status']=='RAW_INT32_ND_PASS'
+ assert r['output_conversion']==r['performance']==r['nz']=='NOT_RUN'

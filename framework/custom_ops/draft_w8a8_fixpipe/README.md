@@ -1,4 +1,8 @@
-# W8A8 output tensor-dequant K128 PoC
+# W8A8 K128 experiments
+
+**Active stage: [independent raw INT32 ND validation](RAW_INT32.md), selected with `--raw-only`.** This stage builds only the two-input accumulator and has no FP16/SetQuantVector/codec gate. Output conversion and performance remain deferred.
+
+The rest of this document describes the older, separately gated output tensor-dequant candidate; it is not the active raw-only workflow.
 
 Independent Ascend310P3 / dav_2002 / CANN 9.0.0 experiment. **CANN compilation, NPU correctness and performance: NOT_RUN.** CPU fixtures do not establish SDK compatibility. No production W8A16 operator, OPP, Source Lock or Golden is changed.
 

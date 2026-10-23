@@ -28,15 +28,36 @@ COMMON_CLAIMS={
  'buffers':'GM quant parameter alignment/lifetime, SDK UB workspace and L1/L0 capacities for M16 K128 N64',
 }
 
+RAW_CLAIMS={
+ 'chip':'Actual CANN9 / Ascend310P3 dav_2002 integer Matmul branch',
+ 'integer_cube':'GM INT8 A x INT8 B, INT32 L0C and integer Mmad implementation, no weight conversion',
+ 'nd_io':'Non-transposed A[16,128]/B[128,64] GM ND; unscaled INT32 ND GM output implementation',
+ 'tiling':'Host INT8 A/B, INT32 C/Bias, no bias or dequant; legal M16/N64/K128 base and singleCore sizes',
+ 'buffers':'SDK UB workspace, aligned GM buffers, L1/L0 capacities, completion and tensor lifetime',
+}
+RAW_ASC_FILES=(
+ 'impl/adv_api/detail/matmul/matmul_impl.h',
+ 'impl/adv_api/detail/matmul/matmul_impl_base.h',
+ 'impl/adv_api/detail/matmul/utils/matmul_utils.h',
+ 'impl/adv_api/detail/matmul/feature_trait/matmul_chip_cap.h',
+ 'impl/adv_api/detail/matmul/stage/copy_cube_out/copy_cube_out_datacopy.h',
+ 'impl/adv_api/detail/matmul/stage/copy_cube_out/copy_cube_out_datacopy_wrapper.h',
+ 'impl/basic_api/dav_m200/kernel_operator_cube_impl.h',
+ 'impl/basic_api/dav_m200/kernel_operator_data_copy_impl.h',
+)
+RAW_SETTINGS={'A':'INT8_ND','B':'INT8_ND_NON_TRANSPOSED','C':'INT32_ND',
+              'shape':[16,128,64],'base':[16,64,128],'block_dim':1,'input_count':2}
 
-def preflight(cann,root,extra=()):
-    report=dict(status='UNRESOLVED',cann_root=str(cann),soc='Ascend310P3',sources=sources(),files=[],missing=[],
+
+def preflight(cann,root,extra=(),raw_only=False):
+    report=dict(status='UNRESOLVED',raw_only=raw_only,cann_root=str(cann),soc='Ascend310P3',sources=sources(),files=[],missing=[],
         cann_compile='NOT_RUN',npu='NOT_RUN',performance='NOT_RUN',
         tools={},scope='Fixed source/ABI paths only. Presence is not support; uint64 encoding is not guessed.')
     folder=root/'sdk-sources';folder.mkdir();seen=set()
     paths=[cann/'version.info',cann/'version.cfg',cann/'aarch64-linux/asc/version.info',
            cann/'include/experiment/tiling/tiling_api.h',cann/'include/tiling/tiling_api.h']
-    paths += [cann/'aarch64-linux/asc'/p for p in ASC_FILES]
+    paths += [cann/'aarch64-linux/asc'/p for p in (RAW_ASC_FILES if raw_only else ASC_FILES)]
+    if raw_only:paths += [cann/'aarch64-linux/asc/include/adv_api/tiling_api.h']
     paths += [cann/p for p in extra]
     try:
         for p in paths:
@@ -61,7 +82,7 @@ def preflight(cann,root,extra=()):
         report['collection']='FIXED_FILES_COLLECTED'
     except Exception as e:report.update(status='BLOCKED_PREFLIGHT',error=f'{type(e).__name__}: {e}')
     path=root/'preflight.json';write(path,report)
-    template=dict(preflight=identity(path),reviewer='',status='UNRESOLVED',
+    template=dict(preflight=identity(path),reviewer='',status='UNRESOLVED',raw_only=raw_only,
         common={k:dict(status='UNRESOLVED',finding=v,citations=[]) for k,v in COMMON_CLAIMS.items()},
         layouts={k:dict(status='UNRESOLVED',finding=v,citations=[]) for k,v in {
             'nd':'B GM ND [128,64], non-transposed; int8 raw and tensor-dequant output',
@@ -70,21 +91,31 @@ def preflight(cann,root,extra=()):
             'float_field','constant_u64','stored_mantissa_bits','effective_mantissa_bits','coefficient_rounding',
             'product_rounding','overflow','subnormal','sign','vector_storage')}),
         citation_format=dict(path='actual source path',sha256='actual SHA256',start=1,end=2,quote='verbatim source lines'))
+    if raw_only:
+        template['common']={k:dict(status='UNRESOLVED',finding=v,citations=[]) for k,v in RAW_CLAIMS.items()}
+        template.pop('layouts');template['settings']=RAW_SETTINGS.copy()
     write(root/'review-template.json',template)
     return report
 
 
-def reviewed(path,review_path,layout):
+def reviewed(path,review_path,layout,raw_only=False):
     p=json.loads(path.read_text());r=json.loads(review_path.read_text())
+    if p.get('raw_only',False)!=raw_only or r.get('raw_only',False)!=raw_only:
+        raise ValueError('raw-only / scaled review scope mismatch')
     if p.get('status')!='UNRESOLVED' or p.get('collection')!='FIXED_FILES_COLLECTED' or r.get('preflight')!=identity(path):
         raise ValueError('preflight identity/integrity incomplete')
     for item in p['sources']:verify(item)
     files={f['source']['path']:f for f in p['files']}
     for f in files.values():verify(f['source']);verify(f['snapshot'])
     for item in p['tools'].values():verify(item['file'])
-    if set(r.get('common',{}))!=set(COMMON_CLAIMS) or set(r.get('layouts',{}))!={'nd','nz'}:
-        raise ValueError('incomplete review schema')
-    required={**r['common'],layout:r['layouts'][layout]}
+    if raw_only:
+        if layout!='nd' or set(r.get('common',{}))!=set(RAW_CLAIMS) or 'layouts' in r or r.get('settings')!=RAW_SETTINGS:
+            raise ValueError('incomplete raw-only ND review schema/settings')
+        required=r['common']
+    else:
+        if set(r.get('common',{}))!=set(COMMON_CLAIMS) or set(r.get('layouts',{}))!={'nd','nz'}:
+            raise ValueError('incomplete review schema')
+        required={**r['common'],layout:r['layouts'][layout]}
     unsupported=[];unresolved=[]
     for key,claim in required.items():
         status=claim.get('status')
@@ -101,6 +132,7 @@ def reviewed(path,review_path,layout):
     if unsupported:raise ValueError('BLOCKED_UNSUPPORTED: '+','.join(unsupported))
     if unresolved:raise ValueError('UNRESOLVED: '+','.join(unresolved))
     if r.get('status')!='SOURCE_REVIEWED' or not r.get('reviewer'):raise ValueError('source review not completed')
+    if raw_only:return p,r
     from w8_reference import check_codec
     settings=r['settings'];check_codec(settings['codec'])
     if set(settings)!={'host_scaled_c_dtype','codec'} or settings['host_scaled_c_dtype'] not in ('DT_INT32','DT_FLOAT16'):

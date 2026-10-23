@@ -61,11 +61,14 @@ def require_proof(path,status,settings,device=None,preflight_identity=None,build
     return identity(path)
 
 
-def installed(opp):
+def installed(opp,raw_only=False):
     sys.path.insert(0,str(QUANT/'test'))
     from opp_preflight import check_root,check_binary_path
     check_root(opp);result={}
-    for mode,(_,snake) in OPS.items():
+    if raw_only:
+        forbidden=OPS['quant'][1]
+        if any(forbidden in p.name for p in opp.rglob('*')):raise ValueError('raw OPP contains scaled operator')
+    for mode,(_,snake) in (dict(raw=OPS['raw']) if raw_only else OPS).items():
         folder=opp/'vendors/customize/op_impl/ai_core/tbe/kernel/ascend310p'/snake
         binaries=sorted(folder.glob('*.o'))
         if not binaries:raise ValueError('missing independent installed kernel: '+snake)
@@ -80,32 +83,56 @@ def installed(opp):
     return result
 
 
+def build_inputs(raw_only,layout,settings):
+    definition=json.loads((HERE/'operators.json').read_text())
+    if raw_only:
+        if layout!='nd':raise ValueError('raw-only is ND K128 only')
+        definition=[definition[0]];definition[0]['input_desc']=definition[0]['input_desc'][:2]
+        files={
+          'op_host/d_flash_w8_a8_accumulator.cpp':HERE/'raw/d_flash_w8_a8_accumulator_host.cpp',
+          'op_host/host_common.h':HERE/'raw/host_common.h',
+          'op_host/d_flash_w8_a8_accumulator_tiling.h':HERE/'op_host/d_flash_w8_a8_accumulator_tiling.h',
+          'op_kernel/d_flash_w8_a8_accumulator.cpp':HERE/'raw/d_flash_w8_a8_accumulator_kernel.cpp',
+        }
+        return definition,files,None,{'raw':OPS['raw']}
+    if layout=='nz':
+        for op in definition:op['input_desc'][1]['format']=['FRACTAL_NZ']
+    files={str(Path(sub)/p.name):p for sub in ('op_host','op_kernel') for p in (HERE/sub).iterdir() if p.is_file()}
+    config='#pragma once\n#define W8A8_B_NZ '+str(int(layout=='nz'))+'\n#define W8A8_SCALED_C_DTYPE matmul_tiling::DataType::'+settings['host_scaled_c_dtype']+'\n'
+    return definition,files,config,OPS
+
+
 def build(args,root,r,p,review):
     if sys.platform!='linux' or platform.machine() not in ('aarch64','arm64'):raise ValueError('Linux aarch64 CANN receiver required')
     if args.layout=='nz':r['nd_proof']=require_proof(args.nd_proof,'SYNTHETIC_ND_PASS',r['settings'],args.device,r['preflight'])
     if 'msopgen' not in p['tools'] or not shutil.which('msopgen') or identity(shutil.which('msopgen'))!=p['tools']['msopgen']['file']:
         raise ValueError('msopgen missing or differs from preflight')
-    text=(HERE/'op_kernel/kernel_common.h').read_text()
+    raw_only=getattr(args,'raw_only',False)
+    text=(HERE/('raw/d_flash_w8_a8_accumulator_kernel.cpp' if raw_only else 'op_kernel/kernel_common.h')).read_text()
     if re.search(r'\b(?:Cast|Brcb|Mul|Muls|AscendAntiQuant|SetAntiQuantVector)\s*[<(]',text):raise ValueError('weight dequant/fallback forbidden')
     r.update(phase='cann_build',cann_compile='RUNNING');write(root/'report.json',r)
-    definition=json.loads((HERE/'operators.json').read_text())
-    if args.layout=='nz':
-        for op in definition:op['input_desc'][1]['format']=['FRACTAL_NZ']
+    definition,source_files,config,operators=build_inputs(raw_only,args.layout,r['settings'])
     write(root/'operators.json',definition);project=root/'CustomOp';e=env(args.cann_root)
-    for index,(name,_) in enumerate(OPS.values()):
+    for index,(name,_) in enumerate(operators.values()):
         command(['msopgen','gen','-i',root/'operators.json','-c','ai_core-Ascend310P3','-lan','cpp','-out',project,'-op',name]+(['-m','1'] if index else []),root/f'msopgen-{index}.log',e)
-    config='#pragma once\n#define W8A8_B_NZ '+str(int(args.layout=='nz'))+'\n#define W8A8_SCALED_C_DTYPE matmul_tiling::DataType::'+r['settings']['host_scaled_c_dtype']+'\n'
-    for sub in ('op_host','op_kernel'):
-        for source in (HERE/sub).iterdir():shutil.copyfile(source,project/sub/source.name)
-        (project/sub/'experiment_config.h').write_text(config)
+    for target,source in source_files.items():shutil.copyfile(source,project/target)
+    if config:
+        for sub in ('op_host','op_kernel'):(project/sub/'experiment_config.h').write_text(config)
+    if raw_only:
+        for sub in ('op_host','op_kernel'):
+            actual={str(p.relative_to(project)) for p in (project/sub).rglob('*') if p.suffix in ('.cpp','.h','.hpp','.cc')}
+            expected={t for t in source_files if t.startswith(sub+'/')}
+            if actual!=expected:raise ValueError('unexpected generated raw-only sources: '+str(actual^expected))
+    r['build_inputs']={'operators':identity(root/'operators.json'),'sources':[identity(project/t) for t in source_files]}
     command(['bash','-c','cd "$1" && bash build.sh','build',project],root/'build.log',e,3600)
     r['cann_compile']='BUILD_COMPLETED_NPU_NOT_RUN'
     packages=list((project/'build_out').glob('custom_opp_*.run'))
     if len(packages)!=1:raise ValueError('isolated package missing/ambiguous')
     opp=root/'opp';command(['bash',packages[0],'--install-path='+str(opp)],root/'install.log',e)
-    r['installed']=installed(opp)
+    r['installed']=installed(opp,True) if raw_only else installed(opp)
     command(['cmake','-S',HERE/'test','-B',root/'runner-build','-DCANN_ROOT='+str(args.cann_root),
-        '-DOPP_ROOT='+str(opp),'-DCOMMON_INCLUDE='+str(QUANT/'test'),'-DCMAKE_EXPORT_COMPILE_COMMANDS=ON'],root/'cmake.log',e)
+        '-DOPP_ROOT='+str(opp),'-DCOMMON_INCLUDE='+str(QUANT/'test'),'-DCMAKE_EXPORT_COMPILE_COMMANDS=ON',
+        '-DW8A8_RAW_ONLY='+('ON' if raw_only else 'OFF')],root/'cmake.log',e)
     command(['cmake','--build',root/'runner-build','--parallel'],root/'runner-build.log',e)
     runner=root/'runner-build/w8a8_runner';command(['ldd',runner],root/'ldd.log',env(args.cann_root,opp))
     if 'not found' in (root/'ldd.log').read_text():raise ValueError('unresolved runtime library')
@@ -121,7 +148,8 @@ def build(args,root,r,p,review):
     artifacts += [identity(p) for p in project.rglob('*') if p.is_file() and p.name in ('CMakeCache.txt','compile_commands.json','CMakePresets.json')]
     r.update(status='BUILT_NOT_NPU_VERIFIED',phase='complete',runner=identity(runner),opp=str(opp),artifacts=artifacts,linked=linked,
         requested_config=dict(shape=[16,128,64],base=[16,64,128],block_dim=1,B=args.layout,
-            A='INT8 ND',C='INT32 raw / FP16 quant',quant_mode='TENSOR / SetQuantVector GM uint64[64]',explicit_weight_dequant=False))
+            A='INT8 ND',C='INT32' if raw_only else 'INT32 raw / FP16 quant',
+            quant_mode='NONE' if raw_only else 'TENSOR / SetQuantVector GM uint64[64]',explicit_weight_dequant=False))
 
 
 def check_execution(ex,mode,layout,device):
@@ -137,6 +165,8 @@ def invoke(case,mode,root,built,args):
     for name,item in case['files'].items():(root/name).symlink_to(verify(item))
     command([verify(built['runner']),args.device,root,args.layout,mode],root/'runner.log',env(args.cann_root,Path(built['opp'])),300)
     ex=json.loads((root/'execution.json').read_text());check_execution(ex,mode,args.layout,args.device)
+    if getattr(args,'raw_only',False) and (ex.get('raw_only') is not True or ex.get('input_count')!=2):
+        raise ValueError('raw-only two-input runner ABI required')
     if f'W8A8_PLAN raw={int(mode=="raw")} nz={int(args.layout=="nz")}' not in (root/'runner.log').read_text():raise ValueError('actual Host plan missing')
     outputs=[identity(root/f'actual-{i}.bin') for i in range(2)]
     return dict(execution_file=identity(root/'execution.json'),log=identity(root/'runner.log'),outputs=outputs)
@@ -179,24 +209,49 @@ def smoke(args,root,r):
         phase='complete',npu='REQUESTED_W8A8_CHECKS_PASSED',w8a16_acceptance='NOT_APPLICABLE_DIFFERENT_NUMERICAL_SCHEME')
 
 
+def raw_smoke(args,root,r):
+    from w8_raw import prepare,compare
+    if args.build_report is None:raise ValueError('--build-report required')
+    built=json.loads(args.build_report.read_text())
+    if built.get('status')!='BUILT_NOT_NPU_VERIFIED' or built.get('raw_only') is not True or built.get('layout')!='nd':
+        raise ValueError('raw-only ND build required')
+    for key in ('settings','preflight','review'):
+        if built[key]!=r[key]:raise ValueError('raw build/review identity mismatch: '+key)
+    verify_tree(built)
+    if installed(Path(built['opp']),True)!=built['installed']:raise ValueError('raw OPP changed')
+    r.update(build_report=identity(args.build_report),cann_compile=built['cann_compile'],phase='cpu_prepare',cases=[])
+    cases=prepare(root/'data');r['cpu_reference']='READY'
+    for case in cases:
+        entry=dict(name=case['name'],case_file=identity(Path(case['files']['a.bin']['path']).parent/'case.json'))
+        r['cases'].append(entry);r.update(npu='RUNNING',phase='raw_npu_correctness');write(root/'report.json',r)
+        entry['raw']=invoke(case,'raw',root/'execute'/case['name'],built,args)
+        entry['comparison']=compare(case,[verify(x).read_bytes() for x in entry['raw']['outputs']])
+        write(root/'report.json',r)
+        if entry['comparison']['status']!='RAW_INT32_MATCH':raise ValueError('raw INT32 mismatch; stop')
+    verify_tree(built)
+    r.update(status='RAW_INT32_ND_PASS',phase='complete',npu='RAW_INT32_CHECKS_PASSED',
+             output_conversion='NOT_RUN',performance='NOT_RUN',nz='NOT_RUN')
+
+
 def main(args):
     protected=[args.cann_root,args.a51_evidence.parent,args.prefetch_evidence.parent]
     protected += [p.parent for p in (args.preflight,args.build_report,args.nd_proof,args.synthetic_proof) if p]
     if args.review:protected.append(args.review)
     root=fresh(args.output_dir,protected)
-    r=dict(status='UNRESOLVED',phase='preflight',layout=args.layout,dataset=args.dataset,device=args.device,
+    r=dict(status='UNRESOLVED',raw_only=args.raw_only,output_conversion='NOT_RUN',phase='preflight',layout=args.layout,dataset=args.dataset,device=args.device,
         cann_compile='NOT_RUN',npu='NOT_RUN',performance='NOT_RUN',k256='NOT_RUN',full_gate='NOT_RUN',draft='NOT_RUN',simulator='NOT_RUN',sources=sources())
     try:
         if args.stage=='preflight':
-            r['preflight_result']=preflight(args.cann_root,root,args.sdk_file);r['status']=r['preflight_result']['status'];r['phase']='complete'
+            r['preflight_result']=preflight(args.cann_root,root,args.sdk_file,raw_only=args.raw_only);r['status']=r['preflight_result']['status'];r['phase']='complete'
         else:
             if args.preflight is None or args.review is None:raise ValueError('--preflight and source-cited --review required')
-            p,review=reviewed(args.preflight,args.review,args.layout)
+            p,review=reviewed(args.preflight,args.review,args.layout,raw_only=args.raw_only)
             if p['cann_root']!=str(args.cann_root):raise ValueError('selected SDK differs from reviewed root')
             r.update(settings=review['settings'],preflight=identity(args.preflight),review=identity(args.review))
             if args.stage=='build':build(args,root,r,p,review)
+            elif args.raw_only:raw_smoke(args,root,r)
             else:smoke(args,root,r)
-            reviewed(args.preflight,args.review,args.layout)
+            reviewed(args.preflight,args.review,args.layout,raw_only=args.raw_only)
     except Exception as e:
         text=str(e);status='BLOCKED_UNSUPPORTED' if text.startswith('BLOCKED_UNSUPPORTED') else 'UNRESOLVED' if text.startswith('UNRESOLVED') else 'BLOCKED'
         r.update(status=status,error=f'{type(e).__name__}: {e}')
@@ -217,6 +272,7 @@ def parse():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('stage',choices=('preflight','build','smoke'))
     p.add_argument('--cann-root',type=Path,default=Path(os.environ.get('CANN_ROOT','/usr/local/Ascend/cann-9.0.0')))
     p.add_argument('--output-dir',type=Path,required=True);p.add_argument('--layout',choices=('nd','nz'),default='nd')
+    p.add_argument('--raw-only',action='store_true',help='Only two-input INT8 ND -> INT32 K128; no scaled operator or codec review')
     p.add_argument('--dataset',choices=('synthetic','frozen'),default='synthetic');p.add_argument('--device',type=int,default=0)
     for key in ('preflight','review','build-report','nd-proof','synthetic-proof'):p.add_argument('--'+key,type=Path)
     p.add_argument('--sdk-file',type=Path,action='append',default=[])
@@ -224,6 +280,8 @@ def parse():
     p.add_argument('--prefetch-evidence',type=Path,default=Path('/home/w00949577/qwen35-dflash-run/gate-raw-prefetch-reverse-20261020-025853/suite.json'))
     a=p.parse_args();a.cann_root=a.cann_root.resolve()
     if a.device<0:p.error('negative device')
+    if a.raw_only and (a.layout!='nd' or a.dataset!='synthetic' or a.nd_proof or a.synthetic_proof):
+        p.error('--raw-only supports only synthetic ND K128; no later-stage proof or automatic progression')
     if any(p.is_absolute() or '..' in p.parts for p in a.sdk_file):p.error('--sdk-file must be explicit SDK-relative path')
     return a
 
