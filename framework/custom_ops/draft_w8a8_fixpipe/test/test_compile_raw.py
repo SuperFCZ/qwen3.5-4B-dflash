@@ -135,3 +135,69 @@ def test_command_returncode_and_postbuild_failure_are_distinct(tmp_path):
 def test_successful_command_retains_zero_and_log_identity(tmp_path):
  r={};probe.run_build_command([sys.executable,'-c','print("fixture complete")'],tmp_path/'build.log',{},r,'build')
  assert r['commands']['build']['returncode']==0 and r['commands']['build']['log_identity']==identity(tmp_path/'build.log')
+
+
+def packaged_alias(project,host):
+ root=project/'build_out/_CPack_Packages/Linux/External/custom_opp_ubuntu_aarch64.run/packages/vendors/customize/op_impl/ai_core/tbe/op_tiling'
+ target=root/probe.HOST_LINK_TARGET;target.parent.mkdir(parents=True)
+ target.write_bytes(host.read_bytes());alias=root/'liboptiling.so';alias.symlink_to(probe.HOST_LINK_TARGET)
+ return alias,target
+
+
+def test_real_dangling_build_alias_requires_valid_identical_runtime_alias(tmp_path):
+ k,h=artifacts(tmp_path);alias=h.parent/'liboptiling.so';alias.symlink_to(probe.HOST_LINK_TARGET)
+ runtime,target=packaged_alias(tmp_path,h);before=[identity(k),identity(h),identity(target)]
+ r={};probe.check_artifacts(tmp_path,r)
+ assert r['artifact_checks']['kernel']['status']=='VERIFIED'
+ assert r['artifact_checks']['host']['status']=='VERIFIED'
+ warning=next(x for x in r['artifact_checks']['host']['candidates'] if x['path']==str(alias))
+ assert warning['status']=='WARNING' and warning['dangling'] and not warning['required_for_compile_validation']
+ assert r['artifact_checks']['host_runtime']['status']=='VERIFIED'
+ assert [identity(k),identity(h),identity(target)]==before and alias.is_symlink() and not alias.exists()
+
+
+@pytest.mark.parametrize('fault',['no_package','runtime_missing','target_missing','changed_target','outside_target','unknown_build_alias'])
+def test_required_runtime_damage_never_hidden_by_valid_host(tmp_path,fault):
+ k,h=artifacts(tmp_path);alias=h.parent/'liboptiling.so'
+ alias.symlink_to(probe.HOST_LINK_TARGET if fault!='unknown_build_alias' else 'missing_required.so')
+ if fault!='no_package':
+  runtime,target=packaged_alias(tmp_path,h)
+  if fault=='runtime_missing':runtime.unlink()
+  elif fault=='target_missing':target.unlink()
+  elif fault=='changed_target':
+   data=bytearray(target.read_bytes());data[48]=1;target.write_bytes(data)
+  elif fault=='outside_target':
+   runtime.unlink();runtime.symlink_to(h)
+ r={}
+ with pytest.raises(ValueError,match='host'):probe.check_artifacts(tmp_path,r)
+ assert r['artifact_checks']['kernel']['status']=='VERIFIED' and r['artifact_checks']['host']['status']=='FAILED'
+
+
+def elf_needs_alias():
+ name=b'\0liboptiling.so\0'
+ header=b'\x7fELF'+bytes([2,1,1])+bytes(9)+struct.pack('<HHIQQQIHHHHHH',3,183,1,0,0,64,0,64,0,0,64,3,0)
+ dynamic=struct.pack('<IIQQQQIIQQ',0,6,0,0,256,32,2,0,8,16)
+ strings=struct.pack('<IIQQQQIIQQ',0,3,0,0,288,len(name),0,0,1,0)
+ return header+bytes(64)+dynamic+strings+struct.pack('<qQqQ',1,1,0,0)+name
+
+
+def test_build_alias_is_not_optional_when_host_dt_needed_uses_it(tmp_path):
+ k,h=artifacts(tmp_path);h.write_bytes(elf_needs_alias())
+ assert probe.host_needed(h)==['liboptiling.so']
+ (h.parent/'liboptiling.so').symlink_to(probe.HOST_LINK_TARGET);packaged_alias(tmp_path,h)
+ r={}
+ with pytest.raises(ValueError,match='host'):probe.check_artifacts(tmp_path,r)
+ assert r['artifact_checks']['host_runtime']['status']=='VERIFIED'
+ assert any('DT_NEEDED requires' in x.get('reason','') for x in r['artifact_checks']['host']['candidates'])
+
+
+def test_permission_error_is_not_dangling_alias_warning(tmp_path):
+ k,h=artifacts(tmp_path);alias=h.parent/'liboptiling.so';alias.symlink_to(probe.HOST_LINK_TARGET)
+ packaged_alias(tmp_path,h);original=Path.resolve
+ def resolve(path,*a,**kw):
+  if path==alias:raise PermissionError('denied')
+  return original(path,*a,**kw)
+ r={}
+ with patch.object(Path,'resolve',resolve):
+  with pytest.raises(ValueError,match='host'):probe.check_artifacts(tmp_path,r)
+ assert any('PermissionError' in x.get('reason','') for x in r['artifact_checks']['host']['candidates'])
