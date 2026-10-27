@@ -1,0 +1,29 @@
+[
+  {
+    "op": "DFlashW8A8PartialReduce",
+    "input_desc": [
+      {
+        "name": "partials",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float16"
+        ]
+      }
+    ],
+    "output_desc": [
+      {
+        "name": "o",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float16"
+        ]
+      }
+    ]
+  }
+]
