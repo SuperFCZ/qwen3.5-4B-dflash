@@ -1,0 +1,49 @@
+[
+  {
+    "op": "DFlashW8A8LocalDequant",
+    "input_desc": [
+      {
+        "name": "a",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "int8"
+        ]
+      },
+      {
+        "name": "b",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "int8"
+        ]
+      },
+      {
+        "name": "scale",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "uint64"
+        ]
+      }
+    ],
+    "output_desc": [
+      {
+        "name": "o",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float16"
+        ]
+      }
+    ]
+  }
+]
