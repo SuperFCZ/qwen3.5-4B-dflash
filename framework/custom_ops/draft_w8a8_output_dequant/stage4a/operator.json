@@ -1,0 +1,63 @@
+[
+  {
+    "op": "DFlashW8A8MultiTile",
+    "input_desc": [
+      {
+        "name": "a",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "int8"
+        ]
+      },
+      {
+        "name": "b",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "int8"
+        ]
+      },
+      {
+        "name": "scale",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "uint64"
+        ]
+      }
+    ],
+    "output_desc": [
+      {
+        "name": "o",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "float16"
+        ]
+      }
+    ],
+    "attr": [
+      {
+        "name": "output_mode",
+        "param_type": "optional",
+        "type": "int",
+        "default_value": 0
+      },
+      {
+        "name": "core_limit",
+        "param_type": "optional",
+        "type": "int",
+        "default_value": 1
+      }
+    ]
+  }
+]
