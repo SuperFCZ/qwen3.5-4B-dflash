@@ -48,7 +48,7 @@ def test_real_index_nz_scale_and_saved_activation(case,frozen):
  assert a.tobytes()==saved.reshape(16,20,128).transpose(1,0,2).copy().tobytes()
 
 
-@pytest.mark.parametrize('cores,limit,expected',[(1,1,1),(2,0,2),(3,0,3),(16,0,8),(16,2,2)])
+@pytest.mark.parametrize('cores,limit,expected',[(1,1,1),(2,0,2),(3,0,3),(7,0,7),(16,0,8),(16,2,2)])
 def test_core_count_and_disjoint_ownership(cores,limit,expected):
  blocks,owners=c.schedule(cores,limit);assert blocks==expected
  assert sorted(x for row in owners for x in row)==list(range(8))
@@ -58,7 +58,8 @@ def test_core_count_and_disjoint_ownership(cores,limit,expected):
 
 def plantext(cores,limit,mode):
  blocks,_=c.schedule(cores,limit);system=4096;arena=4096;stride=5120;user=blocks*stride
- return f'STAGE4A_SCHEDULE coreLimit={limit} blocks={blocks} cores={cores} system={system} arena={arena} stride={stride} user={user} total={system+user} mode={mode}\n'+'scratch=239104 userUB=12288 ubGuards=2560 reserve=8192 single=16/64/128 base=16/64/128'
+ aic=8 if cores==7 else cores
+ return f'STAGE4A_CORE_PROBE aic={aic} aiv={aic} all={cores}\nSTAGE4A_ARCH_PROBE arch=2002\nSTAGE4A_CORE_POLICY aic={aic} aiv={aic} all={cores} selected={cores}\nSTAGE4A_SCHEDULE coreLimit={limit} blocks={blocks} cores={cores} system={system} arena={arena} stride={stride} user={user} total={system+user} mode={mode}\n'+'scratch=239104 userUB=12288 ubGuards=2560 reserve=8192 single=16/64/128 base=16/64/128'
 
 
 def test_workspace_plan_rejects_shared_or_undersized_arenas():
@@ -102,7 +103,7 @@ def execution(mode,limit):
   timing=dict(status='NOT_RUN',warmup=0,repetitions=0),workspace_bytes=60000)
 
 
-@pytest.mark.parametrize('cores,fail',[ (8,False),(1,False),(8,True)])
+@pytest.mark.parametrize('cores,fail',[ (8,False),(7,False),(1,False),(8,True)])
 def test_serial_parallel_driver_gate(case,tmp_path,cores,fail):
  d=c.verify_case(case);runner=tmp_path/'runner';runner.write_text('fixture');bp=tmp_path/'build.json';root=tmp_path/'smoke';root.mkdir()
  r=dict(settings={},sources=[],evidence={},device=0)
@@ -112,12 +113,14 @@ def test_serial_parallel_driver_gate(case,tmp_path,cores,fail):
   mode=int(argv[-2]);limit=int(argv[-1]);calls.append((limit,mode));blocks,_=c.schedule(cores,limit)
   c.write(log.parent/'execution.json',execution(mode,limit));log.write_text(plantext(cores,limit,mode))
   plan=c.plan_from_log(log.read_text(),mode,limit)
-  c.write(log.parent/'resource-admission.json',dict(status='ADMITTED_BEFORE_EXECUTION',workspace_bytes=60000,declared_total=plan['total'],blocks=blocks,cores=cores))
+  c.write(log.parent/'resource-admission.json',run.admission_expected(execution(mode,limit),plan,False))
   data=c.target(d,mode,blocks).tobytes()
   if fail and limit==2:data=bytes(16384)
   for i in range(2):(log.parent/f'actual-{i}.bin').write_bytes(data)
- args=SimpleNamespace(multi_build_report=bp,device=0,cann_root=tmp_path/'sdk',diagnostic_groups=[])
- with patch.object(run,'installed',return_value={}),patch.object(run,'command',side_effect=command):
+ hp=tmp_path/'host-proof.json';c.write(hp,{})
+ policy=c.plan_from_log(plantext(cores,1,21),21,1)['core_policy']
+ args=SimpleNamespace(multi_build_report=bp,host_probe_report=hp,device=0,cann_root=tmp_path/'sdk',diagnostic_groups=[])
+ with patch.object(run,'installed',return_value={}),patch.object(run,'command',side_effect=command),patch.object(run,'validate_host_probe',return_value=policy):
   if cores==1:
    with pytest.raises(ValueError,match='BLOCKED_NO_MULTICORE'):run.smoke(args,root,r,case)
    assert calls==[(1,21),(1,0)]
@@ -158,7 +161,7 @@ int main(int argc,char**argv){
  def invoke(blocks,mode,fault=0):
   out=tmp_path/'out.bin';argv=[str(exe),*[case['files'][n]['path'] for n in ('a_i8.bin','b_i8.bin','quant_u64_doc_candidate.bin')],str(out),str(blocks),str(mode),str(fault)]
   subprocess.run(argv,check=True);return out.read_bytes()
- for blocks in (1,2,3,8):
+ for blocks in (1,2,3,7,8):
   for mode in (0,21,1,20):assert invoke(blocks,mode)==c.target(d,mode,blocks).tobytes()
  for fault in (1,4,5,6):
   data=invoke(2,0,fault);assert c.compare(case,d,0,2,[data]*2)['status']=='FAIL_NUMERICAL'
@@ -205,9 +208,25 @@ def test_actual_cpp_resource_admission_precedes_device_call(tmp_path):
  compiler=shutil.which('c++')
  if not compiler:pytest.skip('no compiler')
  source=(HERE/'test/runner.cpp').read_text();helper=source[source.index('static void AdmitWorkspace'):source.index('struct Tensor')]
- cpp=tmp_path/'admit.cpp';cpp.write_text('#include <algorithm>\n#include <cstdint>\n#include <cstdio>\n#include <fstream>\n#include <iterator>\n#include <regex>\n#include <stdexcept>\n#include <string>\n#include <vector>\n'+helper+'\nint main(int argc,char**argv){try{AdmitWorkspace(argv[1],std::stoull(argv[2]),0,1);return 0;}catch(...){return 2;}}\n')
+ cpp=tmp_path/'admit.cpp';cpp.write_text('#include <cstdlib>\n#include <algorithm>\n#include <cstdint>\n#include <cstdio>\n#include <fstream>\n#include <iterator>\n#include <regex>\n#include <stdexcept>\n#include <string>\n#include <vector>\n'+helper+'\nint main(int argc,char**argv){try{AdmitWorkspace(argv[1],std::stoull(argv[2]),0,1,argc==3);return 0;}catch(...){return 2;}}\n')
  exe=tmp_path/'admit';r=subprocess.run([compiler,'-std=c++17',str(cpp),'-o',str(exe)],capture_output=True,text=True);assert r.returncode==0,r.stderr
  for name,log,size,ok in [('valid',plantext(8,1,0),9216,True),('undersized',plantext(8,1,0),9215,False),('missing','',9216,False),('overlap',plantext(8,1,0).replace('stride=5120','stride=4096'),9216,False),('drift',plantext(8,1,0)+'\n'+plantext(4,1,0),9216,False)]:
   folder=tmp_path/name;folder.mkdir();(folder/'runner.log').write_text(log)
   p=subprocess.run([str(exe),str(folder),str(size)])
   assert (p.returncode==0)==ok and (folder/'resource-admission.json').exists()==ok
+
+
+def test_cpp_admission_binds_real_8_8_7_policy_before_execution(tmp_path):
+ import os
+ compiler=shutil.which('c++')
+ if not compiler:pytest.skip('no compiler')
+ source=(HERE/'test/runner.cpp').read_text();helper=source[source.index('static void AdmitWorkspace'):source.index('struct Tensor')]
+ cpp=tmp_path/'admit.cpp';cpp.write_text('#include <cstdlib>\n#include <algorithm>\n#include <cstdint>\n#include <cstdio>\n#include <fstream>\n#include <iterator>\n#include <regex>\n#include <stdexcept>\n#include <string>\n#include <vector>\n'+helper+'\nint main(int argc,char**argv){try{AdmitWorkspace(argv[1],10000,0,1,false);return 0;}catch(...){return 2;}}\n')
+ exe=tmp_path/'admit';r=subprocess.run([compiler,'-std=c++17',str(cpp),'-o',str(exe)],capture_output=True,text=True);assert r.returncode==0,r.stderr
+ for expected,ok in [(None,False),('8,8,7,7,2002',True),('8,8,8,8,2002',False)]:
+  folder=tmp_path/str(expected);folder.mkdir();(folder/'runner.log').write_text(plantext(7,1,0))
+  env=os.environ.copy();env.pop('DFLASH_STAGE4A_EXPECTED_CORE_POLICY',None)
+  if expected:env['DFLASH_STAGE4A_EXPECTED_CORE_POLICY']=expected
+  p=subprocess.run([str(exe),str(folder)],env=env)
+  assert (p.returncode==0)==ok
+  if ok:assert json.loads((folder/'resource-admission.json').read_text())['core_policy']==dict(aic=8,aiv=8,all=7,selected=7,arch=2002)

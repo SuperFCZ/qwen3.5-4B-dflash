@@ -43,19 +43,38 @@ references. Native Golden is neither modified nor used as a substitute.
 
 Optional integer attributes:
 
-- `core_limit=1` by default; `0` requests min(8, actual available AI Cores).
-  Positive limits must be <=8 and <=actual available cores; they are not
+- `core_limit=1` by default; `0` requests min(8, selected scheduling limit).
+  Eight is the number of tile slots, not an assumed hardware Core count.
+  Positive limits must be <=8 and <=the selected limit; they are not
   silently clipped.
 - `output_mode=0` gives the numerical result. Modes 1..20 select a partial
   group, after every tile has still completed its twenty groups. Mode21 is a
   scheduler witness described below.
 
-Host obtains actual `GetCoreNumAic()` and `GetCoreNum()` from the real
-TilingContext platform and requires a consistent coupled-core count. These
-APIs return AI Core counts on coupled platforms; this is the documented
-[CANN9 core-count contract](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/900/API/ascendcopapi/atlasascendc_api_07_1030.html),
-not an assumption that the device has eight cores. Kernel is restricted to
-dav_2002 and verifies GetBlockNum against the serialized launch count.
+Host logs all three installed SDK getter results and requires:
+`arch==2002`, nonzero aic/aiv/all, `aic==aiv`, and `all<=aic`. Only then is
+`selected=all` admitted. The fixed log is
+`STAGE4A_CORE_POLICY aic=N aiv=N all=N selected=N`. An invalid or unavailable
+architecture/count returns selected=0 and rejects Tiling. There is no max()
+or alternative-source fallback.
+
+The CANN9 [GetCoreNum contract and Host example](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/900/API/ascendcopapi/atlasascendc_api_07_1028.html)
+use its result for SetBlockDim. The [Cube view](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/900/API/ascendcopapi/atlasascendc_api_07_1030.html)
+and [Vector view](https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/900/API/ascendcopapi/atlasascendc_api_07_1031.html)
+provide independent bounds. The supplied installed-SDK/TilingContext evidence
+at `w8a8-core-probe-20261027-073730` reports aic=8, aiv=8, all=7, soc=2,
+arch=2002. Under this policy the scheduling limit is 7, not a hard-coded
+physical-Core diagnosis. These values do **not** establish that a Core is
+broken, reserved, or that exactly seven physical Cores exist. Why the SDK
+views differ remains UNRESOLVED; no out-of-line implementation is invented.
+
+The real Runner still requires Ascend310P3, the Host requires dav_2002 and the
+unchanged Kernel has its 2002 compile-time assertion. Thus this policy does
+not apply a separated Cube/Vector launch rule to the coupled Matmul path.
+Build records compiler-resolved installed platform header identities/API lines,
+Host library identity and actual linked SDK libraries in `core-sdk-binding.json`.
+Missing header resolution is explicit; declarations are not presented as the
+implementation explanation for 8/8/7.
 
 Each block handles `slot=GetBlockIdx()+i*blockDim`. Its TPipe, UB, Matmul object
 and FP32 sum are core-local. Sum is cleared for **each slot**. Within a slot,
@@ -145,62 +164,54 @@ groups 0,1,9,10,18,19; this does not repeat the historical 84-mode suite.
 
 ## Server commands
 
-### Core-query diagnostic (before changing scheduling policy)
+### First: Build and Host-only admission
 
-Host prints `STAGE4A_CORE_PROBE aic=N aiv=N all=N` before the unchanged
-nonzero-AIC / AIC-equals-all rejection. Optional SoC/architecture methods are
-detected at compile time and logged as raw numeric identifiers, or
-API_UNAVAILABLE. They do not grant permission to use another Core source.
-
-Use a new Build and **smoke --host-only** directory for this investigation.
-This option performs only the first mode21/core_limit1 GetWorkspaceSize and,
-if that succeeds, the existing resource admission. It never calls the
-operator, never proceeds to mode0 or parallel execution, and never reports
-numerical PASS. ACL initialization and input transfers may still occur.
-Rejection remains FAILED with NPU NOT_RUN; a successful Host-only query is
-STAGE4A_HOST_TILING_ONLY with NPU NOT_RUN. Do not resume normal Smoke until
-the actual Core values and installed SDK semantics establish a safe source.
+Always create a fresh Build and Host-only directory after this policy change.
+Host-only performs mode21/core_limit1 GetWorkspaceSize and resource admission,
+without submitting the operator. Expected status is STAGE4A_HOST_TILING_ONLY,
+NPU NOT_RUN, with selected=7 for the supplied 8/8/7 context. Workspace totals
+and arena ranges must still pass. The raw SoC identifier is diagnostic; an
+unavailable architecture is now a rejection, not an optional admission.
 
 ```bash
 set -euo pipefail
 cd /home/w00949577/z50058744/qwen3.5-4B-dflash
 git pull --ff-only
 export CANN_ROOT=/usr/local/Ascend/cann-9.0.0
-RUN=/home/w00949577/qwen35-dflash-run/w8a8-core-probe-$(date +%Y%m%d-%H%M%S)
+S4A=/home/w00949577/qwen35-dflash-run/w8a8-core-policy-$(date +%Y%m%d-%H%M%S)
 ENTRY=framework/custom_ops/draft_w8a8_output_dequant/stage4a/run.sh
-bash "$ENTRY" build --device 0 --output-dir "$RUN/build"
-if ! bash "$ENTRY" smoke --host-only --device 0 \
-  --multi-build-report "$RUN/build/report.json" --output-dir "$RUN/host-probe"; then
-  echo 'Host diagnostic rejected; keep the safety gate and return its logs.'
-fi
-grep -E 'STAGE4A_(CORE|SOC|ARCH)_PROBE|STAGE4A_TILING_REJECT' \
-  "$RUN/host-probe/execute/limit-1/mode-21/runner.log" || true
-printf 'Evidence: %s\n' "$RUN"
-```
-
-Return that `runner.log` and both reports. Macro collection now checks bounded
-logs inside this generated CustomOp as well as top-level build.log (64 files,
-8 MiB/file, 32 MiB total). Source pragma echoes are recorded separately from
-emitted expansions. EXPANSION_NOT_EMITTED means no expansion was captured in
-those logs; it does not diagnose a wrong Workspace pointer. Skipped files and
-incomplete searches are explicit. No Kernel, macro definition or Workspace
-offset is changed by this diagnostic patch.
-
-### Normal correctness run (after Core-query investigation is closed)
-
-```bash
-set -euo pipefail
-cd /home/w00949577/z50058744/qwen3.5-4B-dflash
-git pull --ff-only
-export CANN_ROOT=/usr/local/Ascend/cann-9.0.0
-S4A=/home/w00949577/qwen35-dflash-run/w8a8-eight-tiles-$(date +%Y%m%d-%H%M%S)
-ENTRY=framework/custom_ops/draft_w8a8_output_dequant/stage4a/run.sh
-bash "$ENTRY" prepare --device 0 --output-dir "$S4A/prepare"
 bash "$ENTRY" build --device 0 --output-dir "$S4A/build"
-bash "$ENTRY" smoke --device 0 --multi-build-report "$S4A/build/report.json" \
-  --output-dir "$S4A/smoke"
+bash "$ENTRY" smoke --host-only --device 0 \
+  --multi-build-report "$S4A/build/report.json" --output-dir "$S4A/host-only"
 printf 'Evidence: %s\n' "$S4A"
 ```
+
+Inspect `host-only/report.json`, its `core_policy` and the single run's plan
+and `resource-admission.json`. They must agree on aic/aiv/all/selected/arch.
+No new numerical or multicore PASS is claimed at this point.
+
+### Then: normal Smoke in another new directory
+
+Only after Host-only succeeds, with the same Build and unchanged evidence:
+
+```bash
+bash "$ENTRY" smoke --device 0 \
+  --multi-build-report "$S4A/build/report.json" \
+  --host-probe-report "$S4A/host-only/report.json" \
+  --output-dir "$S4A/smoke"
+```
+
+Normal Smoke refuses missing, stale or differently bound Host-only proof. The
+validated count tuple is passed to each Runner; its pre-execution admission
+rechecks actual Core probe/policy/architecture against that tuple before any
+operator call. Policy drift stops before device execution. Workspace pointer
+offsets, arena formula, per-core UB, Kernel mathematics and Golden remain
+unchanged. Normal execution order is limit1 mode21/0, limit2 mode21/0, then
+auto mode21/0 (7 blocks for the observed context). No hard-coded 7 is used.
+
+Macro evidence remains independent: bounded generated-project log collection
+can report EXPANSION_NOT_EMITTED without proving a wrong Workspace pointer.
+Neither the Core policy nor a Host-only PASS upgrades that macro evidence.
 
 To include partial diagnostics on the first run, append
 `--diagnostic-groups 0 1 9 10 18 19` to Smoke. Output directories must be new.
@@ -223,5 +234,5 @@ switching pointers, changing Golden or pretending a serial run is multicore.
 Tests cover eight original boundary tiles, NZ inverse, full-X reuse, Tile0
 identity, Scale broadcast, wrong B offsets, Gate/Up boundary swaps, missing
 slots, wrong compact stride, missing sum reset, workspace partition guards,
-actual Kernel control flow for 1/2/3/8 logical blocks, and refusal to grant
+actual Kernel control flow for 1/2/3/7/8 logical blocks, and refusal to grant
 multicore PASS on a one-core fixture. CPU models are not NPU evidence.

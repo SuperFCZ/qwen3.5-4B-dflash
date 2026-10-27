@@ -4,14 +4,37 @@
 #include <regex>
 #include <cstdio>
 #include <iterator>
+#include <cstdlib>
 #include "aclnn_d_flash_w8_a8_multi_tile.h"
 using namespace draft_quant_test;
-static void AdmitWorkspace(const std::string& folder,uint64_t bytes,int64_t mode,int64_t limit) {
+static void AdmitWorkspace(const std::string& folder,uint64_t bytes,int64_t mode,int64_t limit,bool hostOnly) {
     // Python driver redirects this process's stderr into runner.log. Host Tiling
     // prints its actual platform plan during GetWorkspaceSize, before any kernel launch.
     std::fflush(nullptr);
     std::ifstream in(folder+"/runner.log");if(!in)throw std::runtime_error("missing Host plan log before execution");
     std::string text((std::istreambuf_iterator<char>(in)),std::istreambuf_iterator<char>());
+    auto unique=[&](const char* pattern,int count) {
+        std::regex expr(pattern);std::vector<uint64_t> values;
+        for(auto it=std::sregex_iterator(text.begin(),text.end(),expr);it!=std::sregex_iterator();++it) {
+            std::vector<uint64_t> row;for(int i=1;i<=count;++i)row.push_back(std::stoull((*it)[i].str()));
+            if(!values.empty()&&values!=row)throw std::runtime_error("Core probe/policy drift");values=row;
+        }
+        return values;
+    };
+    const auto probe=unique(R"(STAGE4A_CORE_PROBE aic=(\d+) aiv=(\d+) all=(\d+))",3);
+    const auto policy=unique(R"(STAGE4A_CORE_POLICY aic=(\d+) aiv=(\d+) all=(\d+) selected=(\d+))",4);
+    std::regex archExpr(R"(STAGE4A_ARCH_PROBE arch=(\S+))");bool archSeen=false;
+    for(auto it=std::sregex_iterator(text.begin(),text.end(),archExpr);it!=std::sregex_iterator();++it) {
+        if((*it)[1].str()!="2002")throw std::runtime_error("requires confirmed dav_2002");archSeen=true;
+    }
+    if(!archSeen||probe.size()!=3||policy.size()!=4||!probe[0]||!probe[1]||!probe[2]||probe[0]!=probe[1]||probe[2]>probe[0]||
+       probe[0]!=policy[0]||probe[1]!=policy[1]||probe[2]!=policy[2]||policy[3]!=probe[2])
+        throw std::runtime_error("invalid Core policy BEFORE device execution");
+    if(!hostOnly) {
+        const char* expected=std::getenv("DFLASH_STAGE4A_EXPECTED_CORE_POLICY");
+        const std::string actual=std::to_string(policy[0])+","+std::to_string(policy[1])+","+std::to_string(policy[2])+","+std::to_string(policy[3])+",2002";
+        if(!expected||actual!=expected)throw std::runtime_error("Core policy differs from required Host-only proof");
+    }
     std::regex expression(R"(STAGE4A_SCHEDULE coreLimit=(\d+) blocks=(\d+) cores=(\d+) system=(\d+) arena=(\d+) stride=(\d+) user=(\d+) total=(\d+) mode=(\d+))");
     std::vector<uint64_t> accepted;
     for(auto it=std::sregex_iterator(text.begin(),text.end(),expression);it!=std::sregex_iterator();++it) {
@@ -20,12 +43,13 @@ static void AdmitWorkspace(const std::string& folder,uint64_t bytes,int64_t mode
         if(!accepted.empty()&&p!=accepted)throw std::runtime_error("Host resource plan drift");accepted=p;
     }
     const auto &p=accepted;
-    if(p.size()!=9||p[2]==0||p[1]<1||p[1]>8||p[1]>p[2]||p[1]!=(limit?uint64_t(limit):std::min(uint64_t(8),p[2]))||
+    if(p.size()!=9||p[2]!=policy[3]||p[1]<1||p[1]>8||p[1]>p[2]||p[1]!=(limit?uint64_t(limit):std::min(uint64_t(8),p[2]))||
        !p[3]||p[3]>512ULL*1024*1024||p[4]!=(p[3]+511)/512*512||p[5]!=p[4]+1024||
        p[6]!=p[1]*p[5]||p[7]!=p[3]+p[6]||p[7]>512ULL*1024*1024||bytes<p[7])
         throw std::runtime_error("workspace/core admission failed BEFORE device execution");
     std::ofstream f(folder+"/resource-admission.json");
-    f<<"{\"status\":\"ADMITTED_BEFORE_EXECUTION\",\"workspace_bytes\":"<<bytes<<",\"declared_total\":"<<p[7]<<",\"blocks\":"<<p[1]<<",\"cores\":"<<p[2]<<"}\n";
+    f<<"{\"status\":\"ADMITTED_BEFORE_EXECUTION\",\"workspace_bytes\":"<<bytes<<",\"declared_total\":"<<p[7]<<",\"blocks\":"<<p[1]<<",\"cores\":"<<p[2]
+     <<",\"core_policy\":{\"aic\":"<<policy[0]<<",\"aiv\":"<<policy[1]<<",\"all\":"<<policy[2]<<",\"selected\":"<<policy[3]<<",\"arch\":2002},\"host_proof_checked\":"<<(hostOnly?"false":"true")<<"}\n";
     if(!f)throw std::runtime_error("resource admission write failed");
 }
 struct Tensor {
@@ -76,7 +100,7 @@ int main(int argc,char **argv) {
         auto prepare=[&](){
             executor=nullptr;size=0;
             Check(aclnnDFlashW8A8MultiTileGetWorkspaceSize(r.x.desc,r.w.desc,r.s.desc,mode,limit,r.y.desc,&size,&executor),"Stage4A GetWorkspaceSize");
-            AdmitWorkspace(folder,size,mode,limit);
+            AdmitWorkspace(folder,size,mode,limit,hostOnly);
             if(hostOnly)return; // no workspace allocation or operator submission in this mode
             if(!first.empty()&&previous!=size)throw std::runtime_error("workspace drift");
             if(size&&r.workspace.bytes!=size)r.workspace.Allocate(size);previous=size;

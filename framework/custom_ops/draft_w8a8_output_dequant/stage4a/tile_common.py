@@ -11,6 +11,7 @@ from w8_reference import activation
 NAME='DFlashW8A8MultiTile';SNAKE='d_flash_w8_a8_multi_tile'
 TILES=[0,1,15,16,151,152,302,303]
 SETTINGS=dict(op=NAME,tiles=TILES,A=[20,16,128],B=[8,20,128,64],scale=[8,20,64],output=[16,512],
+    core_policy='dav_2002; nonzero aic/aiv/all; aic==aiv; all<=aic; selected=all',
     tile_n=64,groups=20,base=[16,64,128],scratch=239104,user_ub=12288,ub_guards=2560,reserve=8192,
     scheduling='slot=GetBlockIdx()+i*GetBlockNum(); reset FP32 sum for every slot',
     workspace='one full platform-sized SDK arena per core, 512B GM guards, plus framework system reservation',
@@ -153,10 +154,18 @@ def schedule(cores,limit):
 
 
 def plan_from_log(text,mode,limit):
+    probes=set(re.findall(r'STAGE4A_CORE_PROBE aic=(\d+) aiv=(\d+) all=(\d+)',text))
+    policies=set(re.findall(r'STAGE4A_CORE_POLICY aic=(\d+) aiv=(\d+) all=(\d+) selected=(\d+)',text))
+    arches=set(re.findall(r'STAGE4A_ARCH_PROBE arch=(\S+)',text))
+    if len(probes)!=1 or len(policies)!=1 or arches!={'2002'}:raise ValueError('missing/inconsistent dav_2002 Core policy evidence')
+    raw=tuple(map(int,probes.pop()));policy=tuple(map(int,policies.pop()))
+    if raw!=policy[:3] or not all(raw) or raw[0]!=raw[1] or raw[2]>raw[0] or policy[3]!=raw[2]:raise ValueError('invalid Core policy; no fallback')
     pattern=r'STAGE4A_SCHEDULE coreLimit=(\d+) blocks=(\d+) cores=(\d+) system=(\d+) arena=(\d+) stride=(\d+) user=(\d+) total=(\d+) mode=(\d+)'
     rows=set(re.findall(pattern,text))
     if len(rows)!=1:raise ValueError('missing/ambiguous actual workspace/core plan')
     p=dict(zip(('limit','blocks','cores','system','arena','stride','user','total','mode'),map(int,rows.pop())))
+    if p['cores']!=policy[3]:raise ValueError('schedule does not use GetCoreNum limit')
+    p['core_policy']=dict(zip(('aic','aiv','all','selected','arch'),(*policy,2002)))
     blocks,owners=schedule(p['cores'],limit)
     if p['limit']!=limit or p['mode']!=mode or p['blocks']!=blocks or p['system']<1 or p['arena']!=(p['system']+511)//512*512 or p['stride']!=p['arena']+1024 or p['user']!=blocks*p['stride'] or p['total']!=p['system']+p['user'] or p['total']>SETTINGS['workspace_cap']:
         raise ValueError('workspace/core plan violates disjoint full-arena contract')

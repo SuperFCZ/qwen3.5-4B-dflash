@@ -6,6 +6,23 @@ from tile_common import *
 from build_tiles import build,installed
 from run_stage2b import command
 
+def admission_expected(ex,plan,host_only):
+    return dict(status='ADMITTED_BEFORE_EXECUTION',workspace_bytes=ex['workspace_bytes'],declared_total=plan['total'],
+                blocks=plan['blocks'],cores=plan['cores'],core_policy=plan['core_policy'],host_proof_checked=not host_only)
+
+
+def validate_host_probe(path,build_id,r):
+    if path is None:raise ValueError('--host-probe-report required before normal Smoke')
+    hp=json.loads(path.read_text());verify_tree(hp)
+    if hp.get('status')!='STAGE4A_HOST_TILING_ONLY' or hp.get('phase')!='complete' or hp.get('host_only') is not True or hp.get('npu')!='NOT_RUN' or hp.get('multi_build_report')!=build_id or any(hp.get(k)!=r[k] for k in ('settings','sources','evidence','device')):raise ValueError('Host-only proof must bind this Build/source/device/evidence')
+    if len(hp.get('runs',[]))!=1:raise ValueError('one Host-only query required')
+    row=hp['runs'][0];ex=json.loads(verify(row['execution']).read_text())
+    if row.get('status')!='HOST_TILING_ONLY' or row.get('mode')!=21 or row.get('core_limit')!=1 or ex.get('status')!='HOST_TILING_ONLY' or ex.get('host_only') is not True or ex.get('npu')!='NOT_RUN' or ex.get('device')!=r['device'] or ex.get('output_mode')!=21 or ex.get('core_limit')!=1:raise ValueError('Host-only query scope differs')
+    plan=plan_from_log(verify(hp['commands']['l1_m21']['log_identity']).read_text(),21,1)
+    if row.get('plan')!=plan or hp.get('core_policy')!=plan['core_policy'] or json.loads(verify(row['resource_admission']).read_text())!=admission_expected(ex,plan,True):raise ValueError('Host-only policy/resource proof differs')
+    verify_case(json.loads(verify(hp['case']).read_text()))
+    return plan['core_policy']
+
 
 def smoke(args,root,r,case):
     host_only=getattr(args,'host_only',False)
@@ -14,6 +31,10 @@ def smoke(args,root,r,case):
     if b.get('status')!='STAGE4A_BUILT_NPU_NOT_RUN' or any(b.get(k)!=r[k] for k in ('settings','sources','evidence','device')):raise ValueError('multi-tile build/evidence mismatch')
     if installed(Path(b['opp']))!=b['installed']:raise ValueError('private OPP changed')
     d=verify_case(case);r.update(multi_build_report=identity(args.multi_build_report),cann_compile=b['cann_compile'],installation=b['installation'],runs=[])
+    expected_policy=None
+    if not host_only:
+        expected_policy=validate_host_probe(getattr(args,'host_probe_report',None),r['multi_build_report'],r)
+        r['host_probe_report']=identity(args.host_probe_report);r['expected_core_policy']=expected_policy
     modes=[21] if host_only else [21,0]+[g+1 for g in args.diagnostic_groups]
     limits=[1];seen_cores=None
     index=0
@@ -25,19 +46,23 @@ def smoke(args,root,r,case):
             entry=dict(core_limit=limit,mode=mode,status='RUNNING');r['runs'].append(entry)
             r.update(phase=f'limit{limit}_mode{mode}',npu='NOT_RUN' if host_only else 'RUNNING');write(root/'report.json',r)
             argv=[verify(b['runner']),args.device,folder,mode,limit]+(['--host-only'] if host_only else [])
-            command(argv,folder/'runner.log',common.env(args.cann_root,Path(b['opp'])),r,f'l{limit}_m{mode}',600)
+            environment=common.env(args.cann_root,Path(b['opp']));environment.pop('DFLASH_STAGE4A_EXPECTED_CORE_POLICY',None)
+            if expected_policy:environment['DFLASH_STAGE4A_EXPECTED_CORE_POLICY']=','.join(str(expected_policy[k]) for k in ('aic','aiv','all','selected','arch'))
+            command(argv,folder/'runner.log',environment,r,f'l{limit}_m{mode}',600)
             entry['execution']=identity(folder/'execution.json');ex=json.loads(verify(entry['execution']).read_text())
             if host_only:
                 if ex.get('status')!='HOST_TILING_ONLY' or ex.get('host_only') is not True or ex.get('npu')!='NOT_RUN' or ex.get('device')!=args.device or ex.get('output_mode')!=21 or ex.get('core_limit')!=1:raise ValueError('invalid Host-only diagnostic report')
-                entry['status']='HOST_TILING_ONLY'
-                r.update(status='STAGE4A_HOST_TILING_ONLY',phase='complete',npu='NOT_RUN')
-                return
-            check_execution(ex,args.device,mode,limit)
+            else:check_execution(ex,args.device,mode,limit)
             plan=plan_from_log((folder/'runner.log').read_text(),mode,limit);entry['plan']=plan
             if ex['workspace_bytes']<plan['total']:raise ValueError('ACLNN workspace smaller than declared system plus private arenas')
             entry['resource_admission']=identity(folder/'resource-admission.json')
             admission=json.loads(verify(entry['resource_admission']).read_text())
-            if admission!=dict(status='ADMITTED_BEFORE_EXECUTION',workspace_bytes=ex['workspace_bytes'],declared_total=plan['total'],blocks=plan['blocks'],cores=plan['cores']):raise ValueError('pre-execution resource admission differs from actual plan')
+            if admission!=admission_expected(ex,plan,host_only):raise ValueError('pre-execution resource admission differs from actual plan')
+            if host_only:
+                entry['status']='HOST_TILING_ONLY'
+                r.update(status='STAGE4A_HOST_TILING_ONLY',phase='complete',npu='NOT_RUN',core_policy=plan['core_policy'])
+                return
+            if plan['core_policy']!=expected_policy:raise ValueError('Core policy differs from Host-only admission')
             if seen_cores is None:seen_cores=plan['cores']
             elif seen_cores!=plan['cores']:raise ValueError('platform core count changed during experiment')
             entry['outputs']=[identity(folder/f'actual-{i}.bin') for i in range(2)]
@@ -55,7 +80,7 @@ def smoke(args,root,r,case):
     if installed(Path(b['opp']))!=b['installed']:raise ValueError('OPP changed during execution')
     verify_case(case)
     r.update(status='STAGE4A_MULTI_TILE_MATCH',phase='complete',npu='EIGHT_REAL_TILES_SERIAL_AND_MULTICORE_MATCHED',
-        available_aicores=seen_cores,core_limits_tested=limits,output_modes_tested=modes,
+        scheduling_core_limit=seen_cores,core_policy=expected_policy,core_limits_tested=limits,output_modes_tested=modes,
         summary=dict(runs=len(r['runs']),matched_runs=sum(e['status']=='BITWISE_MATCH' for e in r['runs']),repetitions=2,tiles=8),
         stage4b='NOT_RUN',performance='NOT_RUN')
 
@@ -63,6 +88,7 @@ def smoke(args,root,r,case):
 def main(args):
     protected=[args.stage3b4_root,args.stage3b3_root,args.stage3b2_root,args.stage3b1_root,args.stage3a_root,args.stage2b_root,args.stage2c_report.parent,args.cann_root]
     if args.multi_build_report:protected.append(args.multi_build_report.parent)
+    if args.host_probe_report:protected.append(args.host_probe_report.parent)
     root=fresh(args.output_dir,protected)
     r=dict(stage='4A',status='NOT_RUN',phase='evidence',device=args.device,settings=SETTINGS,sources=sources(),
         cann_compile='NOT_RUN',installation='NOT_RUN',npu='NOT_RUN',performance='NOT_RUN',stage4b='NOT_RUN',draft='NOT_RUN',
@@ -95,6 +121,7 @@ def parse():
     p.add_argument('--output-dir',type=Path,required=True);p.add_argument('--multi-build-report',type=Path)
     p.add_argument('--diagnostic-groups',type=int,nargs='*',default=[])
     p.add_argument('--host-only',action='store_true',help='Smoke: only first GetWorkspaceSize; never submit the operator')
+    p.add_argument('--host-probe-report',type=Path,help='Successful same-Build Host-only report required for normal Smoke')
     for name,default in [('stage3b4','w8a8-twenty-group-20261027-055348'),('stage3b3','w8a8-two-group-20261027-042044'),
                          ('stage3b2','w8a8-local-nz-20261027-031856'),('stage3b1','w8a8-stage3b-20261027-024844'),
                          ('stage3a','w8a8-stage3a-20261027-011523'),('stage2b','w8a8-stage2b-20261026-100533')]:
@@ -107,6 +134,7 @@ def parse():
         if getattr(args,name+'_report') is None:setattr(args,name+'_report',args.stage2b_root/name/'report.json')
     if args.device<0:p.error('negative device')
     if args.host_only and (args.stage!='smoke' or args.diagnostic_groups):p.error('--host-only requires smoke without partial diagnostics')
+    if args.host_probe_report and (args.stage!='smoke' or args.host_only):p.error('--host-probe-report is for normal Smoke only')
     if len(set(args.diagnostic_groups))!=len(args.diagnostic_groups) or any(g not in (0,1,9,10,18,19) for g in args.diagnostic_groups):p.error('diagnostic groups must be unique members of 0,1,9,10,18,19')
     return args
 

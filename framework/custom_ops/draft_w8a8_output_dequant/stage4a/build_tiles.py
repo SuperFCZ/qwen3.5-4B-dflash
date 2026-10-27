@@ -6,6 +6,24 @@ from run_stage2b import command
 QUANT=common.QUANT
 env=common.env
 
+def core_header_binding(project,cann,root):
+    # Compiler-produced Host dependencies only; never scan the installed SDK tree.
+    headers={};deps=[];notes=[];paths=sorted((project/'build_out/op_host').rglob('*.o.d'))
+    for dep in paths[:32]:
+        if dep.stat().st_size>4*1024*1024:notes.append('oversized dependency file: '+str(dep));continue
+        deps.append(identity(dep))
+        for name in re.findall(r'(/[^\s\\]*platform_ascendc\.h)',dep.read_text(errors='replace').replace('\\\n',' ')):
+            p=Path(name).resolve()
+            if cann.resolve() not in p.parents or p.stat().st_size>1024*1024:notes.append('unaccepted platform header: '+name);continue
+            item=identity(p);lines=p.read_text().splitlines();verify(item)
+            matches=[dict(line=i,text=line) for i,line in enumerate(lines,1) if any(s in line for s in ('GetCoreNum','GetCurNpuArch','GetSocVersion'))]
+            headers[str(p)]=dict(source=item,api_lines=matches)
+    if len(paths)>32:notes.append('dependency file count capped at 32')
+    result=dict(status='INSTALLED_HEADER_BOUND' if headers else 'HEADER_NOT_RESOLVED_FROM_DEPENDENCIES',
+        headers=list(headers.values()),dependencies=deps,notes=notes,
+        limitation='Declarations and runtime getter results do not explain the 8/8/7 difference. Out-of-line implementation semantics are not fabricated.')
+    write(root/'core-sdk-binding.json',result);return result
+
 def registration_evidence(project,primary):
     # Successful compiler diagnostics may be kept in nested build logs instead
     # of build.sh stdout. Search only this generated project's logs, bounded.
@@ -88,6 +106,7 @@ def build(args,root,r):
     r['generated_sources']=bound;r['phase']='cann_compile';write(root/'report.json',r)
     command(['bash','-c','cd "$1" && bash build.sh','stage4a',project],root/'build.log',e,r,'build',3600)
     r['cann_compile']='BUILD_RETURNED_ZERO'
+    r['core_sdk_binding']=core_header_binding(project,args.cann_root,root)
     r['workspace_registration']=registration_evidence(project,root/'build.log')
     for f in bound:verify(f)
     packages=list((project/'build_out').glob('custom_opp_*.run'))
@@ -95,6 +114,14 @@ def build(args,root,r):
     r['package']=identity(packages[0]);opp=root/'opp';r['phase']='isolated_install';r['installation']='RUNNING';write(root/'report.json',r)
     command(['bash',packages[0],'--install-path='+str(opp)],root/'install.log',e,r,'install')
     r['phase']='installed_opp_preflight';r['installed']=installed(opp);r['installation']='ISOLATED_OPP_VERIFIED'
+    command(['ldd',r['installed']['host']['path']],root/'host-ldd.log',env(args.cann_root,opp),r,'host_ldd')
+    r['core_sdk_binding']['host_library']=r['installed']['host']
+    r['core_sdk_binding']['host_dependencies_log']=identity(root/'host-ldd.log')
+    dependencies=[]
+    for name in re.findall(r'=>\s+(/\S+)\s+\(', (root/'host-ldd.log').read_text()):
+        if args.cann_root.resolve() in Path(name).resolve().parents:dependencies.append(identity(name))
+    r['core_sdk_binding']['sdk_libraries']=dependencies
+    write(root/'core-sdk-binding.json',r['core_sdk_binding'])
     r['phase']='runner_build';write(root/'report.json',r)
     command(['cmake','-S',HERE/'test','-B',root/'runner-build','-DCANN_ROOT='+str(args.cann_root),
         '-DOPP_ROOT='+str(opp),'-DCOMMON_INCLUDE='+str(QUANT/'test'),'-DCMAKE_EXPORT_COMPILE_COMMANDS=ON'],root/'cmake.log',e,r,'runner_configure')

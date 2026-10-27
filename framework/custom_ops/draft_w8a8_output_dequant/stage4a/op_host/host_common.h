@@ -38,8 +38,8 @@ ge::graphStatus S4ATiling(gert::TilingContext *c) {
        !S4ADims(&y->GetOriginShape(),{16,512})||!S4ADims(&y->GetStorageShape(),{16,512}))return ge::GRAPH_FAILED;
     auto platform=platform_ascendc::PlatformAscendC(c->GetPlatformInfo());
     const auto coreProbe=S4AProbeCores(platform);
-    const uint32_t cores=coreProbe.aic;
-    if(!cores || cores!=coreProbe.all)return S4AReject("requires real coupled AI Core count");
+    const uint32_t cores=S4ASelectSchedulingLimit(coreProbe);
+    if(!cores)return S4AReject("requires dav_2002, nonzero aic/aiv/all, aic==aiv and all<=aic");
     const uint32_t blocks=*limit?static_cast<uint32_t>(*limit):std::min(8U,cores);
     if(blocks>cores)return S4AReject("requested blocks exceed available AICores");
     const uint64_t system=platform.GetLibApiWorkSpaceSize();
