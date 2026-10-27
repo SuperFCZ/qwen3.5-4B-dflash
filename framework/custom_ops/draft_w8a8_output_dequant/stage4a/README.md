@@ -145,6 +145,49 @@ groups 0,1,9,10,18,19; this does not repeat the historical 84-mode suite.
 
 ## Server commands
 
+### Core-query diagnostic (before changing scheduling policy)
+
+Host prints `STAGE4A_CORE_PROBE aic=N aiv=N all=N` before the unchanged
+nonzero-AIC / AIC-equals-all rejection. Optional SoC/architecture methods are
+detected at compile time and logged as raw numeric identifiers, or
+API_UNAVAILABLE. They do not grant permission to use another Core source.
+
+Use a new Build and **smoke --host-only** directory for this investigation.
+This option performs only the first mode21/core_limit1 GetWorkspaceSize and,
+if that succeeds, the existing resource admission. It never calls the
+operator, never proceeds to mode0 or parallel execution, and never reports
+numerical PASS. ACL initialization and input transfers may still occur.
+Rejection remains FAILED with NPU NOT_RUN; a successful Host-only query is
+STAGE4A_HOST_TILING_ONLY with NPU NOT_RUN. Do not resume normal Smoke until
+the actual Core values and installed SDK semantics establish a safe source.
+
+```bash
+set -euo pipefail
+cd /home/w00949577/z50058744/qwen3.5-4B-dflash
+git pull --ff-only
+export CANN_ROOT=/usr/local/Ascend/cann-9.0.0
+RUN=/home/w00949577/qwen35-dflash-run/w8a8-core-probe-$(date +%Y%m%d-%H%M%S)
+ENTRY=framework/custom_ops/draft_w8a8_output_dequant/stage4a/run.sh
+bash "$ENTRY" build --device 0 --output-dir "$RUN/build"
+if ! bash "$ENTRY" smoke --host-only --device 0 \
+  --multi-build-report "$RUN/build/report.json" --output-dir "$RUN/host-probe"; then
+  echo 'Host diagnostic rejected; keep the safety gate and return its logs.'
+fi
+grep -E 'STAGE4A_(CORE|SOC|ARCH)_PROBE|STAGE4A_TILING_REJECT' \
+  "$RUN/host-probe/execute/limit-1/mode-21/runner.log" || true
+printf 'Evidence: %s\n' "$RUN"
+```
+
+Return that `runner.log` and both reports. Macro collection now checks bounded
+logs inside this generated CustomOp as well as top-level build.log (64 files,
+8 MiB/file, 32 MiB total). Source pragma echoes are recorded separately from
+emitted expansions. EXPANSION_NOT_EMITTED means no expansion was captured in
+those logs; it does not diagnose a wrong Workspace pointer. Skipped files and
+incomplete searches are explicit. No Kernel, macro definition or Workspace
+offset is changed by this diagnostic patch.
+
+### Normal correctness run (after Core-query investigation is closed)
+
 ```bash
 set -euo pipefail
 cd /home/w00949577/z50058744/qwen3.5-4B-dflash

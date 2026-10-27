@@ -50,11 +50,14 @@ struct Session {
 int main(int argc,char **argv) {
     std::string folder;
     try {
-        if(argc!=5)throw std::runtime_error("usage: runner DEVICE CASE_DIR OUTPUT_MODE CORE_LIMIT");
+        if(argc!=5&&argc!=6)throw std::runtime_error("usage: runner DEVICE CASE_DIR OUTPUT_MODE CORE_LIMIT [--host-only]");
+        const bool hostOnly=argc==6;
+        if(hostOnly&&std::string(argv[5])!="--host-only")throw std::runtime_error("unknown diagnostic option");
         folder=argv[2];size_t modeEnd=0;std::string modeArg=argv[3];int64_t mode=std::stoll(modeArg,&modeEnd);
         if(modeEnd!=modeArg.size()||mode<0||mode>21)throw std::runtime_error("invalid output mode");std::ofstream(folder+"/execution.json")<<"{\"status\":\"RUNNING\"}\n";
         size_t limitEnd=0;std::string limitArg=argv[4];int64_t limit=std::stoll(limitArg,&limitEnd);
         if(limitEnd!=limitArg.size()||limit<0||limit>8)throw std::runtime_error("invalid core limit");
+        if(hostOnly&&(mode!=21||limit!=1))throw std::runtime_error("Host-only diagnostic requires mode21/core_limit1");
         Session r;size_t end=0;std::string id=argv[1];r.device=std::stoi(id,&end);
         if(end!=id.size()||r.device<0)throw std::runtime_error("invalid device id");
         auto x=ReadBytes(folder+"/a_i8.bin",40960),w=ReadBytes(folder+"/b_i8.bin",1310720),s=ReadBytes(folder+"/quant_u64_doc_candidate.bin",81920);
@@ -74,6 +77,7 @@ int main(int argc,char **argv) {
             executor=nullptr;size=0;
             Check(aclnnDFlashW8A8MultiTileGetWorkspaceSize(r.x.desc,r.w.desc,r.s.desc,mode,limit,r.y.desc,&size,&executor),"Stage4A GetWorkspaceSize");
             AdmitWorkspace(folder,size,mode,limit);
+            if(hostOnly)return; // no workspace allocation or operator submission in this mode
             if(!first.empty()&&previous!=size)throw std::runtime_error("workspace drift");
             if(size&&r.workspace.bytes!=size)r.workspace.Allocate(size);previous=size;
             CheckNamedGuards({{"a",&r.x.buffer},{"b",&r.w.buffer},{"scale",&r.s.buffer},{"o",&r.y.buffer},{"workspace",&r.workspace}},std::cout);
@@ -95,6 +99,14 @@ int main(int argc,char **argv) {
             auto out=r.y.buffer.CopyOut();WriteBytes(folder+"/"+file,out);
             if(first.empty())first=out;else if(out!=first)throw std::runtime_error("repeat output drift");
         };
+        if(hostOnly) {
+            prepare();
+            std::ofstream report(folder+"/execution.json");
+            report<<"{\"status\":\"HOST_TILING_ONLY\",\"host_only\":true,\"npu\":\"NOT_RUN\",\"device\":"<<r.device
+                  <<",\"output_mode\":21,\"core_limit\":1,\"workspace_bytes\":"<<size<<"}\n";
+            if(!report)throw std::runtime_error("Host diagnostic report write failed");
+            return 0;
+        }
         RunMeasuredCalls(timing,prepare,execute,poison,check);
         std::ofstream report(folder+"/execution.json");
         report<<"{\"status\":\"EXECUTION_COMPLETED_NUMERICS_UNCHECKED\",\"op\":\""<<op<<"\",\"soc\":\"Ascend310P3\","

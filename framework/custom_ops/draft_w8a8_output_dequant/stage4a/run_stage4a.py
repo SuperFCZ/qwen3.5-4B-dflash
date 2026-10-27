@@ -8,12 +8,13 @@ from run_stage2b import command
 
 
 def smoke(args,root,r,case):
+    host_only=getattr(args,'host_only',False)
     if args.multi_build_report is None:raise ValueError('--multi-build-report required')
     b=json.loads(args.multi_build_report.read_text());verify_tree(b)
     if b.get('status')!='STAGE4A_BUILT_NPU_NOT_RUN' or any(b.get(k)!=r[k] for k in ('settings','sources','evidence','device')):raise ValueError('multi-tile build/evidence mismatch')
     if installed(Path(b['opp']))!=b['installed']:raise ValueError('private OPP changed')
     d=verify_case(case);r.update(multi_build_report=identity(args.multi_build_report),cann_compile=b['cann_compile'],installation=b['installation'],runs=[])
-    modes=[21,0]+[g+1 for g in args.diagnostic_groups]
+    modes=[21] if host_only else [21,0]+[g+1 for g in args.diagnostic_groups]
     limits=[1];seen_cores=None
     index=0
     while index<len(limits):
@@ -22,9 +23,16 @@ def smoke(args,root,r,case):
             folder=root/'execute'/f'limit-{limit}'/f'mode-{mode}';folder.mkdir(parents=True)
             for name in ('a_i8.bin','b_i8.bin','quant_u64_doc_candidate.bin'):(folder/name).symlink_to(verify(case['files'][name]))
             entry=dict(core_limit=limit,mode=mode,status='RUNNING');r['runs'].append(entry)
-            r.update(phase=f'limit{limit}_mode{mode}',npu='RUNNING');write(root/'report.json',r)
-            command([verify(b['runner']),args.device,folder,mode,limit],folder/'runner.log',common.env(args.cann_root,Path(b['opp'])),r,f'l{limit}_m{mode}',600)
-            entry['execution']=identity(folder/'execution.json');ex=json.loads(verify(entry['execution']).read_text());check_execution(ex,args.device,mode,limit)
+            r.update(phase=f'limit{limit}_mode{mode}',npu='NOT_RUN' if host_only else 'RUNNING');write(root/'report.json',r)
+            argv=[verify(b['runner']),args.device,folder,mode,limit]+(['--host-only'] if host_only else [])
+            command(argv,folder/'runner.log',common.env(args.cann_root,Path(b['opp'])),r,f'l{limit}_m{mode}',600)
+            entry['execution']=identity(folder/'execution.json');ex=json.loads(verify(entry['execution']).read_text())
+            if host_only:
+                if ex.get('status')!='HOST_TILING_ONLY' or ex.get('host_only') is not True or ex.get('npu')!='NOT_RUN' or ex.get('device')!=args.device or ex.get('output_mode')!=21 or ex.get('core_limit')!=1:raise ValueError('invalid Host-only diagnostic report')
+                entry['status']='HOST_TILING_ONLY'
+                r.update(status='STAGE4A_HOST_TILING_ONLY',phase='complete',npu='NOT_RUN')
+                return
+            check_execution(ex,args.device,mode,limit)
             plan=plan_from_log((folder/'runner.log').read_text(),mode,limit);entry['plan']=plan
             if ex['workspace_bytes']<plan['total']:raise ValueError('ACLNN workspace smaller than declared system plus private arenas')
             entry['resource_admission']=identity(folder/'resource-admission.json')
@@ -58,7 +66,7 @@ def main(args):
     root=fresh(args.output_dir,protected)
     r=dict(stage='4A',status='NOT_RUN',phase='evidence',device=args.device,settings=SETTINGS,sources=sources(),
         cann_compile='NOT_RUN',installation='NOT_RUN',npu='NOT_RUN',performance='NOT_RUN',stage4b='NOT_RUN',draft='NOT_RUN',
-        diagnostic_groups=args.diagnostic_groups,prior_kernel_rerun=False)
+        diagnostic_groups=args.diagnostic_groups,host_only=args.host_only,prior_kernel_rerun=False)
     try:
         r['evidence']=evidence(args);case=prepare(root/'data',r['evidence']);r['case']=identity(root/'data/case.json')
         verify_case(case);write(root/'report.json',r)
@@ -86,6 +94,7 @@ def parse():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('stage',choices=('prepare','build','smoke'))
     p.add_argument('--output-dir',type=Path,required=True);p.add_argument('--multi-build-report',type=Path)
     p.add_argument('--diagnostic-groups',type=int,nargs='*',default=[])
+    p.add_argument('--host-only',action='store_true',help='Smoke: only first GetWorkspaceSize; never submit the operator')
     for name,default in [('stage3b4','w8a8-twenty-group-20261027-055348'),('stage3b3','w8a8-two-group-20261027-042044'),
                          ('stage3b2','w8a8-local-nz-20261027-031856'),('stage3b1','w8a8-stage3b-20261027-024844'),
                          ('stage3a','w8a8-stage3a-20261027-011523'),('stage2b','w8a8-stage2b-20261026-100533')]:
@@ -97,6 +106,7 @@ def parse():
     for name in ('build','basic','zero','nonpower'):
         if getattr(args,name+'_report') is None:setattr(args,name+'_report',args.stage2b_root/name/'report.json')
     if args.device<0:p.error('negative device')
+    if args.host_only and (args.stage!='smoke' or args.diagnostic_groups):p.error('--host-only requires smoke without partial diagnostics')
     if len(set(args.diagnostic_groups))!=len(args.diagnostic_groups) or any(g not in (0,1,9,10,18,19) for g in args.diagnostic_groups):p.error('diagnostic groups must be unique members of 0,1,9,10,18,19')
     return args
 

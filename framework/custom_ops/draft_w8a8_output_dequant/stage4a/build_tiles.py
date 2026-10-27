@@ -1,10 +1,43 @@
 """Private Local NZ OPP build only; no earlier-stage builds or installs."""
-import json,platform,shutil,sys
+import json,platform,re,shutil,sys
 from pathlib import Path
 from tile_common import HERE,NAME,SNAKE,common,identity,verify,write
 from run_stage2b import command
 QUANT=common.QUANT
 env=common.env
+
+def registration_evidence(project,primary):
+    # Successful compiler diagnostics may be kept in nested build logs instead
+    # of build.sh stdout. Search only this generated project's logs, bounded.
+    marker='STAGE4A_REGIST_EXPANSION='
+    candidates=[primary]+sorted((project/'build_out').rglob('*.log'))
+    scanned=[];skipped=[];expanded=[];contexts=[];seen=set();remaining=32*1024*1024
+    for path in candidates:
+        real=path.resolve()
+        if real in seen:continue
+        seen.add(real)
+        if real!=primary.resolve() and project.resolve() not in real.parents:
+            skipped.append(dict(path=str(path),reason='OUTSIDE_GENERATED_PROJECT'));continue
+        if len(scanned)>=64:
+            skipped.append(dict(path=str(path),reason='FILE_COUNT_LIMIT'));continue
+        try:
+            size=real.stat().st_size
+            if size>8*1024*1024 or size>remaining:
+                skipped.append(dict(path=str(path),bytes=size,reason='BYTE_LIMIT'));continue
+            item=identity(real);text=real.read_text(errors='replace');verify(item)
+            scanned.append(item);remaining-=size
+            for i,line in enumerate(text.splitlines(),1):
+                if marker not in line:continue
+                payload=line.split(marker,1)[1].strip()
+                row=dict(log=item,line=i,text=line)
+                if not payload or re.search(r'#\s*pragma\s+message\b',line) or 'S4A_TEXT' in payload or 'REGIST_MATMUL_OBJ(' in payload:contexts.append(row)
+                else:expanded.append(row)
+        except OSError as error:skipped.append(dict(path=str(path),reason=f'{type(error).__name__}: {error}'))
+    return dict(status='COMPILER_EXCERPTS_COLLECTED' if expanded else ('EXPANSION_SEARCH_INCOMPLETE' if skipped else 'EXPANSION_NOT_EMITTED'),
+        evidence=expanded,source_context=contexts,log=identity(primary),scanned_logs=scanned,skipped_logs=skipped,
+        interpretation='Bounded log evidence only. A pragma source echo is not an expansion. Absent diagnostics do not prove a wrong Workspace pointer.',
+        limitation='Compiler warnings may be suppressed or captured outside these logs; installed macro behavior remains unresolved without emitted evidence.',
+        runtime_reservation='unchanged; full platform arena per logical core plus framework system space')
 
 def installed(opp):
     sys.path.insert(0,str(QUANT/'test'))
@@ -55,12 +88,7 @@ def build(args,root,r):
     r['generated_sources']=bound;r['phase']='cann_compile';write(root/'report.json',r)
     command(['bash','-c','cd "$1" && bash build.sh','stage4a',project],root/'build.log',e,r,'build',3600)
     r['cann_compile']='BUILD_RETURNED_ZERO'
-    expansions=[dict(line=i,text=line) for i,line in enumerate((root/'build.log').read_text(errors='replace').splitlines(),1)
-                if 'STAGE4A_REGIST_EXPANSION=' in line]
-    r['workspace_registration']=dict(status='COMPILER_EXCERPTS_COLLECTED' if expansions else 'EXPANSION_NOT_EMITTED',
-        evidence=expansions,log=identity(root/'build.log'),
-        interpretation='Actual installed macro expansion only. Forwarding/unused workspace is not inferred from symbols; raw log retained.',
-        runtime_reservation='full platform arena per logical core plus framework global system space; verify Host plan and NPU guards')
+    r['workspace_registration']=registration_evidence(project,root/'build.log')
     for f in bound:verify(f)
     packages=list((project/'build_out').glob('custom_opp_*.run'))
     if len(packages)!=1:raise ValueError('missing/ambiguous Stage4A package')
