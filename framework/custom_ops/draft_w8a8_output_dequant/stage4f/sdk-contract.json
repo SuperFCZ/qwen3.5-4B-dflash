@@ -1,0 +1,174 @@
+{
+  "status": "USER_REVIEWED_GO_FOR_ISOLATED_EXPERIMENT_ONLY",
+  "sdk": "CANN 9.0.0",
+  "soc": "Ascend310P3",
+  "arch": 2002,
+  "npu": "NOT_RUN",
+  "files": [
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/matmul/matmul_impl_base.h",
+      "sha256": "923527715a9baa2147538221ccf82afc14b5fd4f913b42363adbf00eb2de5006",
+      "lines": [
+        [
+          140,
+          143
+        ],
+        [
+          459,
+          462
+        ],
+        [
+          505,
+          542
+        ]
+      ],
+      "conclusion": "LocalWorkspace binding and API delegation"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/matmul/resource/local_workspace/matmul_local_workspace.h",
+      "sha256": "dbffdce3b74c3e18414c1c5e89e4a4260ec64654eeccc58f172ed89f7ae6c08b",
+      "lines": [
+        [
+          175,
+          183
+        ],
+        [
+          261,
+          317
+        ]
+      ],
+      "conclusion": "Workspace binding/offsets under fixed tiling and types"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/matmul/scheduler/base/scheduler_norm_base.h",
+      "sha256": "5f4385b9683bb6a6a7ba68186f7aa81ecb01327aad52f31b0cc7cffb3e609685",
+      "lines": [
+        [
+          59,
+          62
+        ]
+      ],
+      "conclusion": "Reset changes iteration state"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/matmul/scheduler/base/scheduler_base.h",
+      "sha256": "e37c5029455b8ffac29e2a51652592d02830504e77ce68b6d3fe7d4902d9a2a4",
+      "lines": [
+        [
+          149,
+          167
+        ],
+        [
+          363,
+          386
+        ]
+      ],
+      "conclusion": "End and Local output lifecycle remain unchanged"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/matmul/stage/copy_cube_out/quant/quant_processor_datacopy.h",
+      "sha256": "10438170dde8cb131bf3ba9443955d101d5e7936aa27dc38127677cb1b898c7c",
+      "lines": [
+        [
+          49,
+          54
+        ],
+        [
+          109,
+          111
+        ],
+        [
+          143,
+          158
+        ]
+      ],
+      "conclusion": "Per-group coefficient updates retained; Destroy empty"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/matmul/stage/copy_cube_in/base/copy_cube_in_base.h",
+      "sha256": "ffc0476ab498f82527c432c17f2ce097ad395207c54a723d8b8c540ba7bdcb5e",
+      "lines": [
+        [
+          60,
+          68
+        ]
+      ],
+      "conclusion": "Input lifecycle delegates to own CubeInBuffer"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/matmul/resource/cube_in_buffer/cube_in_buffer_normal.h",
+      "sha256": "e98fc3cbc75b916088a956922a6d49137477a1f211ba45572a8095874f954bd7",
+      "lines": [
+        [
+          74,
+          85
+        ],
+        [
+          117,
+          123
+        ]
+      ],
+      "conclusion": "Own cache/tensor/event lifecycle; no LocalWorkspace rebinding in reviewed methods"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/matmul/resource/cube_in_buffer/cube_in_buffer_single_buffer.h",
+      "sha256": "7fdfc5f5fd65abaeb06f7c5b0ecf5a984f0c3a53120e0e3c35dfcf3230afacfd",
+      "lines": [
+        [
+          43,
+          52
+        ],
+        [
+          69,
+          74
+        ]
+      ],
+      "conclusion": "Own cache/tensor/event lifecycle; no LocalWorkspace rebinding in reviewed methods"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/matmul/resource/cube_in_buffer/cube_in_buffer_single_global_buffer.h",
+      "sha256": "1f632a95cdbb8af1f7f4dd7a553fe965c7c46c9662c632b63fda97fe1ca90523",
+      "lines": [
+        [
+          47,
+          47
+        ],
+        [
+          69,
+          69
+        ]
+      ],
+      "conclusion": "Own cache/tensor/event lifecycle; no LocalWorkspace rebinding in reviewed methods"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/matmul/resource/cube_in_buffer/cube_in_buffer_double_buffer.h",
+      "sha256": "6fe816b0a966bb4e586e5e959daaab7bae5c8ac2d58dbb2de8c46bcc8ef23d47",
+      "lines": [
+        [
+          75,
+          85
+        ],
+        [
+          109,
+          119
+        ]
+      ],
+      "conclusion": "Own cache/tensor/event lifecycle; no LocalWorkspace rebinding in reviewed methods"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/matmul/resource/cube_in_buffer/cube_in_buffer_double_global_buffer.h",
+      "sha256": "542f5e0a8c27d21ce149bbb9e3769d5e686568f2166c2c0fdf74454c6fcb5b6f",
+      "lines": [
+        [
+          50,
+          50
+        ],
+        [
+          87,
+          87
+        ]
+      ],
+      "conclusion": "Own cache/tensor/event lifecycle; no LocalWorkspace rebinding in reviewed methods"
+    }
+  ]
+}
