@@ -1,5 +1,5 @@
 """Build byte-audited private A/B projects; no historical OPP is installed or edited."""
-import json,platform,shutil,sys
+import json,platform,re,shutil,sys
 from pathlib import Path
 from pair_common import HERE,NAME,SNAKE,common,identity,verify,write
 from build_full import core_header_binding,registration_evidence
