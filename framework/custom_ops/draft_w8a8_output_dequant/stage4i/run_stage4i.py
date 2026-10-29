@@ -13,19 +13,51 @@ SDK={
  'aarch64-linux/asc/impl/adv_api/detail/matmul/stage/copy_cube_out/quant/quant_processor_datacopy.h':('10438170dde8cb131bf3ba9443955d101d5e7936aa27dc38127677cb1b898c7c',[[113,158]]),
 }
 
+# Fixed paths verified from this server's installation metadata and Raw Preflight.
+VERSION_PATHS=('aarch64-linux/ascend_toolkit_install.info','ascend_toolkit_install.info',
+ 'version.info','version.cfg','aarch64-linux/asc/version.info','aarch64-linux/asc/version.cfg',
+ 'share/info/asc-devkit/version.info','opp/version.info')
+
+def version_fields(text,relative):
+ # A dependency constraint, directory name, compatible_version or innerversion
+ # is never evidence of the installed release. Only the observed key=value form.
+ found=[];packages=[]
+ for number,line in enumerate(text.splitlines(),1):
+  match=re.fullmatch(r'\s*(version|package_name)\s*=\s*(.*?)\s*',line,re.I)
+  if not match:continue
+  record=dict(key=match[1],value=match[2],line=number)
+  (found if match[1].lower()=='version' else packages).append(record)
+ if len(found)!=1:raise ValueError('CANN 9.0.0 version unverified: missing/duplicate version field in '+relative)
+ result=dict(version_field=found[0],reported_version=found[0]['value'],cann_9_0_0=found[0]['value']=='9.0.0')
+ if Path(relative).name=='ascend_toolkit_install.info':
+  if len(packages)!=1 or packages[0]['value']!='Ascend-cann-toolkit':raise ValueError('CANN 9.0.0 version unverified: wrong/ambiguous toolkit package in '+relative)
+  result['package_field']=packages[0]
+ return result
+
+
 def bind(cann):
- rows=[];versions=[]
+ rows=[];versions=[];missing=[]
  for rel,(sha,lines) in SDK.items():
   item=identity(cann/rel)
   if cann not in Path(item['path']).parents or item['sha256']!=sha:raise ValueError('reviewed SDK identity mismatch: '+rel)
   rows.append(dict(file=item,lines=lines))
- for rel in ('version.info','version.cfg','aarch64-linux/asc/version.info'):
+ for rel in VERSION_PATHS:
   p=cann/rel
-  if p.is_file():
-   item=identity(p);text=p.read_text(errors='replace') if item['bytes']<=65536 else ''
-   versions.append(dict(file=item,cann_9_0_0=bool(re.search(r'(?<![\d.])9\.0\.0(?![\d.])',text))))
- if not any(x['cann_9_0_0'] for x in versions):raise ValueError('CANN 9.0.0 version unverified')
- return dict(status='FIXED_SDK_IDENTITIES_MATCHED',files=rows,versions=versions,source_snapshots_saved=False,platform_route='GetInstance() only; selected real device; no customSocVersion')
+  if not p.is_file():
+   if p.is_symlink():raise ValueError('broken version metadata link: '+rel)
+   missing.append(rel);continue
+  item=identity(p)
+  if cann not in Path(item['path']).parents:raise ValueError('version file escapes selected CANN root: '+rel)
+  if item['bytes']>65536:raise ValueError('version metadata exceeds 64 KiB: '+rel)
+  text=verify(item).read_text(encoding='utf-8-sig');verify(item)
+  versions.append(dict(file=item,relative=rel,**version_fields(text,rel)))
+ if not versions:raise ValueError('CANN 9.0.0 version unverified: no recognized version metadata files')
+ wrong=[x['relative']+'='+x['reported_version'] for x in versions if not x['cann_9_0_0']]
+ if wrong:raise ValueError('CANN 9.0.0 version unverified: conflicting/unsupported release: '+', '.join(wrong))
+ return dict(status='FIXED_SDK_IDENTITIES_MATCHED',files=rows,versions=versions,version_missing=missing,
+  version_policy='Exact installed release field; all discovered declarations must agree with 9.0.0; no directory/tool-error fallback',
+  source_snapshots_saved=False,platform_route='GetInstance() only; selected real device; no customSocVersion')
+
 
 def command(argv,path,env,timeout=180):
  argv=list(map(str,argv));write(str(path)+'.command.json',dict(argv=argv))

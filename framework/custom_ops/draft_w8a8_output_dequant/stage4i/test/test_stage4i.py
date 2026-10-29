@@ -211,3 +211,62 @@ def test_timeout_is_not_success(tmp_path,monkeypatch):
  monkeypatch.setattr(driver.subprocess,'run',timeout)
  result=driver.command(['host-only-fixture'],tmp_path/'log.txt',{},1)
  assert result['status']=='TIMEOUT' and result['returncode'] is None
+
+@pytest.mark.parametrize('relative',['share/info/asc-devkit/version.info','opp/version.info'])
+def test_component_version_path_without_legacy_files(tmp_path,monkeypatch,relative):
+ import run_stage4i as driver
+ cann=tmp_path/'sdk';cann.mkdir();header=cann/'platform.h';header.write_text('CPU fixture only')
+ monkeypatch.setattr(driver,'SDK',{'platform.h':(driver.identity(header)['sha256'],[[1,1]])})
+ version=cann/relative;version.parent.mkdir(parents=True);version.write_text('Version=9.0.0\n')
+ r=driver.bind(cann)
+ assert r['versions'][0]['file']==driver.identity(version) and r['versions'][0]['cann_9_0_0']
+ header.write_text('SDK header tampered')
+ with pytest.raises(ValueError,match='SDK identity'):driver.bind(cann)
+
+
+def test_version_directory_name_and_escape_never_prove_version(tmp_path,monkeypatch):
+ import run_stage4i as driver
+ cann=tmp_path/'cann-9.0.0';cann.mkdir();monkeypatch.setattr(driver,'SDK',{})
+ with pytest.raises(ValueError,match='version unverified'):driver.bind(cann)
+ p=cann/'opp/version.info';p.parent.mkdir();outside=tmp_path/'version.info';outside.write_text('Version=9.0.0\n');p.symlink_to(outside)
+ with pytest.raises(ValueError,match='escapes'):driver.bind(cann)
+ p.unlink();p.write_text('Version=8.5.0\n')
+ with pytest.raises(ValueError,match='version unverified'):driver.bind(cann)
+
+
+def test_actual_metadata_formats_and_three_source_agreement(tmp_path,monkeypatch):
+ import run_stage4i as driver
+ cann=tmp_path/'sdk';cann.mkdir();monkeypatch.setattr(driver,'SDK',{})
+ # Minimal format fixtures, not copies of server files or private installation data.
+ texts={'aarch64-linux/ascend_toolkit_install.info':'package_name=Ascend-cann-toolkit\nversion=9.0.0\ninnerversion=BUILD_TAG\ncompatible_version=[OLD_RELEASE]\n',
+        'share/info/asc-devkit/version.info':'Version=9.0.0\nversion_dir=cann\nrequired_package_runtime_version="9.0"\n',
+        'opp/version.info':'Version=9.0.0\nrequired_package_runtime_version=">=8.5"\n'}
+ for rel,text in texts.items():
+  p=cann/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text)
+ result=driver.bind(cann)
+ assert len(result['versions'])==3 and all(v['reported_version']=='9.0.0' for v in result['versions'])
+ assert result['versions'][0]['version_field']['line']==2
+ assert result['versions'][0]['package_field']['value']=='Ascend-cann-toolkit'
+ (cann/'opp/version.info').write_text('Version=8.5.0\n')
+ with pytest.raises(ValueError,match='conflicting/unsupported'):driver.bind(cann)
+
+@pytest.mark.parametrize('text',[
+ 'required_package_runtime_version=9.0.0\n',
+ 'compatible_version=9.0.0\ninnerversion=9.0.0\n',
+ '# Version=9.0.0\nversion_dir=cann-9.0.0\n',
+ 'Version=9.0.0\nversion=9.0.0\n',
+ 'Version=9.0.0\nversion=8.5.0\n',
+])
+def test_nonrelease_or_duplicate_fields_cannot_prove_version(text):
+ import run_stage4i as driver
+ with pytest.raises(ValueError,match='version unverified'):driver.version_fields(text,'opp/version.info')
+
+@pytest.mark.parametrize('value',['9.0.0-beta','9.0.0.1','19.0.0','8.5.0'])
+def test_exact_release_only(value):
+ import run_stage4i as driver
+ assert not driver.version_fields('Version='+value,'version.info')['cann_9_0_0']
+
+@pytest.mark.parametrize('text',['version=9.0.0\n','package_name=other-component\nversion=9.0.0\n'])
+def test_install_record_requires_toolkit_identity(text):
+ import run_stage4i as driver
+ with pytest.raises(ValueError,match='package'):driver.version_fields(text,'aarch64-linux/ascend_toolkit_install.info')
