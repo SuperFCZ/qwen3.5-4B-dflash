@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Host-only N64/N128 Tiling and CPU layout experiment. Never builds/launches a compute Kernel."""
-import argparse,json,os,platform,re,shlex,shutil,subprocess
+import argparse,json,os,platform,re,shutil,subprocess
 from pathlib import Path
 from layout import HERE,old,identity,verify,verify_tree,real
 from resources import CONFIGS,validate,decide
+from dependency_identity import compiled_dependencies,verify_dependency_binding
 write,fresh=old.write,old.fresh
 
 SDK={
@@ -127,14 +128,8 @@ def main(args):
   tr['host_compile']='COMPLETED';exe=root/'host-build/stage4i_host';sdk['executable']=identity(exe)
   sdk['compile_commands']=identity(root/'host-build/compile_commands.json')
   sdk['linked_libraries']=linked_libraries(root/'host-build/CMakeCache.txt',args.cann_root)
-  deps=set()
-  for dep in (root/'host-build').rglob('*.o.d'):
-   for token in shlex.split(dep.read_text().replace('\\\n',' ').split(':',1)[1]):
-    p=Path(token).resolve()
-    if args.cann_root in p.parents:deps.add(p)
-  platform_header=sdk['files'][0]['file']['path']
-  if Path(platform_header) not in deps:raise ValueError('compiled platform header is not the reviewed header')
-  sdk['compiled_sdk_headers']=[identity(p) for p in sorted(deps)]
+  sdk['dependency_binding']=compiled_dependencies(root/'host-build',args.cann_root,HERE/'probe.cpp',sdk['files'][0]['file'])
+  sdk['compiled_sdk_headers']=sdk['dependency_binding']['headers']
   tr['commands']['ldd']=command([tools['ldd'],exe],root/'ldd.log',env)
   if tr['commands']['ldd']['returncode']!=0 or 'not found' in (root/'ldd.log').read_text():raise ValueError('Host dependency unresolved')
   sdk['loaded_sdk_libraries']=[identity(p) for p in re.findall(r'=>\s+(/\S+)\s+\(', (root/'ldd.log').read_text()) if args.cann_root in Path(p).resolve().parents]
@@ -157,6 +152,7 @@ def main(args):
   try:
    for s in sources:verify(s)
    verify_tree(lr);verify_tree(sdk);verify_tree(tr)
+   if 'dependency_binding' in sdk:verify_dependency_binding(sdk['dependency_binding'])
   except Exception as error:tr.update(status='STAGE4I_N128_BLOCKED',integrity_error=str(error))
   write(root/'layout-report.json',lr);write(root/'resource-report.json',rr);write(root/'sdk-binding.json',sdk);write(root/'tiling-report.json',tr)
   (root/'comparison.md').write_text(table(rows,rr['cases']))
