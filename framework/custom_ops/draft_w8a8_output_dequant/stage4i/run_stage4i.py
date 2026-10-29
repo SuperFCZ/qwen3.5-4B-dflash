@@ -96,7 +96,7 @@ def linked_libraries(cache,cann):
    key,value=line.split(':FILEPATH=',1);item=identity(value)
    if cann not in Path(item['path']).parents:raise ValueError('linked library outside selected CANN: '+key)
    linked.append(dict(name=key,file=item))
- if {x['name'] for x in linked}!={'LIB_tiling_api','LIB_c_sec','LIB_platform','LIB_ascendcl'}:raise ValueError('unexpected Host libraries')
+ if {x['name'] for x in linked}!={'LIB_tiling_api','LIB_register','LIB_c_sec','LIB_platform','LIB_ascendcl'}:raise ValueError('unexpected Host libraries')
  return linked
 
 

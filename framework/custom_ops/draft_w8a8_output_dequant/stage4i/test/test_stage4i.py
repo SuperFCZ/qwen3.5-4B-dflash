@@ -272,12 +272,13 @@ def test_install_record_requires_toolkit_identity(text):
  with pytest.raises(ValueError,match='package'):driver.version_fields(text,'aarch64-linux/ascend_toolkit_install.info')
 
 
-def test_cmake_explicit_c_sec_after_static_tiling_and_dl_retained():
+def test_cmake_proven_register_and_c_sec_after_static_tiling_and_dl_retained():
  text=(HERE/'CMakeLists.txt').read_text()
- assert 'foreach(name tiling_api c_sec platform ascendcl)' in text
+ assert 'foreach(name tiling_api register c_sec platform ascendcl)' in text
  assert 'find_library(LIB_${name} NAMES ${name} PATHS "${CANN_ROOT}/lib64" "${CANN_ROOT}/aarch64-linux/lib64" NO_DEFAULT_PATH)' in text
  links=re.findall(r'target_link_libraries\(stage4i_host PRIVATE ([^\n]+)\)',text)
- assert links==['"${LIB_tiling_api}" "${LIB_c_sec}" "${LIB_platform}" "${LIB_ascendcl}" ${CMAKE_DL_LIBS}']
+ assert links==['"${LIB_tiling_api}" "${LIB_register}" "${LIB_c_sec}" "${LIB_platform}" "${LIB_ascendcl}" ${CMAKE_DL_LIBS}']
+ assert 'graph_base' not in text
  assert '--allow-shlib-undefined' not in text and '--unresolved-symbols' not in text
 
 
@@ -285,31 +286,33 @@ def library_cache(tmp_path):
  import run_stage4i as driver
  cann=tmp_path/'sdk';lib=cann/'lib64';lib.mkdir(parents=True)
  records={}
- for name in ('tiling_api','c_sec','platform','ascendcl'):
+ for name in ('tiling_api','register','c_sec','platform','ascendcl'):
   p=lib/('lib'+name+('.a' if name=='tiling_api' else '.so'));p.write_bytes(('CPU fixture '+name).encode());records['LIB_'+name]=p
  cache=tmp_path/'CMakeCache.txt'
  cache.write_text(''.join(f'{name}:FILEPATH={p}\n' for name,p in records.items()))
  return driver,cann,cache,records
 
 
-def test_link_identity_includes_c_sec_and_detects_tampering(tmp_path):
+@pytest.mark.parametrize('library',['LIB_register','LIB_c_sec'])
+def test_link_identity_includes_proven_dependency_and_detects_tampering(tmp_path,library):
  driver,cann,cache,records=library_cache(tmp_path)
  linked=driver.linked_libraries(cache,cann)
  assert {r['name'] for r in linked}==set(records)
- assert next(r['file'] for r in linked if r['name']=='LIB_c_sec')==driver.identity(records['LIB_c_sec'])
+ assert next(r['file'] for r in linked if r['name']==library)==driver.identity(records[library])
  driver.verify_tree(linked)
- records['LIB_c_sec'].write_bytes(b'tampered')
+ records[library].write_bytes(b'tampered')
  with pytest.raises(ValueError,match='identity changed'):driver.verify_tree(linked)
 
+@pytest.mark.parametrize('library',['LIB_register','LIB_c_sec'])
 @pytest.mark.parametrize('kind',['missing','extra','outside','escaped_symlink'])
-def test_link_identity_remains_fail_closed(tmp_path,kind):
+def test_link_identity_remains_fail_closed(tmp_path,kind,library):
  driver,cann,cache,records=library_cache(tmp_path)
- if kind=='missing':records.pop('LIB_c_sec')
- elif kind=='extra':records['LIB_unrequested']=records['LIB_c_sec']
+ if kind=='missing':records.pop(library)
+ elif kind=='extra':records['LIB_unrequested']=records[library]
  else:
   external=tmp_path/'outside.so';external.write_bytes(b'not selected CANN')
-  if kind=='outside':records['LIB_c_sec']=external
+  if kind=='outside':records[library]=external
   else:
-   records['LIB_c_sec'].unlink();records['LIB_c_sec'].symlink_to(external)
+   records[library].unlink();records[library].symlink_to(external)
  cache.write_text(''.join(f'{name}:FILEPATH={p}\n' for name,p in records.items()))
  with pytest.raises(ValueError,match='unexpected Host libraries|outside selected CANN'):driver.linked_libraries(cache,cann)
