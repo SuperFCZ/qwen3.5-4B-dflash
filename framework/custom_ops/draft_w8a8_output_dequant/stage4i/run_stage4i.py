@@ -89,6 +89,17 @@ def table(rows,resource):
  return '\n'.join(out)+'\n\nRequested budgets and calculated bounds are not measurements of live resource usage. No Kernel was executed.\n'
 
 
+def linked_libraries(cache,cann):
+ linked=[]
+ for line in cache.read_text().splitlines():
+  if line.startswith('LIB_') and ':FILEPATH=' in line:
+   key,value=line.split(':FILEPATH=',1);item=identity(value)
+   if cann not in Path(item['path']).parents:raise ValueError('linked library outside selected CANN: '+key)
+   linked.append(dict(name=key,file=item))
+ if {x['name'] for x in linked}!={'LIB_tiling_api','LIB_c_sec','LIB_platform','LIB_ascendcl'}:raise ValueError('unexpected Host libraries')
+ return linked
+
+
 def main(args):
  historical_root=args.stage4b_report.parent.parent if args.stage4b_report.parent.name=='smoke' else args.stage4b_report.parent
  root=fresh(args.output_dir,[args.cann_root,historical_root])
@@ -115,14 +126,7 @@ def main(args):
    if tr['commands'][key]['returncode']!=0:raise ValueError('Host-only '+key+' failed; no fallback')
   tr['host_compile']='COMPLETED';exe=root/'host-build/stage4i_host';sdk['executable']=identity(exe)
   sdk['compile_commands']=identity(root/'host-build/compile_commands.json')
-  linked=[]
-  for line in (root/'host-build/CMakeCache.txt').read_text().splitlines():
-   if line.startswith('LIB_') and ':FILEPATH=' in line:
-    key,value=line.split(':FILEPATH=',1);item=identity(value)
-    if args.cann_root not in Path(item['path']).parents:raise ValueError('linked library outside selected CANN: '+key)
-    linked.append(dict(name=key,file=item))
-  if {x['name'] for x in linked}!={'LIB_tiling_api','LIB_platform','LIB_ascendcl'}:raise ValueError('unexpected Host libraries')
-  sdk['linked_libraries']=linked
+  sdk['linked_libraries']=linked_libraries(root/'host-build/CMakeCache.txt',args.cann_root)
   deps=set()
   for dep in (root/'host-build').rglob('*.o.d'):
    for token in shlex.split(dep.read_text().replace('\\\n',' ').split(':',1)[1]):
