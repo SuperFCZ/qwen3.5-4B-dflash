@@ -41,6 +41,16 @@ changes, not additional operations. Identical file sizes do not imply identical
 instruction counts. No guessed load bias or subtraction of historical PC bases
 is used. A zero disassembler return code alone does not prove device support.
 
+Observed tool limitation: an `elf64-hiipu` listing may contain only addresses
+followed by `<not available>`, even with return code zero and a registered hiipu
+target. Those are undecoded-address placeholders, not instructions. They set
+`unknown_diagnostic=true`, are counted separately as `unavailable_address_lines`,
+and keep the analysis UNRESOLVED even in a mixed listing. The address increment
+and `.text` byte difference must not be converted to an instruction count.
+Existing reports are not rewritten; no repeat disassembly is needed merely to
+correct the old diagnostic flag. First inspect already installed tool options
+and alternatives, without downloading a new SDK or guessing a different ISA.
+
 The tool checks four fixed CANN compiler locations and PATH for llvm-objdump /
 ccec-objdump; it does not scan the SDK tree. Ambiguous tools require an explicit
 `--objdump` path. Unsupported output is saved and remains UNRESOLVED. No online

@@ -72,10 +72,14 @@ def disassemble(tool,path,out):
     r=command([tool,'--disassemble','--reloc','--line-numbers',path],out)
     # These are unclassified static lines, never dynamic instruction counts/cycles.
     text=out.read_text(errors='replace') if out.stat().st_size<=64*1024*1024 else ''
-    lines=re.findall(r'^\s*[0-9a-fA-F]+:\s+(?:[0-9a-fA-F]{2,8}\s+)+\S.*$',text,re.M)
-    unknown=bool(re.search(r'<unknown>|unknown instruction|unsupported|can.t disassemble|invalid instruction',text,re.I))
+    placeholders=r'<unknown>|<not\s+available>'
+    lines=[line for line in re.findall(r'^\s*[0-9a-fA-F]+:\s+(?:[0-9a-fA-F]{2,8}\s+)+\S.*$',text,re.M)
+           if not re.search(placeholders,line,re.I)]
+    unavailable=len(re.findall(r'^\s*[0-9a-fA-F]+:[^\r\n]*<not\s+available>[^\r\n]*$',text,re.M|re.I))
+    unknown=bool(re.search(placeholders+r'|unknown instruction|unsupported|can.t disassemble|invalid instruction',text,re.I))
     r.update(status='UNRESOLVED_TOOL_OUTPUT' if r['returncode']!=0 or unknown or not lines else 'DISASSEMBLY_COLLECTED_REQUIRES_REVIEW',
-        instruction_like_lines=len(lines),unknown_diagnostic=unknown,
+        instruction_like_lines=len(lines),unknown_diagnostic=unknown,unavailable_address_lines=unavailable,
+        decode_limitation='TOOL_EMITTED_UNDECODED_ADDRESSES' if unavailable else 'NO_NOT_AVAILABLE_MARKER_OBSERVED',
         source_attribution='UNRESOLVED; inspect actual DWARF line records and generated-source binding',
         dynamic_execution_cost='UNRESOLVED')
     return r

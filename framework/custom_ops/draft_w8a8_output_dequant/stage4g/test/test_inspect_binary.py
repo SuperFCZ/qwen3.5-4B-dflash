@@ -68,6 +68,23 @@ def test_hash_tampering_rejected(tmp_path):
     with pytest.raises(ValueError):g.f.verify(item)
 
 
+@pytest.mark.parametrize('extra',['','   8: 00 00 00 00 <not available>\n',
+                                  '   8: 01 02 03 04 scalar_fixture r0, r1\n'])
+def test_hiipu_not_available_is_not_an_instruction(tmp_path,monkeypatch,extra):
+    # Minimal format fixture; no SDK source or private server log is included.
+    body='fixture.o:\tfile format elf64-hiipu\nDisassembly of section .text:\n       0: <not available>\n       4: <not available>\n'+extra
+    def run(argv,stdout,stderr,timeout):
+        stdout.write(body.encode())
+        class Result:returncode=0
+        return Result()
+    monkeypatch.setattr(g.subprocess,'run',run)
+    result=g.disassemble('fixture-tool','fixture-object',tmp_path/'out.txt')
+    assert result['status']=='UNRESOLVED_TOOL_OUTPUT' and result['unknown_diagnostic'] is True
+    assert result['unavailable_address_lines']==(3 if '<not available>' in extra else 2)
+    assert result['instruction_like_lines']==(1 if 'scalar_fixture' in extra else 0)
+    assert result['decode_limitation']=='TOOL_EMITTED_UNDECODED_ADDRESSES'
+
+
 def test_fixed_tool_discovery_does_not_scan(tmp_path,monkeypatch):
     monkeypatch.setattr(g.shutil,'which',lambda _:None)
     p=tmp_path/'aarch64-linux/ccec_compiler/bin/llvm-objdump';p.parent.mkdir(parents=True);p.write_text('fixture')
