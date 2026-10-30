@@ -36,12 +36,29 @@ def version_fields(text,relative):
  return result
 
 
+def bind_shared_ub(cann,contract_path=None):
+ contract_path=contract_path or HERE/'shared-ub-contract.json'
+ contract=json.loads(contract_path.read_text());consumption=[]
+ if contract.get('arch')!=2002:raise ValueError('unexpected shared-UB contract architecture')
+ for row in contract['files']:
+  item=identity(cann/row['relative'])
+  if cann not in Path(item['path']).parents or item['sha256']!=row['server_sha256'] or row['server_sha256']!=row['local_sha256']:
+   raise ValueError('shared-UB consumption SDK identity mismatch: '+row['relative'])
+  consumption.append(dict(file=item,lines=row['lines']))
+ library=identity(cann/contract['local_host_library']['relative'])
+ if cann not in Path(library['path']).parents:raise ValueError('Host tiling library outside selected CANN')
+ return dict(file=identity(contract_path),status='CONSUMPTION_SOURCE_IDENTITIES_MATCHED',files=consumption,
+  target_host_library=library,host_library_identity=('EXACT_MATCH_RECORDED_SERVER_LIBRARY' if library['sha256']==contract['local_host_library']['server_sha256'] else 'LOCAL_ONLY_NOT_SERVER_VERIFIED'),
+  host_field_generation='UNRESOLVED_BINARY_IMPLEMENTATION; no formula inferred from observed sizes')
+
+
 def bind(cann):
  rows=[];versions=[];missing=[]
  for rel,(sha,lines) in SDK.items():
   item=identity(cann/rel)
   if cann not in Path(item['path']).parents or item['sha256']!=sha:raise ValueError('reviewed SDK identity mismatch: '+rel)
   rows.append(dict(file=item,lines=lines))
+ consumption=bind_shared_ub(cann)
  for rel in VERSION_PATHS:
   p=cann/rel
   if not p.is_file():
@@ -57,6 +74,7 @@ def bind(cann):
  if wrong:raise ValueError('CANN 9.0.0 version unverified: conflicting/unsupported release: '+', '.join(wrong))
  return dict(status='FIXED_SDK_IDENTITIES_MATCHED',files=rows,versions=versions,version_missing=missing,
   version_policy='Exact installed release field; all discovered declarations must agree with 9.0.0; no directory/tool-error fallback',
+  shared_ub_contract=consumption,
   source_snapshots_saved=False,platform_route='GetInstance() only; selected real device; no customSocVersion')
 
 
@@ -84,8 +102,10 @@ def table(rows,resource):
   if key=='L0 db':return str([p.get('dbL0A'),p.get('dbL0B'),p.get('dbL0C')])
   if key=='Resource status':return checks.get(name,{}).get('status','NOT_RUN')
   return str({'Scratch requested':r.get('scratch','NOT_RUN'),'transLength':p.get('transLength','UNKNOWN'),
-   'Scale storage bound':d.get('scale_storage_bound','NOT_EVALUATED'),'UB budget total':d.get('total_ub','NOT_EVALUATED')}.get(key))
- for key in ('GetTiling','singleCore M/N/K','base M/N/K','Scratch requested','transLength','Scale storage bound','L1 depth','L0 db','UB budget total','Resource status'):
+   'Scale storage bound':d.get('scale_storage_bound','NOT_EVALUATED'),
+   'Host shareUbSize':p.get('shareUbSize','UNKNOWN'),'Effective shared UB (source contract)':d.get('effective_sdk_reserved_ub','NOT_EVALUATED'),
+   'Coefficient view in Scratch':d.get('coefficient_region_in_scratch','NOT_EVALUATED'),'UB budget total':d.get('total_ub','NOT_EVALUATED')}.get(key))
+ for key in ('GetTiling','singleCore M/N/K','base M/N/K','Scratch requested','transLength','Scale storage bound','Host shareUbSize','Effective shared UB (source contract)','Coefficient view in Scratch','L1 depth','L0 db','UB budget total','Resource status'):
   out.append('| '+key+' | '+' | '.join(cell(n,key) for n in CONFIGS)+' |')
  return '\n'.join(out)+'\n\nRequested budgets and calculated bounds are not measurements of live resource usage. No Kernel was executed.\n'
 

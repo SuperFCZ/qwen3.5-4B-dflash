@@ -71,9 +71,12 @@ Checks require real SDK GetTiling success **and**:
 - M/N aligned to16 and INT8 K to32 for physical payload bounds;
 - actual depths, db and step factors applied to L1/L0 bounds; returned shared
   L1/L0C reservations are additionally charged conservatively;
-- **nonzero extra shared UB or nondefault shareMode blocks admission** until its
-  allocation/alias accounting is established. It is not silently treated as
-  part of Scratch. Capacity bounds are conservative and can reject a layout
+- **nondefault shareMode blocks admission**. Stage4I.1 binds the dav_2002
+  device accessor: GetShareUbSize returns zero, independently of the preserved
+  raw Host field. The coefficient storage is a view inside caller Scratch,
+  not an additional allocation. See SHARED_UB_REVIEW.md and the hash-bound
+  shared-ub-contract.json; a changed consumption header blocks the probe.
+  Capacity bounds are conservative and can reject a layout
   the SDK accepted; such a rejection is not a hardware UNSUPPORTED verdict.
 
 This is Host resource feasibility, not observed live high-water memory or

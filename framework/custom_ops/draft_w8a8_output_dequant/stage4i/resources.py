@@ -24,10 +24,12 @@ def validate(platform,row):
  check('no_bias',p['isBias']==0)
  check('positive_depths',all(p[k]>0 for k in ('depthA1','depthB1','dbL0A','dbL0B','dbL0C','stepM','stepN','stepKa','stepKb')))
  check('nonnegative_sharing',all(p[k]>=0 for k in ('shareMode','shareL1Size','shareL0CSize','shareUbSize')))
- # No assumption that an SDK reservation aliases the user-provided scratch.
- check('shared_ub_accounted',p['shareUbSize']==0)
+ # Verified MatmulTiling::GetShareUbSize() returns zero on dav_2002.
+ # Keep Host raw value; do not equate it with a TPipe allocation or erase it.
+ effective_sdk_ub=0 if platform.get('arch')==2002 else p['shareUbSize']
+ check('shared_ub_accounted',platform.get('arch')==2002 and 0<=p['shareUbSize']<=2147483647)
  check('default_share_mode',p['shareMode']==0)
- total=scratch+user+2560+8192
+ total=scratch+user+2560+8192+effective_sdk_ub
  check('ub_capacity',total<=cap['UB'] and cap['UB']==262144)
  check('scratch_budget',scratch<=(239104 if n==64 else 226816) and scratch%256==0)
  scale=n*8;trans=p['transLength']
@@ -49,7 +51,12 @@ def validate(platform,row):
  detail=dict(requested_scratch=scratch,user_ub=user,guards=2560,reserve=8192,total_ub=total,scale_storage_bound=scale,
   transLength=trans,b_two_conversion_tiles=2*b,full_c_staging_bound=16*n*2,
   scratch_peak_bound=max(layout,trans+scale),l1_conservative_bound=l1,l0a_bound=l0a,l0b_bound=l0b,l0c_bound=l0c,
-  extra_shared_ub=p['shareUbSize'],shared_l1=p['shareL1Size'],shared_l0c=p['shareL0CSize'],
+  reported_shareUbSize=p['shareUbSize'],effective_sdk_reserved_ub=effective_sdk_ub,extra_shared_ub=effective_sdk_ub,
+  shared_ub_policy='DAV_2002_GETTER_RETURNS_ZERO_IDENTITY_BOUND',
+  coefficient_region_in_scratch=[trans,trans+p['baseN']*8],coefficient_logical_bound=[trans,trans+scale],
+  coefficient_bytes_already_inside_scratch=p['baseN']*8,
+  field_generation_formula='UNRESOLVED; capacity accounting uses actual returned transLength and verified device consumer',
+  shared_l1=p['shareL1Size'],shared_l0c=p['shareL0CSize'],
   padding='M/N rounded to16; INT8 K rounded to32; fixed requests have no tail padding',
   scope='SDK GetTiling acceptance plus conservative capacity checks; not runtime allocation, alias or event proof',
   t2_output_contract='two N64 base outputs per logical N128 group; placement/lifecycle requires a later Kernel review' if name=='T2' else 'one base output per group',

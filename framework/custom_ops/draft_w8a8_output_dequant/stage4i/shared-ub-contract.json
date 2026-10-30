@@ -1,0 +1,223 @@
+{
+  "status": "REVIEWED_DAV_2002_CONSUMPTION_CONTRACT",
+  "local_container": "qwen35-cann9-host",
+  "local_cann_root": "/usr/local/Ascend/cann-9.0.0",
+  "arch": 2002,
+  "field_generation_formula": "UNRESOLVED_HOST_LIBRARY_IMPLEMENTATION; not inferred from observed sizes",
+  "local_host_library": {
+    "relative": "lib64/libtiling_api.a",
+    "local_sha256": "a2e5bb0bc70ffef0abeb33d864213ad069d65ad6156bf8a02daf37ed29992079",
+    "server_sha256": "90f7a3ba4fd55e4c3c99a5b4ad62d5e2e16a434eb62eb880232276b0b84a2ebf",
+    "status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+  },
+  "files": [
+    {
+      "relative": "aarch64-linux/asc/impl/basic_api/kernel_tpipe_impl.h",
+      "local_sha256": "7a91fe65d16c3775fa57d15ebb63a37b275c0c9ee1c269bca4d76355e2873c8d",
+      "server_sha256": "7a91fe65d16c3775fa57d15ebb63a37b275c0c9ee1c269bca4d76355e2873c8d",
+      "identity": "EXACT_MATCH_USER_SERVER_CHECK",
+      "lines": [
+        [
+          72,
+          74
+        ],
+        [
+          298,
+          346
+        ],
+        [
+          552,
+          594
+        ],
+        [
+          920,
+          934
+        ]
+      ],
+      "conclusion": "TPipe allocation cursor; consumes effective shared lengths"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/basic_api/kernel_tpipe_base.h",
+      "local_sha256": "4d99631a40cdd33656d3f9bed5b8726f915cbbe11c7b69c62b9566bde1d164ea",
+      "server_sha256": "4d99631a40cdd33656d3f9bed5b8726f915cbbe11c7b69c62b9566bde1d164ea",
+      "identity": "EXACT_MATCH_USER_SERVER_CHECK",
+      "lines": [
+        [
+          220,
+          247
+        ]
+      ],
+      "conclusion": "First shared reservation uses start plus supplied length, including mode0"
+    },
+    {
+      "relative": "aarch64-linux/asc/include/basic_api/kernel_tpipe.h",
+      "local_sha256": "93cafd5746bbe315a3eee3adb817262ceba1a947e0f7e17ab5f18d7605c4345f",
+      "server_sha256": "93cafd5746bbe315a3eee3adb817262ceba1a947e0f7e17ab5f18d7605c4345f",
+      "identity": "EXACT_MATCH_USER_SERVER_CHECK",
+      "lines": [
+        [
+          24,
+          24
+        ],
+        [
+          395,
+          403
+        ],
+        [
+          469,
+          491
+        ]
+      ],
+      "conclusion": "TPipe inherits TPipeBase and binds implementation"
+    },
+    {
+      "relative": "aarch64-linux/asc/include/adv_api/matmul/matmul_intf.h",
+      "local_sha256": "32992a9d7a343f1deed1407e6a696e95b154299c3a339ea90378bba63035eece",
+      "server_sha256": "32992a9d7a343f1deed1407e6a696e95b154299c3a339ea90378bba63035eece",
+      "identity": "EXACT_MATCH_USER_SERVER_CHECK",
+      "lines": [
+        [
+          18,
+          31
+        ]
+      ],
+      "conclusion": "Matmul registration alias and architecture routing"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/kfc/kfc_register_obj.h",
+      "local_sha256": "28ea04257428760816b5bbfaf2ccfd23029fc42c6bd20b7ca685fdafb278f876",
+      "server_sha256": "28ea04257428760816b5bbfaf2ccfd23029fc42c6bd20b7ca685fdafb278f876",
+      "identity": "EXACT_MATCH_USER_SERVER_CHECK",
+      "lines": [
+        [
+          125,
+          138
+        ],
+        [
+          369,
+          377
+        ]
+      ],
+      "conclusion": "Coupled registration initializes Matmul with supplied pipe"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/matmul/param/matmul_shape_tiling.h",
+      "local_sha256": "c9edef2ce2870de4007acff91931150c76b40afaf981029e24c8dec84aeb35b3",
+      "server_sha256": "c9edef2ce2870de4007acff91931150c76b40afaf981029e24c8dec84aeb35b3",
+      "identity": "EXACT_MATCH_USER_SERVER_CHECK",
+      "lines": [
+        [
+          18,
+          37
+        ]
+      ],
+      "conclusion": "GetTiling returns MatmulTiling accessor, not raw Host struct"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/tiling/matmul/matmul_constant_tiling_struct.h",
+      "local_sha256": "459baa2d5d50fbb053eb04f5afa5c4ffa024035150e2f103d59f6b82618fddc7",
+      "server_sha256": "459baa2d5d50fbb053eb04f5afa5c4ffa024035150e2f103d59f6b82618fddc7",
+      "identity": "EXACT_MATCH_USER_SERVER_CHECK",
+      "lines": [
+        [
+          206,
+          217
+        ]
+      ],
+      "conclusion": "GetShareUbSize returns zero for architecture2002"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/matmul/scheduler/base/scheduler_base.h",
+      "local_sha256": "e37c5029455b8ffac29e2a51652592d02830504e77ce68b6d3fe7d4902d9a2a4",
+      "server_sha256": "e37c5029455b8ffac29e2a51652592d02830504e77ce68b6d3fe7d4902d9a2a4",
+      "identity": "EXACT_MATCH_USER_SERVER_CHECK",
+      "lines": [
+        [
+          91,
+          118
+        ],
+        [
+          137,
+          139
+        ]
+      ],
+      "conclusion": "Passes accessor result in shareLens; finishes share initialization"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/matmul/resource/local_workspace/matmul_local_workspace.h",
+      "local_sha256": "dbffdce3b74c3e18414c1c5e89e4a4260ec64654eeccc58f172ed89f7ae6c08b",
+      "server_sha256": "dbffdce3b74c3e18414c1c5e89e4a4260ec64654eeccc58f172ed89f7ae6c08b",
+      "identity": "EXACT_MATCH_USER_SERVER_CHECK",
+      "lines": [
+        [
+          175,
+          183
+        ],
+        [
+          227,
+          232
+        ],
+        [
+          285,
+          317
+        ]
+      ],
+      "conclusion": "Caller scratch binding and offset views; not another allocation"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/matmul/stage/copy_cube_out/quant/quant_processor_datacopy.h",
+      "local_sha256": "10438170dde8cb131bf3ba9443955d101d5e7936aa27dc38127677cb1b898c7c",
+      "server_sha256": "10438170dde8cb131bf3ba9443955d101d5e7936aa27dc38127677cb1b898c7c",
+      "identity": "EXACT_MATCH_USER_SERVER_CHECK",
+      "lines": [
+        [
+          42,
+          42
+        ],
+        [
+          109,
+          111
+        ],
+        [
+          113,
+          124
+        ],
+        [
+          143,
+          158
+        ]
+      ],
+      "conclusion": "Quant init/destroy allocate nothing; coefficient view at transLength in caller workspace"
+    },
+    {
+      "relative": "aarch64-linux/asc/impl/adv_api/detail/matmul/matmul_impl_base.h",
+      "local_sha256": "923527715a9baa2147538221ccf82afc14b5fd4f913b42363adbf00eb2de5006",
+      "server_sha256": "923527715a9baa2147538221ccf82afc14b5fd4f913b42363adbf00eb2de5006",
+      "identity": "EXACT_MATCH_USER_SERVER_CHECK",
+      "lines": [
+        [
+          140,
+          143
+        ],
+        [
+          388,
+          404
+        ]
+      ],
+      "conclusion": "Registration initializes Scheduler; SetLocalWorkspace binds caller scratch"
+    },
+    {
+      "relative": "aarch64-linux/asc/include/adv_api/matmul/matmul_tiling_base.h",
+      "local_sha256": "44dea3b20ddeea8987471f8f226cfeadbdc65140f746ee1f3bab33b8b8e3350b",
+      "server_sha256": "44dea3b20ddeea8987471f8f226cfeadbdc65140f746ee1f3bab33b8b8e3350b",
+      "identity": "EXACT_MATCH_USER_SERVER_CHECK",
+      "lines": [
+        [
+          451,
+          460
+        ]
+      ],
+      "conclusion": "Host SetBufferSpace declaration; implementation is in compiled Host library"
+    }
+  ]
+}

@@ -8,6 +8,14 @@ from resources import CONFIGS,validate,decide
 import layout
 
 
+@pytest.fixture(autouse=True)
+def isolate_additional_sdk_contract_for_existing_cpu_fixtures(monkeypatch):
+ # Existing fixtures cover version/platform checks with synthetic SDK files.
+ # The new consumption binding has dedicated unmocked tests in test_shared_ub.py.
+ import run_stage4i as driver
+ monkeypatch.setattr(driver,'bind_shared_ub',lambda _:dict(status='CPU_FIXTURE_ONLY'))
+
+
 def fixture(name):
  n,bn,scratch,user=CONFIGS[name]
  platform=dict(platform_source='NO_ARGUMENT_MANAGER_ON_SELECTED_DEVICE',soc='Ascend310P3',arch=2002,aic=8,aiv=8,all=7,
@@ -26,7 +34,7 @@ def test_capacity_calculations_are_not_measurements(name):
  assert v['details']['scale_storage_bound']==(512 if name=='N64' else 1024)
  assert v['details']['device_allocation']=='NOT_RUN'
 
-@pytest.mark.parametrize('field,value',[('transLength',226816),('baseN',32),('singleCoreN',64),('usedCoreNum',2),('shareUbSize',1024),('shareMode',1),('dbL0B',999),('stepKb',None),('isBias',1)])
+@pytest.mark.parametrize('field,value',[('transLength',226816),('baseN',32),('singleCoreN',64),('usedCoreNum',2),('shareUbSize',-1),('shareMode',1),('dbL0B',999),('stepKb',None),('isBias',1)])
 def test_bad_or_unknown_resources_block(field,value):
  p,r=fixture('T1');r['fields'][field]=value
  assert validate(p,r)['status']=='BLOCKED'
