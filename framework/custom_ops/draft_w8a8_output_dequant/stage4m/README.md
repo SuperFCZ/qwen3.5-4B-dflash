@@ -1,6 +1,6 @@
 # Stage4M design review — no device experiment admitted yet
 
-Status: **BLOCKED_PENDING_COMPARE_CONTRACT_AND_SERVER_IDENTITIES**.
+Status: **BLOCKED_BITMAP_STORE_CONTRACT**. See [bounded lifetime follow-up](LIFETIME_REVIEW.md).
 No Kernel, OPP, CANN build, NPU smoke, benchmark or profile is created/run by
 this directory. Stage4B–4L remain unchanged. Weak Guard remains diagnostic.
 
@@ -13,8 +13,8 @@ separate instruction cost, hidden wait, DMA or critical-path contribution.
 The FP16 and W8A16 numbers are historical, unpaired context only.
 
 The actual Stage4L CSVs are on the server, not present on this development
-machine. Profile-supported conclusions therefore remain UNRESOLVED until
-rows are returned. `profile_review.py` rereads hash-bound raw rows using the
+machine. Returned Task1/3 examples corroborate the paired trend and cross-file task
+identity; they do not establish a complete38-row population or critical path. `profile_review.py` rereads hash-bound raw rows using the
 existing Stage4L reviewer, keeping each source file, row type, column schema,
 unit, Task/Core identifiers and duplicate flags. It computes no pooled median
 or Pipe sum. Its grouped examples are evidence for subsequent interpretation,
@@ -24,9 +24,10 @@ not an assertion that all rows within a group may safely be averaged.
 
 Local container qwen35-cann9-host, root
 `/usr/local/Ascend/cann-9.0.0/aarch64-linux/asc`.
-All files below are **LOCAL_ONLY_NOT_SERVER_VERIFIED** for this new review.
-The historical local Toolkit has the matched internal build identifier, but
-that is not proof that these newly inspected files match the server.
+All four files in the following table were confirmed SHA256-identical by the
+server owner. That closes their identity gate only, not the missing compare
+store-size contract. New event/Tensor/checker dependencies in the follow-up
+remain LOCAL_ONLY_NOT_SERVER_VERIFIED.
 
 | Relative file | Lines | Finding | SHA256 |
 |---|---|---|---|
@@ -84,7 +85,8 @@ This accounting is only a design: it does not establish legal device aliasing.
 
 Before a device experiment can be created, close:
 
-- Server hashes for the direct API/implementation files above.
+- Server binding for the newly traced event/Tensor dependencies in the
+  follow-up; the four Compare/Reduce identities above already match.
 - Actual destination footprint,32B alignment and comparison result packing;
   the direct next check is CheckFuncVecBinaryScalarCmp for the count overload
   referenced at cmpsel_intf_impl.h:450, plus the corresponding vcmpvs contract.
