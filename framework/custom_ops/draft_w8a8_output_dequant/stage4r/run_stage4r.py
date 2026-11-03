@@ -7,6 +7,7 @@ from reference_r import HERE,q,fc,POLICY,prepare,check
 import run_stage4q as qq
 from build_q import build as build_w8
 from run_stage2b import command
+from header_binding import select_header,verify_binding
 STATES={'prepare':'STAGE4R_CPU_PREPARED','build':'STAGE4R_RUNNERS_BUILT','smoke':'STAGE4R_NUMERICS_ADMITTED','benchmark':'STAGE4R_PAIRED_MEASURED'}
 
 def sources():
@@ -25,11 +26,9 @@ def prior(path,stage,r):
 def native_env(cann):return q.common.env(cann)
 
 def build_native(args,root,r):
- candidates={p.resolve() for p in [args.cann_root/rel for rel in ('include/aclnnop/aclnn_mm.h','aarch64-linux/include/aclnnop/aclnn_mm.h','opp/built-in/op_impl/ai_core/tbe/op_api/include/aclnn_mm.h')] if p.is_file()}
- if len(candidates)!=1:raise ValueError('selected SDK aclnn_mm.h missing/ambiguous in fixed public locations')
- header=candidates.pop()
- if args.cann_root not in header.parents:raise ValueError('native header outside selected SDK')
- r['native_header']=q.identity(header)
+ binding=select_header(args.cann_root,getattr(args,'native_mm_header',None))
+ r['native_header_binding']=binding
+ header=Path(binding['selected']['path']);r['native_header']=binding['selected']
  r['native_tools']={name:q.identity(shutil.which(name)) for name in ('cmake','c++')}
  e=native_env(args.cann_root)
  command(['cmake','-S',HERE,'-B',root/'native-build','-DCANN_ROOT='+str(args.cann_root),'-DNATIVE_MM_HEADER='+str(header.resolve()),'-DCOMMON_INCLUDE='+str(q.common.QUANT/'test'),'-DCMAKE_EXPORT_COMPILE_COMMANDS=ON'],root/'cmake.log',e,r,'native_configure')
@@ -43,7 +42,8 @@ def build_native(args,root,r):
    if args.cann_root not in Path(item['path']).parents:raise ValueError('native library outside SDK')
    links[key]=item
  if set(links)!={'LIB_opapi','LIB_ascendcl','LIB_nnopbase'}:raise ValueError('native libraries differ')
- return dict(runner=q.identity(runner),libraries=links,header=r['native_header'],tools=r['native_tools'],compile_commands=q.identity(root/'native-build/compile_commands.json'))
+ verify_binding(binding,args.cann_root)
+ return dict(runner=q.identity(runner),libraries=links,header_binding=binding,header=r['native_header'],tools=r['native_tools'],compile_commands=q.identity(root/'native-build/compile_commands.json'))
 
 def invoke_native(args,folder,r,b,prepared,timed,golden=None):
  folder.mkdir(parents=True)
@@ -96,6 +96,7 @@ def main(args):
     build_w8(sub,dest,w);r['w8_runner_build']=w
    else:
     b=prior(args.build_report,'build',r)
+    verify_binding(b['native']['header_binding'],args.cann_root)
     if b['w8_runner_build']['evidence']!=r['evidence']['variants'][args.candidate] or b['w8_runner_build']['linked_libraries']['LIB_custom']!=r['evidence']['variants'][args.candidate]['installed']['api']:raise ValueError('W8 private OPP binding differs')
     if b['prepare_report']!=r['prepare_report']:raise ValueError('build uses another reference')
     if b['machine']['os']!=r['machine']['os'] or b['machine']['version_files']!=r['machine']['version_files']:raise ValueError('environment drift')
@@ -130,7 +131,9 @@ def main(args):
    for item in r['sources']:q.verify(item)
    if 'evidence' in r:q.immutable(r['evidence'])
    if 'reference' in r:q.read(q.verify(r['reference']))
-   if args.build_report:q.read(args.build_report)
+   if args.build_report:
+    built=q.read(args.build_report);verify_binding(built['native']['header_binding'],args.cann_root)
+   if 'native_header_binding' in r:verify_binding(r['native_header_binding'],args.cann_root)
    for item in r.get('machine',{}).get('version_files',[]):q.verify(item)
   except Exception as e:r.update(status='BLOCKED',integrity_error=str(e))
   if r['status']=='BLOCKED':r.pop('comparison',None)
@@ -139,24 +142,25 @@ def main(args):
   q.write(root/'preprocessing-inventory.json',dict(status='ONLINE_PREPROCESSING_NOT_RUN',excluded=['FP16 effective weight generation','INT8 activation quantization','combined scale and encoding','H2D/D2H','validation','Draft/Decode'],resident_input_bytes=dict(FP16=81920+99614720,W8=40960+49807360+3112960),output_bytes=622592,measured_memory='workspace in each execution; payload arithmetic is not process peak or DDR traffic'))
  print(r['status']+': '+str(root/(args.stage+'-report.json')));return int(r['status']=='BLOCKED')
 
-def parse():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('stage',choices=('prepare','build','smoke','benchmark'))
-    p.add_argument('--output-dir',type=Path,required=True);p.add_argument('--build-report',type=Path);p.add_argument('--prepare-report',type=Path);p.add_argument('--candidate',choices=('N128','N256'),default='N128');p.add_argument('--smoke-report',type=Path);p.add_argument('--benchmark-report',type=Path)
-    p.add_argument('--msprof',default='msprof')
-    for name,default in [('stage4b','w8a8-full-gate-20261027-093617'),('stage4a','w8a8-core-policy-20261027-083223'),('stage3b4','w8a8-twenty-group-20261027-055348'),('stage3b3','w8a8-two-group-20261027-042044'),('stage3b2','w8a8-local-nz-20261027-031856'),('stage3b1','w8a8-stage3b-20261027-024844'),('stage3a','w8a8-stage3a-20261027-011523'),('stage2b','w8a8-stage2b-20261026-100533')]:
-        p.add_argument('--'+name+'-root',type=Path,default=Path('/home/w00949577/qwen35-dflash-run')/default)
-    for name in ('build','basic','zero','nonpower'):p.add_argument('--'+name+'-report',type=Path)
-    p.add_argument('--stage2c-report',type=Path,default=Path('/home/w00949577/qwen35-dflash-run/w8a8-stage2c-20261026-104943/report.json'))
-    p.add_argument('--device',type=int,default=0);p.add_argument('--cann-root',type=Path,default=Path(os.environ.get('CANN_ROOT','/usr/local/Ascend/cann-9.0.0')))
-    p.add_argument('--stage4j-root',type=Path,default=Path('/home/w00949577/qwen35-dflash-run/w8a8-n128-t1-20261030-092118'))
-    p.add_argument('--stage4i-root',type=Path,default=Path('/home/w00949577/qwen35-dflash-run/w8a8-n128-host-shareub-20261030-083337'))
-    p.add_argument('--stage4c-report',type=Path,default=Path('/home/w00949577/qwen35-dflash-run/w8a8-baseline-20261027-111748/benchmark/benchmark-report.json'))
-    p.add_argument('--stage4n-root',type=Path,default=Path('/home/w00949577/qwen35-dflash-run/w8a8-n128-xor-guard-20261102-063409'))
-    p.add_argument('--stage4p-root',type=Path,default=Path('/home/w00949577/qwen35-dflash-run/w8a8-n256-correctness-20261103-012123'))
-    p.add_argument('--stage4o-root',type=Path,default=Path('/home/w00949577/qwen35-dflash-run/w8a8-n256-host-20261102-081401'))
-    args=p.parse_args();args.cann_root=args.cann_root.resolve()
-    for name in ('build','basic','zero','nonpower'):
-        if getattr(args,name+'_report') is None:setattr(args,name+'_report',args.stage2b_root/name/'report.json')
+def parse(argv=None):
+    p=argparse.ArgumentParser(description=__doc__,allow_abbrev=False)
+    p.add_argument('stage',choices=('prepare','build','smoke','benchmark'))
+    p.add_argument('--output-dir',type=Path,required=True)
+    for name in ('prepare-report','build-report','smoke-report','benchmark-report'):
+        p.add_argument('--'+name,type=Path)
+    p.add_argument('--candidate',choices=('N128','N256'),default='N128')
+    p.add_argument('--native-mm-header',type=Path,help='Build-only explicit choice when SDK headers are independent files; reviewed SHA256 still required')
+    p.add_argument('--device',type=int,default=0)
+    p.add_argument('--cann-root',type=Path,default=Path(os.environ.get('CANN_ROOT','/usr/local/Ascend/cann-9.0.0')))
+    base=Path('/home/w00949577/qwen35-dflash-run')
+    for name,folder in (('stage4n','w8a8-n128-xor-guard-20261102-063409'),('stage4p','w8a8-n256-correctness-20261103-012123'),('stage4o','w8a8-n256-host-20261102-081401')):
+        p.add_argument('--'+name+'-root',type=Path,default=base/folder)
+    args=p.parse_args(argv);args.cann_root=args.cann_root.resolve()
+    required={'prepare':(), 'build':('prepare_report',), 'smoke':('prepare_report','build_report'),
+              'benchmark':('prepare_report','build_report','smoke_report')}
+    missing=['--'+key.replace('_','-') for key in required[args.stage] if getattr(args,key) is None]
+    if missing:p.error(args.stage+' requires '+', '.join(missing))
+    if args.native_mm_header is not None and args.stage!='build':p.error('--native-mm-header is for build only; later stages use the bound Build identity')
     if args.device<0:p.error('negative device')
     return args
 

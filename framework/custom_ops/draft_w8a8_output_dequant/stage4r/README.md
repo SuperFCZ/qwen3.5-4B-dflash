@@ -94,3 +94,39 @@ checked native install locations: real native CMake configuration is BLOCKED
 locally (log retained). No SDK package is installed and no undefined symbols
 are ignored. This does not block Q. Actual server native ABI/library binding,
 NPU numerical acceptance and performance remain NOT_RUN.
+
+## CLI/header bugfix
+
+The Stage4R entry point no longer inherits Stage2B's `--build-report` or its
+historical default assignment. The live evidence call graph uses only
+`--stage4n-root`, `--stage4o-root`, `--stage4p-root`, device and CANN_ROOT;
+Stage2B reports are reached through bound historical evidence, not CLI flags.
+Unused Stage2B/basic/zero/nonpower, earlier-stage root and msprof options were
+removed. `--build-report` is exclusively Stage4R's own Build input.
+`--benchmark-report` remains a reserved Stage4R option (stored unchanged; not
+required or consumed by the current four stages). No historical default is
+assigned to any Stage4R report option.
+
+Required inputs are checked by argparse before work starts:
+prepare: none; build: prepare-report; smoke: prepare-report+build-report;
+benchmark: prepare-report+build-report+smoke-report. Candidate consistency is
+checked against the prior reports; pass `--candidate N256` at every stage
+when selecting the measured Stage4Q winner. Missing arguments exit2.
+
+Native header selection records aliases, resolved paths, device/inode, sizes
+and SHA256. The two supplied server paths are one real file, SHA256
+`212c8d5565c54e0d78c13cff27f1150d13a5500b1859fd38a4319c96b8bb7f81`.
+They are accepted as ONE_FILE_WITH_ALIASES, not two independent headers.
+Hardlinks are treated as the same file too. Independent files require an
+explicit build-only `--native-mm-header /absolute/path/inside/CANN_ROOT/aclnn_mm.h`,
+even if their bytes match. All candidates and their content equality are
+recorded. The chosen file must match the reviewed server hash; explicit
+selection does not bypass that gate. Broken links, empty files, escapes,
+changed hashes or alias retargeting fail closed. The Build report records
+`native_header_binding`; subsequent phases revalidate it. CMake's fixed
+CANN_ROOT/NO_DEFAULT_PATH library search is unchanged.
+
+After this source change use a new run root and regenerate Stage4R Prepare;
+do not rewrite existing report source identities. Numerical reference,
+tolerances, native Runner, weight reconstruction and timing are unchanged.
+Stage4Q need not be rerun.
