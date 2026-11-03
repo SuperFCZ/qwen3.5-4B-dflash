@@ -130,3 +130,19 @@ After this source change use a new run root and regenerate Stage4R Prepare;
 do not rewrite existing report source identities. Numerical reference,
 tolerances, native Runner, weight reconstruction and timing are unchanged.
 Stage4Q need not be rerun.
+
+## Prepare final-integrity wrapper fix
+
+Stage4C machine() stores version records as `{file: identity, text: snapshot}`.
+Stage4R now verifies `item['file']`, retaining the explicit version-file gate,
+and recursively verifies other machine identities (preflight, npu-smi tool
+and log). Plain metadata/status strings are not passed to the file verifier.
+The existing source checks and `reference.json` hash/read remain in finally;
+reading that manifest recursively verifies reference_f64.bin and both NK/KN
+weight identities, including NK which is nested only under weights/files.
+
+CPU integration regression exercises the actual machine() wrapper and real
+final hash verification with small structural files. Untampered Prepare must
+complete; changing any source, version, manifest, reference, weight, preflight,
+tool or log must remain BLOCKED. No weight/reference/Runner/tolerance change.
+Use a new Stage4R root after pulling this fix; keep old BLOCKED reports intact.

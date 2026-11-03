@@ -134,7 +134,9 @@ def main(args):
    if args.build_report:
     built=q.read(args.build_report);verify_binding(built['native']['header_binding'],args.cann_root)
    if 'native_header_binding' in r:verify_binding(r['native_header_binding'],args.cann_root)
-   for item in r.get('machine',{}).get('version_files',[]):q.verify(item)
+   for item in r.get('machine',{}).get('version_files',[]):q.verify(item['file'])
+   # Other machine identities (preflight, npu-smi tool/log) are direct records.
+   q.verify_tree(r.get('machine',{}))
   except Exception as e:r.update(status='BLOCKED',integrity_error=str(e))
   if r['status']=='BLOCKED':r.pop('comparison',None)
   r['artifacts']=[q.identity(p) for p in sorted(root.rglob('*')) if p.is_file() and p.name in ('runner.log','execution.json','actual-0.bin','actual-1.bin','benchmark-last.bin','postcheck.bin')]
