@@ -5,12 +5,40 @@ from pathlib import Path
 from evidence import HERE,v,load,identity,verify,verify_tree,read,write,fresh,sources
 from sdk_review import bind
 from raw_resources import validate
-from dependency_identity import compiled_dependencies,verify_dependency_binding
+import raw_host_dependency_identity as dependency_validator
+from raw_host_dependency_identity import compiled_dependencies,verify_dependency_binding
+
+
+def dependency_validator_identity():
+ """Reject foreign/cached validators before reading or generating build evidence."""
+ expected=(Path(__file__).resolve().parent/'raw_host_dependency_identity.py').resolve(strict=True)
+ if Path(dependency_validator.__file__).resolve(strict=True)!=expected:
+  raise ValueError('Raw Host dependency validator module is outside Diagnostics')
+ if dependency_validator.__spec__ is None or Path(dependency_validator.__spec__.origin).resolve(strict=True)!=expected:
+  raise ValueError('Raw Host dependency validator import origin differs')
+ functions={}
+ for name,fn in (('compiled_dependencies',compiled_dependencies),('verify_dependency_binding',verify_dependency_binding)):
+  if fn is not getattr(dependency_validator,name) or fn.__module__!='raw_host_dependency_identity' or Path(fn.__code__.co_filename).resolve(strict=True)!=expected:
+   raise ValueError('Raw Host dependency validator function origin differs: '+name)
+  functions[name]=dict(module=fn.__module__,source_path=str(expected))
+ return dict(status='DIAGNOSTICS_VALIDATOR_IDENTITY_VERIFIED',module='raw_host_dependency_identity',file=identity(expected),functions=functions)
+
+
+# Also protect direct imports and --help; do not alter sys.modules or search paths.
+VALIDATOR_AT_IMPORT=dependency_validator_identity()
+
+
+def bound_validator(source_records):
+ current=dependency_validator_identity()
+ if current!=VALIDATOR_AT_IMPORT or [x for x in source_records if x['path']==current['file']['path']]!=[current['file']]:
+  raise ValueError('Raw Host dependency validator source identity changed')
+ return current
 
 
 def main(args):
  root=fresh(args.output_dir,[args.frozen_root,args.cann_root]);r=dict(status='NOT_RUN',source_review='NOT_RUN',host_feasible='NOT_RUN',build_pass='NOT_RUN',npu='NOT_RUN',opp='NOT_CREATED',runner='NOT_CREATED',sources=sources(),cause='UNRESOLVED',benchmark='PROHIBITED')
  try:
+  r['dependency_validator']=bound_validator(r['sources'])
   data=load(args.frozen_root);r['evidence']=data['identities'];frozen=data['frozen']
   if args.device!=frozen['device']:raise ValueError('device differs from frozen run')
   if platform.system()!='Linux' or platform.machine() not in ('aarch64','arm64'):raise ValueError('real Linux ARM64 Host receiver required')
@@ -30,6 +58,7 @@ def main(args):
   exe=root/'host-build/raw_int32_host';r['host_binary']=identity(exe);r['host_compile']='COMPLETED'
   r['linked_libraries']=old.linked_libraries(root/'host-build/CMakeCache.txt',args.cann_root)
   r['dependency_binding']=compiled_dependencies(root/'host-build',args.cann_root,HERE/'raw_host/probe.cpp',release['files'][0]['file'])
+  if bound_validator(r['sources'])!=r['dependency_validator']:raise ValueError('validator changed before Host query')
   for name,argv in [('ldd',[tools['ldd'],exe]),('query',[exe,args.device,root])]:
    r['commands'][name]=old.command(argv,root/(name+'.log'),env,300)
    if r['commands'][name]['returncode']!=0 or name=='ldd' and 'not found' in (root/'ldd.log').read_text():raise ValueError('Host '+name+' failed')
@@ -48,6 +77,7 @@ def main(args):
  finally:
   try:
    for f in r['sources']:verify(f)
+   if 'dependency_validator' in r and bound_validator(r['sources'])!=r['dependency_validator']:raise ValueError('validator binding changed')
    for key in ('evidence','sdk','release','linked_libraries'):verify_tree(r.get(key,{}))
    if 'dependency_binding' in r:verify_dependency_binding(r['dependency_binding'])
   except Exception as e:r.update(status='BLOCKED',integrity_error=str(e))

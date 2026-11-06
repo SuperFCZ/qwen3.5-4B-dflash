@@ -1,0 +1,21 @@
+{
+  "previous_commit": "21e63695a05759a885b9ce5a37b4b4589c17ed13",
+  "scope": "SOURCE_RENAME_ONLY; no validator parsing or numerical algorithm changes",
+  "files": [
+    {
+      "old_path": "framework/custom_ops/draft_w8a8_output_dequant/stage4v_diagnostics/dependency_identity.py",
+      "new_path": "framework/custom_ops/draft_w8a8_output_dequant/stage4v_diagnostics/raw_host_dependency_identity.py",
+      "bytes": 6739,
+      "sha256": "dfb876acd73a8ac46b957c5425ea06b4ddc0550c3c418d30d7aad98952e7e8ea",
+      "content_identical": true
+    },
+    {
+      "old_path": "framework/custom_ops/draft_w8a8_output_dequant/stage4v_diagnostics/models.py",
+      "new_path": "framework/custom_ops/draft_w8a8_output_dequant/stage4v_diagnostics/stage4v_rounding_models.py",
+      "bytes": 11618,
+      "sha256": "433a96fc364181d11f396a399b41b7a3912acaa300992b1c7e2e6616fc6e8ffd",
+      "content_identical": true
+    }
+  ],
+  "old_analysis_reports": "PRESERVED_NOT_REWRITTEN; old source paths belong to the recorded previous commit"
+}

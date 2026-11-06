@@ -18,7 +18,7 @@ positions and verifies dot_i32; effective Scale must match actual word bits.
 Nothing in the frozen directory is rewritten. First-precheck failure may mean no
 second device output exists; no Repeat or complete-safety PASS is fabricated.
 
-The fixed14-model suite is in `models.py`:
+The fixed14-model suite is in `stage4v_rounding_models.py`:
 
 - A: the original FP32-input / FP32-product / RN16 contract.
 - B: all signed integers truncated toward zero to an even integer, followed by A.
@@ -118,3 +118,56 @@ Local validation on2026-11-06: macOS12/12 and Docker ARM64 12/12 tests passed.
 The standalone Host executable compiled/linked, the Raw Matmul interface syntax
 check returned0, and20 fixed SDK identities/ranges matched locally. No Host query,
 compute OPP or NPU execution occurred. See `local-status.json`.
+
+## Import-identity bugfix
+
+The original `dependency_identity.py` collided with Stage4I during the historical
+`evidence` import chain. Normal startup could reuse the cached Stage4I validator
+and demand `stage4i_host.dir`; importing the diagnostic file first could instead
+create a circular import. The diagnostic validator is now uniquely named
+`raw_host_dependency_identity.py`, with byte-identical parsing code. No old-name
+shim, sys.modules deletion, historical sys.path edit or weakened dependency gate
+is used. Stage4I is untouched.
+
+Raw Host now checks the validator module file, import-spec origin and both
+function code origins against its own Diagnostics directory at startup. It binds
+the file SHA256 to the source inventory, rechecks before Host query and in final
+integrity validation, and writes `dependency_validator` to `raw-host-report.json`.
+The expected module is `raw_host_dependency_identity`, with source SHA256
+`dfb876acd73a8ac46b957c5425ea06b4ddc0550c3c418d30d7aad98952e7e8ea`.
+
+The sibling-module audit also found `models.py` conflicting with the repository's
+`models` package. It is now `stage4v_rounding_models.py`; its body is byte-identical.
+`evidence`, `sdk_review`, `raw_resources` and `raw_host` have no duplicate module
+file names in this repository/dependency chain, and their resolved paths are
+checked by the import-order tests. No broader import refactor is included.
+
+`import-rename-proof.json` records the old/new names and unchanged hashes. Existing
+4096-element analysis results remain valid and need not be regenerated. Historical
+source paths belong to commit21e6369; the reports are not rewritten to impersonate
+the new source inventory. The rounding cause remains UNRESOLVED.
+
+Fresh-process regression covers Raw Host first, Stage4I first, validator first,
+application `models` first, both CLI help entries, correct/wrong targets, compiler
+depfiles, Make dependency pairs, missing/disagreeing records, escaped/modified SDK
+headers, post-check tampering and substituted validator functions/modules.
+macOS40/40 and Docker ARM64 40/40 tests pass. Read-only validation of an existing
+local CMake3.16 Raw Host build also accepted the actual197280-byte object and132
+SDK headers. This is not a new Host resource or NPU PASS.
+
+Rerun **Raw Host only**, in a new directory (do not rerun or overwrite the original
+analysis or BLOCKED run):
+
+```bash
+set -euo pipefail
+git pull --ff-only
+export CANN_ROOT=/usr/local/Ascend/cann-9.0.0
+FROZEN=/home/w00949577/qwen35-dflash-run/w8a8-full-k-l1fix-20261106-073850
+OUT=/home/w00949577/qwen35-dflash-run/w8a8-raw-host-importfix-$(date +%Y%m%d-%H%M%S)
+D=framework/custom_ops/draft_w8a8_output_dequant/stage4v_diagnostics
+bash "$D/run_raw_host.sh" --frozen-root "$FROZEN" --device 0 --output-dir "$OUT"
+```
+
+Inspect `dependency_validator`, `dependency_binding.object`, `dependency_binding.route`,
+then the real query return code/resources in `raw-host-report.json`. Return that
+report and the failing configure/compile/ldd/query log if blocked.
