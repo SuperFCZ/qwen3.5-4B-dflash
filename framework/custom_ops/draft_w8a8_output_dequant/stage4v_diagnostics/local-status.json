@@ -1,0 +1,21 @@
+{
+  "status": "OFFLINE_TOOLS_READY_CAUSE_UNRESOLVED",
+  "validation_date": "2026-11-06",
+  "cpu_tests": {
+    "macos": "12/12",
+    "docker_arm64": "12/12"
+  },
+  "local_host_compile": "COMPLETED_NOT_QUERIED",
+  "raw_interface_syntax": "ACCEPTED_LOCAL_ONLY",
+  "selected_local_sdk_identities": 20,
+  "real_tile0_analysis": "NOT_RUN_SERVER_FILES_REQUIRED",
+  "raw_host_query": "NOT_RUN",
+  "formal_raw_tiling_context": "NOT_RUN",
+  "opp": "NOT_CREATED",
+  "device_runner": "NOT_CREATED",
+  "build_pass": "NOT_RUN",
+  "npu_pass": "NOT_RUN",
+  "normal_stage4v": "UNCHANGED_BLOCKED_EVIDENCE_RETAINED",
+  "benchmark_admission": "PROHIBITED",
+  "hardware_cause": "UNRESOLVED"
+}

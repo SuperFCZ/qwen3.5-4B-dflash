@@ -1,0 +1,398 @@
+{
+  "status": "LOCAL_SOURCE_REVIEWED_NOT_HARDWARE_ARITHMETIC_PROOF",
+  "cann_root": "/usr/local/Ascend/cann-9.0.0",
+  "sources": [
+    {
+      "id": "base",
+      "relative_path": "impl/adv_api/detail/matmul/matmul_impl_base.h",
+      "sha256": "923527715a9baa2147538221ccf82afc14b5fd4f913b42363adbf00eb2de5006",
+      "bytes": 31237,
+      "lines": [
+        [
+          334,
+          346
+        ],
+        [
+          459,
+          462
+        ],
+        [
+          505,
+          542
+        ],
+        [
+          601,
+          646
+        ]
+      ],
+      "server_reviewed_sha256": "923527715a9baa2147538221ccf82afc14b5fd4f913b42363adbf00eb2de5006",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "scheduler",
+      "relative_path": "impl/adv_api/detail/matmul/scheduler/base/scheduler_norm.h",
+      "sha256": "bb565c78b53644f63cdf89cef18f4d622f11f4fca755ce03b989347f5f5083cd",
+      "bytes": 13193,
+      "lines": [
+        [
+          93,
+          122
+        ],
+        [
+          164,
+          206
+        ],
+        [
+          242,
+          257
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "scheduler_base",
+      "relative_path": "impl/adv_api/detail/matmul/scheduler/base/scheduler_base.h",
+      "sha256": "e37c5029455b8ffac29e2a51652592d02830504e77ce68b6d3fe7d4902d9a2a4",
+      "bytes": 23836,
+      "lines": [
+        [
+          149,
+          167
+        ],
+        [
+          363,
+          386
+        ],
+        [
+          61,
+          138
+        ]
+      ],
+      "server_reviewed_sha256": "e37c5029455b8ffac29e2a51652592d02830504e77ce68b6d3fe7d4902d9a2a4",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "scheduler_reset",
+      "relative_path": "impl/adv_api/detail/matmul/scheduler/base/scheduler_norm_base.h",
+      "sha256": "5f4385b9683bb6a6a7ba68186f7aa81ecb01327aad52f31b0cc7cffb3e609685",
+      "bytes": 18197,
+      "lines": [
+        [
+          59,
+          62
+        ],
+        [
+          180,
+          188
+        ]
+      ],
+      "server_reviewed_sha256": "5f4385b9683bb6a6a7ba68186f7aa81ecb01327aad52f31b0cc7cffb3e609685",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "quant",
+      "relative_path": "impl/adv_api/detail/matmul/stage/copy_cube_out/quant/quant_processor_datacopy.h",
+      "sha256": "10438170dde8cb131bf3ba9443955d101d5e7936aa27dc38127677cb1b898c7c",
+      "bytes": 6914,
+      "lines": [
+        [
+          49,
+          54
+        ],
+        [
+          109,
+          111
+        ],
+        [
+          113,
+          124
+        ],
+        [
+          143,
+          160
+        ],
+        [
+          38,
+          54
+        ]
+      ],
+      "server_reviewed_sha256": "10438170dde8cb131bf3ba9443955d101d5e7936aa27dc38127677cb1b898c7c",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "copyout",
+      "relative_path": "impl/adv_api/detail/matmul/stage/copy_cube_out/copy_cube_out_datacopy.h",
+      "sha256": "e572b74a29a2d09cc66f79fba676400e4900ef5ceadddf3f6abb99746ab14aad",
+      "bytes": 30236,
+      "lines": [
+        [
+          75,
+          88
+        ],
+        [
+          107,
+          136
+        ],
+        [
+          245,
+          294
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "shared_ub",
+      "relative_path": "impl/adv_api/tiling/matmul/matmul_constant_tiling_struct.h",
+      "sha256": "459baa2d5d50fbb053eb04f5afa5c4ffa024035150e2f103d59f6b82618fddc7",
+      "bytes": 17849,
+      "lines": [
+        [
+          206,
+          217
+        ]
+      ],
+      "server_reviewed_sha256": "459baa2d5d50fbb053eb04f5afa5c4ffa024035150e2f103d59f6b82618fddc7",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "datacopy_interface",
+      "relative_path": "impl/basic_api/kernel_operator_data_copy_intf_impl.h",
+      "sha256": "0a432937742d2625565d3eb1ef3caa930a190271faadb0344345d2382235737b",
+      "lines": [
+        [
+          941,
+          1028
+        ],
+        [
+          1108,
+          1121
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED",
+      "note": "Stage4S user reports PASS but its SDK gate report has not been read here; no new server equality claim."
+    },
+    {
+      "id": "datacopy_device",
+      "relative_path": "impl/basic_api/dav_m200/kernel_operator_data_copy_impl.h",
+      "sha256": "8a890aa80c39380519bcba461bfd19a67060e650253622d8b49b4b2c01ea3c8f",
+      "lines": [
+        [
+          487,
+          505
+        ],
+        [
+          542,
+          572
+        ],
+        [
+          1057,
+          1102
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED",
+      "note": "Stage4S user reports PASS but its SDK gate report has not been read here; no new server equality claim."
+    },
+    {
+      "id": "l1_input_params",
+      "relative_path": "impl/adv_api/detail/matmul/stage/copy_cube_in/base/copy_cube_in_params_base.h",
+      "sha256": "83df6f7e85f295d082a911e4d5e5e220c9e0f31f786a93e8f6922cbba1f7c287",
+      "lines": [
+        [
+          121,
+          134
+        ],
+        [
+          247,
+          265
+        ],
+        [
+          288,
+          299
+        ],
+        [
+          396,
+          407
+        ],
+        [
+          532,
+          558
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "l1_normal_allocator",
+      "relative_path": "impl/adv_api/detail/matmul/resource/cube_in_buffer/cube_in_buffer_normal.h",
+      "sha256": "e98fc3cbc75b916088a956922a6d49137477a1f211ba45572a8095874f954bd7",
+      "lines": [
+        [
+          29,
+          71
+        ],
+        [
+          157,
+          170
+        ]
+      ],
+      "server_reviewed_sha256": "e98fc3cbc75b916088a956922a6d49137477a1f211ba45572a8095874f954bd7",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "l1_tpipe_base",
+      "relative_path": "impl/basic_api/kernel_tpipe_base.h",
+      "sha256": "4d99631a40cdd33656d3f9bed5b8726f915cbbe11c7b69c62b9566bde1d164ea",
+      "lines": [
+        [
+          220,
+          246
+        ]
+      ],
+      "server_reviewed_sha256": "4d99631a40cdd33656d3f9bed5b8726f915cbbe11c7b69c62b9566bde1d164ea",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "l1_tpipe_alloc",
+      "relative_path": "impl/basic_api/kernel_tpipe_impl.h",
+      "sha256": "7a91fe65d16c3775fa57d15ebb63a37b275c0c9ee1c269bca4d76355e2873c8d",
+      "lines": [
+        [
+          211,
+          295
+        ],
+        [
+          552,
+          593
+        ]
+      ],
+      "server_reviewed_sha256": "7a91fe65d16c3775fa57d15ebb63a37b275c0c9ee1c269bca4d76355e2873c8d",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "l1_cfg",
+      "relative_path": "include/adv_api/matmul/tiling.h",
+      "sha256": "a9a55c80deb72b6b2b8bc1561ca17b13889dd91fa40950a0f70a02b37659da1f",
+      "lines": [
+        [
+          36,
+          95
+        ],
+        [
+          400,
+          403
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "l1_module_types",
+      "relative_path": "impl/adv_api/detail/matmul/policy/matmul_private_modules.h",
+      "sha256": "e1934286246684af49b155a77ea9952ce94fb63c4439f57ff568ee24312c2fbd",
+      "lines": [
+        [
+          55,
+          60
+        ],
+        [
+          94,
+          118
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "raw_quant",
+      "relative_path": "impl/adv_api/detail/matmul/stage/copy_cube_out/quant/quant_processor_intf.h",
+      "sha256": "d280aeb808633dd80d58feba31e70e28b0d46b3abe6ffb47b02eea17cb3b31fb",
+      "lines": [
+        [
+          37,
+          75
+        ],
+        [
+          124,
+          133
+        ]
+      ],
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "quant_scenario",
+      "relative_path": "impl/adv_api/detail/matmul/stage/copy_cube_out/quant/quant_processor_utils.h",
+      "sha256": "31467a960b31e5ad1bffb9b459f507f5a6b835fd236771af6f59b137cf9fdf1c",
+      "lines": [
+        [
+          23,
+          46
+        ]
+      ],
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "params",
+      "relative_path": "include/basic_api/kernel_struct_data_copy.h",
+      "sha256": "8402ed99bc1be3c05f688fb92e9262531ebce6199ba953c827dcef2a47bf5343",
+      "lines": [
+        [
+          118,
+          135
+        ]
+      ],
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "compute",
+      "relative_path": "impl/adv_api/detail/matmul/stage/compute/mmad_compute.h",
+      "sha256": "c5f5dd39c23f845d4a8e4088030c6e173bf0273370d81152819432a952c66c5b",
+      "lines": [
+        [
+          26,
+          69
+        ]
+      ],
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "mad_device",
+      "relative_path": "impl/basic_api/dav_m200/kernel_operator_mm_impl.h",
+      "sha256": "68978eaa868921f747f03fa808731db96de8edb889ff798954817315128c5c67",
+      "lines": [
+        [
+          368,
+          391
+        ]
+      ],
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    }
+  ],
+  "public_documentation": [
+    {
+      "url": "https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/900/API/ascendcopapi/atlasascendc_api_07_0104.html",
+      "scope": "CANN900 DataCopy Tables5/6, documented bit meanings; not device microarchitecture"
+    },
+    {
+      "url": "https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/900/API/ascendcopapi/atlasascendc_api_07_0073.html",
+      "scope": "CANN900 Cast precision rules and inference AI Core modes; not a VDEQ rounding guarantee"
+    }
+  ],
+  "raw_int32": "SOURCE_PATH_EXISTS_HOST_AND_DEVICE_NOT_RUN",
+  "hardware_vdeq_rounding": "UNRESOLVED",
+  "mcb_bit": 36,
+  "n_bits": [
+    32,
+    35
+  ],
+  "multiplier_bits": [
+    0,
+    31
+  ],
+  "sign_bit": 46,
+  "sign_scope": "DEQ8/VDEQ8 only per CANN900 documentation",
+  "root_cause": "UNRESOLVED"
+}
