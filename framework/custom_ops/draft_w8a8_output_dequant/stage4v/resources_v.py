@@ -2,6 +2,39 @@
 CONFIGS={'FULL_K_N256':(256,256,202240,8704)}
 def align(v,a):return (v+a-1)//a*a
 
+def l1_contract(p,capacity):
+ """Fixed no-bias GM INT8 / CFG_NORM contract, not a general SDK tiler."""
+ checks={}
+ fields=('baseM','baseN','baseK','singleCoreM','singleCoreN','singleCoreK',
+         'depthA1','depthB1','stepM','stepN','stepKa','stepKb','shareL1Size','shareMode','isBias')
+ checks['l1_integer_fields']=all(type(p.get(k)) is int and 0<=p[k]<=2147483647 for k in fields)
+ if not checks['l1_integer_fields']:
+  return checks,dict(allocation_bytes=None)
+ checks['l1_fixed_scope']=([p[k] for k in ('baseM','baseN','baseK','singleCoreM','singleCoreN','singleCoreK')]==[16,256,128,16,256,2560]
+                           and p['shareMode']==0 and p['isBias']==0)
+ blocks=20
+ checks['l1_step_mn']=p['stepM']==1 and p['stepN']==1
+ # Conservative admitted family: no partial step batches in this fixed20-block K.
+ # These are explicit Host admission checks, NOT claims about dav_2002 debug asserts.
+ steps=[p['stepKa'],p['stepKb']]
+ checks['l1_step_k']=all(0<x<=blocks and blocks%x==0 for x in steps)
+ checks['l1_step_compatibility']=all(x>0 for x in steps) and (steps[0]%steps[1]==0 or steps[1]%steps[0]==0)
+ counts=[]
+ for tag,major,step,depth in [('a',p['stepM'],p['stepKa'],p['depthA1']),('b',p['stepN'],p['stepKb'],p['depthB1'])]:
+  batch=major*step
+  ok=batch>0 and 0<depth<=blocks and depth%batch==0 and depth//batch in (1,2)
+  checks['l1_'+tag+'_depth_step']=ok
+  counts.append(depth//batch if ok else None)
+ a=2048*p['depthA1'];b=32768*p['depthB1'];total=a+b
+ checks['l1_report_matches_depths']=total>0 and p['shareL1Size']==total
+ checks['L1_capacity']=type(capacity) is int and 0<total<=capacity and 0<p['shareL1Size']<=capacity
+ return checks,dict(a1_basic_block_bytes=2048,b1_basic_block_bytes=32768,a1_bytes=a,b1_bytes=b,
+  allocation_bytes=total,reported_shareL1Size=p['shareL1Size'],unexplained_reported_bytes=p['shareL1Size']-total,
+  a_step_batches=counts[0],b_step_batches=counts[1],
+  normal_allocator='cacheNum is total basic blocks; cache plus queue sums to depth, not depth*step',
+  extra_l1_consumers=0,shareL1Size_role='same allocation pool bound, not an additive allocation',
+  scope='fixed GM INT8 A/B, no Bias, Scale in UB; no device execution claim')
+
 def validate(platform,row):
  name=row['name'];n,bn,scratch,user=CONFIGS[name];fail=[];checks={};detail={}
  def check(k,ok):
@@ -39,10 +72,13 @@ def validate(platform,row):
  a=align(p['baseM'],16)*align(p['baseK'],32)
  b=align(p['baseN'],16)*align(p['baseK'],32)
  acc=align(p['baseM'],16)*align(p['baseN'],16)*4
- # This is a conservative upper bound, not a claim about measured live usage.
- l1=a*p['depthA1']*p['stepM']*p['stepKa']+b*p['depthB1']*p['stepN']*p['stepKb']+p['shareL1Size']
+ # Source-proven NORMAL allocation; reject unaccounted shared-pool differences.
+ l1_checks,l1_detail=l1_contract(p,cap['L1'])
+ for key,ok in l1_checks.items():check(key,ok)
+ l1=l1_detail['allocation_bytes']
+ check('l0_double_buffer_factors',all(p[k] in (1,2) for k in ('dbL0A','dbL0B','dbL0C')))
  l0a=a*p['dbL0A'];l0b=b*p['dbL0B'];l0c=acc*p['dbL0C']+p['shareL0CSize']
- for k,value in [('L1',l1),('L0A',l0a),('L0B',l0b),('L0C',l0c)]:check(k+'_capacity',0<value<=cap[k])
+ for k,value in [('L0A',l0a),('L0B',l0b),('L0C',l0c)]:check(k+'_capacity',0<value<=cap[k])
  # Reviewed normal nontransposed INT8 ND input needs two B conversion tiles.
  # Local VECIN/NZ C is user-owned; additionally bound an entire output staging
  # tile inside scratch conservatively, rather than assuming omitted space is free.
@@ -52,7 +88,7 @@ def validate(platform,row):
  check('system_workspace_known',type(system) is int and system>0)
  detail=dict(requested_scratch=scratch,user_ub=user,guards=1536,reserve=8192,total_ub=total,scale_storage_bound=scale,
   transLength=trans,b_two_conversion_tiles=2*b,full_c_staging_bound=16*n*2,
-  scratch_peak_bound=max(layout,trans+scale),l1_conservative_bound=l1,l0a_bound=l0a,l0b_bound=l0b,l0c_bound=l0c,
+  scratch_peak_bound=max(layout,trans+scale),l1_conservative_bound=l1,l1_allocation=l1_detail,l0a_bound=l0a,l0b_bound=l0b,l0c_bound=l0c,
   reported_shareUbSize=p['shareUbSize'],effective_sdk_reserved_ub=effective_sdk_ub,extra_shared_ub=effective_sdk_ub,
   shared_ub_policy='DAV_2002_GETTER_RETURNS_ZERO_IDENTITY_BOUND',
   coefficient_region_in_scratch=[trans,trans+p['baseN']*8],coefficient_logical_bound=[trans,trans+scale],

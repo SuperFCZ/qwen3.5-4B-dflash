@@ -64,6 +64,10 @@
         [
           363,
           386
+        ],
+        [
+          61,
+          138
         ]
       ],
       "server_reviewed_sha256": "e37c5029455b8ffac29e2a51652592d02830504e77ce68b6d3fe7d4902d9a2a4",
@@ -108,6 +112,10 @@
         [
           143,
           160
+        ],
+        [
+          38,
+          54
         ]
       ],
       "server_reviewed_sha256": "10438170dde8cb131bf3ba9443955d101d5e7936aa27dc38127677cb1b898c7c",
@@ -215,6 +223,186 @@
       ],
       "server_reviewed_sha256": null,
       "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "l1_input_params",
+      "relative_path": "impl/adv_api/detail/matmul/stage/copy_cube_in/base/copy_cube_in_params_base.h",
+      "sha256": "83df6f7e85f295d082a911e4d5e5e220c9e0f31f786a93e8f6922cbba1f7c287",
+      "lines": [
+        [
+          121,
+          134
+        ],
+        [
+          247,
+          265
+        ],
+        [
+          288,
+          299
+        ],
+        [
+          396,
+          407
+        ],
+        [
+          532,
+          558
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "l1_input_init",
+      "relative_path": "impl/adv_api/detail/matmul/stage/copy_cube_in/base/copy_cube_in_base.h",
+      "sha256": "ffc0476ab498f82527c432c17f2ce097ad395207c54a723d8b8c540ba7bdcb5e",
+      "lines": [
+        [
+          38,
+          42
+        ]
+      ],
+      "server_reviewed_sha256": "ffc0476ab498f82527c432c17f2ce097ad395207c54a723d8b8c540ba7bdcb5e",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "l1_normal_allocator",
+      "relative_path": "impl/adv_api/detail/matmul/resource/cube_in_buffer/cube_in_buffer_normal.h",
+      "sha256": "e98fc3cbc75b916088a956922a6d49137477a1f211ba45572a8095874f954bd7",
+      "lines": [
+        [
+          29,
+          71
+        ],
+        [
+          157,
+          170
+        ]
+      ],
+      "server_reviewed_sha256": "e98fc3cbc75b916088a956922a6d49137477a1f211ba45572a8095874f954bd7",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "l1_selector",
+      "relative_path": "impl/adv_api/detail/matmul/resource/cube_in_buffer/cube_in_buffer_utils.h",
+      "sha256": "f790d435011a69734d73259c3936ee52cc1ccb08899c7551076f2129df459350",
+      "lines": [
+        [
+          95,
+          146
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "l1_tpipe_base",
+      "relative_path": "impl/basic_api/kernel_tpipe_base.h",
+      "sha256": "4d99631a40cdd33656d3f9bed5b8726f915cbbe11c7b69c62b9566bde1d164ea",
+      "lines": [
+        [
+          220,
+          246
+        ]
+      ],
+      "server_reviewed_sha256": "4d99631a40cdd33656d3f9bed5b8726f915cbbe11c7b69c62b9566bde1d164ea",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "l1_tpipe_alloc",
+      "relative_path": "impl/basic_api/kernel_tpipe_impl.h",
+      "sha256": "7a91fe65d16c3775fa57d15ebb63a37b275c0c9ee1c269bca4d76355e2873c8d",
+      "lines": [
+        [
+          211,
+          295
+        ],
+        [
+          552,
+          593
+        ]
+      ],
+      "server_reviewed_sha256": "7a91fe65d16c3775fa57d15ebb63a37b275c0c9ee1c269bca4d76355e2873c8d",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "l1_cfg",
+      "relative_path": "include/adv_api/matmul/tiling.h",
+      "sha256": "a9a55c80deb72b6b2b8bc1561ca17b13889dd91fa40950a0f70a02b37659da1f",
+      "lines": [
+        [
+          36,
+          95
+        ],
+        [
+          400,
+          403
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "l1_module_types",
+      "relative_path": "impl/adv_api/detail/matmul/policy/matmul_private_modules.h",
+      "sha256": "e1934286246684af49b155a77ea9952ce94fb63c4439f57ff568ee24312c2fbd",
+      "lines": [
+        [
+          55,
+          60
+        ],
+        [
+          94,
+          118
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "l1_input_tags",
+      "relative_path": "impl/adv_api/detail/matmul/utils/matmul_type_def.h",
+      "sha256": "bbcd98829a26cb3d97281f995a5c8c9d61fa9811356ba1f0058c169aeaa23081",
+      "lines": [
+        [
+          43,
+          53
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "l1_static_step_correspondence",
+      "relative_path": "impl/adv_api/tiling/matmul/matmul_constant_tiling_impl.h",
+      "sha256": "5501743619f4d9823eaecae7f1f9c3acb0831a1573526b70c2df5c197ebeec0f",
+      "lines": [
+        [
+          396,
+          431
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "l1_debug_check_scope",
+      "relative_path": "impl/adv_api/detail/matmul/param/matmul_shape_tiling.h",
+      "sha256": "c9edef2ce2870de4007acff91931150c76b40afaf981029e24c8dec84aeb35b3",
+      "lines": [
+        [
+          40,
+          63
+        ],
+        [
+          237,
+          265
+        ]
+      ],
+      "server_reviewed_sha256": "c9edef2ce2870de4007acff91931150c76b40afaf981029e24c8dec84aeb35b3",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
     }
-  ]
+  ],
+  "l1_revision": "DEPTH_COUNTS_BASIC_BLOCKS; SHARE_L1_IS_POOL_BOUND; FIXED_NO_BIAS_EXACT_MATCH_REQUIRED"
 }

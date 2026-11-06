@@ -252,3 +252,12 @@ Runner Golden/Guard/Readonly/log failures and evidence gates. Host/Runner compil
 and normal/Fault SDK syntax checks returned0 within the limited scopes above.
 `local-validation.json` explicitly leaves actual frozen-data quality, real Host
 resources, official OPP Build and every device/performance stage NOT_RUN.
+
+## L1 resource-contract bugfix
+
+The original Host L1 expression double-counted step dimensions and the shared
+pool. See [L1_CONTRACT.md](L1_CONTRACT.md) for the installed-SDK allocation proof,
+strict equality/capacity and depth/step guards, regression coverage and fresh
+Prepare/Host commands. The reported368640 B allocation now replaces the erroneous
+2826240 B estimate for the supplied depth20/10 and step20/5 values. No prior report
+is edited, and no Kernel correctness or server rerun PASS is claimed by this fix.
