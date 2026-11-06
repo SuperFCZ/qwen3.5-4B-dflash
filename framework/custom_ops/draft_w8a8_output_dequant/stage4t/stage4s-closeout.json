@@ -1,0 +1,24 @@
+{
+  "stage": "4S",
+  "source": "USER_REPORTED_DEVICE_RESULT",
+  "artifact_revalidation": "NOT_PERFORMED_NO_RUN_ROOT_SUPPLIED",
+  "phases": [
+    "Build",
+    "Host-only",
+    "Bounded",
+    "Full",
+    "Fault",
+    "Benchmark",
+    "Profile"
+  ],
+  "reported_all_pass": true,
+  "baseline_ms": 2.77508,
+  "strided_ms": 2.76595,
+  "samples_per_variant": 90,
+  "rounds": 3,
+  "ratio": 1.003300855,
+  "required_ratio": 1.03,
+  "decision": "NO_GO_NO_MATERIAL_IMPROVEMENT",
+  "policy": "FROZEN_NO_FURTHER_DATACOPY_TUNING",
+  "retained_baseline": "Stage4P N256 XOR/OR"
+}
