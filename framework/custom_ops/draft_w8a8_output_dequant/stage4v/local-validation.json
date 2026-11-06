@@ -1,0 +1,31 @@
+{
+  "stage": "4V",
+  "validation_date": "2026-11-06",
+  "scope": "LOCAL_DEVELOPMENT_ONLY",
+  "cpu": {
+    "macos": {
+      "passed": 35,
+      "failed": 0
+    },
+    "docker_linux_arm64": {
+      "passed": 35,
+      "failed": 0
+    }
+  },
+  "source_review": "LOCAL_SDK_CONTRACT_REVIEWED_SERVER_IDENTITY_GATE_REQUIRED",
+  "host_probe": "LOCAL_COMPILED_NOT_EXECUTED",
+  "runner": "LOCAL_COMPILED_WITH_FAILING_PRIVATE_API_STUB_NOT_EXECUTED",
+  "kernel": "LOCAL_SDK_SYNTAX_ACCEPTED_NORMAL_AND_FAULT_WITH_TILING_DECODE_ADAPTER",
+  "manual_object_probe": "NOT_ACCEPTED_AS_COMPUTE_BODY_PROOF_IDENTICAL_132_BYTE_TEXT",
+  "actual_full_k_host_query": "NOT_RUN",
+  "actual_tiling_and_resources": "NOT_RUN",
+  "actual_frozen_quantization_quality": "NOT_RUN",
+  "official_opp_build": "NOT_RUN",
+  "npu_correctness": "NOT_RUN",
+  "device_fault_coverage": "NOT_RUN",
+  "benchmark": "NOT_RUN",
+  "profile": "NOT_RUN",
+  "quality_go": "UNRESOLVED",
+  "production": "NOT_APPROVED",
+  "local_libraries": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+}

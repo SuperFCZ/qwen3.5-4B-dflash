@@ -1,0 +1,220 @@
+{
+  "status": "SOURCE_CONTRACT_REVIEWED_LOCAL_IDENTITIES_SERVER_GATE_REQUIRED",
+  "local_root": "/usr/local/Ascend/cann-9.0.0",
+  "scope": "Full-K normal scheduler K-loop + one Local NZ output; no runtime or performance assertion",
+  "sources": [
+    {
+      "id": "base",
+      "relative_path": "impl/adv_api/detail/matmul/matmul_impl_base.h",
+      "sha256": "923527715a9baa2147538221ccf82afc14b5fd4f913b42363adbf00eb2de5006",
+      "bytes": 31237,
+      "lines": [
+        [
+          334,
+          346
+        ],
+        [
+          459,
+          462
+        ],
+        [
+          505,
+          542
+        ],
+        [
+          601,
+          646
+        ]
+      ],
+      "server_reviewed_sha256": "923527715a9baa2147538221ccf82afc14b5fd4f913b42363adbf00eb2de5006",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "scheduler",
+      "relative_path": "impl/adv_api/detail/matmul/scheduler/base/scheduler_norm.h",
+      "sha256": "bb565c78b53644f63cdf89cef18f4d622f11f4fca755ce03b989347f5f5083cd",
+      "bytes": 13193,
+      "lines": [
+        [
+          93,
+          122
+        ],
+        [
+          164,
+          206
+        ],
+        [
+          242,
+          257
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "scheduler_base",
+      "relative_path": "impl/adv_api/detail/matmul/scheduler/base/scheduler_base.h",
+      "sha256": "e37c5029455b8ffac29e2a51652592d02830504e77ce68b6d3fe7d4902d9a2a4",
+      "bytes": 23836,
+      "lines": [
+        [
+          149,
+          167
+        ],
+        [
+          363,
+          386
+        ]
+      ],
+      "server_reviewed_sha256": "e37c5029455b8ffac29e2a51652592d02830504e77ce68b6d3fe7d4902d9a2a4",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "scheduler_reset",
+      "relative_path": "impl/adv_api/detail/matmul/scheduler/base/scheduler_norm_base.h",
+      "sha256": "5f4385b9683bb6a6a7ba68186f7aa81ecb01327aad52f31b0cc7cffb3e609685",
+      "bytes": 18197,
+      "lines": [
+        [
+          59,
+          62
+        ],
+        [
+          180,
+          188
+        ]
+      ],
+      "server_reviewed_sha256": "5f4385b9683bb6a6a7ba68186f7aa81ecb01327aad52f31b0cc7cffb3e609685",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "quant",
+      "relative_path": "impl/adv_api/detail/matmul/stage/copy_cube_out/quant/quant_processor_datacopy.h",
+      "sha256": "10438170dde8cb131bf3ba9443955d101d5e7936aa27dc38127677cb1b898c7c",
+      "bytes": 6914,
+      "lines": [
+        [
+          49,
+          54
+        ],
+        [
+          109,
+          111
+        ],
+        [
+          113,
+          124
+        ],
+        [
+          143,
+          160
+        ]
+      ],
+      "server_reviewed_sha256": "10438170dde8cb131bf3ba9443955d101d5e7936aa27dc38127677cb1b898c7c",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "copyout",
+      "relative_path": "impl/adv_api/detail/matmul/stage/copy_cube_out/copy_cube_out_datacopy.h",
+      "sha256": "e572b74a29a2d09cc66f79fba676400e4900ef5ceadddf3f6abb99746ab14aad",
+      "bytes": 30236,
+      "lines": [
+        [
+          75,
+          88
+        ],
+        [
+          107,
+          136
+        ],
+        [
+          245,
+          294
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    },
+    {
+      "id": "workspace",
+      "relative_path": "impl/adv_api/detail/matmul/resource/local_workspace/matmul_local_workspace.h",
+      "sha256": "dbffdce3b74c3e18414c1c5e89e4a4260ec64654eeccc58f172ed89f7ae6c08b",
+      "bytes": 14174,
+      "lines": [
+        [
+          156,
+          181
+        ],
+        [
+          189,
+          196
+        ],
+        [
+          227,
+          233
+        ],
+        [
+          261,
+          317
+        ]
+      ],
+      "server_reviewed_sha256": "dbffdce3b74c3e18414c1c5e89e4a4260ec64654eeccc58f172ed89f7ae6c08b",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "shared_ub",
+      "relative_path": "impl/adv_api/tiling/matmul/matmul_constant_tiling_struct.h",
+      "sha256": "459baa2d5d50fbb053eb04f5afa5c4ffa024035150e2f103d59f6b82618fddc7",
+      "bytes": 17849,
+      "lines": [
+        [
+          206,
+          217
+        ]
+      ],
+      "server_reviewed_sha256": "459baa2d5d50fbb053eb04f5afa5c4ffa024035150e2f103d59f6b82618fddc7",
+      "identity_status": "MATCHES_PREVIOUS_SERVER_REVIEWED_SHA256"
+    },
+    {
+      "id": "datacopy_interface",
+      "relative_path": "impl/basic_api/kernel_operator_data_copy_intf_impl.h",
+      "sha256": "0a432937742d2625565d3eb1ef3caa930a190271faadb0344345d2382235737b",
+      "lines": [
+        [
+          1108,
+          1121
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED",
+      "note": "Stage4S user reports PASS but its SDK gate report has not been read here; no new server equality claim."
+    },
+    {
+      "id": "datacopy_device",
+      "relative_path": "impl/basic_api/dav_m200/kernel_operator_data_copy_impl.h",
+      "sha256": "8a890aa80c39380519bcba461bfd19a67060e650253622d8b49b4b2c01ea3c8f",
+      "lines": [
+        [
+          542,
+          572
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED",
+      "note": "Stage4S user reports PASS but its SDK gate report has not been read here; no new server equality claim."
+    },
+    {
+      "id": "basic_config",
+      "relative_path": "impl/adv_api/detail/matmul/utils/matmul_config_utils.h",
+      "sha256": "2a011b535bf219995b8a2d66f3bbf86359e85e4142c7f34a0a0ec641c0a1bba1",
+      "lines": [
+        [
+          338,
+          345
+        ]
+      ],
+      "server_reviewed_sha256": null,
+      "identity_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+    }
+  ]
+}
