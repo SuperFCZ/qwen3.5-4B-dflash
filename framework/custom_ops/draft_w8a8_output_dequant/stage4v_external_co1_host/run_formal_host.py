@@ -6,12 +6,16 @@ import co1_host_common as c
 import co1_build as builder
 from co1_host_dependencies import verify_binding
 from raw_probe_runtime_identity import verify_runtime
+from co1_serialization import bind_capture,compare_callbacks,verify_serialization_record
 
 STATUS={'source':'SOURCE_REVIEWED','build':'PRIVATE_OPP_COMPILED','host':'FORMAL_CO1_HOST_FEASIBLE'}
 
 
 def artifact_check(item,proof):
  c.v.verify_tree(item);verify_binding(item['core_sdk_binding']);verify_runtime(item['core_sdk_binding'])
+ recorded={x['file']['path']:x['file'] for x in item['core_sdk_binding']['dependencies']}
+ for entry in proof['serialization_binding']['sdk_sources']:
+  if recorded.get(entry['file']['path'])!=entry['file']:raise ValueError('compiled serializer SDK identity differs')
  if item['status']!='PRIVATE_OPP_COMPILED' or item['kernel_role']!='COMPILE_ONLY' or item['npu']!='NOT_RUN' or builder.installed(Path(item['opp']))!=item['installed']:raise ValueError('private Host-only artifacts changed')
  want={sub+'/'+p.name:p.read_bytes() for sub in ('op_host','op_kernel') for p in (c.HERE/sub).iterdir() if p.is_file()}
  want['op_host/co1_fields.h']=c.generated_header(proof['field_names']).encode()
@@ -39,18 +43,24 @@ def host_query(a,root,r):
   for row in rows:
    path=Path(row['json']['path']);op=path.with_name(path.stem+'-op.bin')
    row['op_serialization']=c.identity(op) if op.is_file() else None
+   payload=path.with_name(path.stem+'-cube-payload.bin');row['cube_payload']=c.identity(payload) if payload.is_file() else None
  if not rows:raise ValueError('actual registered callback did not capture evidence')
  ex=c.read(folder/'execution.json')
  if ex.get('status')!='HOST_QUERY_RETURNED_ZERO' or ex.get('returncode')!=0 or ex.get('device')!=a.device or ex.get('soc')!='Ascend310P3' or ex.get('executor_returned') is not True or ex.get('execute_api_calls')!=0 or ex.get('npu')!='NOT_RUN' or ex.get('input_payload')!='NOT_UPLOADED_NOT_READ':raise ValueError('not a valid Host-only receiver result')
- if any(x['data']!=rows[0]['data'] for x in rows):raise ValueError('formal callback drift')
+ compare_callbacks(rows)
  checks=[]
  for row in rows:
   if row['cube'] is None or row['op_serialization'] is None or row['op_serialization']['bytes']<200:raise ValueError('missing actual cube/Op serialization')
-  checks.append(c.validate_callback(row['data'],c.verify(row['cube']).read_bytes(),r['evidence'],ex))
+  resources,serialization=bind_capture(row,r['evidence'],ex);checks.append(resources)
+  serialization['callback_binary']=r['artifacts']['installed']['host']
+  serialization['compiled_callback_sources']=r['artifacts']['generated_sources']
+  serialization['sdk_runtime_libraries']=r['artifacts']['core_sdk_binding']['sdk_libraries']
+  verify_serialization_record(serialization,r['evidence']);row['serialization']=serialization
  r['execution']=c.identity(folder/'execution.json');r['resource_checks']=checks
  r['workspace_bytes']=ex['workspace_bytes'];r['workspace_accounting']=dict(callback_requested=rows[0]['data']['requested_workspace_bytes'],aclnn_returned=ex['workspace_bytes'],framework_extra=ex['workspace_bytes']-rows[0]['data']['requested_workspace_bytes'],allocation='NOT_RUN')
  r['formal_fields']=rows[0]['data']['fields']
- r['formal_cube_binary']=rows[0]['cube'];r['field_count']=50
+ r['formal_cube_binary']=rows[0]['cube_payload'];r['serialization']=rows[0]['serialization'];r['field_count']=50
+ r.update({k:r['serialization'][k] for k in ('cube_payload_offset','cube_payload_bytes','cube_payload_source','cube_payload_sha256','op_serialization_sha256','schema_sha256')})
  r['events']=dict(status='DESIGN_RECORDED_NOT_RUN',allocation='AllocEventID/ReleaseEventID, actual IDs checked at future device runtime',dependencies=c.review.dependencies())
  r['historical_formal_fields']=dict(fp16='23 UNKNOWN',raw='23 UNKNOWN',missing=r['evidence']['original_formal_unknown'],not_filled_from_co1=True)
 
@@ -73,6 +83,11 @@ def main(a):
  finally:
   try:
    c.v.verify_tree(r)
+   for row in r.get('callbacks',[]):
+    if 'serialization' in row:verify_serialization_record(row['serialization'],r['evidence'])
+   if 'serialization' in r:
+    for key in ('cube_payload_offset','cube_payload_bytes','cube_payload_source','cube_payload_sha256','op_serialization_sha256','schema_sha256'):
+     if r[key]!=r['serialization'][key]:raise ValueError('top-level serialization identity differs')
    if r['sources']!=c.sources() or 'evidence' in r and c.bind(a)!=r['evidence']:raise ValueError('source/SDK/history drift')
    if r.get('artifacts',{}).get('status')=='PRIVATE_OPP_COMPILED':artifact_check(r['artifacts'],r['evidence'])
   except Exception as e:r.update(status='BLOCKED',integrity_error=str(e))

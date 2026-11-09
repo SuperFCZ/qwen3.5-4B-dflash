@@ -29,10 +29,13 @@ def bind(args):
  r=dict(review=identity(args.review_report),sdk=sdk,codec_and_schema_sdk=vdeq_bind(args.cann_root),
   reviewed_platform=raw_host['evidence']['reviewed_platform'],preflight=raw_host['evidence']['preflight'],frozen=raw_host['evidence']['frozen'],
   policy=raw_host['evidence']['policy'],reference_raw_host=tiling['evidence']['raw_host'],
+  schema_identity=read(root/'review/report.json')['serializer']['schema'],
   schema=read(verify(read(root/'review/report.json')['serializer']['schema'])),
   original_formal_unknown=prior['formal_missing'])
  if len(r['original_formal_unknown'])!=23:raise ValueError('unexpected historical formal coverage')
  r['field_names']=schema_names(r['codec_and_schema_sdk'])
+ from co1_serialization import bind_layout
+ r['serialization_binding']=bind_layout(r)
  return r
 
 
@@ -49,17 +52,20 @@ AUX_ZERO=('depthAL1CacheUB','depthBL1CacheUB','mxTypePara')+tuple(x for prefix,e
 
 
 def generated_header(names):
+ from co1_serialization import SCHEMA_SHA
  text=capture_header(names)
+ text+='static const char* Co1SchemaSha="'+SCHEMA_SHA+'";\n'
+ text+='template<class T> void Co1MarkerFields(T& p){'+''.join('p.set_'+n+'('+str(0x13570000+i)+');' for i,n in enumerate(names))+'}\n'
  text+='template<class T> bool Co1Aux(T& p){return '+ ' && '.join([f'p.get_{n}()==0' for n in AUX_ZERO]+[f'(p.get_{n}()==0||p.get_{n}()==1)' for n in BATCH])+';}\n'
  if set(names)!=set(review.prev.raw.v.p.FIELDS)|set(BATCH)|set(AUX_ZERO):raise ValueError('unaccounted schema field')
  return text
 
 
-def validate_callback(row,binary,proof,execution):
- from tiling_decode import decode
+def validate_callback(row,op_binary,proof,execution):
+ from co1_serialization import validate_serialization
  names=proof['field_names'];p=row.get('fields')
  if not isinstance(p,dict) or set(p)!=set(names) or any(type(x)is not int for x in p.values()):raise ValueError('50 actual fields required')
- if decode(binary,proof['schema'])!=p:raise ValueError('callback JSON does not match actual serialized TCube')
+ validate_serialization(row,op_binary,proof)
  if row['status']!='FORMAL_CALLBACK_ACCEPTED' or row['context']!='REGISTERED_FORMAL_TILING_CALLBACK' or type(row['get_tiling_rc'])is not int or row['get_tiling_rc']!=0 or row['error']:raise ValueError('callback failed')
  setters=('SetAType','SetBType','SetCType','SetBiasType','SetBias','SetShape','SetOrgShape','SetFixSplit','SetBufferSpace')
  if set(row['setters'])!=set(setters) or any(x is not None and (type(x)is not int or x<0) for x in row['setters'].values()):raise ValueError('setup contract differs')

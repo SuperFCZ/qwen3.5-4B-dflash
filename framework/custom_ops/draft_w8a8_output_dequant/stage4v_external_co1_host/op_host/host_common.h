@@ -14,6 +14,7 @@
 #include "tiling/platform/platform_ascendc.h"
 #include "core_probe.h"
 #include "co1_fields.h"
+#include "nested_serialization.h"
 inline void Co1Write(const std::string&p,const void*data,size_t bytes){
  int fd=open(p.c_str(),O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW,0600);
  if(fd<0)throw std::runtime_error("capture open failed");
@@ -25,6 +26,7 @@ struct Co1Capture{
  std::string stem,fields="null",error="",status="BLOCKED";
  std::ostringstream setters;bool first=true;long long rc=-999;bool called=false;
  uint64_t ub=0,l1=0,l0a=0,l0b=0,l0c=0,system=0,arena=0,total=0;
+ Co1SerializationLayout layout{0,0,0,false};
  S4CO1CoreSnapshot core{0,0,0,-1};uint32_t selected=0;std::map<std::string,bool> checks;
  Co1Capture(){static std::atomic<unsigned>count{0};const char*d=std::getenv("DFLASH_CO1_CAPTURE_DIR");if(!d||d[0]!='/')throw std::runtime_error("absolute capture directory required");stem=std::string(d)+"/callback-"+std::to_string(count++);}
  template<class F>auto call(const char*,F f)->typename std::enable_if<std::is_void<decltype(f())>::value,void>::type{f();setters<<"null";}
@@ -34,7 +36,7 @@ struct Co1Capture{
  bool ok(){for(auto&x:checks)if(!x.second)return false;return true;}
  void finish(){std::ostringstream o;o<<"{\"status\":\""<<status<<"\",\"context\":\"REGISTERED_FORMAL_TILING_CALLBACK\",\"kernel\":\"COMPILE_ONLY\",\"npu\":\"NOT_RUN\",\"error\":\""<<error<<"\",\"setters\":{"<<setters.str()<<"},\"get_tiling_rc\":";
  if(called)o<<rc;else o<<"null";
- o<<",\"fields\":"<<fields<<",\"capacity\":{\"UB\":"<<ub<<",\"L1\":"<<l1<<",\"L0A\":"<<l0a<<",\"L0B\":"<<l0b<<",\"L0C\":"<<l0c<<"},\"core\":{\"aic\":"<<core.aic<<",\"aiv\":"<<core.aiv<<",\"all\":"<<core.all<<",\"selected\":"<<selected<<",\"arch\":"<<core.arch<<"},\"block_dim\":1,\"system_workspace_bytes\":"<<system<<",\"arena_bytes\":"<<arena<<",\"requested_workspace_bytes\":"<<total<<",\"checks\":{";
+ o<<",\"fields\":"<<fields<<",\"cube_payload_offset\":"<<layout.offset<<",\"cube_payload_bytes\":"<<layout.bytes<<",\"cube_payload_source\":\"FORMAL_RAW_TILING_DATA_PARENT_SLICE\",\"op_serialization_bytes\":"<<layout.total<<",\"schema_sha256\":\""<<Co1SchemaSha<<"\",\"layout_proof\":\"SDK_PARENT_AND_STANDALONE_MARKERS\",\"child_save_unchanged_in_selftest\":"<<(layout.childSaveLeftDestinationUnchanged?"true":"false")<<",\"standalone_cube_role\":\"DIAGNOSTIC_ONLY\",\"capacity\":{\"UB\":"<<ub<<",\"L1\":"<<l1<<",\"L0A\":"<<l0a<<",\"L0B\":"<<l0b<<",\"L0C\":"<<l0c<<"},\"core\":{\"aic\":"<<core.aic<<",\"aiv\":"<<core.aiv<<",\"all\":"<<core.all<<",\"selected\":"<<selected<<",\"arch\":"<<core.arch<<"},\"block_dim\":1,\"system_workspace_bytes\":"<<system<<",\"arena_bytes\":"<<arena<<",\"requested_workspace_bytes\":"<<total<<",\"checks\":{";
  bool f=true;for(auto&x:checks){if(!f)o<<",";f=false;o<<"\""<<x.first<<"\":"<<(x.second?"true":"false");}
  o<<"},\"external_l0c\":{\"bytes\":16384,\"start\":0,\"alignment\":1024,\"effective_shared\":0,\"allocation\":\"PLANNED_NOT_EXECUTED\"},\"ub\":{\"scratch\":202240,\"echo\":16384,\"scale\":2048,\"fp16\":8192,\"guards\":2048,\"reserve\":8192,\"total\":239104,\"effective_shared\":0}}\n";
  auto text=o.str();Co1Write(stem+".json",text.data(),text.size());}
@@ -64,6 +66,7 @@ template<class Tiling>ge::graphStatus S4CO1Tiling(gert::TilingContext*c){
    r.set("SetBias",[&]{return mm.SetBias(false);});
    r.set("SetShape",[&]{return mm.SetShape(16,256,2560);});r.set("SetOrgShape",[&]{return mm.SetOrgShape(16,256,2560);});
    r.set("SetFixSplit",[&]{return mm.SetFixSplit(16,256,128);});r.set("SetBufferSpace",[&]{return mm.SetBufferSpace(-1,-1,202240);});
+   r.layout=Co1ProveLayout<Tiling>();
    Tiling td;r.called=true;r.rc=mm.GetTiling(td.cubeTilingData);
    if(r.rc!=0)throw std::runtime_error("GetTiling rejected CO1");auto&p=td.cubeTilingData;
    std::ostringstream fields;Co1Fields(fields,p);r.fields=fields.str();
@@ -88,7 +91,9 @@ template<class Tiling>ge::graphStatus S4CO1Tiling(gert::TilingContext*c){
    c->SetBlockDim(1);c->SetTilingKey(0);auto raw=c->GetRawTilingData();
    if(!raw||!raw->GetData()||raw->GetCapacity()<td.GetDataSize())throw std::runtime_error("Op Tiling capacity");
    td.SaveToBuffer(raw->GetData(),raw->GetCapacity());raw->SetDataSize(td.GetDataSize());c->GetWorkspaceSizes(1)[0]=r.total;
-   Co1Write(r.stem+"-op.bin",raw->GetData(),td.GetDataSize());r.status="FORMAL_CALLBACK_ACCEPTED";
+   if(td.GetDataSize()!=r.layout.total||r.layout.offset+r.layout.bytes!=r.layout.total)throw std::runtime_error("actual parent serialization size changed");
+   Co1Write(r.stem+"-op.bin",raw->GetData(),td.GetDataSize());
+   Co1Write(r.stem+"-cube-payload.bin",static_cast<const uint8_t*>(raw->GetData())+r.layout.offset,r.layout.bytes);r.status="FORMAL_CALLBACK_ACCEPTED";
   }catch(const std::exception&e){r.error=e.what();std::fprintf(stderr,"CO1_HOST_REJECT: %s\n",e.what());}
   r.finish();return r.status=="FORMAL_CALLBACK_ACCEPTED"?ge::GRAPH_SUCCESS:ge::GRAPH_FAILED;
  }catch(const std::exception&e){std::fprintf(stderr,"CO1_CAPTURE_REJECT: %s\n",e.what());return ge::GRAPH_FAILED;}

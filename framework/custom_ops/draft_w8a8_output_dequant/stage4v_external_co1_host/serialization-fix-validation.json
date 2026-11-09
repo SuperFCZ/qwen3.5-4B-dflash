@@ -1,0 +1,33 @@
+{
+  "scope": "LOCAL_ONLY_NOT_SERVER_FORMAL_HOST_EVIDENCE",
+  "date": "2026-11-09",
+  "macos_cpu": {"tests": 149, "result": "PASS"},
+  "docker_arm64_cpu": {"tests": 149, "result": "PASS"},
+  "native_sdk_serializer": {
+    "parent_bytes": 248,
+    "nested_bytes": 200,
+    "nested_offset": 48,
+    "markers": "all50 fields plus all outer fields/padding",
+    "child_targets_unchanged_for_prefills": [0, 165, 255],
+    "scope": "this parent type and these local SDK libraries; not universal nested behavior"
+  },
+  "schema_sha256": "f1688b61034f91c7518f65dcf73382ee9b007ab2c461fc8244cb6b883bd1d944",
+  "serializer_header": {
+    "path": "/usr/local/Ascend/cann-9.0.0/aarch64-linux/include/register/tilingdata_base.h",
+    "sha256": "242c15b887d92f3c1d36bb927bb7540d1a9c4e626fdd3c5db1ca202590da57ab",
+    "lines": [[75,103],[151,216],[240,249]]
+  },
+  "local_binary_implementation": {
+    "libregister.so": "b827c258233358359c97362b8f86ea8599829bf4322182789ad7be91545bafc1",
+    "libopp_registry.so": "5cfad52f7f85f06e2f7b9403e43a6f65effa3f87fad997a731577fc061a039f7",
+    "source_bodies": "NOT_AVAILABLE_IN_REVIEWED_INSTALLED_HEADERS",
+    "server_identity": "NOT_ASSUMED; bound by fresh server build runtime dependency evidence"
+  },
+  "cann_host_package_and_runner_compile": "LOCAL_COMPILE_ONLY",
+  "installation": "NOT_RUN",
+  "formal_host": "NOT_RUN",
+  "npu": "NOT_RUN",
+  "benchmark": "NOT_RUN",
+  "profile": "NOT_RUN",
+  "historical_failed_reports": "UNCHANGED"
+}

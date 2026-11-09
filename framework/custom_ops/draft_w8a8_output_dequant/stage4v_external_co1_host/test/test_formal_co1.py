@@ -4,24 +4,36 @@ from pathlib import Path
 import pytest
 HERE=Path(__file__).resolve().parents[1];sys.path.insert(0,str(HERE))
 import co1_host_common as c
+import co1_serialization as ser
 import run_formal_host as run
 
 
 def fixture():
- names=list(c.v.p.FIELDS)+list(c.BATCH)+list(c.AUX_ZERO)
+ schema=json.loads((HERE/'test/fixtures/tcube-schema.json').read_text());names=[x['name'] for x in schema['fields']]
  p={k:0 for k in names};p.update(usedCoreNum=1,singleCoreM=16,singleCoreN=256,singleCoreK=2560,baseM=16,baseN=256,baseK=128,depthA1=20,depthB1=10,stepM=1,stepN=1,stepKa=20,stepKb=5,dbL0A=2,dbL0B=2,dbL0C=1,transLength=174080,shareL1Size=368640,shareL0CSize=16384,M=16,N=256,Ka=2560,Kb=2560)
  policy=dict(aic=8,aiv=8,all=7,selected=7,arch=2002)
- proof=dict(field_names=names,schema=dict(bytes=200,fields=[dict(name=n,offset=i*4) for i,n in enumerate(names)]),policy=policy)
+ proof=dict(field_names=names,schema=schema,policy=policy,schema_identity=c.identity(HERE/'test/fixtures/tcube-schema.json'))
+ sdk=[dict(id='schema',file=dict(path='/synthetic-sdk/schema.h',bytes=1,sha256='a'*64),lines=[[1,1]]),dict(id='serialization',file=dict(path='/synthetic-sdk/tilingdata_base.h',bytes=1,sha256=ser.HEADER_SHA),lines=[[1,1]])]
+ proof['codec_and_schema_sdk']=dict(files=sdk)
+ proof['serialization_binding']=dict(method=ser.METHOD,cube_payload_offset=48,cube_payload_bytes=200,op_serialization_bytes=248,cube_payload_source=ser.SOURCE,schema_sha256=ser.SCHEMA_SHA,schema_identity=proof['schema_identity'],outer_field_offsets=ser.OUTER_OFFSETS,sdk_sources=sdk,callback_sources=[c.identity(HERE/'op_host/host_common.h')])
  row=dict(status='FORMAL_CALLBACK_ACCEPTED',context='REGISTERED_FORMAL_TILING_CALLBACK',kernel='COMPILE_ONLY',npu='NOT_RUN',error='',get_tiling_rc=0,fields=p,
   setters={k:0 for k in ('SetAType','SetBType','SetCType','SetBiasType','SetBias','SetShape','SetOrgShape','SetFixSplit','SetBufferSpace')},
   capacity=dict(UB=262144,L1=1048576,L0A=65536,L0B=65536,L0C=262144),core=policy,block_dim=1,system_workspace_bytes=4096,arena_bytes=4096,requested_workspace_bytes=9216,
   checks={k:True for k in ('shape','scope','steps','depths','L1','db','L0AB','external_L0C','UB','scratch','auxiliary_consumers','Workspace')},
   external_l0c=dict(bytes=16384,start=0,alignment=1024,effective_shared=0,allocation='PLANNED_NOT_EXECUTED'),
   ub=dict(scratch=202240,echo=16384,scale=2048,fp16=8192,guards=2048,reserve=8192,total=239104,effective_shared=0))
+ row.update(cube_payload_offset=48,cube_payload_bytes=200,op_serialization_bytes=248,cube_payload_source=ser.SOURCE,schema_sha256=ser.SCHEMA_SHA,layout_proof=ser.METHOD,standalone_cube_role='DIAGNOSTIC_ONLY')
  return row,proof,dict(workspace_bytes=9216)
 
 
-def binary(row,proof):return struct.pack('<50i',*[row['fields'][k] for k in proof['field_names']])
+def binary(row,proof):return ser.outer_bytes(row)+struct.pack('<50i',*[row['fields'][k] for k in proof['field_names']])
+
+
+@pytest.fixture(autouse=True)
+def synthetic_sdk_io(monkeypatch):
+ # Unit fixtures have no proprietary SDK files on macOS. Real SDK verification
+ # is exercised by the Docker serializer check and the production stage gate.
+ monkeypatch.setattr(ser,'verify_sdk_sources',lambda entries:None)
 
 
 def test_valid_synthetic_record_and_complete_schema():
