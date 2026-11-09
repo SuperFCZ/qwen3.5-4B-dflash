@@ -26,6 +26,12 @@ def verify_artifacts(item,proof):
  c.v.verify_tree(item)
  from raw_probe_dependencies import verify_binding
  verify_binding(item['core_sdk_binding'])
+ from raw_probe_runtime_identity import verify_runtime
+ verify_runtime(item['core_sdk_binding'])
+ runtime=c.read(c.verify(item['runtime_dependencies']))
+ if any(item['core_sdk_binding'].get(key)!=value for key,value in runtime.items()):raise ValueError('runtime dependency file differs')
+ for key in ('sdk_libraries','driver_libraries','system_libraries','driver_binding'):
+  if item[key]!=item['core_sdk_binding'][key]:raise ValueError('runtime dependency report differs: '+key)
  if item['status']!='STAGE4RAW_PRIVATE_BUILT' or item['cann_compile']!='COMPLETED' or installed(Path(item['opp']))!=item['installed']:raise ValueError('private build changed/incomplete')
  want={sub+'/'+p.name:p.read_bytes() for sub in ('op_host','op_kernel') for p in (c.HERE/sub).iterdir() if p.is_file()}
  want['op_host/t1_contract.h']=c.contract_header(proof['t1']).encode()
@@ -110,6 +116,9 @@ def main(args):
  finally:
   try:
    c.v.verify_tree(r)
+   if 'driver_binding' in r.get('artifacts',{}):
+    from raw_probe_runtime_identity import verify_runtime
+    verify_runtime(r['artifacts']['core_sdk_binding'])
    if r['sources']!=c.sources():raise ValueError('source inventory changed')
    if 'evidence' in r and c.evidence(args)[0]!=r['evidence']:raise ValueError('frozen/SDK/Host evidence changed during phase')
   except Exception as error:r.update(status='BLOCKED',integrity_error=str(error))

@@ -116,12 +116,12 @@ def build(args,root,r,source_dir):
     if 'not found' in (root/'host-ldd.log').read_text():raise ValueError('unresolved formal Host library')
     r['core_sdk_binding']['host_library']=r['installed']['host']
     r['core_sdk_binding']['host_dependencies_log']=identity(root/'host-ldd.log')
-    dependencies=[]
-    for name in re.findall(r'=>\s+(/\S+)\s+\(', (root/'host-ldd.log').read_text()):
-        real=Path(name).resolve(strict=True)
-        if '/Ascend/' in str(real) and args.cann_root.resolve() not in real.parents:raise ValueError('Host runtime library outside selected CANN')
-        if args.cann_root.resolve() in real.parents:dependencies.append(identity(name))
-    r['core_sdk_binding']['sdk_libraries']=dependencies
+    from raw_probe_runtime_identity import collect as runtime_dependencies,history_records
+    runtime=runtime_dependencies(root/'host-ldd.log',args.cann_root,history_records(r['evidence']))
+    write(root/'runtime-dependencies.json',runtime)
+    r['runtime_dependencies']=identity(root/'runtime-dependencies.json')
+    r['core_sdk_binding'].update(runtime)
+    r.update({key:runtime[key] for key in ('sdk_libraries','driver_libraries','system_libraries','driver_binding')})
     write(root/'core-sdk-binding.json',r['core_sdk_binding'])
     r['phase']='runner_build';write(root/'report.json',r)
     command(['cmake','-S',HERE/args.runner_kind,'-B',root/'runner-build','-DCANN_ROOT='+str(args.cann_root),

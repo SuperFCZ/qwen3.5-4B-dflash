@@ -176,3 +176,64 @@ Tiling, lifetime and writeback investigation before any claim about MMAD hardwar
 The six FP16 differences remain UNRESOLVED. Original FP16 Golden/tolerance and
 Stage4V Benchmark admission remain unchanged. Benchmark, Profile and device Fault
 are NOT_RUN and unavailable in this experiment.
+
+## Driver dependency identity bugfix (after279c306)
+
+The original Host `ldd` check incorrectly treated every `/usr/local/Ascend/`
+resolved path as a Toolkit file. `libascend_hal.so` is instead a separate Driver
+runtime dependency at the confirmed root `/usr/local/Ascend/driver`. The fix
+changes dependency validation only; Kernel, Host Tiling, workspace/UB/L1/L0,
+Oracle, numerical rules and execution gates are unchanged.
+
+`host/private/runtime-dependencies.json` now records separate `sdk_libraries`,
+`driver_libraries`, `system_libraries` and `driver_binding`. The same categories
+are in `report.json.artifacts` and the compiled Host binding. Toolkit paths and
+resolved targets must stay inside the selected CANN_ROOT. Driver admission allows
+only the requested name **and ELF SONAME** `libascend_hal.so`, with ELF64 LE
+AArch64 ET_DYN validation; other Driver names/SONAMEs are BLOCKED. All libraries
+have real-path/size/SHA256 identities. Every directory/file symlink is recorded;
+Driver/Toolkit escapes and changed aliases are rejected, even if bytes match.
+The confirmed Driver root itself cannot redirect elsewhere. System dependencies
+are limited to `/lib`, `/lib64`, `/usr/lib`, `/usr/lib64` and their canonical
+locations; unknown Ascend installations and arbitrary external paths remain
+BLOCKED. A Toolkit copy of HAL is not accepted as a Driver identity.
+
+Driver version inspection is limited to `version.info` and `driver/version.info`
+under that root, with identity and parsed version fields. Missing/unparseable
+version evidence is explicitly `UNRESOLVED`; no version is inferred from a path
+or SONAME. The driver compares identities against the already-bound original
+Preflight and frozen Stage4V `machine` evidence, including `{file, text}` version
+wrappers. It does not scan server logs or follow arbitrary historical reports.
+Historical version matches do **not** establish a historical HAL binary match.
+Without such a binary identity, the report records
+`UNRESOLVED_NO_HISTORICAL_DRIVER_BINARY_IDENTITY` and creates a new independent
+`driver_binding`, never a CANN SDK or NPU acceptance claim. Any available
+historical identity disagreement blocks admission. SHA256 and alias/version
+identities are rechecked before formal Host query, at stage completion and when
+Build Seal / Bounded validate prior artifacts.
+
+Regression uses synthetic AArch64 ELF and filesystem fixtures on macOS and
+Docker ARM64, without loading or executing a Driver. It covers Toolkit/Driver/OS
+classification, HAL SONAME, file changes, file/directory symlink escape and
+retargeting, unknown Ascend paths, missing version information, historical
+machine version/binary comparison, and existing SDK-header/Host-library tamper
+rejection. No calculation Kernel rebuild or NPU launch is needed for this fix.
+
+For the server rerun, retain the commands above but use a **new** root, e.g.:
+
+```bash
+RAW=/home/w00949577/qwen35-dflash-run/w8a8-independent-raw-driverfix-$(date +%Y%m%d-%H%M%S)
+bash "$D/run.sh" host --frozen-root "$FROZEN" --raw-host-report "$RAW_HOST" \
+  --device 0 --output-dir "$RAW/host"
+```
+
+Do not reuse or edit `w8a8-independent-raw-int32-20261109-020324`. Target status
+remains `FORMAL_HOST_FEASIBLE`; Build Seal and Bounded remain gated on that actual
+server result. Return `host/report.json`, `host/private/host-ldd.log` and
+`host/private/runtime-dependencies.json` (if created) if still BLOCKED.
+
+Bugfix regression on2026-11-09: macOS39/39 and Docker ARM64 39/39 CPU tests
+completed successfully, plus Python static checks. The earlier19-test local
+compile record remains historical and unchanged. This bugfix performed no new
+CANN compute build, Driver loading, formal Host query or NPU execution; server
+`FORMAL_HOST_FEASIBLE` and Raw NPU result remain NOT_RUN pending the fresh rerun.
