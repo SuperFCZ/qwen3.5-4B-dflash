@@ -4,6 +4,7 @@ from pathlib import Path
 import echo_common as c
 import echo_build as build
 from echo_dependencies import verify_binding
+from echo_execution_contract import validate_execution
 from echo_serialization import bind_capture,compare_callbacks,verify_serialization_record
 STATUS=dict(source='SOURCE_REVIEWED',cpu='CPU_TESTS_PASSED',build='PRIVATE_OPP_BUILT',host='FORMAL_HOST_FEASIBLE',echo='ECHO_NPU_MATCH')
 
@@ -27,7 +28,7 @@ def prior(path,status,r):
 def verify_host(h):
  files={Path(f['path']).name:c.verify(f) for f in h['files']}
  ex=c.read(files['execution.json'])
- if ex!=dict(status='HOST_TILING_ONLY',npu='NOT_RUN',workspace_bytes=h['evidence']['accepted_workspace'],device=h['device']):raise ValueError('Host-only receiver proof differs')
+ validate_execution(ex,h['device'],h['evidence']['accepted_workspace'],host=True)
  compare_callbacks(h['callbacks'])
  for row in h['callbacks']:
   if c.read(c.verify(row['json']))!=row['data']:raise ValueError('Host callback JSON drift')
@@ -55,16 +56,13 @@ def execute(a,root,r,host):
    r['outputs']=[c.identity(p) for p in outputs];r['comparison']=c.compare_echo(c.verify(r['data']['expected.bin']).read_bytes(),[p.read_bytes() for p in outputs]);c.write(root/'echo-comparison.json',r['comparison'])
   r['witnesses']=[dict(file=c.identity(p),analysis=witness(p.read_bytes())) for p in sorted(d.glob('witness-*.bin'))]
  ex=c.read(d/'execution.json')
- if ex['device']!=a.device or ex['workspace_bytes']!=r['evidence']['accepted_workspace']:raise ValueError('execution scope/Workspace')
+ validate_execution(ex,a.device,r['evidence']['accepted_workspace'],host=host)
  rows=[]
  for p in sorted(d.glob('callback-*.json')):
   row=dict(json=c.identity(p),data=c.read(p),cube=c.identity(p.with_name(p.stem+'-cube.bin')),op_serialization=c.identity(p.with_name(p.stem+'-op.bin')),cube_payload=c.identity(p.with_name(p.stem+'-cube-payload.bin')))
   resources,serial=bind_capture(row,r['evidence'],ex);verify_serialization_record(serial,r['evidence']);row.update(resources=resources,serialization=serial);rows.append(row)
  compare_callbacks(rows);r['callbacks']=rows
- if host:
-  if ex['status']!='HOST_TILING_ONLY' or ex['npu']!='NOT_RUN':raise ValueError('not Host-only')
- else:
-  if ex['status']!='ECHO_EXECUTION_MATCH' or ex['npu']!='COMPLETED' or ex['repetitions']!=2 or any(ex.get(k) is not True for k in ('guards','readonly','poison','repeat_equal')) or ex['cpu_fallback'] is not False or ex['l0c_guard']!='RANGE_ONLY_NO_CANARIES' or ex['vdeq16']!='NOT_IMPLEMENTED_PENDING_ECHO_PASS':raise ValueError('Echo safety contract')
+ if not host:
   if r['comparison']['status']!='MATCH' or len(r['witnesses'])!=2 or any(x['analysis']['status']!='VALID' for x in r['witnesses']):raise ValueError('Echo numerical/witness failure')
 
 

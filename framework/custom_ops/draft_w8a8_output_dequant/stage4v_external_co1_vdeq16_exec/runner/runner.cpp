@@ -1,4 +1,5 @@
 #include "runner_common.h"
+#include "execution_report.h"
 #include "aclnn_d_flash_external_co1_echo_probe.h"
 #include <iostream>
 #include <fstream>
@@ -45,7 +46,7 @@ int main(int argc,char**argv){std::string folder;try{
   if(rc!=0||!executor)throw std::runtime_error("GetWorkspaceSize rejected");
   if(bytes!=EchoExpectedWorkspace||repeat&&bytes!=previous)throw std::runtime_error("Workspace differs from admitted Formal contract");
   previous=bytes;
-  if(host){std::ofstream(folder+"/execution.json")<<"{\"status\":\"HOST_ONLY\",\"npu\":\"NOT_RUN\",\"workspace_bytes\":"<<bytes<<",\"device\":"<<r.device<<"}\n";return 0;}
+  if(host){std::ofstream out(folder+"/execution.json");echo_execution_report::Host(out,bytes,r.device);return 0;}
   if(!repeat)r.workspace.Allocate(bytes);
   const uint8_t poison=repeat?0x80:0x7f;
   Check(aclrtMemset(r.y.buffer.data,16384,poison,16384),"poison echo");Check(aclrtMemset(r.z.buffer.data,256,poison,256),"poison witness");
@@ -61,6 +62,5 @@ int main(int argc,char**argv){std::string folder;try{
   for(int i=0;i<8;++i)if(meta[8+i]>=8||!meta[16+i])throw std::runtime_error("Event witness missing");
   if(y!=expected)throw std::runtime_error("INT32 Echo mismatch");if(!repeat)first=y;else if(y!=first)throw std::runtime_error("Repeat drift");
  }
- std::ofstream out(folder+"/execution.json");out<<"{\"status\":\"ECHO_EXECUTION_MATCH\",\"npu\":\"COMPLETED\",\"device\":"<<r.device<<",\"workspace_bytes\":"<<previous<<",\"repetitions\":2,\"guards\":true,\"readonly\":true,\"poison\":true,\"repeat_equal\":true,\"l0c_guard\":\"RANGE_ONLY_NO_CANARIES\",\"vdeq16\":\"NOT_IMPLEMENTED_PENDING_ECHO_PASS\",\"cpu_fallback\":false}\n";
- if(!out)throw std::runtime_error("report write");return 0;
+ std::ofstream out(folder+"/execution.json");echo_execution_report::Echo(out,previous,r.device);return 0;
  }catch(const std::exception&e){std::cerr<<"ECHO_BLOCKED: "<<e.what()<<"\n";return 1;}}

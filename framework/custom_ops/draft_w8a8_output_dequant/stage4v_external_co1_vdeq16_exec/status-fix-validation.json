@@ -1,0 +1,33 @@
+{
+  "scope": "LOCAL_ONLY_NOT_SERVER_VERIFIED",
+  "date": "2026-11-09",
+  "baseline": "0257084",
+  "macos_cpu": {
+    "tests": 32,
+    "result": "PASS"
+  },
+  "docker_arm64_cpu": {
+    "tests": 32,
+    "result": "PASS"
+  },
+  "cross_language": "Actual C++ Host/Echo JSON producers compiled and executed on CPU; outputs validated by production Python contract and both Host gates",
+  "runner_cann_compile": {
+    "status": "COMPLETED",
+    "log_directory": "/work/build/co1-echo-statusfix-snBHp7",
+    "runner_sha256": "48605baaed1993aee40ff8affd748391e5c4cfc6d4c316bc3dbc9cb9fcad63a6",
+    "private_api": "REAL_PREVIOUSLY_GENERATED_API_AND_LIBRARY",
+    "kernel_recompile": "NOT_RUN_UNCHANGED_SOURCE"
+  },
+  "installation": "NOT_RUN",
+  "formal_host": "NOT_RUN",
+  "echo_npu": "NOT_RUN",
+  "vdeq16": "NOT_IMPLEMENTED_PENDING_REAL_ECHO_PASS",
+  "benchmark": "NOT_RUN",
+  "profile": "NOT_RUN",
+  "changed_contract_source_hashes": {
+    "runner/runner.cpp": "c3e8e1a5017fe755325cce949755f38965f0d5ee5ee188f69b271ca5397ea3cb",
+    "runner/execution_report.h": "23d2f1784bf297bb2dc83d7bffc3d32bcb059aac201ef69fc1fba4835dee1f6f",
+    "echo_execution_contract.py": "0463b7aee44da6540515d6b6b71556e0c193f1e3ff001a1315a5547f1223d0b6",
+    "run_echo.py": "dc795c69286bce7ac4921a6103a7f53ca212880c3d2696d2734952072a638da2"
+  }
+}

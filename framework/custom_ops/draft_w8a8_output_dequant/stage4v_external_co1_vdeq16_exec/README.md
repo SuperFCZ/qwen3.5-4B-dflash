@@ -189,3 +189,53 @@ injection results. Real CANN compilation uses a clearly marked local Formal
 contract fixture only for compilation, never device admission. See
 `local-validation.json`. Server Host/Echo, VDEQ16, Benchmark and Profile remain
 NOT_RUN until the corresponding real authorized test occurs.
+
+## Host execution-status contract fix (after0257084)
+
+The initial C++ Host branch emitted `HOST_ONLY`, while both Python Host gates
+required `HOST_TILING_ONLY`. This deterministically rejected an otherwise
+successful GetWorkspaceSize. `HOST_TILING_ONLY` is now the only accepted spelling;
+old reports are not rewritten or admitted through an alias.
+
+The exact Host `execution.json` contains four fields:
+
+| Field | Required value/type |
+|---|---|
+| status | string `HOST_TILING_ONLY` |
+| npu | string `NOT_RUN` |
+| workspace_bytes | integer, equal to the admitted Workspace |
+| device | integer, equal to the selected device |
+
+The production C++ JSON producers live in `runner/execution_report.h` and are
+used by the actual Runner. CPU regression compiles those same producers, runs
+them without CANN/device APIs, parses their JSON and passes every field through
+the real Python validator. The tests also exercise both `execute(host=True)` and
+`verify_host()` while mocking only the unrelated SDK/resource boundaries, checking
+that those boundary checks are still invoked. Missing, changed, extra or mistyped
+fields reject. The old spelling and RUNNING/ATTEMPTED states reject. Report write
+failures throw instead of returning Host success.
+
+The phase audit confirms these intentionally separate levels:
+
+| Phase | Runner completion | Phase report |
+|---|---|---|
+| Source | no Runner invocation | SOURCE_REVIEWED / NPU NOT_RUN |
+| CPU | no NPU Runner invocation | CPU_TESTS_PASSED / NPU NOT_RUN |
+| Build | no Runner execution | PRIVATE_OPP_BUILT / NPU NOT_RUN |
+| Formal Host | HOST_TILING_ONLY / NOT_RUN | FORMAL_HOST_FEASIBLE / NOT_RUN |
+| Echo | ECHO_EXECUTION_MATCH / COMPLETED | ECHO_NPU_MATCH / COMPLETED |
+
+Echo completion still requires exactly two repeats, all existing safety flags,
+no CPU fallback, the explicit L0C coverage limitation and the closed VDEQ16
+label. Full numerical, witness, callback, serialization, artifact and SHA256
+checks remain additional mandatory gates. No Kernel, Tiling, allocation budget,
+event, data, reference or tolerance is changed by this fix.
+
+Use **all five commands above with a fresh root**, for example
+`w8a8-external-co1-echo-statusfix-$(date +%Y%m%d-%H%M%S)`. Source identities changed,
+so old Source/CPU/Build/Host reports cannot be reused. The local check for this
+fix recompiles only the changed Runner against real CANN headers/libraries and
+its previously generated actual private API in a new directory. It does not
+install an OPP or run a device process; existing compute Kernel artifacts are
+not rebuilt for this report-only change. Historical validation reports stay
+unchanged. See `status-fix-validation.json` for this bugfix's local results.
