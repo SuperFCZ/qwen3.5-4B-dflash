@@ -115,7 +115,9 @@
       "MTE3_S",
       "S_V"
     ],
-    "l0c_guard": "RANGE_ONLY_NO_CANARIES"
+    "l0c_guard": "RANGE_ONLY_NO_CANARIES",
+    "sdk_sv_evidence": "PRECHECKED_SOURCE_INFERRED_NOT_DIRECTLY_INSTRUMENTED",
+    "location": "DEDICATED_DIAGNOSTICS_UB_VIEW_NO_MIGRATION"
   },
   "device_execution": "NOT_IMPLEMENTED",
   "host_requirements": [
@@ -124,6 +126,11 @@
     "actual Core policy and BlockDim1",
     "actual output-three Workspace request;4195328 is reference only",
     "no Matmul dequant setter; Scale belongs to direct consumer",
-    "buffers/alias intervals/event resource contracts re-admitted"
-  ]
+    "new B diagnostic buffer/guards/actual TPipe addresses/event demand re-admitted; no Reserve borrowing"
+  ],
+  "revision": "PHASE2_1_DESIGN_ONLY",
+  "selected_design": "B",
+  "ub_accounted_bytes": 240384,
+  "ub_explicit_bytes": 232192,
+  "reserve_bytes": 8192
 }

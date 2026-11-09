@@ -1,6 +1,6 @@
-# Stage4V External CO1 → VDEQ16 Phase2 design
+# Stage4V External CO1 → VDEQ16 Phase2.1 review
 
-Baseline: b2f357e, branch `feature/ascend310p-custom-ops`.
+Phase2.1 baseline:1417f198730b591c8722eed91fb09d44be71e293, branch `feature/ascend310p-custom-ops`.
 **Design/review only. No Kernel, OPP, device Runner, ACLNN execution, Benchmark or
 Profile is created/run by this directory.** All historical stages remain read only.
 
@@ -11,27 +11,42 @@ witnesses. This is not rewritten as Phase2 success. Actual file identities must
 be rechecked by the provided audit on the server; local development cannot read
 that server directory. Six original FP16 mismatches remain UNRESOLVED.
 
+The user reports the read-only Phase2 audit at
+`/home/w00949577/qwen35-dflash-run/w8a8-co1-phase2-design-20261109-114559/design-review-report.json`
+completed without errors, with all12 SDK identities and historical evidence
+reverified. It remains immutable. This revision reviews event ownership/drains;
+it does not repeat Profile extraction or create an execution implementation.
+
 ## Deliverables and decision
 
 | File | Purpose |
 |---|---|
 | SDK_CONTRACT.md | Actual9.0.0 interfaces, parameter derivation, Scale words, evidence/completion status |
-| sdk-review.json | Fixed SDK paths/SHA256/line ranges; no source snapshots |
-| MEMORY_EVENTS.md | Exact UB/L0C/GM accounting, alias migration, lifetime table and event graph |
+| sdk-review.json / phase21-sdk-review.json | Original12 identities and four-file focused ranges; no source snapshots |
+| EVENT_OWNERSHIP_REVIEW.md | Four exact SDK identities, Alloc/Fetch/Release semantics, per-time event ledger |
+| FAILURE_DRAIN_REVIEW.md | A–H ordinary-error/hardware-failure analysis and explicit missing proof |
+| DESIGN_A_VS_B.md | B preferred,240384B, dedicated diagnostics; A retained alternative |
+| MEMORY_EVENTS.md | B UB/L0C/GM accounting, lifetime table and event graph |
 | abi-design.json | New name, six tensors, sizes/layout and WitnessV2 proposal; not an Op registration file |
 | ACCEPTANCE.md | CPU/device gates, complete numeric analysis, failures and unresolved risks |
-| phase2_contract.py / test | Pure CPU byte-range, lifecycle, event-ownership and report-contract checks |
+| phase2_contract.py / phase21_contract.py / test | Pure CPU byte-range, lifecycle, event-ownership and report-contract checks |
 | phase2_evidence.py | Revalidation of all five immutable Echo stages and actual binaries/repeats/witnesses |
 | audit_phase2.py | Read-only SDK/history/design report; never invokes a device |
-| local-validation.json | Local checks and NOT_RUN boundaries |
+| local-validation.json / phase21-validation.json | Original and new local checks, separately recorded |
 
-**Overall: BLOCKED pending independent design review and completion of the event
-ownership/error-drain contract.** The ordinary VDEQ16 API, N16 geometry and the
-proposed spatial layout have evidence. The normal-path dependency graph is a
-reviewable design, not proof that every late event-allocation failure is safe.
-SDK internal Fetch(S_V), manual reservations and delayed consumer completion
-must be reconciled before implementation. New three-output Formal Host and NPU
-observation are later mandatory gates, not replaced by this plan.
+**Overall: BLOCKED; B preferred for independent review.**
+
+S_V conflicts are conditionally excluded: Alloc reserves a bit, Fetch does not;
+Fetch cannot select a valid still-reserved ID. B uses no manual S_V, requires a
+free SDK slot and a frozen same-pool ownership window, and proposes a Scalar V_S
+completion join after each of16 conversions. A needs completed S_V→V_S handoff
+before releasing its manual S_V. Release itself does not wait or cancel.
+
+Three blockers remain: selected Matmul peak per-event demand with pre-reserved
+application drain tickets; SDK-internal MTE1/input/queue cleanup at ordinary-error
+exits; B's actual TPipe/resource/Formal Host admission plus independent review.
+Known M/V/MTE2/MTE3 joins do not prove all SDK lifetimes. Hardware faults/timeouts
+have no proved finite in-Kernel drain and cannot produce success Witnesses.
 
 Do not start Kernel implementation from this commit. No broad SDK scan, new
 precision model, UB→L0C injection or reduced safety protocol is offered as a
@@ -49,17 +64,17 @@ is an investigation target rather than a fabricated API restriction.
    the integer blockLen value. All4096 elements/256 coefficients are covered.
 3. Preserve all original A/B/Scale bytes and numeric references. bit36 is MCB,
    bit46 is Sign. No reinterpretation is used to change or fit the Scale input.
-4. Explicit user UB230912 + untouched Reserve8192 =239104; external CO116384B.
-   No new TBuf or Reserve borrowing. Source layouts and all redzones remain.
-5. Publish Raw GM completely before reusing Echo UB. Use MTE3_S to close its read
-   lifetime, migrate Witness via Scalar metadata copy, and use S_V plus a proven
-   completion handshake before FP16 overwrites the old aliases. Post-Arena and
-   Witness use dead Echo payload; FP16 gets its entire8192B numerical payload.
-6. Preserve M_V, V_M, V_S, MTE2_V, V_MTE3, MTE3_MTE2, MTE2_S, S_MTE3; add explicitly
-   audited MTE3_S and S_V reuse edges. Never infer completion from End/sync=true.
+4. Preferred B explicit UB232192 + untouched Reserve8192 =240384; external
+   CO116384B. Added1280B is Arena512 + Witness256 + Guards512. Existing numerical
+   buffer/Scratch addresses remain unchanged; actual allocation requires admission.
+5. Dedicated metadata never aliases FP16 or Echo. No scalar migration or manual
+   S_V is needed. MTE3_S still closes Raw/FP16/Witness DMA before buffer release.
+6. Preserve all original barriers, producer/consumer events and End. The proposed
+   per-call V_S join supplies explicit completion reasoning; no C++ return,
+   PIPE_ALL or End is promoted to a universal drain guarantee.
 7. A new ABI has Raw INT32, FP16 and Witness outputs. Changed consumers/alias
-   lifetimes/output count require new Formal Host checks even with the same UB
-   sum. Workspace4195328 is a reference, not a hard-coded new measurement.
+   lifetimes/output count and B allocation require new Formal Host checks.
+   Workspace4195328 is a reference, not a hard-coded new measurement.
 8. Raw4096 bitwise equality, FP16 exact Repeat, complete output coverage and
    safety are prerequisites for interpreting FP16. Report exact relationships
    to both historical actual and CPU Golden separately, including new errors
@@ -91,7 +106,7 @@ Server command, repository root, fresh independent directory:
 git pull --ff-only
 export CANN_ROOT=/usr/local/Ascend/cann-9.0.0
 D=framework/custom_ops/draft_w8a8_output_dequant/stage4v_external_co1_vdeq16_phase2
-OUT=/home/w00949577/qwen35-dflash-run/w8a8-co1-phase2-design-$(date +%Y%m%d-%H%M%S)
+OUT=/home/w00949577/qwen35-dflash-run/w8a8-co1-phase21-events-$(date +%Y%m%d-%H%M%S)
 python3 -B "$D/audit_phase2.py" --cann-root "$CANN_ROOT" --device 0 \
  --echo-root /home/w00949577/qwen35-dflash-run/w8a8-external-co1-echo-hostfix-20261109-102407 \
  --co1-root /home/w00949577/qwen35-dflash-run/w8a8-co1-nestedfix-20261109-074724 \
@@ -101,7 +116,8 @@ python3 -B "$D/audit_phase2.py" --cann-root "$CANN_ROOT" --device 0 \
  --output-dir "$OUT"
 ```
 
-Return `design-review-report.json`. Exit2 means the audit completed but
+Optional new server read-only re-audit: return `design-review-report.json`.
+No new SDK excerpts are requested. Exit2 means the audit completed but
 implementation admission stays BLOCKED; exit1 means evidence/source validation
 failed. Do not treat exit2 as an execution PASS. The report includes actual
 history identities only when the complete five-root audit succeeds.
@@ -113,10 +129,11 @@ D=framework/custom_ops/draft_w8a8_output_dequant/stage4v_external_co1_vdeq16_pha
 PYTHONPATH=framework/custom_ops/draft_quant/test python3 -B -m pytest -q -p no:cacheprovider "$D/test"
 # Optional fixed-file SDK audit in existing CANN Docker, no historical root assumptions:
 python3 -B "$D/audit_phase2.py" --cann-root /usr/local/Ascend/cann-9.0.0 \
- --output-dir /work/build/NEW_PHASE2_DESIGN_AUDIT
+ --output-dir /work/build/NEW_PHASE21_EVENT_AUDIT
 ```
 
 CPU completion markers are abstract preconditions, not emulated hardware flags.
-The16384 Guard bit flips test mathematical detection coverage, not NPU fault
-injection. No local result can produce VDEQ16_NPU_MATCH. Independent review and
+The original16384 A Guard bit flips and new20480 B bit flips test mathematical
+detection coverage, not NPU fault injection. No local result can produce
+VDEQ16_NPU_MATCH. Independent review and
 closure of the stated blocker are required before the next development round.

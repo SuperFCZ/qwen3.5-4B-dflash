@@ -1,4 +1,4 @@
-# Proposed ABI and acceptance — no execution implementation
+# Phase2.1 proposed ABI and acceptance — no execution implementation
 
 `abi-design.json` is a design artifact, **not** an msopgen operator description.
 Proposed unique name: `DFlashExternalCo1Vdeq16Phase2Probe`; distinct ACLNN symbols,
@@ -22,10 +22,12 @@ Tiling numbers cannot replace new Formal Host admission.
 
 WitnessV2 keeps8 header words, then10 event IDs and10 completion/visit counts,
 then4 phase flags. Fields include failure code, actual L0C address/extent,
-explicit user-buffer end, Guard completion and **no-L0C-canary** flag. The two
-new events are MTE3_S and S_V. Validate actual IDs and ownership; invalid metadata,
-old protocol version or missing completion blocks. Metadata must move intact
-from A to B before FP16 overwrite and be published only after all final checks.
+explicit user-buffer end, Guard completion and **no-L0C-canary** flag. B reserves nine manual event types, including MTE3_S. The tenth S_V slot records
+only a prechecked/source-inferred SDK Fetch choice under a frozen pool, NOT an
+instrumented SDK allocation or device completion counter. Per-call V_S joins
+are the proposed completion witnesses; do not fabricate direct SDK telemetry.
+Validate IDs and provenance. Metadata remains in dedicated diagnostics throughout;
+there is no alias migration. Publication follows all final checks and DMA drains.
 
 ## Gates
 
@@ -75,8 +77,16 @@ Already implemented pure contract tests cover:
 * migration before Raw DMA completion, VDEQ before S_V, End before consumers,
   output publication before completion and early event release all rejected;
 * no stale completion token may authorize a later producer; IDs must be0..7;
-* resource sum239104, no alias in Guard/Reserve, no extra L0C;
+* legacy alternative A resource sum239104, no alias in Guard/Reserve, no extra L0C;
 * ABI sizes, separate numeric references and wrong-status/failed-safety rejection.
+
+Phase2.1 adds pure CPU tests for separate HardEvent bitmaps, Fetch without
+reservation, app/SDK collisions, exhaustion before unsafe Alloc, completion before
+release, all16 conversion intervals, A–H error tails, stale completion rejection,
+Witness DMA completion, hardware-timeout fail-closed behavior, and B budget240384.
+B's640 Guard words receive20480 mathematical single-bit cases. The explicit
+`prove_sdk_cleanup()` token is a missing external theorem, not evidence generated
+by a test. No successful model path grants Kernel admission.
 
 Later implementation tests must additionally compile the actual device sources
 against the admitted SDK, test actual generated ABI/report producers across
@@ -112,19 +122,24 @@ tie-breaking remain UNKNOWN unless independently evidenced.
 
 ## Outstanding issues / risks
 
-* **Implementation blocker**: event ownership and resource-exhaustion cleanup,
-  including app S_V versus SDK Fetch(S_V), need a complete reviewed reservation
-  schedule. Nominal arrows alone do not prove every error path safe.
+* **Implementation blocker**: selected Matmul per-pool peak event demand with
+  held app drain tickets, and SDK-owned MTE1/queue/L1/L0A/B lifetime at each error
+  checkpoint remain unproved. The narrowly scoped S_V conflict is conditionally
+  avoidable, per EVENT_OWNERSHIP_REVIEW.md; that does not close these blockers.
 * **Review gate**: this design has not passed an independent review. No Kernel
   development is authorized by the current BLOCKED report.
-* **Evidence gate**: local access cannot read server experiment files. Run the
-  read-only audit to verify actual SHA256s; supplied summaries alone are insufficient.
+* **Evidence gate**: the user reports prior server audit114559 succeeded with
+  all12 hashes and historical evidence verified. Preserve it unchanged. This
+  design revision's optional new read-only audit must bind its own current source
+  inventory; local checks do not re-verify unavailable server files.
 * **Future execution gates**: new ABI Formal Host/Workspace, compiler behavior,
-  alias migration and all numerical/safety observations remain NOT_RUN.
+  B's actual TPipe allocations and all numerical/safety observations remain NOT_RUN.
 * **Coverage limitation**: no L0C Canary protection; cannot claim unknown OOB
   absence solely from full Echo equality. Range/alignment proof is required.
 * **Arithmetic unknown**: SDK does not expose full internal rounding precision.
   This is an investigation target, not permission to invent a hardware model.
 
-No additional Buffer, relaxed tolerance, old report rewrite, profiling run or
-full-SDK scan is proposed to work around any of these limitations.
+One explicit1280B dedicated diagnostic allocation is proposed for B, independently
+accounted and pending new Formal Host admission. It is not borrowed Reserve or a
+way to bypass event proof. No relaxed tolerance, old report rewrite, profiling
+run or full-SDK scan is proposed.

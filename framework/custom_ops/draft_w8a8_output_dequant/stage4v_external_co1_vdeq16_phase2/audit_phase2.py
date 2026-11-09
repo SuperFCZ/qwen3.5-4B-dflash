@@ -4,6 +4,7 @@ import argparse,os
 from pathlib import Path
 import phase2_evidence as e
 import phase2_contract as contract
+import phase21_contract as event_contract
 
 
 def sdk(cann):
@@ -15,16 +16,25 @@ def sdk(cann):
   count=len(e.verify(f).read_text().splitlines())
   if not all(1<=lo<=hi<=count for lo,hi in s['lines']):raise ValueError('SDK range mismatch')
   rows.append(dict(id=s['id'],file=f,lines=s['lines'],interface=s['interface']))
- return dict(status='CURRENT_INSTALL_MATCHES_REVIEWED_9_0_0_HASHES',files=rows,release=release,release_usage='VERSION_IDENTITY_ONLY_NO_PLATFORM_QUERY',manifest=e.identity(e.HERE/'sdk-review.json'))
+ focus=e.read(e.HERE/'phase21-sdk-review.json');focused=[]
+ baseline={s['relative_path']:s for s in spec['sources']}
+ for s in focus['sources']:
+  original=baseline[s['relative_path']]
+  if any(s[k]!=original[k] for k in ('id','sha256','bytes')):raise ValueError('Phase2.1 changed SDK identity')
+  f=e.identity(cann/s['relative_path']);count=len(e.verify(f).read_text().splitlines())
+  if f['sha256']!=s['sha256'] or f['bytes']!=s['bytes'] or not all(1<=lo<=hi<=count for lo,hi in s['lines']):raise ValueError('Phase2.1 SDK binding/range differs')
+  focused.append(dict(id=s['id'],file=f,lines=s['lines']))
+ if len(focused)!=4 or len({s['id'] for s in focused})!=4:raise ValueError('expected four distinct focused sources')
+ return dict(status='CURRENT_INSTALL_MATCHES_REVIEWED_9_0_0_HASHES',files=rows,release=release,release_usage='VERSION_IDENTITY_ONLY_NO_PLATFORM_QUERY',manifest=e.identity(e.HERE/'sdk-review.json'),
+  focused_review=dict(manifest=e.identity(e.HERE/'phase21-sdk-review.json'),files=focused))
 
 
 def decision(history_checked):
- return dict(status='BLOCKED',design='READY_FOR_INDEPENDENT_REVIEW_WITH_OPEN_EVENT_CONTRACT',
-  kernel_implementation='NOT_AUTHORIZED',historical_files='SHA_REVERIFIED' if history_checked else 'NOT_READ_LOCAL_SERVER_FILES_UNAVAILABLE',
-  blockers=['independent design review pending','event reservation/release plan and failure-path completion need selected-SDK allocator demand proof before implementation'],
+ return dict(event_contract.outcome(),design='B_PREFERRED_FOR_INDEPENDENT_REVIEW_NOT_IMPLEMENTATION',
+  historical_files='SHA_REVERIFIED' if history_checked else 'NOT_READ_LOCAL_SERVER_FILES_UNAVAILABLE',
   required_later=['new three-output ABI Formal Host/resource verification','real Echo + VDEQ16 repeated device observation'],
   unknown=['VDEQ16 internal multiply precision and tie-breaking','equivalence to original FP16 Matmul live L0C','Phase2 device outcomes'],
-  kernel='NOT_CREATED',opp='NOT_CREATED',aclnn='NOT_CALLED',npu='NOT_RUN',benchmark='NOT_RUN',profile='NOT_RUN',golden='UNCHANGED')
+  golden='UNCHANGED')
 
 
 def main(a):
@@ -39,7 +49,10 @@ def main(a):
    for item in (tiling,analysis):
     if item['review_report']!=e.identity(a.review_root/'review/report.json') or item['evidence']['raw_bounded']!=original['evidence']['raw_evidence']['raw_bounded']:raise ValueError('VDEQ review/Raw evidence link differs')
    r['offline_history']={s:e.identity(a.review_root/s/'report.json') for s in ('review','tiling','analysis')}
-  r['geometry']=contract.validate_geometry(contract.geometry());r['resource_design']=contract.layout()
+  r['geometry']=contract.validate_geometry(contract.geometry());r['resource_design']=event_contract.layout_b()
+  r['alternative_resource_design_A']=contract.layout()
+  r['event_ownership_model']=dict(scope='PURE_CPU_CONDITIONAL_MODEL_NOT_DEVICE_EVIDENCE',
+    sv={plan:event_contract.sv_trace(plan) for plan in ('A','B')},manual_B=event_contract.manual_pool_trace())
   r.update(decision('history' in r));r['audit_completed']=True
  except Exception as x:r.update(status='BLOCKED',audit_completed=False,error=f'{type(x).__name__}: {x}')
  finally:
