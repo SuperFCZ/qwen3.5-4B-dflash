@@ -1,0 +1,20 @@
+{
+  "scope": "LOCAL_ONLY_NOT_SERVER_VERIFIED",
+  "date": "2026-11-09",
+  "macos_cpu_tests": {"count": 29, "result": "PASS"},
+  "docker_arm64_cpu_tests": {"count": 29, "result": "PASS"},
+  "sdk": "CANN9.0.0 fixed 19-file identity review",
+  "offline_serializer": {"fields": 50, "bytes": 200, "result": "SDK_SETTERS_SAVE_TO_BUFFER_SELF_CHECK_COMPLETED"},
+  "public_api_syntax": ["same-type UB-to-L0C wrapper", "L0C INT32 to UB half VDEQ16", "external CO1 Matmul Iterate overload"],
+  "public_api_syntax_meaning": "Local compiler acceptance only; injection bounds, CO1 Host/resources and completion contract not admitted",
+  "device_kernel": "NOT_CREATED",
+  "opp": "NOT_CREATED",
+  "device_runner": "NOT_CREATED",
+  "formal_host": "NOT_RUN",
+  "server_frozen_tiling_comparison": "NOT_RUN",
+  "server_frozen_numeric_analysis": "NOT_RUN",
+  "npu": "NOT_RUN",
+  "benchmark": "PROHIBITED",
+  "decision": "BLOCKED_L0C_INJECTION_CONTRACT_UNRESOLVED",
+  "cause": "UNRESOLVED"
+}
