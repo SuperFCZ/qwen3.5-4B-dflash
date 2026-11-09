@@ -1,0 +1,264 @@
+{
+  "cann_root": "/usr/local/Ascend/cann-9.0.0",
+  "cann_release": "9.0.0",
+  "sources": [
+    {
+      "id": "interface",
+      "relative_path": "aarch64-linux/asc/impl/basic_api/kernel_operator_data_copy_intf_impl.h",
+      "sha256": "0a432937742d2625565d3eb1ef3caa930a190271faadb0344345d2382235737b",
+      "bytes": 76974,
+      "lines": [
+        [
+          941,
+          995
+        ],
+        [
+          1099,
+          1121
+        ]
+      ],
+      "interface": "DataCopy(LocalTensor<half>, LocalTensor<int32_t>, DataCopyParams, DataCopyEnhancedParams); L0C->UB checked",
+      "identity_status": "LOCAL_AUDITED_HASH_REQUIRES_SERVER_RECHECK"
+    },
+    {
+      "id": "params",
+      "relative_path": "aarch64-linux/asc/include/basic_api/kernel_struct_data_copy.h",
+      "sha256": "8402ed99bc1be3c05f688fb92e9262531ebce6199ba953c827dcef2a47bf5343",
+      "bytes": 14796,
+      "lines": [
+        [
+          44,
+          68
+        ],
+        [
+          115,
+          137
+        ]
+      ],
+      "interface": "DataCopyParams / DataCopyEnhancedParams",
+      "identity_status": "LOCAL_AUDITED_HASH_REQUIRES_SERVER_RECHECK"
+    },
+    {
+      "id": "device",
+      "relative_path": "aarch64-linux/asc/impl/basic_api/dav_m200/kernel_operator_data_copy_impl.h",
+      "sha256": "8a890aa80c39380519bcba461bfd19a67060e650253622d8b49b4b2c01ea3c8f",
+      "bytes": 67588,
+      "lines": [
+        [
+          487,
+          505
+        ],
+        [
+          542,
+          572
+        ],
+        [
+          1057,
+          1107
+        ]
+      ],
+      "interface": "DataCopyMatrixL0C2UBImpl(half* UB,int32_t* CC,params,enhanced); CRMODE_DEQSCALE_VDEQ16",
+      "identity_status": "LOCAL_AUDITED_HASH_REQUIRES_SERVER_RECHECK"
+    },
+    {
+      "id": "copyout",
+      "relative_path": "aarch64-linux/asc/impl/adv_api/detail/matmul/stage/copy_cube_out/copy_cube_out_datacopy.h",
+      "sha256": "e572b74a29a2d09cc66f79fba676400e4900ef5ceadddf3f6abb99746ab14aad",
+      "bytes": 30236,
+      "lines": [
+        [
+          107,
+          136
+        ],
+        [
+          245,
+          294
+        ]
+      ],
+      "interface": "CopyOutNZ2NZ / CopyCo12Co2WithQuant",
+      "identity_status": "LOCAL_AUDITED_HASH_REQUIRES_SERVER_RECHECK"
+    },
+    {
+      "id": "quant",
+      "relative_path": "aarch64-linux/asc/impl/adv_api/detail/matmul/stage/copy_cube_out/quant/quant_processor_datacopy.h",
+      "sha256": "10438170dde8cb131bf3ba9443955d101d5e7936aa27dc38127677cb1b898c7c",
+      "bytes": 6914,
+      "lines": [
+        [
+          49,
+          63
+        ],
+        [
+          113,
+          124
+        ],
+        [
+          143,
+          158
+        ]
+      ],
+      "interface": "SetQuantVector / UpdateDataCopyParamForQuant / CopyQuantTensorImpl",
+      "identity_status": "LOCAL_AUDITED_HASH_REQUIRES_SERVER_RECHECK"
+    },
+    {
+      "id": "extent",
+      "relative_path": "aarch64-linux/asc/impl/basic_api/utils/kernel_check_data_copy_util.h",
+      "sha256": "63b0874089739c09f37c390608bd0a66d99bb7c928e10c94f46b7bf823051c05",
+      "bytes": 17355,
+      "lines": [
+        [
+          286,
+          311
+        ],
+        [
+          314,
+          353
+        ]
+      ],
+      "interface": "GetBurstLenUnit / CalculateDataCopyMaxOffset; conversion changes destination byte unit",
+      "identity_status": "LOCAL_AUDITED_HASH_REQUIRES_SERVER_RECHECK"
+    },
+    {
+      "id": "event",
+      "relative_path": "aarch64-linux/asc/impl/basic_api/kernel_event.h",
+      "sha256": "d974ecee61e39402dad6fa368e036b538bc1f69b05989b6b3a9fc9c946bd609c",
+      "bytes": 40944,
+      "lines": [
+        [
+          125,
+          132
+        ],
+        [
+          227,
+          237
+        ],
+        [
+          291,
+          327
+        ],
+        [
+          890,
+          915
+        ],
+        [
+          922,
+          951
+        ],
+        [
+          1030,
+          1048
+        ],
+        [
+          1093,
+          1119
+        ]
+      ],
+      "interface": "EventToIndex / SetFlagInternal / WaitFlagInternal; MTE3_S and S_V mappings",
+      "identity_status": "LOCAL_AUDITED_HASH_REQUIRES_SERVER_RECHECK"
+    },
+    {
+      "id": "tpipe",
+      "relative_path": "aarch64-linux/asc/impl/basic_api/kernel_tpipe_impl.h",
+      "sha256": "7a91fe65d16c3775fa57d15ebb63a37b275c0c9ee1c269bca4d76355e2873c8d",
+      "bytes": 48876,
+      "lines": [
+        [
+          298,
+          347
+        ],
+        [
+          443,
+          484
+        ],
+        [
+          920,
+          935
+        ]
+      ],
+      "interface": "InitBuffer / AllocEventID / ReleaseEventID / FetchEventID / ResetPool",
+      "identity_status": "LOCAL_AUDITED_HASH_REQUIRES_SERVER_RECHECK"
+    },
+    {
+      "id": "tensor",
+      "relative_path": "aarch64-linux/asc/impl/basic_api/kernel_tensor_impl.h",
+      "sha256": "1e5d6669d91e5687db76fcace1cb1b2a9af0dfde92c4b5ee65dd2b23b99b9e0a",
+      "bytes": 73563,
+      "lines": [
+        [
+          646,
+          668
+        ],
+        [
+          669,
+          719
+        ],
+        [
+          748,
+          825
+        ],
+        [
+          864,
+          866
+        ]
+      ],
+      "interface": "GetPhyAddr / GetValue / SetValue / GetPosition; Scalar UB access in MIX mode",
+      "identity_status": "LOCAL_AUDITED_HASH_REQUIRES_SERVER_RECHECK"
+    },
+    {
+      "id": "external",
+      "relative_path": "aarch64-linux/asc/impl/adv_api/detail/matmul/resource/cube_out_buffer/cube_out_buffer_extend.h",
+      "sha256": "a58a2dc187f9c4b89fa8af8b0fcb0026379fbf4b812c83273719f88f55f345a7",
+      "bytes": 2353,
+      "lines": [
+        [
+          29,
+          65
+        ]
+      ],
+      "interface": "external CO1 lifetime",
+      "identity_status": "LOCAL_AUDITED_HASH_REQUIRES_SERVER_RECHECK"
+    },
+    {
+      "id": "scheduler",
+      "relative_path": "aarch64-linux/asc/impl/adv_api/detail/matmul/scheduler/base/scheduler_base.h",
+      "sha256": "e37c5029455b8ffac29e2a51652592d02830504e77ce68b6d3fe7d4902d9a2a4",
+      "bytes": 23836,
+      "lines": [
+        [
+          91,
+          118
+        ],
+        [
+          149,
+          167
+        ]
+      ],
+      "interface": "effective shared L0C / End",
+      "identity_status": "LOCAL_AUDITED_HASH_REQUIRES_SERVER_RECHECK"
+    },
+    {
+      "id": "shared",
+      "relative_path": "aarch64-linux/asc/impl/adv_api/tiling/matmul/matmul_constant_tiling_struct.h",
+      "sha256": "459baa2d5d50fbb053eb04f5afa5c4ffa024035150e2f103d59f6b82618fddc7",
+      "bytes": 17849,
+      "lines": [
+        [
+          198,
+          217
+        ]
+      ],
+      "interface": "GetShareL0CSize / GetShareUbSize",
+      "identity_status": "LOCAL_AUDITED_HASH_REQUIRES_SERVER_RECHECK"
+    }
+  ],
+  "public_reference": {
+    "url": "https://www.hiascend.com/doc_center/source/en/CANNCommunityEdition/900/API/ascendcopapi/atlasascendc_api_07_0104.html",
+    "tables": [
+      4,
+      5,
+      6
+    ],
+    "scope": "CANN900 only; supplementary parameter semantics, not hidden arithmetic"
+  },
+  "hardware_precision": "UNKNOWN"
+}

@@ -1,0 +1,19 @@
+{
+  "date": "2026-11-09",
+  "scope": "DESIGN_AND_PURE_CPU_ONLY",
+  "macos_cpu": {"tests": 32, "result": "PASS"},
+  "docker_arm64_cpu": {"tests": 32, "result": "PASS"},
+  "mathematical_guard_bit_flip_cases": 16384,
+  "sdk_file_hash_audit": "LOCAL_INSTALL_MATCHED_12_FIXED_FILES",
+  "server_historical_file_audit": "NOT_RUN_LOCAL_SERVER_FILES_UNAVAILABLE",
+  "device_compilation": "NOT_RUN",
+  "kernel": "NOT_CREATED",
+  "opp": "NOT_CREATED",
+  "aclnn": "NOT_CALLED",
+  "npu": "NOT_RUN",
+  "benchmark": "NOT_RUN",
+  "profile": "NOT_RUN",
+  "decision": "BLOCKED_PENDING_INDEPENDENT_REVIEW_AND_EVENT_OWNERSHIP_ERROR_DRAIN_PROOF",
+  "hardware_rounding": "UNKNOWN",
+  "historical_evidence_and_golden": "UNCHANGED"
+}

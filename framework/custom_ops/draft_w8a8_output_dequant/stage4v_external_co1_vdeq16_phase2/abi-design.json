@@ -1,0 +1,129 @@
+{
+  "status": "DESIGN_ONLY_NOT_REGISTERED",
+  "proposed_op": "DFlashExternalCo1Vdeq16Phase2Probe",
+  "proposed_acl_symbol": "aclnnDFlashExternalCo1Vdeq16Phase2Probe",
+  "opp": "NEW_PRIVATE_ROOT_REQUIRED_NOT_CREATED",
+  "scope": "M16_K2560_N256_TILE0",
+  "inputs": [
+    {
+      "name": "a",
+      "shape": [
+        16,
+        2560
+      ],
+      "dtype": "INT8",
+      "format": "ND",
+      "bytes": 40960
+    },
+    {
+      "name": "b",
+      "shape": [
+        2560,
+        256
+      ],
+      "dtype": "INT8",
+      "format": "ND",
+      "bytes": 655360
+    },
+    {
+      "name": "scale",
+      "shape": [
+        256
+      ],
+      "dtype": "UINT64",
+      "format": "ND",
+      "bytes": 2048
+    }
+  ],
+  "outputs": [
+    {
+      "name": "raw_echo",
+      "shape": [
+        16,
+        256
+      ],
+      "dtype": "INT32",
+      "format": "ND",
+      "bytes": 16384,
+      "poison": [
+        "0x7f7f7f7f",
+        "0x80808080"
+      ]
+    },
+    {
+      "name": "fp16",
+      "shape": [
+        16,
+        256
+      ],
+      "dtype": "FP16",
+      "format": "ND",
+      "bytes": 8192,
+      "poison": [
+        "0x7e01",
+        "0x7fff"
+      ],
+      "nonfinite": "BLOCKED_FOR_FROZEN_FINITE_CASE"
+    },
+    {
+      "name": "witness",
+      "shape": [
+        32
+      ],
+      "dtype": "UINT64",
+      "format": "ND",
+      "bytes": 256,
+      "poison": [
+        "0x7f",
+        "0x80"
+      ],
+      "protocol": "PROPOSED_V2"
+    }
+  ],
+  "full_output_rows": 16,
+  "compact_row_stride": 256,
+  "historical_fp16_row_stride": 19456,
+  "raw_reference": "EXACT_HISTORICAL_RAW_INT32_MATCH_ALL4096",
+  "fp16_reference": "FROZEN_ACTUAL_AND_FROZEN_CPU_AS_SEPARATE_COMPARATORS_NO_NEW_GOLDEN",
+  "repeats": 2,
+  "witness": {
+    "header": [
+      0,
+      8
+    ],
+    "event_ids": [
+      8,
+      18
+    ],
+    "event_counts": [
+      18,
+      28
+    ],
+    "phase_flags": [
+      28,
+      32
+    ],
+    "events": [
+      "M_V",
+      "V_M",
+      "V_S",
+      "MTE2_V",
+      "V_MTE3",
+      "MTE3_MTE2",
+      "MTE2_S",
+      "S_MTE3",
+      "MTE3_S",
+      "S_V"
+    ],
+    "l0c_guard": "RANGE_ONLY_NO_CANARIES"
+  },
+  "device_execution": "NOT_IMPLEMENTED",
+  "host_requirements": [
+    "real TilingContext",
+    "all50 fields parent248B/cube200B offset48 proof",
+    "actual Core policy and BlockDim1",
+    "actual output-three Workspace request;4195328 is reference only",
+    "no Matmul dequant setter; Scale belongs to direct consumer",
+    "buffers/alias intervals/event resource contracts re-admitted"
+  ]
+}
