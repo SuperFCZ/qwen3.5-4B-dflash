@@ -1,0 +1,291 @@
+{
+  "cann_root": "/usr/local/Ascend/cann-9.0.0",
+  "cann_version": "9.0.0",
+  "sources": [
+    {
+      "id": "base",
+      "relative_path": "aarch64-linux/asc/impl/adv_api/detail/matmul/matmul_impl_base.h",
+      "sha256": "923527715a9baa2147538221ccf82afc14b5fd4f913b42363adbf00eb2de5006",
+      "bytes": 31237,
+      "lines": [
+        [
+          459,
+          462
+        ],
+        [
+          603,
+          615
+        ],
+        [
+          638,
+          658
+        ]
+      ],
+      "server_identity": "VERIFY_CURRENT_SERVER_INSTALL_HASH_BEFORE_USING_CONCLUSION"
+    },
+    {
+      "id": "scheduler",
+      "relative_path": "aarch64-linux/asc/impl/adv_api/detail/matmul/scheduler/base/scheduler_norm.h",
+      "sha256": "bb565c78b53644f63cdf89cef18f4d622f11f4fca755ce03b989347f5f5083cd",
+      "bytes": 13193,
+      "lines": [
+        [
+          93,
+          122
+        ],
+        [
+          164,
+          206
+        ]
+      ],
+      "server_identity": "VERIFY_CURRENT_SERVER_INSTALL_HASH_BEFORE_USING_CONCLUSION"
+    },
+    {
+      "id": "scheduler_base",
+      "relative_path": "aarch64-linux/asc/impl/adv_api/detail/matmul/scheduler/base/scheduler_base.h",
+      "sha256": "e37c5029455b8ffac29e2a51652592d02830504e77ce68b6d3fe7d4902d9a2a4",
+      "bytes": 23836,
+      "lines": [
+        [
+          61,
+          138
+        ],
+        [
+          149,
+          167
+        ],
+        [
+          363,
+          385
+        ]
+      ],
+      "server_identity": "VERIFY_CURRENT_SERVER_INSTALL_HASH_BEFORE_USING_CONCLUSION"
+    },
+    {
+      "id": "external",
+      "relative_path": "aarch64-linux/asc/impl/adv_api/detail/matmul/resource/cube_out_buffer/cube_out_buffer_extend.h",
+      "sha256": "a58a2dc187f9c4b89fa8af8b0fcb0026379fbf4b812c83273719f88f55f345a7",
+      "bytes": 2353,
+      "lines": [
+        [
+          29,
+          65
+        ]
+      ],
+      "server_identity": "VERIFY_CURRENT_SERVER_INSTALL_HASH_BEFORE_USING_CONCLUSION"
+    },
+    {
+      "id": "normal_queue",
+      "relative_path": "aarch64-linux/asc/impl/adv_api/detail/matmul/resource/cube_out_buffer/cube_out_buffer_no_unit_flag.h",
+      "sha256": "48ece4a5ed45d1f74efa2fc8c34f5c741ccdf059c1b3c2f487b14c544dc2ed28",
+      "bytes": 3066,
+      "lines": [
+        [
+          32,
+          86
+        ]
+      ],
+      "server_identity": "VERIFY_CURRENT_SERVER_INSTALL_HASH_BEFORE_USING_CONCLUSION"
+    },
+    {
+      "id": "event",
+      "relative_path": "aarch64-linux/asc/impl/basic_api/kernel_event.h",
+      "sha256": "d974ecee61e39402dad6fa368e036b538bc1f69b05989b6b3a9fc9c946bd609c",
+      "bytes": 40944,
+      "lines": [
+        [
+          291,
+          327
+        ],
+        [
+          566,
+          575
+        ],
+        [
+          890,
+          916
+        ],
+        [
+          1029,
+          1048
+        ],
+        [
+          1112,
+          1119
+        ]
+      ],
+      "server_identity": "VERIFY_CURRENT_SERVER_INSTALL_HASH_BEFORE_USING_CONCLUSION"
+    },
+    {
+      "id": "tpipe",
+      "relative_path": "aarch64-linux/asc/impl/basic_api/kernel_tpipe_impl.h",
+      "sha256": "7a91fe65d16c3775fa57d15ebb63a37b275c0c9ee1c269bca4d76355e2873c8d",
+      "bytes": 48876,
+      "lines": [
+        [
+          55,
+          75
+        ],
+        [
+          298,
+          347
+        ],
+        [
+          443,
+          484
+        ],
+        [
+          920,
+          935
+        ]
+      ],
+      "server_identity": "VERIFY_CURRENT_SERVER_INSTALL_HASH_BEFORE_USING_CONCLUSION"
+    },
+    {
+      "id": "share_allocator",
+      "relative_path": "aarch64-linux/asc/impl/basic_api/kernel_tpipe_base.h",
+      "sha256": "4d99631a40cdd33656d3f9bed5b8726f915cbbe11c7b69c62b9566bde1d164ea",
+      "bytes": 11026,
+      "lines": [
+        [
+          172,
+          211
+        ],
+        [
+          220,
+          246
+        ]
+      ],
+      "server_identity": "VERIFY_CURRENT_SERVER_INSTALL_HASH_BEFORE_USING_CONCLUSION"
+    },
+    {
+      "id": "share_getter",
+      "relative_path": "aarch64-linux/asc/impl/adv_api/tiling/matmul/matmul_constant_tiling_struct.h",
+      "sha256": "459baa2d5d50fbb053eb04f5afa5c4ffa024035150e2f103d59f6b82618fddc7",
+      "bytes": 17849,
+      "lines": [
+        [
+          190,
+          217
+        ]
+      ],
+      "server_identity": "VERIFY_CURRENT_SERVER_INSTALL_HASH_BEFORE_USING_CONCLUSION"
+    },
+    {
+      "id": "datacopy",
+      "relative_path": "aarch64-linux/asc/impl/basic_api/dav_m200/kernel_operator_data_copy_impl.h",
+      "sha256": "8a890aa80c39380519bcba461bfd19a67060e650253622d8b49b4b2c01ea3c8f",
+      "bytes": 67588,
+      "lines": [
+        [
+          487,
+          505
+        ],
+        [
+          542,
+          572
+        ],
+        [
+          1057,
+          1107
+        ]
+      ],
+      "server_identity": "VERIFY_CURRENT_SERVER_INSTALL_HASH_BEFORE_USING_CONCLUSION"
+    },
+    {
+      "id": "datacopy_interface",
+      "relative_path": "aarch64-linux/asc/impl/basic_api/kernel_operator_data_copy_intf_impl.h",
+      "sha256": "0a432937742d2625565d3eb1ef3caa930a190271faadb0344345d2382235737b",
+      "bytes": 76974,
+      "lines": [
+        [
+          1099,
+          1121
+        ]
+      ],
+      "server_identity": "VERIFY_CURRENT_SERVER_INSTALL_HASH_BEFORE_USING_CONCLUSION"
+    },
+    {
+      "id": "quant",
+      "relative_path": "aarch64-linux/asc/impl/adv_api/detail/matmul/stage/copy_cube_out/quant/quant_processor_datacopy.h",
+      "sha256": "10438170dde8cb131bf3ba9443955d101d5e7936aa27dc38127677cb1b898c7c",
+      "bytes": 6914,
+      "lines": [
+        [
+          113,
+          124
+        ],
+        [
+          143,
+          158
+        ]
+      ],
+      "server_identity": "VERIFY_CURRENT_SERVER_INSTALL_HASH_BEFORE_USING_CONCLUSION"
+    },
+    {
+      "id": "compute",
+      "relative_path": "aarch64-linux/asc/impl/adv_api/detail/matmul/stage/compute/mmad_compute.h",
+      "sha256": "c5f5dd39c23f845d4a8e4088030c6e173bf0273370d81152819432a952c66c5b",
+      "bytes": 3226,
+      "lines": [
+        [
+          26,
+          75
+        ]
+      ],
+      "server_identity": "VERIFY_CURRENT_SERVER_INSTALL_HASH_BEFORE_USING_CONCLUSION"
+    },
+    {
+      "id": "copyout",
+      "relative_path": "aarch64-linux/asc/impl/adv_api/detail/matmul/stage/copy_cube_out/copy_cube_out_datacopy.h",
+      "sha256": "e572b74a29a2d09cc66f79fba676400e4900ef5ceadddf3f6abb99746ab14aad",
+      "bytes": 30236,
+      "lines": [
+        [
+          107,
+          136
+        ],
+        [
+          245,
+          294
+        ]
+      ],
+      "server_identity": "VERIFY_CURRENT_SERVER_INSTALL_HASH_BEFORE_USING_CONCLUSION"
+    },
+    {
+      "id": "acl_meta",
+      "relative_path": "aarch64-linux/include/aclnn/acl_meta.h",
+      "sha256": "bb2deb2582c6e080f71b7e0ac4d86f1d29798750071ff6438742802a9f397453",
+      "bytes": 9285,
+      "lines": [
+        [
+          44,
+          54
+        ],
+        [
+          98,
+          132
+        ]
+      ],
+      "server_identity": "VERIFY_CURRENT_SERVER_INSTALL_HASH_BEFORE_USING_CONCLUSION"
+    },
+    {
+      "id": "tiling_context",
+      "relative_path": "aarch64-linux/include/exe_graph/runtime/tiling_context.h",
+      "sha256": "03873ce5d2d66b1aa436f222b2fd6e704dcda2a72fd1a943d3e5ee9290fd3f83",
+      "bytes": 25962,
+      "lines": [
+        [
+          337,
+          367
+        ],
+        [
+          387,
+          402
+        ]
+      ],
+      "server_identity": "VERIFY_CURRENT_SERVER_INSTALL_HASH_BEFORE_USING_CONCLUSION"
+    }
+  ],
+  "scope": "BOUNDED_DIRECT_DEPENDENCIES_NO_SDK_SOURCE_SNAPSHOTS"
+}

@@ -1,0 +1,18 @@
+{
+  "scope": "LOCAL_ONLY_NOT_SERVER_DEVICE_PROOF",
+  "date": "2026-11-09",
+  "macos_cpu": {"tests": 29, "result": "PASS"},
+  "docker_arm64_cpu": {"tests": 29, "result": "PASS"},
+  "cann": "9.0.0; fixed-file source hashes checked",
+  "interface_check": "syntax-only: External CO1 Iterate, CO1 physical mapping/TBuf allocation, Alloc/Release M_V and V_M events",
+  "formal_50_field_capture": "BLOCKED_NO_VERIFIED_OBSERVATION_INTERFACE",
+  "external_co1_formal_host": "NOT_RUN",
+  "conditional_budget_bytes": 239104,
+  "budget_is_actual_host_measurement": false,
+  "kernel": "NOT_CREATED",
+  "opp": "NOT_CREATED",
+  "device_runner": "NOT_CREATED",
+  "npu": "NOT_RUN",
+  "benchmark": "PROHIBITED",
+  "decision": "BLOCKED_PENDING_FORMAL_CONTEXT_AND_RESOURCE_ADMISSION"
+}
