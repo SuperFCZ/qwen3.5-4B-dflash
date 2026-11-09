@@ -1,0 +1,45 @@
+{
+  "scope": "LOCAL_ONLY_NOT_SERVER_VERIFIED",
+  "date": "2026-11-09",
+  "macos_cpu": {
+    "tests": 15,
+    "result": "PASS"
+  },
+  "docker_arm64_cpu": {
+    "tests": 15,
+    "result": "PASS"
+  },
+  "cpu_guard_injections": 16384,
+  "cpu_guard_words": 512,
+  "cann_compile": {
+    "status": "COMPLETED_LOCAL_ONLY",
+    "logs": "/work/build/co1-echo-20261109-final",
+    "kernel": {
+      "bytes": 23136,
+      "sha256": "efa48139212067d5dd00dba28b35e2c87a1b33a3adabae4f5415dc8cb5731cd6"
+    },
+    "runner": {
+      "bytes": 51400,
+      "sha256": "cad2a70cadc4120e847fd84c8c8b20d68c7664e09af34f05f72c04db0eda7d86"
+    },
+    "contract": "LOCAL_SYNTHETIC_COMPILE_FIXTURE_NOT_FORMAL_HOST"
+  },
+  "source_api_correction": "GetQueueEndAddress is private; only public GetPhyAddr/GetSize validate explicit user buffer ranges. No whole-pool runtime measurement is claimed.",
+  "installation": "NOT_RUN",
+  "formal_host": "NOT_RUN",
+  "echo_npu": "NOT_RUN",
+  "l0c_guard": "RANGE_ONLY_NO_CANARIES",
+  "vdeq16": "NOT_IMPLEMENTED_PENDING_REAL_ECHO_PASS",
+  "benchmark": "PROHIBITED",
+  "profile": "NOT_RUN",
+  "source_hashes": {
+    "op_host/core_probe.h": "9815338091f1150ac60e4ed2c3184423e4becd88983ed1399a361d463f2ece2d",
+    "op_host/d_flash_external_co1_echo_probe.cpp": "9d59ece08e94d87fe0601a3452d2a69c9045a2cd5a590b5a3d6619fd48edb1d9",
+    "op_host/d_flash_external_co1_echo_probe_tiling.h": "7a0bc26c23b51d5eacbf34b123cc79af8bed5230c40ee0d6767c329f95d55532",
+    "op_host/host_common.h": "cc6720b3a1f8a10f30f2a193b79e95b45acdfe646f7d79bbd168229bfbbc27c3",
+    "op_host/nested_serialization.h": "dbaf4ea96da9ec6c1c597bba6d76943b87a93f3cb51760dce4506e7eebbdb383",
+    "op_kernel/d_flash_external_co1_echo_probe.cpp": "0c5527c742715912813f9619a9ff00477456a7ae0f42ec9f1732eb60281faf17",
+    "runner/CMakeLists.txt": "9eecd91bc009f01003e3dab8cb59e24d625ecd14eed4f0fdaa2b4c4fdaf551b0",
+    "runner/runner.cpp": "793ac0ba1e486eb32ac4986bf867590cdfb75cc512f0b7cc16e43bc214acab6a"
+  }
+}
