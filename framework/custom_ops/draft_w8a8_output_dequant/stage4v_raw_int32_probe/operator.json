@@ -1,0 +1,39 @@
+[
+  {
+    "op": "DFlashFullKInt32Probe",
+    "input_desc": [
+      {
+        "name": "a",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "int8"
+        ]
+      },
+      {
+        "name": "b",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "int8"
+        ]
+      }
+    ],
+    "output_desc": [
+      {
+        "name": "o",
+        "param_type": "required",
+        "format": [
+          "ND"
+        ],
+        "type": [
+          "int32"
+        ]
+      }
+    ]
+  }
+]

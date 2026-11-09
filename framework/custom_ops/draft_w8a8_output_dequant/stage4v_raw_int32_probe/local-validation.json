@@ -1,0 +1,54 @@
+{
+  "date": "2026-11-09",
+  "scope": "LOCAL_ONLY_NOT_SERVER_VERIFIED",
+  "macos_cpu": {
+    "tests": 19,
+    "result": "PASS"
+  },
+  "docker_arm64_cpu": {
+    "tests": 19,
+    "result": "PASS"
+  },
+  "static_checks": [
+    "pyflakes",
+    "bash -n",
+    "Kernel CPU source-model bounds/lifetime",
+    "exact generated Host Make dependencies (170 source/SDK files)",
+    "private ABI INT8/INT8 -> INT32 (generated API linked)"
+  ],
+  "local_compile": {
+    "status": "COMPLETED_OFFLINE_ONLY",
+    "cann_root": "/usr/local/Ascend/cann-9.0.0",
+    "host_library": "COMPILED_LINKED",
+    "kernel": "GENERATED_OPP_CANN_CODEGEN_COMPLETED",
+    "runner": "LINKED_REAL_GENERATED_PRIVATE_API",
+    "package": "CREATED_NOT_INSTALLED",
+    "tiling": "LOCAL_SYNTHETIC_COMPILE_FIXTURE_NOT_DEVICE_PLATFORM",
+    "logs": "/work/build/raw-int32-probe-opp-20261109-final",
+    "kernel_elf": {
+      "bytes": 18608,
+      "sha256": "c6ff498b45dd2017918939a5facb7a09b4dbeb9bf8b908a34f679f334169f0fe"
+    },
+    "runner_elf": {
+      "bytes": 201992,
+      "sha256": "9229503a2696469db9ecf787748366eba711f992821738149cfd2dac7852ab63"
+    }
+  },
+  "server": {
+    "formal_host": "NOT_RUN",
+    "build": "NOT_RUN",
+    "npu": "NOT_RUN",
+    "fault": "NOT_RUN",
+    "benchmark": "NOT_RUN"
+  },
+  "original_fp16_cause": "UNRESOLVED",
+  "compiled_source_hashes": {
+    "op_host/core_probe.h": "e54fc1af1ab802ff8b8d4c1b6dc7c5c5dddc7f895df1f19aec5c56934a45d6e8",
+    "op_host/d_flash_full_k_int32_probe.cpp": "948ad4c7b70d4a70521dada461333a50c4fb5e804bc4c5c753b84ded49abdda5",
+    "op_host/d_flash_full_k_int32_probe_tiling.h": "03f013de2d184a9ba296a96e947999b30d582c625e57967116d31605dbb1cd85",
+    "op_host/host_common.h": "caf2042d8037816c9009242301350125ab11436b2c863d870ad4e828b75e02e6",
+    "op_kernel/d_flash_full_k_int32_probe.cpp": "cbff2cbb3009048592a2fed53fe0d8fc0aeb294eada5495f9ed10b2fd259a597",
+    "runner/CMakeLists.txt": "97a8a2996de36c4d9e802192f53340b9bf7f87eafe9ee187c5104d008e9afa10",
+    "runner/runner.cpp": "a97beacf09c451710d4a42a329464fb8e4904648820ad68ade9e02226f4f8b4b"
+  }
+}
