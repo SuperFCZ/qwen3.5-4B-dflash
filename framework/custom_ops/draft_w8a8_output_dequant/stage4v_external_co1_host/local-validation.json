@@ -1,0 +1,46 @@
+{
+  "date": "2026-11-09",
+  "scope": "LOCAL_ONLY_NOT_SERVER_VERIFIED",
+  "macos_cpu": {
+    "tests": 30,
+    "result": "PASS"
+  },
+  "docker_arm64_cpu": {
+    "tests": 30,
+    "result": "PASS"
+  },
+  "local_cann_compile": {
+    "status": "COMPLETED_COMPILE_ONLY",
+    "host": "REAL_CALLBACK_COMPILED",
+    "placeholder": {
+      "role": "COMPILE_ONLY",
+      "bytes": 5632,
+      "sha256": "9a78e0dab5e11c389752373b16a5f32355556c2fc25665290e03fe6ae4a58fcc"
+    },
+    "host_library": {
+      "bytes": 874456,
+      "sha256": "9d13e5e40afa7bdfd6bc01ef02842df9dd5adb83ebf14229f2bab76188a6a248"
+    },
+    "runner": {
+      "bytes": 36624,
+      "sha256": "ccdf7b91f102f8ccf0c547499c206d0c69edb11ceb309b08ce8943f9fe90fc7b",
+      "api": "REAL_GENERATED_PRIVATE_API_LINKED",
+      "symbol_audit": "GET_WORKSPACE_ONLY_NO_EXECUTE_OR_LAUNCH"
+    },
+    "logs": "/work/build/co1-formal-host-20261109-v2"
+  },
+  "installation": "NOT_RUN",
+  "formal_host": "NOT_RUN",
+  "events": "NOT_RUN",
+  "npu": "NOT_RUN",
+  "benchmark": "NOT_RUN",
+  "compiled_source_hashes": {
+    "op_host/core_probe.h": "9815338091f1150ac60e4ed2c3184423e4becd88983ed1399a361d463f2ece2d",
+    "op_host/d_flash_external_co1_host_probe.cpp": "8edc9649212089c4b0603597f7fdc8b2a3f4ae1e000c6e7234fb059c6d7d503b",
+    "op_host/d_flash_external_co1_host_probe_tiling.h": "e4d166347429db481f8d377fa67aa60251ef29f8f55b68bd1aadefcbd847ead9",
+    "op_host/host_common.h": "80dea83cdde86b42574345d9c67fa78b86c796fb0a1259f9c5921c987638decb",
+    "op_kernel/d_flash_external_co1_host_probe.cpp": "080749d8bfdb0a59dc0613ffdb042ae7593fdbc48d50a8292cce7179cdbfec3c",
+    "runner/CMakeLists.txt": "aea4209bf3d00b31369d2b7ca4f73e5566015767235dbe71766da63aa1f69f3e",
+    "runner/runner.cpp": "cd727b430cec21437679c639219657cf5a7144a25bbd6601025a71cdae2a79ed"
+  }
+}
