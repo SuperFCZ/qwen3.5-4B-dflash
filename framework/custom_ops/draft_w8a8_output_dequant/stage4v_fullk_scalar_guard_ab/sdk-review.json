@@ -1,0 +1,83 @@
+{
+  "scope": "DIRECT_UINT32_VECTOR_COMPARE_REDUCE_NOT_ADMITTED; SCALAR_FALLBACK_NO_NEW_API",
+  "sources": [
+    {
+      "relative_path": "aarch64-linux/asc/impl/basic_api/kernel_operator_vec_reduce_intf_impl.h",
+      "sha256": "87f073691c5296f19c6b2c23473635c886fc25409fbe26f6c6b43f603b1a503a",
+      "lines": [
+        [
+          181,
+          220
+        ],
+        [
+          625,
+          645
+        ],
+        [
+          688,
+          708
+        ]
+      ],
+      "finding": "Selected dav_2002 reduction overloads restrict primitive types to half/float; no uint32 reduction support assumed."
+    },
+    {
+      "relative_path": "aarch64-linux/asc/impl/basic_api/kernel_operator_vec_cmpsel_intf_impl.h",
+      "sha256": "4f852c20951d3b2cf33e812c4b320f2b7188a653bb3f409b71d2d3a737c998c5",
+      "lines": [
+        [
+          429,
+          454
+        ]
+      ],
+      "finding": "2002 CompareScalar accepts half/float input and uint8 output; bitmap footprint and GetCmpMask prior blockers are not waived."
+    },
+    {
+      "relative_path": "aarch64-linux/asc/impl/basic_api/kernel_tensor_impl.h",
+      "sha256": "1e5d6669d91e5687db76fcace1cb1b2a9af0dfde92c4b5ee65dd2b23b99b9e0a",
+      "lines": [
+        [
+          669,
+          719
+        ],
+        [
+          748,
+          825
+        ]
+      ],
+      "finding": "Existing uint32 GetValue/SetValue MIX scalar access only; candidate uses no new Vector API."
+    },
+    {
+      "relative_path": "aarch64-linux/asc/impl/basic_api/kernel_event.h",
+      "sha256": "d974ecee61e39402dad6fa368e036b538bc1f69b05989b6b3a9fc9c946bd609c",
+      "lines": [
+        [
+          890,
+          951
+        ],
+        [
+          1030,
+          1048
+        ],
+        [
+          1093,
+          1119
+        ]
+      ],
+      "finding": "Diagnostic-only V_S/S_MTE3/MTE3_MTE2/MTE3_S producer-consumer mappings; normal events unchanged."
+    },
+    {
+      "relative_path": "aarch64-linux/asc/impl/basic_api/kernel_tpipe_impl.h",
+      "sha256": "7a91fe65d16c3775fa57d15ebb63a37b275c0c9ee1c269bca4d76355e2873c8d",
+      "lines": [
+        [
+          443,
+          484
+        ]
+      ],
+      "finding": "Fetch is not reservation. Diagnostic pairs are sequential, with MTE3_S before reusing the temporary source; no new normal event use."
+    }
+  ],
+  "server_identity": "RECHECK_EXACT_HASH_AT_SOURCE_STAGE",
+  "local_identity": "MATCHED_EXISTING_CANN_9_0_0",
+  "vector_decision": "NO_GO_FOR_REVIEWED_DIRECT_UINT32_OR_UNPROVEN_BITMAP_ROUTES; NOT_A_UNIVERSAL_CLAIM_ABOUT_ALL_VECTOR_ALGORITHMS"
+}

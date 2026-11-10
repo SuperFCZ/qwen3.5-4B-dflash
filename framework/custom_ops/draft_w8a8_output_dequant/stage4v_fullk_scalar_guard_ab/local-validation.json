@@ -1,0 +1,37 @@
+{
+  "date": "2026-11-10",
+  "baseline_commit": "f225ec79eeac2f05f593025e8ed1cd5c91d2f01e",
+  "scope": "LOCAL_ONLY_NOT_SERVER_VERIFIED",
+  "candidate": "ARENA_PER_SIDE_UINT32_XOR_OR_ONLY; UB_DELTA_UNCHANGED",
+  "vector_route": "REVIEWED_DIRECT_UINT32_ROUTE_NOT_SUPPORTED; BITMAP_CONTRACTS_UNRESOLVED",
+  "macos_cpu": {"new_tests":29,"including_unchanged_exploration_tests":73,"result":"PASS"},
+  "docker_arm64_cpu": {"new_tests":29,"including_unchanged_exploration_tests":73,"result":"PASS"},
+  "cpu_coverage": {
+    "ub_single_bit_cases":36864,
+    "arena_single_bit_cases":16384,
+    "actual_source_fault_sweep":"PASS_IN_BOUNDED_CPU_MEMORY_MODEL",
+    "actual_source_abort_modes":[3,4,5,6,7],
+    "actual_source_numerics":"Full Auto7 /2 Core and Tile0 CPU model PASS",
+    "hardware_event_emulation":false
+  },
+  "sdk_hashes":"5_OF_5_FIXED_FILES_MATCHED_LOCAL_CANN9",
+  "static_checks":["exact Kernel/Host/Runner transformation audit PASS","pyflakes PASS","git diff --check PASS"],
+  "local_cann_build": {
+    "output_dir":"/work/build/fullk-arena-ab-20261110-01",
+    "contract":"SYNTHETIC_T1_COMPILE_FIXTURE_NOT_FORMAL_HOST",
+    "candidate":{"kernel_bytes":18512,"kernel_sha256":"897cc0c0d2eded3166e04637a73825652d828b843d8afad69ea4d4a840d8c692","runner_bytes":225064,"runner_sha256":"4e70ae6fe17271ad0c5a22e6e5ff9895e491ee2cec07520db7bb63325c979f59","kernel_host_api_runner_compile_link":"COMPLETED_LOCAL_ONLY"},
+    "fault":{"kernel_bytes":47176,"kernel_sha256":"6b9fbedfb6367f2331ecaab239c5a75690197b0a9abf94435138a0ed563fcc72","runner_bytes":215928,"runner_sha256":"dfc7396f233e0f0989e9c4f224fd0ac8f8e3a518f4a390f920cf577c1d6d325d","kernel_host_api_runner_compile_link":"COMPLETED_LOCAL_ONLY"},
+    "compiled_kernel_host_sources":"MATCH_CURRENT_EXACT_TRANSFORMS",
+    "installation":"NOT_RUN",
+    "local_hal":"SDK_DEVELOPMENT_STUB_NOT_SERVER_DRIVER"
+  },
+  "server_source_identity_review":"NOT_RUN",
+  "server_formal_host":"NOT_RUN",
+  "server_tile0_full_smoke":"NOT_RUN",
+  "server_device_fault":"NOT_RUN",
+  "server_paired_benchmark":"NOT_RUN",
+  "latency_improvement":"UNRESOLVED_NOT_MEASURED",
+  "numeric_status":"NUMERIC_MISMATCH_UNRESOLVED",
+  "production":"NOT_APPROVED",
+  "historical_sources_golden_opp_reports":"UNCHANGED"
+}
