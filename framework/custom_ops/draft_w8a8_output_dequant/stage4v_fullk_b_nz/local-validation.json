@@ -1,0 +1,33 @@
+{
+  "date":"2026-11-10",
+  "baseline_commit":"8252c1c71c044dc7c475b5a36c6151540ff391d7",
+  "scope":"LOCAL_ONLY_NOT_SERVER_VERIFIED",
+  "selected_representation":"B_TRANSPOSED_STORAGE_NZ_WITH_HOST_KERNEL_RUNTIME_TRANSPOSE_TRUE",
+  "logical_math":"A @ (B.T).T == A @ B",
+  "physical_B_shape":[76,80,16,16,32],
+  "logical_B_bytes":49807360,
+  "physical_B_bytes":49807360,
+  "padding_bytes":0,
+  "macos_cpu":{"new_tests":27,"including_unchanged_arena_tests":56,"result":"PASS"},
+  "docker_arm64_cpu":{"new_tests":27,"including_unchanged_arena_tests":56,"result":"PASS"},
+  "cpu_scope":"All49807360 synthetic signed bytes, all1520 SDK-addressed windows, actual candidate source in bounded CPU model, fault sites, CLI/resource gates",
+  "interface_compile":{"status":"ACCEPTED_LOCAL_ONLY","directory":"/work/build/fullk-bnz-transpose-20261110-02","notes":"Initial AuxGetC0Size namespace typo fixed; not an SDK configuration rejection"},
+  "local_cann_build":{
+    "directory":"/work/build/fullk-bnz-build-20261110-03",
+    "contract":"SYNTHETIC_T1_FOR_COMPILATION_NOT_FORMAL_HOST",
+    "candidate":{"kernel_bytes":18488,"kernel_sha256":"a5ae40ef3d10095cd769551f607f5478b6d3d141c072b7373161d3695d84ef98","runner_bytes":224992,"runner_sha256":"c1fe8dfed8e5dfd7cd4efd8d053ba55da9449337c239abef3ae30250a8ef1836","kernel_host_api_runner_compile_link":"COMPLETED_LOCAL_ONLY"},
+    "fault":{"kernel_bytes":43072,"kernel_sha256":"b8202ce422806f7f8219404e3aa62d5c0304702f6a1915b4e3f515b35b445455","runner_bytes":215920,"runner_sha256":"f6ca85f0e7635bcecbd5fe9c616d43792548cb047365a742e31642a27fac3480","kernel_host_api_runner_compile_link":"COMPLETED_LOCAL_ONLY"},
+    "initial_failure":"msopgen snake-case filename mismatch caused duplicate registration; fixed names only, logs retained in01",
+    "installation":"NOT_RUN"
+  },
+  "standalone_host_compile":{"directory":"/work/build/fullk-bnz-host-20261110-01","compile_link_returncode":0,"execution":"NOT_RUN"},
+  "server_source_and_frozen_prepack":"NOT_RUN",
+  "server_get_tiling":"NOT_RUN",
+  "formal_tiling_context":"NOT_RUN",
+  "npu_smoke_fault":"NOT_RUN",
+  "paired_benchmark":"NOT_RUN",
+  "performance_gain":"UNKNOWN",
+  "numeric_status":"NUMERIC_MISMATCH_UNRESOLVED",
+  "production":"NOT_APPROVED",
+  "historical_files":"UNCHANGED"
+}
