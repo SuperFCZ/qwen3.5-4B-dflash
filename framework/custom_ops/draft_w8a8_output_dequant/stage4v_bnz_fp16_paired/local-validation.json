@@ -1,0 +1,27 @@
+{
+  "date":"2026-11-10",
+  "baseline_commit":"971d73ed8ce550e7d4dffb417ed74f62d9dbe72a",
+  "scope":"DRIVER_AND_CPU_CONTRACTS_ONLY",
+  "macos_cpu":{"new_tests":20,"including_unchanged_stage4r_tests":70,"result":"PASS"},
+  "docker_arm64_cpu":{"new_tests":20,"including_unchanged_stage4r_tests":70,"result":"PASS"},
+  "native_cpu_runner_tests":"UNCHANGED_STAGE4R_CPP_WITH_EXPLICIT_CPU_TEST_STUBS; NOT_NPU_EVIDENCE",
+  "static_checks":["pyflakes PASS","git diff --check PASS"],
+  "local_native_cann_prerequisites":{
+    "status":"BLOCKED_MISSING_NATIVE_SDK",
+    "missing":["/usr/local/Ascend/cann-9.0.0/include/aclnnop/aclnn_mm.h","/usr/local/Ascend/cann-9.0.0/aarch64-linux/include/aclnnop/aclnn_mm.h","/usr/local/Ascend/cann-9.0.0/lib64/libopapi.so"],
+    "replacement_or_installation":"NOT_PERFORMED"
+  },
+  "new_cpp_or_kernel":"NOT_CREATED",
+  "server_build_stage":"READ_ONLY_REVALIDATION_OF_EXISTING_RUNNERS_AND_DEPENDENCIES",
+  "server_source":"NOT_RUN",
+  "server_binary_dependency_admission":"NOT_RUN",
+  "fresh_smoke":"NOT_RUN",
+  "fresh_paired_benchmark":"NOT_RUN",
+  "timing_samples":"NOT_COLLECTED_LOCALLY",
+  "new_speedup":"UNKNOWN_UNTIL_FRESH_SERVER_PAIR",
+  "profile":"NOT_RUN",
+  "native_core_count":"UNAVAILABLE_FROM_REUSED_RUNNER",
+  "w8_numeric_status":"NUMERIC_MISMATCH_UNRESOLVED",
+  "production":"NOT_APPROVED",
+  "historical_kernel_opp_golden_reports":"UNCHANGED"
+}
