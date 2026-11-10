@@ -1,0 +1,36 @@
+{
+  "date": "2026-11-10",
+  "baseline_commit": "46f9f80861f6f35da7ebcf9bc84c975fb9675256",
+  "scope": "LOCAL_ONLY_NOT_SERVER_VERIFIED",
+  "macos_cpu": {"new_tests": 22, "including_unchanged_exploration_tests": 66, "result": "PASS"},
+  "docker_arm64_cpu": {"new_tests": 22, "including_unchanged_exploration_tests": 66, "result": "PASS"},
+  "static_checks": ["pyflakes PASS", "git diff --check PASS"],
+  "msprof_help_check": {
+    "status": "INSTALLED_OPTIONS_CONFIRMED_LOCAL_ONLY",
+    "tool": "/usr/local/Ascend/cann-9.0.0/tools/profiler/bin/msprof",
+    "tool_sha256": "a168e827ebfeced390b62c062de4a42214fe2cfbcc327178708b5224519646cb",
+    "help_sha256": "fc3b8971ec5165bf694099429b792c238e0c23ee48f52d23ea0c9586f68447c2",
+    "collection": "NOT_RUN"
+  },
+  "unchanged_runner_build_check": {
+    "status": "COMPILE_LINK_COMPLETED_LOCAL_ONLY",
+    "output_dir": "/work/build/fullk-profile-runnercheck-20261110-01",
+    "configure_returncode": 0,
+    "compile_link_returncode": 0,
+    "ldd": "RESOLVED_LOCAL_DEVLIB_HAL_NOT_SERVER_DRIVER",
+    "binary_bytes": 225056,
+    "binary_sha256": "d4b37627e6e6af28fa8dcc21dd7e2ae30e0d4eb47bd5dcf09873f622a36ee670",
+    "server_runner_replacement": "NOT_PERFORMED"
+  },
+  "historical_server_reverification": "NOT_RUN_LOCAL_SERVER_FILES_UNAVAILABLE",
+  "server_profile_prepare": "NOT_RUN",
+  "new_npu_executions": "NOT_RUN",
+  "new_profile_collection": "NOT_RUN",
+  "new_benchmark": "NOT_RUN",
+  "device_counters": "UNAVAILABLE_UNTIL_SERVER_CAPTURE",
+  "bottleneck": "UNRESOLVED",
+  "first_investigation": "B_ONLY_INPUT_ND_TO_NZ_LAYOUT",
+  "first_implementation": "NOT_APPROVED_PENDING_DEVICE_EVIDENCE_AND_SDK_PROOF",
+  "numeric_status": "NUMERIC_MISMATCH_UNRESOLVED",
+  "kernel_host_tiling_golden_scale_old_reports_opp": "UNCHANGED"
+}
