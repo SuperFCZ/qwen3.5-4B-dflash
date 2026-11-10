@@ -1,0 +1,38 @@
+{
+  "date": "2026-11-10",
+  "baseline_commit": "cc1ad008d6fdeb06f22617f3b980d6d93ac95f98",
+  "scope": "NORMAL_PATH_REVIEW_OFFLINE_CONTRACTS_AND_SYNTAX_ONLY",
+  "macos_cpu": {"new_tests": 36, "with_unchanged_phase21": 106, "result": "PASS"},
+  "docker_arm64_cpu": {"new_tests": 36, "with_unchanged_phase21": 106, "result": "PASS"},
+  "static_checks": ["pyflakes", "git diff --check"],
+  "cann_interface_syntax": {
+    "status": "INTERFACE_SYNTAX_ACCEPTED_LOCAL_ONLY",
+    "returncode": 0,
+    "output_dir": "/work/build/co1-perf-interfaces-20261110-01",
+    "target": "dav-m200 __NPU_ARCH__=2002",
+    "object_emitted": false,
+    "contract": "NO_KERNEL_NO_MAIN_NO_OPP_NO_EXECUTABLE"
+  },
+  "sdk_review": {
+    "audit_completed": true,
+    "error": null,
+    "integrity_error": null,
+    "base_manifest_files_matched": 12,
+    "normal_path_manifest_files_matched": 10,
+    "server_new_identities": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+  },
+  "decision": "BLOCKED_NORMAL_PATH_EVENT_BUDGET",
+  "remaining_basic_safety_issue": "Selected normal input helper per-HardEvent peak/reuse contract with held application tickets not closed",
+  "production_failure_recovery": "DEFERRED_NOT_THE_CURRENT_BLOCKER",
+  "six_ulp_root_cause": "DEFERRED_UNRESOLVED",
+  "kernel": "NOT_CREATED",
+  "opp": "NOT_CREATED",
+  "runner": "NOT_CREATED",
+  "formal_host": "NOT_RUN",
+  "kernel_build": "NOT_RUN",
+  "smoke": "NOT_RUN",
+  "benchmark": "NOT_RUN",
+  "device_timing": "UNAVAILABLE",
+  "profile": "NOT_RUN",
+  "historical_kernel_golden_and_reports": "UNCHANGED"
+}
