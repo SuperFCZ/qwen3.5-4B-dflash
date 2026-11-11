@@ -1,0 +1,25 @@
+{
+  "date": "2026-11-11",
+  "baseline_commit": "00c414778d10e48f74e76dd433ef83a7b29dde25",
+  "scope": "NATIVE_MLP_DSO_ISOLATION_ONLY",
+  "macos_cpu": {"dso_fixtures": 26, "other_stage4w_tests": 43, "unchanged_paired_tests": 20, "total": 89, "status": "PASS"},
+  "docker_arm64_cpu": {"dso_fixtures": 26, "other_stage4w_tests": 43, "unchanged_paired_tests": 20, "total": 89, "status": "PASS"},
+  "static_checks": ["pyflakes PASS", "git diff --check PASS"],
+  "ast_audit": {
+    "guard_inputs_boundaries_snapshot_parse": "IDENTICAL_TO_BASELINE",
+    "native_case": "IDENTICAL_AFTER_REMOVING_ONLY_TWO_UNTIMED_DSO_ADMISSION_STATEMENTS",
+    "numerical_policy_outputs_and_timing_loops": "UNCHANGED"
+  },
+  "known_vendor_sha256_basis": "CAPTURE_FROM_SELECTED_SERVER_CANN_BEFORE_TORCH_IMPORT_THEN_FREEZE; NOT_GUESSED_LOCALLY",
+  "actual_server_vendor_loading": "NOT_RUN_AFTER_FIX",
+  "server_smoke": "NOT_RUN_AFTER_FIX",
+  "server_benchmark": "NOT_RUN_AFTER_FIX",
+  "kernel_or_cpp_change": "NONE",
+  "historical_checkpoint_golden_kernel_opp_reports": "UNCHANGED",
+  "old_blocked_mlp_smoke": "RETAINED_BLOCKED",
+  "old_local_validation_json": "UNCHANGED",
+  "source_lock": "UNCHANGED_STRICT_POLICY_REQUIRES_FRESH_PREPARE_AND_DOWNSTREAM_REPORTS",
+  "capture_reuse": "UNDERLYING_A2_BUNDLES_ONLY_AFTER_CURRENT_IDENTITY_REVERIFICATION",
+  "quality": "UNRESOLVED",
+  "production": "NOT_APPROVED"
+}

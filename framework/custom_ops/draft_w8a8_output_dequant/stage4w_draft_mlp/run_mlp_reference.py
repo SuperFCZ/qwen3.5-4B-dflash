@@ -14,24 +14,7 @@ import numpy as np
 import real_mlp_common as c
 import run_real_gate as gate
 from reference_r import check as fp16_check, POLICY
-
-
-def mapped_runtime(cann, maps=Path('/proc/self/maps')):
-    """Actual native process DSOs, recorded after all operators were exercised."""
-    paths=set()
-    for line in maps.read_text().splitlines():
-        parts=line.split(maxsplit=5)
-        if len(parts)!=6 or not parts[5].startswith('/') or '.so' not in parts[5]:continue
-        raw=Path(parts[5]);real=raw.resolve(strict=True)
-        if '/vendors/' in str(raw) or '/vendors/' in str(real):
-            raise ValueError('custom OPP leaked into native eager process')
-        driver=Path('/usr/local/Ascend/driver').resolve()
-        if str(raw).startswith('/usr/local/Ascend/') or str(real).startswith('/usr/local/Ascend/'):
-            if cann not in real.parents and driver not in real.parents:
-                raise ValueError('native process resolved another Ascend installation')
-        paths.add(raw)
-    if not paths:raise ValueError('native shared-library map unavailable')
-    return [dict(alias=str(p),file=c.identity(p)) for p in sorted(paths)]
+from real_mlp_dso_identity import bind_native_runtime, verify_native_binding, mapped_runtime, compare_loaded
 
 
 def guard_inputs(torch, values, device):
@@ -117,8 +100,10 @@ def native_case(torch, a, root, case, prep, gate_row, timed, r):
     result['mixed_scope']='Gate from separately safety-checked custom OPP; actual NPU SiLU/Multiply/W8A16 Down. NOT_ALL_W8A8; no combined resident call.'
     result['complete_w8a8_mlp']='NOT_RUN_DOWN_KERNEL_UNSUPPORTED'
     result['native_guard_scope']='surrounding input and boundary-copy GM guards; native internal allocations/UB guards NOT_EXPOSED; not custom-OP Guard equivalence'
+    r['runtime_libraries']=mapped_runtime(Path(r['native_dso_binding']['cann_root']),r['native_dso_binding'])
     if not timed:return
     previous=c.read(a.smoke_report)
+    compare_loaded(r['runtime_libraries'],previous['runtime_libraries'])
     prior_case=next(x for x in previous['cases'] if x['case']==case['id'])
     for name,values in anchors.items():
         for key,value in values.items():
@@ -185,6 +170,10 @@ def main(a):
             r['smoke_report']=c.identity(a.smoke_report)
         if os.environ.get('ASCEND310P_SIMULATION_ONLY')=='1' or os.environ.get('ASCEND_CUSTOM_OPP_PATH'):
             raise ValueError('real native-only process required; unset custom OPP path, no fallback')
+        if a.phase=='benchmark':verify_native_binding(old['native_dso_binding'],Path(g['cann_root']))
+        r['native_dso_binding']=bind_native_runtime(Path(g['cann_root']),g['evidence']['bnz']['build']['variants']['candidate']['build'])
+        if a.phase=='benchmark' and old['native_dso_binding']!=r['native_dso_binding']:
+            raise ValueError('native vendor/private DSO binding differs from Smoke')
         sys.path[:0]=[str(c.REPO),str(c.REPO/'framework/python')]
         import torch
         import torch_npu
@@ -195,6 +184,8 @@ def main(a):
             torch_module=c.identity(torch.__file__),torch_npu_module=c.identity(torch_npu.__file__))
         if a.phase=='benchmark' and old['environment']!=r['environment']:
             raise ValueError('native Torch runtime differs from Smoke')
+        r['runtime_libraries_after_import']=mapped_runtime(Path(g['cann_root']),r['native_dso_binding'])
+        if a.phase=='benchmark':compare_loaded(r['runtime_libraries_after_import'],old['runtime_libraries'])
         # Record stdout/stderr; inspect log size outside each continuous interval.
         sys.stdout.flush();sys.stderr.flush()
         log=(root/'native.log').open('wb');os.dup2(log.fileno(),1);os.dup2(log.fileno(),2)
@@ -203,9 +194,8 @@ def main(a):
             for case,row in zip(prep['cases'],g['runs']):
                 dest=root/case['id'];dest.mkdir()
                 native_case(torch,a,dest,case,prep,row,a.phase=='benchmark',r)
-        r['runtime_libraries']=mapped_runtime(Path(g['cann_root']))
-        if a.phase=='benchmark' and old['runtime_libraries']!=r['runtime_libraries']:
-            raise ValueError('native mapped libraries differ from Smoke')
+        r['runtime_libraries']=mapped_runtime(Path(g['cann_root']),r['native_dso_binding'])
+        if a.phase=='benchmark':compare_loaded(r['runtime_libraries'],old['runtime_libraries'],complete=True)
         r['npu']='COMPLETED'
         r['status']='REAL_MLP_BOUNDARIES_RECORDED_W8_DOWN_NOT_RUN' if a.phase=='smoke' else 'REAL_NATIVE_MLP_TIMED_W8_DOWN_NOT_RUN'
         if a.phase=='benchmark':r['benchmark']='NATIVE_EAGER_AND_MIXED_SUFFIX_ONLY'
@@ -214,7 +204,7 @@ def main(a):
         try:
             c.verify_tree(r);c.prepared(a.prepare_report)
             if r['sources']!=c.sources():raise ValueError('source changed')
-            if 'runtime_libraries' in r and r['runtime_libraries']!=mapped_runtime(Path(g['cann_root'])):
+            if 'runtime_libraries' in r and r['runtime_libraries']!=mapped_runtime(Path(g['cann_root']),r['native_dso_binding']):
                 raise ValueError('native library identity/alias changed')
         except Exception as exc:r.update(status='BLOCKED',integrity_error=str(exc))
         c.write(root/'report.json',r)

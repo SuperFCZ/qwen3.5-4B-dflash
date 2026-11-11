@@ -1,5 +1,10 @@
 # Stage4W real Draft Layer0 Gate/Up and MLP evidence
 
+For the native vendor-library isolation fix on baseline00c4147, use
+[DSO_FIX.md](DSO_FIX.md): it specifies the three exact CANN paths, private B-NZ
+identity rejection, reusable Capture inputs and required fresh Source-lock chain.
+Old BLOCKED reports must not be edited or relabeled.
+
 Independent tooling only; no historical Kernel, OPP, Golden, model or OM edits.
 See [INTEGRATION_REVIEW.md](INTEGRATION_REVIEW.md) for numerical and resource
 boundaries. **Gate/Up is supported by the frozen operator. Down is not.** Native

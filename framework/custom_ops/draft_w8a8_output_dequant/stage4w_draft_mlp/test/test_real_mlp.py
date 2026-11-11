@@ -280,17 +280,3 @@ def test_capture_fake_acl_rejected_before_data_use(tmp_path,monkeypatch):
     monkeypatch.setattr(c,'load_bundle',lambda p:b)
     with pytest.raises(ValueError,match='real replay'):
         c.capture_binding(tmp_path/'manifest.json',ck)
-
-
-def test_native_runtime_library_identity_and_custom_isolation(tmp_path):
-    lib=tmp_path/'libfixture.so';lib.write_bytes(b'unit ELF bytes')
-    alias=tmp_path/'alias.so';alias.symlink_to(lib)
-    maps=tmp_path/'maps';maps.write_text('0000-1000 r-xp 000 0:0 1 '+str(alias)+'\n')
-    before=mlp.mapped_runtime(tmp_path/'cann',maps)
-    assert before[0]['file']==c.identity(lib) and before[0]['alias']==str(alias)
-    lib.write_bytes(b'changed')
-    assert mlp.mapped_runtime(tmp_path/'cann',maps)!=before
-    custom=tmp_path/'vendors/customize';custom.mkdir(parents=True)
-    so=custom/'libcustom.so';so.write_bytes(b'unit')
-    maps.write_text('0000-1000 r-xp 000 0:0 1 '+str(so)+'\n')
-    with pytest.raises(ValueError,match='custom OPP'):mlp.mapped_runtime(tmp_path/'cann',maps)
