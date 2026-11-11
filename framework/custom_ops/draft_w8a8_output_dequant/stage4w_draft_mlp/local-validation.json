@@ -1,0 +1,40 @@
+{
+  "date": "2026-11-11",
+  "baseline_commit": "1cb521f63eac145c8cfc3abd355a2603b7466307",
+  "scope": "INDEPENDENT_REAL_DRAFT_TOOLS_AND_CPU_CONTRACTS",
+  "macos_cpu": {"new_tests": 44, "unchanged_paired_driver_tests": 20, "total": 64, "status": "PASS"},
+  "docker_arm64_cpu": {"python": "3.8.10", "new_tests": 44, "unchanged_paired_driver_tests": 20, "total": 64, "status": "PASS"},
+  "static_checks": ["pyflakes PASS", "CLI subprocess import/help PASS", "git diff --check PASS"],
+  "local_cann_cpp_check": {
+    "scope": "UNCHANGED_NORMAL_BNZ_RUNNER_ONLY_NO_KERNEL_BUILD_OR_EXECUTION",
+    "cann_root": "/usr/local/Ascend/cann-9.0.0",
+    "build_directory": "/work/build/real-draft-runner-0djF7N",
+    "configure": "PASS",
+    "translation_unit_compile": "PASS",
+    "object_sha256": "548a504629754636252f9d7cbe58801521411fe9434e86bf047ba1aeb153f693",
+    "compile_commands_sha256": "8935cb98ac3ba56c0ecbf3e0b6fa5d97dde0c2bf9217b3a085e7cea241f2802e",
+    "configure_log_sha256": "d5cf07f5c10c93e0f2dfde24d721bd68c2be766715347d975771305e31155c92",
+    "link": "BLOCKED_MISSING_LOCAL_ASCEND_DRIVER_LIBASCEND_HAL",
+    "build_log_sha256": "121d3f3eeb9365e3657e19c01425cc8e4bc7c945aabf9b6813dcd53ac6c2092d",
+    "ignored_symbols_or_replacement_libraries": "NOT_USED",
+    "server_identity": "LOCAL_ONLY_NOT_SERVER_VERIFIED"
+  },
+  "docker_native_prerequisites": {
+    "torch": "NOT_INSTALLED",
+    "torch_npu": "NOT_AVAILABLE",
+    "aclnn_mm_header": "NOT_FOUND",
+    "libopapi": "NOT_FOUND",
+    "installation_or_substitution": "NOT_PERFORMED"
+  },
+  "real_checkpoint_capture_and_conversion": "NOT_RUN_LOCALLY",
+  "server_source_build_host": "NOT_RUN",
+  "new_real_gate_npu": "NOT_RUN",
+  "new_native_or_mixed_mlp_npu": "NOT_RUN",
+  "new_performance_samples": "NOT_COLLECTED",
+  "complete_w8a8_mlp": "NOT_RUN_DOWN_KERNEL_UNSUPPORTED",
+  "online_npu_quantization": "NOT_RUN",
+  "rowwise_scale": "UNSUPPORTED_BY_FROZEN_CHANNEL_ONLY_ABI",
+  "quality": "UNRESOLVED",
+  "production": "NOT_APPROVED",
+  "historical_kernels_opps_golden_sources_reports": "UNCHANGED"
+}
