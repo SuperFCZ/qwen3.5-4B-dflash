@@ -1,5 +1,10 @@
 # Native MLP DSO isolation fix (baseline00c4147)
 
+The later [mount-aware fix](MOUNT_FIX.md) supersedes strict maps/stat device
+equality with a proved per-file translation when necessary. Its extra mount
+contract and fresh-output instructions apply; the three vendor paths below do
+not change.
+
 The old `mapped_runtime` rejected every mapped path containing `/vendors/`.
 The server has demonstrated that a native-only Torch-NPU process loads three
 normal libraries from the selected CANN installation even when

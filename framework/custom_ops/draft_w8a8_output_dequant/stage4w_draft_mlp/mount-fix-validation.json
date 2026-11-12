@@ -1,0 +1,29 @@
+{
+  "date": "2026-11-12",
+  "baseline_commit": "e7035bf8309bc0623b789e4690972cd11bb281f5",
+  "scope": "NATIVE_DSO_MOUNT_IDENTITY_ONLY",
+  "macos_cpu": {"passed": 108, "skipped": 1, "skip_reason": "real mmap witness requires Linux", "status": "PASS"},
+  "docker_arm64_cpu": {"passed": 109, "skipped": 0, "status": "PASS"},
+  "docker_live_observation": {
+    "kernel_release": "6.12.76-linuxkit",
+    "map_files_readlink": "READABLE_FOR_THREE_OBSERVED_SYSTEM_PYTHON_DSOS",
+    "map_files_open": "EPERM_ERRNO_1",
+    "observed_devices": "MAPS_AND_STAT_EQUAL_0_63",
+    "readonly_mmap_probe": "LIVE_LINUX_DISCOVERY_HASH_AND_CLEANUP_TEST_PASS",
+    "server_8_17_to_0_69_reproduction": "NOT_CLAIMED_CPU_FIXTURES_ONLY"
+  },
+  "static_checks": ["pyflakes PASS", "git diff --check PASS"],
+  "source_audit": {
+    "three_vendor_paths": "AST_IDENTICAL_TO_BASELINE",
+    "reject_private": "AST_IDENTICAL_TO_BASELINE",
+    "compare_loaded": "AST_IDENTICAL_TO_BASELINE",
+    "run_mlp_reference_math_output_and_timing": "FILE_UNCHANGED",
+    "real_mlp_common_source_hash_policy": "FILE_UNCHANGED"
+  },
+  "server_mapping_probe": "NOT_RUN_AFTER_FIX",
+  "server_smoke": "NOT_RUN_AFTER_FIX",
+  "server_benchmark": "NOT_RUN_AFTER_FIX",
+  "unknown_translation_policy": "BLOCKED_NO_DEVICE_NUMBER_ALLOWLIST",
+  "source_lock": "FRESH_PREPARE_SOURCE_BUILD_HOST_GATE_SMOKE_MLP_SMOKE_REQUIRED",
+  "historical_reports_kernel_weights_golden_checkpoint_opp": "UNCHANGED"
+}

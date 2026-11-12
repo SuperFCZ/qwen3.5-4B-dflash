@@ -28,7 +28,8 @@ def setup(tmp_path):
     runner = put(tmp_path/'bin/normal_runner', b'frozen normal runner')
     build = dict(opp=str(opp), runner=c.identity(runner), installed=dict(api=c.identity(api),
         host=c.identity(host), host_alias=str(alias), all_files=[c.identity(x) for x in (api,host,proto)]))
-    binding = d.bind_native_runtime(cann,build)
+    maps_file(tmp_path,vendors)
+    binding = d.bind_native_runtime(cann,build,proc=tmp_path)
     return cann, vendors, build, binding
 
 
@@ -37,7 +38,13 @@ def maps_file(tmp_path, paths):
     for i, p in enumerate(paths):
         st=p.stat()
         lines.append(f'{i:04x}-ffff r-xp 00000000 {os.major(st.st_dev):x}:{os.minor(st.st_dev):x} {st.st_ino} {p}')
-    path=tmp_path/'maps';path.write_text('\n'.join(lines)+'\n');return path
+    path=tmp_path/'maps';path.write_text('\n'.join(lines)+'\n')
+    st=paths[0].stat()
+    (tmp_path/'mountinfo').write_text(f'1 0 {os.major(st.st_dev)}:{os.minor(st.st_dev)} / / rw - fixturefs fixture rw\n')
+    (tmp_path/'ns').mkdir(exist_ok=True)
+    ns=tmp_path/'ns/mnt'
+    if not ns.is_symlink():ns.symlink_to('mnt:[42]')
+    return path
 
 
 def test_three_exact_normal_vendors_import_and_preflight(setup,tmp_path):
@@ -59,7 +66,7 @@ def test_known_vendor_internal_symlink_canonical_mapping(setup,tmp_path):
     cann, vendors, build, _=setup
     alias=vendors[0];real=cann/'aarch64-linux/lib64/actual_vendor.so'
     put(real,alias.read_bytes());alias.unlink();alias.symlink_to(real)
-    binding=d.bind_native_runtime(cann,build)
+    binding=d.bind_native_runtime(cann,build,proc=cann.parent)
     assert binding['vendor_libraries'][0]['symlink_chain']
     for path in (alias,real):
         rows=d.mapped_runtime(cann,binding,maps_file(tmp_path,[path]))
@@ -97,7 +104,7 @@ def test_private_copy_at_an_approved_vendor_path_is_not_allowed(setup):
     cann, vendors, build, _=setup
     vendors[2].write_bytes(c.verify(build['installed']['api']).read_bytes())
     with pytest.raises(ValueError,match='private B-NZ identity/copy'):
-        d.bind_native_runtime(cann,build)
+        d.bind_native_runtime(cann,build,proc=cann.parent)
 
 
 @pytest.mark.parametrize('before_bind',[False,True])
@@ -106,7 +113,7 @@ def test_approved_vendor_symlink_escape_blocks(setup,tmp_path,before_bind):
     outside=put(tmp_path/'outside/libvendor.so',b'other installation')
     vendors[0].unlink();vendors[0].symlink_to(outside)
     with pytest.raises(ValueError,match='escapes allowed root') as error:
-        if before_bind:d.bind_native_runtime(cann,build)
+        if before_bind:d.bind_native_runtime(cann,build,proc=cann.parent)
         else:d.mapped_runtime(cann,binding,maps_file(tmp_path,[vendors[0]]))
     assert str(vendors[0]) in str(error.value)
 
@@ -117,7 +124,7 @@ def test_symlink_out_and_back_still_blocks(setup,tmp_path):
     outside=tmp_path/'outside.so';outside.symlink_to(actual)
     vendors[0].unlink();vendors[0].symlink_to(outside)
     with pytest.raises(ValueError,match='hop escapes'):
-        d.bind_native_runtime(cann,build)
+        d.bind_native_runtime(cann,build,proc=cann.parent)
 
 
 @pytest.mark.parametrize('which',['vendor','private','runner','alias'])
@@ -143,7 +150,7 @@ def test_allowlist_cannot_be_expanded_in_a_report(setup,tmp_path):
 def test_missing_exact_vendor_blocks_without_fallback(setup):
     cann, vendors, build, _=setup;vendors[0].unlink()
     with pytest.raises(ValueError,match='missing runtime path'):
-        d.bind_native_runtime(cann,build)
+        d.bind_native_runtime(cann,build,proc=cann.parent)
 
 
 def test_nonvendor_library_identity_and_smoke_benchmark_drift(setup,tmp_path):

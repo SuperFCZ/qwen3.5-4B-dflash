@@ -1,5 +1,9 @@
 # Stage4W real Draft Layer0 Gate/Up and MLP evidence
 
+For the subsequent Linux maps/stat device mismatch fix, use
+[MOUNT_FIX.md](MOUNT_FIX.md). Device translations require per-file mapped-content
+or measured read-only overlay evidence; the inode/hash/source gates are retained.
+
 For the native vendor-library isolation fix on baseline00c4147, use
 [DSO_FIX.md](DSO_FIX.md): it specifies the three exact CANN paths, private B-NZ
 identity rejection, reusable Capture inputs and required fresh Source-lock chain.
