@@ -1,0 +1,26 @@
+#include "d_flash_down_full_kb_nz_fault_tiling.h"
+#include "host_common.h"
+namespace optiling {
+static ge::graphStatus Tiling(gert::TilingContext *c) { return S4XTiling<DFlashDownFullKBNzFaultTilingData>(c); }
+}
+namespace ge {
+static graphStatus Infer(gert::InferShapeContext *c) { return S4XShape(c); }
+static graphStatus Dtype(gert::InferDataTypeContext *c) { c->SetOutputDataType(0, DT_FLOAT16);return GRAPH_SUCCESS; }
+}
+namespace ops {
+class DFlashDownFullKBNzFault: public OpDef {
+public:
+ explicit DFlashDownFullKBNzFault(const char *n):OpDef(n) {
+  Input("a").ParamType(REQUIRED).DataType({ge::DT_INT8}).Format({ge::FORMAT_ND});
+  Input("b").ParamType(REQUIRED).DataType({ge::DT_INT8}).Format({ge::FORMAT_ND});
+  Input("scale").ParamType(REQUIRED).DataType({ge::DT_UINT64}).Format({ge::FORMAT_ND});
+  Output("o").ParamType(REQUIRED).DataType({ge::DT_FLOAT16}).Format({ge::FORMAT_ND});
+  Attr("output_mode").AttrType(OPTIONAL).Int(0);
+  Attr("core_limit").AttrType(OPTIONAL).Int(1);
+  Attr("tile_id").AttrType(OPTIONAL).Int(-1);
+  SetInferShape(ge::Infer).SetInferDataType(ge::Dtype);
+  AICore().SetTiling(optiling::Tiling).AddConfig("ascend310p");
+ }
+};
+OP_ADD(DFlashDownFullKBNzFault);
+}
