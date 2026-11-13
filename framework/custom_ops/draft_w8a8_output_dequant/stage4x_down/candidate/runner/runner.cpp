@@ -96,7 +96,7 @@ int main(int argc,char **argv) {
         int repeatIndex=0;
         Session r;size_t end=0;std::string id=argv[1];r.device=std::stoi(id,&end);
         if(end!=id.size()||r.device<0)throw std::runtime_error("invalid device id");
-        auto x=ReadBytes(folder+"/a_i8.bin",155648),w=ReadBytes(folder+"/b_i8.bin",24903680),s=ReadBytes(folder+"/quant_u64_doc_candidate.bin",155648);
+        auto x=ReadBytes(folder+"/a_i8.bin",155648),w=ReadBytes(folder+"/b_i8.bin",24903680),s=ReadBytes(folder+"/quant_u64_doc_candidate.bin",20480);
         const char *op="DFlashDownFullKBNz";
         const size_t outputBytes=81920;
         Check(aclInit(nullptr),"aclInit");r.initialized=true;
@@ -106,7 +106,7 @@ int main(int argc,char **argv) {
         r.x.Make({16,9728},{16,9728},ACL_INT8,ACL_FORMAT_ND,155648,&x);
         r.y.Make({16,2560},{16,2560},ACL_FLOAT16,ACL_FORMAT_ND,outputBytes);
         r.w.Make({10,304,16,16,32},{10,304,16,16,32},ACL_INT8,ACL_FORMAT_ND,24903680,&w);
-        r.s.Make({2560},{2560},ACL_UINT64,ACL_FORMAT_ND,155648,&s);
+        r.s.Make({2560},{2560},ACL_UINT64,ACL_FORMAT_ND,20480,&s);
         uint64_t size=0,previous=0;aclOpExecutor *executor=nullptr;std::vector<uint8_t> first;std::vector<double> output_copyout_ms;
         bool numericMismatch=false;uint32_t prepareCalls=0,verifyCalls=0;uint64_t preLogBytes=0;
         auto logBytes=[&](){std::fflush(nullptr);std::ifstream f(folder+"/runner.log",std::ios::binary|std::ios::ate);

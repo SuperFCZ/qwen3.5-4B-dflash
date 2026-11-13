@@ -3,7 +3,10 @@ from pathlib import Path
 import re,difflib
 HERE=Path(__file__).resolve().parent;BASE=HERE.parent/'stage4v_fullk_b_nz'
 NAMES={'candidate':('DFlashDownFullKBNz','d_flash_down_full_kb_nz'),'fault':('DFlashDownFullKBNzFault','d_flash_down_full_kb_nz_fault')}
-NUMBERS={'2560':'9728','19456':'2560','76':'10','75':'9','80':'304','40960':'155648','49807360':'24903680','311296':'40960','622592':'81920'}
+# Simultaneous source-token mapping: Gate A40960 -> Down A155648, while
+# Gate Scale155648 -> Down Scale20480. Never cascade .replace() operations:
+# the newly produced A byte count must not be converted again as a Scale.
+NUMBERS={'2560':'9728','19456':'2560','76':'10','75':'9','80':'304','40960':'155648','155648':'20480','49807360':'24903680','311296':'40960','622592':'81920'}
 
 
 def files(kind):

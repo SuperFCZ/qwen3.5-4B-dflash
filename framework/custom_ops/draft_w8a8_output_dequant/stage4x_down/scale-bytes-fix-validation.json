@@ -1,0 +1,24 @@
+{
+  "date": "2026-11-13",
+  "baseline_commit": "35797f76365411164d364c9924e9421fa26c3e4e",
+  "failure_confirmation": "USER_SUPPLIED_HOST_REPORT_AND_RUNNER_LOG; SCALE_FILE_20480_BYTES_REJECTED_BY_155648_BYTE_READ_BEFORE_ACL_INIT",
+  "macos_cpu": {"stage4x_passed": 32, "combined_passed": 120, "linux_only_skipped": 1},
+  "docker_arm64_cpu": {"stage4x_passed": 32, "combined_passed": 121, "skipped": 0},
+  "cpu_reader_allocator_harness": "ACTUAL_READBYTES_AND_TENSOR_MAKE_WITH_EXPLICIT_CPU_ACL_MOCKS_NOT_NPU",
+  "local_runner_compile_link": {
+    "directory": "/work/build/stage4x-scale-bytes-AgUSm2",
+    "normal_returncode": 0,
+    "fault_returncode": 0,
+    "normal_sha256": "7d36340430b288879ae2fe356d6527b84a4f691501a0ba952dff6fedc317b301",
+    "fault_sha256": "ac43931b1056c559198d8e976b4998625f84058068a74aad02a888d32a46748a",
+    "api_source": "EXISTING_LOCAL_DOWN_PRIVATE_PACKAGES; LOCAL_ONLY_NOT_SERVER_VERIFIED",
+    "kernel_build_or_opp_install": "NOT_RUN"
+  },
+  "contracts": {"a_bytes": 155648, "b_bytes": 24903680, "scale_bytes": 20480, "output_bytes": 81920, "initial_input_payload_bytes": 25079808, "workspace": "UNCHANGED_SDK_QUERY_AND_PER_CORE_ARENA_FORMULA"},
+  "kernel_host_tiling_guard_golden_checkpoint_stage4w": "UNCHANGED",
+  "source_hash_gates": "UNCHANGED_STRICT_POLICY_FRESH_STAGE4X_CHAIN_REQUIRED",
+  "server_formal_host_after_fix": "NOT_RUN",
+  "server_npu_after_fix": "NOT_RUN",
+  "server_benchmark_after_fix": "NOT_RUN",
+  "old_blocked_report": "UNCHANGED"
+}

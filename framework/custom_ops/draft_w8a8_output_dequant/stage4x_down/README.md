@@ -1,5 +1,9 @@
 # Stage4X — real Draft Full-K W8A8 Down
 
+For the Runner Scale byte-count bug in baseline35797f7, see
+[SCALE_BYTES_FIX.md](SCALE_BYTES_FIX.md). Scale is20480B; A remains155648B.
+It includes confirmed failure evidence and fresh Source→Host rerun commands.
+
 Baseline4e433eb. Independent `DFlashDownFullKBNz` and diagnostic
 `DFlashDownFullKBNzFault`. No Stage4W, accepted Gate, Golden, checkpoint or old
 report is edited. The private normal/fault OPPs and Runner processes are separate.
