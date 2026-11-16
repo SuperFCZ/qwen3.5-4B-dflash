@@ -19,6 +19,7 @@ def identity(path):
 
 
 def verify(item):
+    if not Path(item['path']).is_absolute():raise ValueError('identity needs an explicitly bound absolute path: '+item['path'])
     if identity(item['path'])!=item:raise ValueError('file identity changed: '+item['path'])
     return Path(item['path'])
 

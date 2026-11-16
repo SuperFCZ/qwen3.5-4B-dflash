@@ -1,5 +1,6 @@
 """Read-only H/B/R identity admission. No compiler, model import or device call."""
 from pathlib import Path
+import copy
 import shutil
 import raw_common as c
 from a3_launch import load_build_config
@@ -8,6 +9,29 @@ from gate_prefetch_contract import match_plans
 
 NAMES=[f'layer-{i}-gate_up' for i in range(5)]
 FIELDS=('abi','policy','k_tile_policy','core_limit','dequant_mode','pipeline_mode','kv_m80_mode','scale_mode','k_tile','tiling_abi','launch_version','gate_copy_mode')
+# These six worker-input references are relative to H, as confirmed by the
+# receiver's diagnostic output. Do not infer bases for arbitrary nested records.
+H_STATE_REFERENCES=(('native_boundary',),('report','native_boundary'),
+    ('report','draft_interface'),('report','provenance'),
+    ('report','preflight_imports'),('report','coordinator_process'))
+
+
+def canonical_historical_state(root,state):
+    """New evidence copy only; keep the original worker-input and args intact."""
+    root=Path(root).resolve(strict=True)
+    normalized=copy.deepcopy(state)
+    for route in H_STATE_REFERENCES:
+        parent=normalized
+        for key in route[:-1]:parent=parent[key]
+        item=parent[route[-1]]
+        if not isinstance(item,dict) or set(item)!={'path','bytes','sha256'}:
+            raise ValueError('historical identity schema differs: '+'.'.join(route))
+        path=c.linked(root,item)  # Verify the declared size/hash before rebasing.
+        if root not in path.parents:raise ValueError('historical state reference escapes H: '+str(path))
+        bound=dict(item,path=str(path))  # Preserve the expected size/hash, not new values.
+        c.verify(bound)
+        parent[route[-1]]=bound
+    return normalized
 
 
 def configs(off,raw):
@@ -122,7 +146,8 @@ def historical(root,pins):
     device=c.read(root/'device-process.json')
     for key,prefix in [('ASCEND_CUSTOM_OPP_PATH',Path(opp['install'])/'vendors/customize'),('LD_LIBRARY_PATH',Path(opp['install'])/'vendors/customize/op_api/lib')]:
         if Path(device[key].split(':')[0]).resolve()!=prefix:raise ValueError('H loader did not select bound OPP')
-    return dict(reports=files,state=state,runner=runner,opp=opp,opp_root=opp['install'],gears=cases,environment=suite['environment'],
+    return dict(reports=files,state=canonical_historical_state(root,state),state_reference_root=str(root.resolve()),
+        runner=runner,opp=opp,opp_root=opp['install'],gears=cases,environment=suite['environment'],
         records=[c.identity(p) for p in watch]+[c.identity(base/x['path']) for x in audit['files']]+[c.identity(base/'SOURCE_LOCK.json'),c.identity(boundary_path),c.identity(root/'preflight-input.json'),c.identity(root/'device-process.json')],native_base=str(base),source_lock=audit,native_air=c.identity(air['path']),
         factory=c.identity(state['args']['factory_config']),native_deployment=c.identity(state['args']['native_deployment']),
         historical_build_config=c.identity(state['args']['a_build_config']),

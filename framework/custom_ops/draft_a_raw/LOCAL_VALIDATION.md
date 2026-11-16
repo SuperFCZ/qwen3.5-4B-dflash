@@ -33,3 +33,18 @@ Tail、Postcheck、异常计时日志、Execute 失败阻断。伪实现始终�
 漂移拒绝、非 Gate 计划漂移、完整三轮协议及禁止混入历史/Profile 样本。
 
 无任何新的完整 Draft 加速结论。五层孤立 Gate 实测和差不转换为整图预测。
+
+## 相对身份路径 Bugfix 回归 — 2026-11-16
+
+服务器用户回传：`a-only-raw-full-Nh4YTP/precheck/report.json` 在最终完整性检查
+BLOCKED；H 内六处引用（五个文件）的 bytes/SHA 均匹配。这里只修复新证据的路径基准，
+不改变旧报告状态。下列结果是本次修复后的本地 CPU 验证：
+
+- macOS Python：**45 passed**。
+- Docker `qwen35-cann9-host` / Linux ARM64：**45 passed**。
+- pyflakes、shell syntax、Git whitespace check：通过。
+- 新增16个 CPU 用例：六处引用规范化、原文件/args/Source Lock 内容不变、序列化后
+  递归校验、每个目标缺失、文件/声明 bytes 与 SHA 漂移、cwd 同名诱饵、后续篡改、
+  越界路径和未知相对引用拒绝。
+- `build.py`、`worker.py`、Runner、历史 Kernel/OPP/Golden 均未修改。
+- 本次没有运行 CANN Build、ACL 或 NPU；修复版服务器 Precheck 仍 **NOT_RUN**。

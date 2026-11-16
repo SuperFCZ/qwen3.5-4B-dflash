@@ -2,8 +2,36 @@
 
 目标：测量 **完整五层 W8A16 Draft OM** 的 Raw Prefetch 收益。不是 W8A8，
 不是五个独立 Gate/Up median 的和，不修改生产 deployment/导出路径。
-本目录首次实现后的服务器 Precheck、私有 OPP 编译、OM 导出、NPU Smoke、Benchmark
-均为 **NOT_RUN**。本地证据见 [LOCAL_VALIDATION.md](LOCAL_VALIDATION.md)。
+首次服务器 Precheck 因历史相对引用的路径基准丢失而 **BLOCKED**，见下文路径修复。
+修复版服务器复测、私有 OPP 编译、OM 导出、NPU Smoke、Benchmark 均为 **NOT_RUN**。
+本地证据见 [LOCAL_VALIDATION.md](LOCAL_VALIDATION.md)。
+
+## 历史相对身份引用修复
+
+用户回传的 `a-only-raw-full-Nh4YTP/precheck/report.json` 诊断确认，以下字段均以
+历史 H 根目录为基准，大小和 SHA256 正确；最终递归验证错误地从 cwd 查找它们：
+
+| `evidence.H.state` 下的位置 | H 内文件 |
+|---|---|
+| `native_boundary`、`report.native_boundary` | `native-base-preflight.json` |
+| `report.draft_interface` | `draft-interface-preflight.json` |
+| `report.provenance` | `preflight.json` |
+| `report.preflight_imports` | `preflight-imports.json` |
+| `report.coordinator_process` | `coordinator-process.json` |
+
+`canonical_historical_state()` 仅对这六处已确认引用处理：先通过 `linked(H, ref)`
+核对原声明的 bytes/SHA256，验证真实路径仍在 H 内，再在**新证据的深拷贝**中写入
+绝对路径；保留原声明的 bytes/SHA256，并再次执行严格身份验证。
+`state_reference_root` 记录基准 H。原 `worker-input.json` 仍以原始文件 SHA256 绑定。
+
+不改历史文件、不复制/软链接到 cwd、不重新生成原报告。`args`、`path_args`、OPP
+描述和 Native Boundary 内部 `accepted_args`/Source Lock 不变。`build.py`、`worker.py`
+继续读取相同 args，原 Native Source Lock/Boundary 校验仍执行；这两个脚本无需修改。
+通用 `verify()` 明确拒绝尚未绑定的相对身份，未知新字段不会自动套用 H 或 cwd。
+文件缺失、大小/哈希漂移、越界及 cwd 同名替代仍 BLOCKED。
+
+旧实验 `a-only-raw-full-Nh4YTP` 保留 BLOCKED。修复会改变本实验 Source Hash，必须
+新建目录从 Precheck 开始，不续用旧报告。本次不进入 Build 或 NPU。
 
 ## H / B / R 与不可变数据
 
