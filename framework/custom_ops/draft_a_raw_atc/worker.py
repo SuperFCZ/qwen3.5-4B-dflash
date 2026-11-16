@@ -3,6 +3,7 @@ import gc,os,sys
 from pathlib import Path
 from types import SimpleNamespace
 from split_atc import SplitAtcRunner,one_capture
+from raw_atc_interface_identity import canonical_worker_report
 import raw_common as c
 
 
@@ -89,6 +90,8 @@ def main(path):
                 result['import_boundary']['modules']=boundary.verify_loaded()
                 result['import_boundary']['receiver']=boundary.receiver
                 result['import_boundary']['status']='PASS' if result['status']!='BLOCKED' else 'FAIL'
+            if 'interfaces' in result:
+                result=canonical_worker_report(result,root/'report.json',req['output'],req['evidence'])
             c.verify_tree(req);c.verify_tree(result);c.verify_opp(req['private_opp'])
         except Exception as e:result.update(status='BLOCKED',integrity_error=str(e))
         c.write(root/'report.json',result)

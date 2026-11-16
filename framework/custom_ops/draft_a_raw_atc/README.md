@@ -4,6 +4,35 @@
 Host/Kernel、Header、OPP、Golden、Native Source Lock 与历史报告全部不修改。
 本地不具备服务器资产或NPU；新 ATC/日志分离的服务器验收仍 **NOT_RUN**。
 
+## Admit 的接口相对路径修复
+
+`a-only-raw-atc-split-M0FLNV` 的失败栈确认：外层Export Report扫描相对身份为0，
+报错实际来自 `old_worker()` 中的 `c.verify_tree(model)`，即
+`.../export/B/c16/report.json` 的接口记录，不是 `c.verify_tree(outer)`。
+
+| Worker JSON 字段 | 声明 | 真实基准 |
+|---|---|---|
+| `$.interfaces.source_lock` | `source-lock.json`，72988 B，SHA `a60acc77d90f953e417d723443b54a23a311ea6eb8f1b29c273d0d66297ff6c2` | Worker目录；服务器回传已确认匹配 |
+| `$.interfaces.native_air` | `air-manifest-w8a16-chunk.json`，1390805 B，SHA `77a072e7e95b4ed8171bbfbf74d313fed2f55a63779ddab094923fec3427fc02` | 已绑定Native Deployment的AIR目录，须再次按声明验证 |
+
+`draft_ac/test/draft_only.py:77–86` 分别将 source audit 相对于接口报告目录、Native AIR
+相对于AIR自己的目录记录。前者是诊断审计报告，不能当作Native Base的`SOURCE_LOCK.json`。
+
+新增 `raw_atc_interface_identity.py` 只处理这两个已知字段。在内存深拷贝中：
+
+- Worker报告位置、request.output、model.output_root必须指向同一根；冲突直接BLOCKED。
+- Native AIR必须同时符合H已绑定身份与Native Deployment中的air_manifest；不同路径
+  即使同bytes/SHA，也不挑选其中一个，直接BLOCKED。
+- 保留原声明bytes/SHA，使用明确owner核验真实文件；不从CWD或其它候选目录查找。
+- 与未修改的`draft-interface.json`生产者内容交叉核对，再记录绝对身份和上下文绑定。
+- 原始Worker/Interface/Source Lock/AIR文件不写入，不创建替代文件或软链接。
+- 未知相对身份继续由未修改的`raw_common.verify/verify_tree`拒绝。
+
+独立新worker也在写入自己的新报告前应用同一内存规范化，避免后续三个新Export重复
+触发同一问题；原`draft_a_raw/worker.py`及共享接口生产者不修改，原接口检查不跳过。
+该修复改变ATC辅助目录的源码清单，因此旧BLOCKED Admit保留，必须新目录重新Admit。
+原Precheck/Build/104 Probes依旧只按原身份规则重核，不重新执行。
+
 ## 原因与接口选择
 
 - Host 的 CUBE 记录由 `draft_quant/op_host/d_flash_group_quant_linear.cpp:288` 写 stdout。

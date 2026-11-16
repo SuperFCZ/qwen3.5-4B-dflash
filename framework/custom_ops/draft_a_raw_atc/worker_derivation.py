@@ -11,7 +11,7 @@ def replaced(text,old,new):
 def worker_text():
     text=(c.HERE/'worker.py').read_text()
     text=replaced(text,'import gc,os,sys,importlib.util','import gc,os,sys')
-    text=replaced(text,'import raw_common as c','from split_atc import SplitAtcRunner,one_capture\nimport raw_common as c')
+    text=replaced(text,'import raw_common as c','from split_atc import SplitAtcRunner,one_capture\nfrom raw_atc_interface_identity import canonical_worker_report\nimport raw_common as c')
     text=replaced(text,'    boundary=None','    boundary=None;capture=None\n    result.update(variant=req["variant"],gear=req["gear"],continuation_sources=req["continuation_sources"],private_opp=req["private_opp"])')
     text=replaced(text,'        c.clean();c.verify_tree(req[\'sources\']);c.verify_tree(req[\'evidence\'])','        c.clean();c.verify_tree(req);c.verify_opp(req["private_opp"])')
     old="""        export_spec=importlib.util.spec_from_file_location('draft_a_raw_existing_export',c.AC/'test/run.py')
@@ -27,7 +27,7 @@ def worker_text():
         if atc_log.read_bytes()!=c.verify(split['stdout']).read_bytes():raise ValueError('compiler stdout copy differs')
         result['atc_log']=split['stdout'];result['atc_stderr']=split['stderr']""")
     text=replaced(text,"    finally:\n        try:","    finally:\n        result['atc_captures']=capture.records if capture else []\n        try:")
-    text=replaced(text,"            c.verify_tree(req['sources']);c.verify_tree(req['evidence'])","            c.verify_tree(req);c.verify_tree(result);c.verify_opp(req['private_opp'])")
+    text=replaced(text,"            c.verify_tree(req['sources']);c.verify_tree(req['evidence'])","            if 'interfaces' in result:\n                result=canonical_worker_report(result,root/'report.json',req['output'],req['evidence'])\n            c.verify_tree(req);c.verify_tree(result);c.verify_opp(req['private_opp'])")
     return text
 
 
@@ -45,7 +45,7 @@ def verify_derivation():
     for name,expected in [('worker.py',worker_text()),('split_export.py',helper_text())]:
         if (HERE/name).read_text()!=expected:raise ValueError('unapproved worker/helper change: '+name)
     return dict(worker_source=c.identity(c.HERE/'worker.py'),helper_source=c.identity(c.AC/'test/run.py'),
-        change='Dedicated stream capture and real-ABI precheck only; no model/math/OPP changes')
+        change='Dedicated stream capture, real-ABI precheck and context-bound interface identities; no model/math/OPP changes')
 
 
 if __name__=='__main__':verify_derivation()

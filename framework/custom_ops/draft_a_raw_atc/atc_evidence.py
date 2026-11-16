@@ -3,6 +3,7 @@ import hashlib
 from pathlib import Path
 import shutil
 from split_atc import c,one_capture,verify_resources
+from raw_atc_interface_identity import canonical_worker_report
 
 COUNTS={'DFlashGroupQuantLinear':26,'DFlashDraftLmHeadTop1':0,'DFlashDraftLmHeadTop1Audit':0}
 
@@ -48,7 +49,9 @@ def old_worker(failed_path,prior):
     root=failed_path.parent;request_path=root/'B-c16-request.json';request=c.read(request_path)
     if any(request[k]!=v for k,v in dict(variant='B',gear=16,device=prior['current']['device'],sources=c.sources(),evidence=prior['current']['evidence']).items()):
         raise ValueError('B-C16 request source/selection differs')
-    child=root/'B/c16/report.json';model=c.read(child);c.verify_tree(model)
+    child=root/'B/c16/report.json'
+    model=canonical_worker_report(c.read(child),child,request['output'],prior['current']['evidence'])
+    c.verify_tree(model)
     if (model.get('status')!='A_ONLY_OM_COMPILED_NOT_EXECUTED' or model.get('error') or model.get('integrity_error') or
             model.get('import_boundary',{}).get('status')!='PASS' or model.get('interfaces',{}).get('status')!='PASS'):
         raise ValueError('B-C16 worker/interface did not pass')

@@ -165,9 +165,15 @@ def admitted_assets(tmp_path,monkeypatch):
     env={'ASCEND_CUSTOM_OPP_PATH':'/private/B/vendor','LD_LIBRARY_PATH':'/private/B/api'}
     monkeypatch.setattr(c,'selected_env',lambda *a:env)
     monkeypatch.setattr(c,'sources',lambda:[])
-    e={'H':{'gears':{'16':{'abi':abi}}},'tools':{'atc':c.identity(executable)}}
+    native=tmp_path/'native';native.mkdir()
+    native_air=native/'air-manifest-w8a16-chunk.json';c.write(native_air,dict(status='PASS',scope='CPU fixture'))
+    native_dep=native/'deployment.json';c.write(native_dep,dict(air_manifest=dict(c.identity(native_air),path=native_air.name)))
+    source_lock=child/'source-lock.json';c.write(source_lock,dict(status='PASS',scope='CPU source audit fixture'))
+    interfaces=dict(status='PASS',source_lock=dict(c.identity(source_lock),path=source_lock.name),native_air=dict(c.identity(native_air),path=native_air.name))
+    c.write(child/'draft-interface.json',interfaces)
+    e={'H':{'gears':{'16':{'abi':abi}},'native_air':c.identity(native_air),'native_deployment':c.identity(native_dep)},'tools':{'atc':c.identity(executable)}}
     prior=dict(current={'device':0,'evidence':e},references={},reports={'build':{'variants':{'B':{'opp':{'install':'/private/B'}}}}})
-    model=dict(status='A_ONLY_OM_COMPILED_NOT_EXECUTED',import_boundary={'status':'PASS'},interfaces={'status':'PASS'},
+    model=dict(status='A_ONLY_OM_COMPILED_NOT_EXECUTED',import_boundary={'status':'PASS'},interfaces=interfaces,
         output_root=str(child),environment=env,counts=COUNTS,abi=abi,graph=c.identity(ir),logical_ir_sha256=hashlib.sha256(ir.read_bytes()).hexdigest(),
         artifacts={'air':c.identity(ap),'deployment':c.identity(dp),'om':c.identity(om)},om=c.identity(om),atc_command=command,atc_log=c.identity(log))
     c.write(child/'report.json',model)
