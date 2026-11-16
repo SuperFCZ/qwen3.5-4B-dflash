@@ -1,0 +1,18 @@
+{
+  "history": {
+    "suite.json": "9a70bd6dfdde5e338849726b954e1f9d7cc4af90e3140924dae76c325bd6f7a1",
+    "draft-suite.json": "e1a2fd5c86df0ea0957292a00d73d1d3440a7f7b7eebc088a646d8f9bdba768e",
+    "joint/opp.json": "0cd7386f84213e3b8723cbacbff46eaba49aa8cf8a658d5f2d15aa4603b3b3c5",
+    "worker-input.json": "08ba52f1ebed075d1196b83cce13fd7f278c13b0c6a18c3e8f1bb8cd0bf50a4c"
+  },
+  "pairs": {
+    "forward": {
+      "suite.json": "dc71e07836fdf99cd11f66e8105e2f9b1d02c607fe21145451704fc12dd0bf9d",
+      "comparison.json": "1a4db4412955f9c6c852aa56bad908102ea2ba7aaa518707e0eec5a02f75dc60"
+    },
+    "reverse": {
+      "suite.json": "bfa80d263b3a5dda49559c8f0272f657f7b69464b31d22a132afc34a9127c589",
+      "comparison.json": "18de10152bc6c2554c847a136a96cbe7be5e84a9d03c8bd02a1a236b46f1d90c"
+    }
+  }
+}
