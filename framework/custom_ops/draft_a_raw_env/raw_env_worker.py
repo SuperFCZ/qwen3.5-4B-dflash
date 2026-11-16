@@ -10,7 +10,7 @@ c=ec.c
 
 def main(path):
     req=c.read(path);out=Path(req['output']);out.mkdir(parents=True,exist_ok=False)
-    r=dict(status='BLOCKED',npu='NOT_RUN',interfaces='NOT_PREPARED',export='NOT_RUN');boundary=None
+    r=dict(status='BLOCKED',output_root=str(out),npu='NOT_RUN',interfaces='NOT_PREPARED',export='NOT_RUN');boundary=None
     try:
         c.clean();c.verify_tree(req);e=req['evidence'];h=e['H']
         r['python']=ec.python_identity()
@@ -57,7 +57,9 @@ def main(path):
     finally:
         try:
             if boundary:r['native_boundary']['modules']=boundary.verify_loaded()
-            r['loaded_files']=ec.loaded_files();ec.verify_loaded_files(r['loaded_files']);c.verify_tree(req)
+            r['loaded_files'],r['process_modules']=ec.lifetime.capture(ec.loaded_files(),out)
+            ec.verify_loaded_files(r['loaded_files'])
+            ec.lifetime.verify(r['process_modules'],r['loaded_files'],out);c.verify_tree(req)
         except Exception as error:r.update(status='BLOCKED',integrity_error=str(error))
         c.write(out/'report.json',r)
     return int(r['status']=='BLOCKED')

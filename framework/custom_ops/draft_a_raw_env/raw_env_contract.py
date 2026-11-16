@@ -12,6 +12,7 @@ RAW=HERE.parent/'draft_a_raw'
 sys.path.insert(0,str(RAW))
 import raw_common as c
 import run_experiment as experiment
+import raw_env_lifetime as lifetime
 
 
 def sources():
@@ -133,7 +134,9 @@ def verify_loaded_files(records):
 
 
 def snapshot(child):
-    return {k:child[k] for k in ('python','packages','loaded_files','operators')}
+    result={k:child[k] for k in ('python','packages','loaded_files','operators')}
+    result['process_modules']=lifetime.comparison(child.get('process_modules',{}))
+    return result
 
 
 def validate_child(child):
@@ -141,9 +144,10 @@ def validate_child(child):
         raise ValueError('environment import gate BLOCKED: '+str(child.get('error') or child.get('integrity_error')))
     if child.get('npu')!='NOT_RUN' or child.get('interfaces')!='NOT_PREPARED':raise ValueError('environment gate executed outside import-only scope')
     c.verify_tree(child);verify_loaded_files(child['loaded_files'])
+    lifetime.verify(child['process_modules'],child['loaded_files'],child['output_root'])
 
 
 def print_summary(report):
     out={k:report.get(k) for k in ('status','error','integrity_error','npu','export','reuse')}
-    out['variants']={k:{field:v.get(field) for field in ('status','error','integrity_error','current_distribution','historical_environment','python','operators')} for k,v in report.get('variants',{}).items()}
+    out['variants']={k:{field:v.get(field) for field in ('status','error','integrity_error','current_distribution','historical_environment','python','operators','process_modules')} for k,v in report.get('variants',{}).items()}
     print(json.dumps(out,ensure_ascii=False,indent=2))

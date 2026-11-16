@@ -138,3 +138,10 @@ Export阶段会进行原有设备Tensor准备/设备查询和ATC编译，仍不�
 后续须显式传入原Precheck/Build/Probes与新的Export报告，不能套用要求全部阶段同根的旧shell入口。
 
 当前本地只能验证CPU合同；真实历史venv import和完整Export仍由服务器验收。
+
+## 进程临时模块身份（后续修复）
+
+已确认PyTorch的 `_remote_module_non_scriptable.py` 在子进程退出时正常删除，原先把它
+作为持久路径复核会误报。仅该已确认模块使用“存活时来源/内容核验 + 持久快照”，普通
+模块身份不放宽。已有Admit可经固定Git源码校验与原资产严格复核做只读续接。
+详见 [MODULE_LIFETIME.md](MODULE_LIFETIME.md) 的根因、限制和只运行Import-only的命令。
