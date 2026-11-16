@@ -48,3 +48,18 @@ BLOCKED；H 内六处引用（五个文件）的 bytes/SHA 均匹配。这里只
   越界路径和未知相对引用拒绝。
 - `build.py`、`worker.py`、Runner、历史 Kernel/OPP/Golden 均未修改。
 - 本次没有运行 CANN Build、ACL 或 NPU；修复版服务器 Precheck 仍 **NOT_RUN**。
+
+## Head 库别名身份 Bugfix 回归 — 2026-11-16
+
+用户回传第二次 Precheck 仍 BLOCKED，但 Head 库大小和 SHA256 与冻结记录一致。
+本地复现：旧验证器比较 resolve 后的真实路径与历史别名路径，导致整字典不等。
+详细来源与修复约束见 `ALIAS_IDENTITY_FIX.md`。
+
+- macOS：**59 passed**；Docker Linux ARM64：**59 passed**。
+- 新增14项 CPU 用例，覆盖别名/真实文件双记录、原误报复现、JSON 往返、文件大小与
+  SHA 漂移、缺失/断链、无冻结真实目标对照、冲突身份、越界、同字节复制件改指向、
+  链变化、目录链接以及 C Release provenance 绑定。
+- pyflakes、shell syntax、Git whitespace check 通过。
+- 保留原校验和全部历史期望哈希；不去重删除证据、不修改历史文件。
+- 本次没有运行 CANN Build、Export、Smoke、Benchmark、Profile、ACL 或 NPU。
+- 修复版真实服务器 Precheck **NOT_RUN**；两个旧 BLOCKED 目录保持原状。

@@ -3,7 +3,9 @@
 目标：测量 **完整五层 W8A16 Draft OM** 的 Raw Prefetch 收益。不是 W8A8，
 不是五个独立 Gate/Up median 的和，不修改生产 deployment/导出路径。
 首次服务器 Precheck 因历史相对引用的路径基准丢失而 **BLOCKED**，见下文路径修复。
-修复版服务器复测、私有 OPP 编译、OM 导出、NPU Smoke、Benchmark 均为 **NOT_RUN**。
+第二次 Precheck 暴露历史 Head 动态库别名与真实路径混比的问题，仍为 **BLOCKED**。
+见 [别名身份诊断及最小修复](ALIAS_IDENTITY_FIX.md)。本次修复版服务器复测、私有 OPP 编译、
+OM 导出、NPU Smoke、Benchmark 均为 **NOT_RUN**。
 本地证据见 [LOCAL_VALIDATION.md](LOCAL_VALIDATION.md)。
 
 ## 历史相对身份引用修复

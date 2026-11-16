@@ -36,9 +36,50 @@ def linked(base,item):
     return p.resolve(strict=True)
 
 
+HEAD_ALIAS_KIND='historical-head-library-alias-v1'
+
+
+def alias_target(path):
+    """Observe every link component, without creating or rewriting a link."""
+    path=Path(path)
+    if not path.is_absolute():raise ValueError('library alias must be absolute: '+str(path))
+    pending=list(path.parts[1:]);current=Path(path.anchor);links=[]
+    while pending:
+        part=pending.pop(0)
+        if part=='..':current=current.parent;continue
+        current=current/part
+        if current.is_symlink():
+            target=os.readlink(current);links.append(dict(path=str(current),target=target))
+            if len(links)>40:raise ValueError('library symlink loop or excessive depth: '+str(path))
+            destination=Path(target)
+            if destination.is_absolute():current=Path(destination.anchor);parts=destination.parts[1:]
+            else:current=current.parent;parts=destination.parts
+            pending=list(parts)+pending
+    resolved=path.resolve(strict=True)
+    if current!=resolved:raise ValueError('library alias resolution changed: '+str(path))
+    return resolved,links
+
+
+def verify_head_alias(binding):
+    if (set(binding)!={'kind','install_root','resolved_install_root','alias','links','file'} or
+            binding['kind']!=HEAD_ALIAS_KIND):raise ValueError('historical Head alias schema differs')
+    root=Path(binding['install_root']);alias=Path(binding['alias'])
+    if not root.is_absolute() or not alias.is_absolute() or root not in alias.parents:
+        raise ValueError('historical Head library outside declared OPP: '+str(alias))
+    real_root=root.resolve(strict=True)
+    if str(real_root)!=binding['resolved_install_root']:raise ValueError('historical Head OPP root retargeted')
+    target,links=alias_target(alias)
+    if real_root not in target.parents:raise ValueError('historical Head alias escapes OPP: '+str(alias))
+    if str(target)!=binding['file']['path'] or links!=binding['links']:
+        raise ValueError('historical Head alias target/chain changed: '+str(alias))
+    verify(binding['file'])  # Original expected bytes/SHA; no acceptance of new content.
+    if alias_target(alias)!=(target,links):raise ValueError('historical Head alias changed during verification')
+
+
 def verify_tree(v):
     if isinstance(v,dict):
-        if set(v)=={'path','bytes','sha256'}:verify(v)
+        if v.get('kind')==HEAD_ALIAS_KIND:verify_head_alias(v)
+        elif set(v)=={'path','bytes','sha256'}:verify(v)
         else:
             for x in v.values():verify_tree(x)
     elif isinstance(v,list):

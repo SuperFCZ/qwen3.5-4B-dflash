@@ -34,6 +34,44 @@ def canonical_historical_state(root,state):
     return normalized
 
 
+def bind_head_libraries(installed):
+    """Require each alias target to have its own matching frozen inventory row."""
+    root=Path(installed['install_root'])
+    if not root.is_absolute() or installed.get('status')!='PASS' or installed.get('release_only') is not True:
+        raise ValueError('historical Head release identity missing')
+    records=installed['libraries'];declared={}
+    if not records:raise ValueError('historical Head library inventory empty')
+    for item in records:
+        if set(item)!={'path','bytes','sha256'} or not Path(item['path']).is_absolute():
+            raise ValueError('historical Head library identity schema differs')
+        old=declared.setdefault(item['path'],item)
+        if old!=item:raise ValueError('conflicting historical library identities: '+item['path'])
+    bindings=[]
+    for item in records:
+        target,links=c.alias_target(item['path'])
+        expected=dict(item,path=str(target))
+        # A matching hash on the current filesystem alone cannot authorize a
+        # different target. The original C Release must also name this target.
+        if declared.get(str(target))!=expected:
+            raise ValueError('alias lacks matching frozen canonical library record: '+item['path'])
+        bound=dict(kind=c.HEAD_ALIAS_KIND,install_root=str(root),resolved_install_root=str(root.resolve(strict=True)),
+            alias=item['path'],links=links,file=expected)
+        c.verify_head_alias(bound);bindings.append(bound)
+    return bindings
+
+
+def head_release_evidence(root,state):
+    reference=state['provenance']['records']['c_release']
+    release_path=c.linked(root,reference)
+    release_identity=c.identity(release_path)
+    if (release_path!=Path(state['args']['c_release']).resolve(strict=True) or
+            release_identity['sha256']!=reference['sha256'] or
+            c.read(release_path)['installed_opp']!=state['provenance']['c_installed_opp']):
+        raise ValueError('historical C Release provenance differs')
+    return dict(release=release_identity,libraries=bind_head_libraries(state['provenance']['c_installed_opp']),
+        role='HISTORICAL_C_RELEASE_SOURCE_PACKAGE_NOT_H_JOINT_RUNTIME_OPP')
+
+
 def configs(off,raw):
     if any(off.get(k)!=raw.get(k) for k in (*FIELDS,'source_sha256')):raise ValueError('non-Raw configuration differs')
     if tuple(off.get(k) for k in ('dequant_mode','scale_mode','k_tile','kv_m80_mode','gate_copy_mode'))!=('batched','broadcast',256,'a-ub','loop'):
@@ -146,7 +184,11 @@ def historical(root,pins):
     device=c.read(root/'device-process.json')
     for key,prefix in [('ASCEND_CUSTOM_OPP_PATH',Path(opp['install'])/'vendors/customize'),('LD_LIBRARY_PATH',Path(opp['install'])/'vendors/customize/op_api/lib')]:
         if Path(device[key].split(':')[0]).resolve()!=prefix:raise ValueError('H loader did not select bound OPP')
-    return dict(reports=files,state=canonical_historical_state(root,state),state_reference_root=str(root.resolve()),
+    head_binding=head_release_evidence(root,state)
+    normalized=canonical_historical_state(root,state)
+    normalized['provenance']['c_installed_opp']['libraries']=[dict(x['file']) for x in head_binding['libraries']]
+    return dict(reports=files,state=normalized,state_reference_root=str(root.resolve()),
+        head_release_binding=head_binding,
         runner=runner,opp=opp,opp_root=opp['install'],gears=cases,environment=suite['environment'],
         records=[c.identity(p) for p in watch]+[c.identity(base/x['path']) for x in audit['files']]+[c.identity(base/'SOURCE_LOCK.json'),c.identity(boundary_path),c.identity(root/'preflight-input.json'),c.identity(root/'device-process.json')],native_base=str(base),source_lock=audit,native_air=c.identity(air['path']),
         factory=c.identity(state['args']['factory_config']),native_deployment=c.identity(state['args']['native_deployment']),
