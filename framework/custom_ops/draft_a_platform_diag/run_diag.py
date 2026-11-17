@@ -8,6 +8,8 @@ from atc_evidence import payloads,option
 from derive import verify
 import atc_dependency_identity as atc_deps
 import platform_runtime_env as runtime_env
+import dso_manifest as dsos
+from standard_opp_reference import audit as audit_standard_opp
 from old_runtime_reference import audit as audit_old_runtime
 from platform_contracts import read_platform,validate_runtime,compare,loaded_libraries,verify_loaded,environment
 
@@ -55,6 +57,7 @@ def stage(path,name):
     verify_loaded(r.get('loaded_libraries',[]))
     if name=='source':atc_deps.verify(r['atc_dependencies'])
     if 'runtime_environment' in r:runtime_env.verify_binding(r['runtime_environment'])
+    if 'dso_manifest' in r:dsos.verify_manifest(c.read(c.verify(r['dso_manifest'])))
     if r.get('status')!=STATES[name] or r.get('error') or r.get('integrity_error') or r['sources']!=sources():raise ValueError('diagnostic predecessor/source mismatch')
     return r
 
@@ -62,6 +65,7 @@ def stage(path,name):
 def main(a):
     protected=[p.parent for p in (a.admission_report,a.source_report,a.build_report,a.atc_report,a.aclnn_report) if p]
     if a.reference_root:protected.append(a.reference_root)
+    if a.cann_opp_reference_root:protected.append(a.cann_opp_reference_root)
     root=c.fresh(a.output_dir,protected)
     r=dict(status='BLOCKED',phase=a.phase,sources=sources(),npu='NOT_RUN',kernel_execute_calls=0,benchmark='NOT_RUN',full_draft='NOT_RUN')
     try:
@@ -70,6 +74,9 @@ def main(a):
             r['binding']=source(a);r['admission_report']=c.identity(a.admission_report)
             if a.reference_root:r['old_runtime_reference']=audit_old_runtime(a.reference_root)
             b=r['binding'];env,r['runtime_environment']=runtime_env.for_prior(b['prior'])
+            r['standard_opp_reference']=audit_standard_opp(a.cann_opp_reference_root)
+            manifest=dsos.source_manifest(r['runtime_environment']['cann_root'],r['runtime_environment']['driver_root'],r['standard_opp_reference'])
+            c.write(root/'cann-opp-dso-identity.json',manifest);r['dso_manifest']=c.identity(root/'cann-opp-dso-identity.json')
             dep_root=root/'atc-dependencies'
             try:r['atc_dependencies']=atc_deps.audit(b['frozen']['atc_binary'],b['frozen']['command'][0],b['prior']['current']['cann_root'],env,dep_root)
             finally:
@@ -78,6 +85,7 @@ def main(a):
             src=stage(a.source_report,'source');r['source_report']=c.identity(a.source_report);binding=src['binding'];prior=binding['prior']
             if ec.previous(prior['root'])['references']!=prior['references']:raise ValueError('old predecessor drift')
             standard=runtime_env.standard_identity(src['runtime_environment'])
+            source_dsos=c.read(c.verify(src['dso_manifest']));dsos.verify_manifest(source_dsos)
             if a.phase=='build':
                 req=root/'request.json';dest=root/'package'
                 c.write(req,dict(output=str(dest),prior=prior,variant='B',sources=sources()))
@@ -92,10 +100,13 @@ def main(a):
                 if runtime_env.standard_identity(r['runtime_environment'])!=standard:raise ValueError('standard runtime identity changed during Build')
                 c.command(['cmake','-S',HERE/'runner','-B',root/'runner-build','-DCANN_ROOT='+prior['current']['cann_root'],'-DCOMMON_INCLUDE='+str(c.QUANT/'test'),'-DPRIVATE_OPP='+built['opp']['install']],root/'runner-configure.log',env)
                 c.command(['cmake','--build',root/'runner-build','--parallel','2'],root/'runner-build.log',env)
+                manifest=dsos.with_private(source_dsos,built['opp'],src['dso_manifest'])
+                c.write(root/'dso-identity.json',manifest);r['dso_manifest']=c.identity(root/'dso-identity.json')
                 r['runner']=c.identity(root/'runner-build/platform_diag_runner');r['dependencies']=c.dependencies(r['runner'],root/'runner-ldd.log',env);r['environment_contract']=environment(env)
             else:
                 built=stage(a.build_report,'build');r['build_report']=c.identity(a.build_report)
                 if built['source_report']!=r['source_report']:raise ValueError('mixed source/build')
+                manifest=c.read(c.verify(built['dso_manifest']));dsos.verify_manifest(manifest);r['dso_manifest']=built['dso_manifest']
                 opp=built['package']['opp'];c.verify_opp(opp);env,r['runtime_environment']=runtime_env.for_prior(prior,opp['install'])
                 if runtime_env.standard_identity(r['runtime_environment'])!=standard or r['runtime_environment']['values']!=built['runtime_environment']['values']:raise ValueError('minimal runtime environment/standard identities changed')
                 env.pop('DFLASH_GROUP_QUANT_EVIDENCE_PATH',None)
@@ -127,7 +138,7 @@ def main(a):
                     result=c.read(out/'execution.json')
                     journal=[json.loads(x) for x in (out/'runtime-events.jsonl').read_text().splitlines()]
                     validate_runtime(result,journal)
-                    r['loaded_libraries']=loaded_libraries(out/'maps.txt',opp,Path(prior['current']['cann_root']))
+                    r['loaded_libraries']=loaded_libraries(out/'maps.txt',opp,Path(prior['current']['cann_root']),manifest)
                     r.update(maps=c.identity(out/'maps.txt'),execution=c.identity(out/'execution.json'),runtime_events=c.identity(out/'runtime-events.jsonl'),platform=read_platform(diag,'ACLNN',opp))
                     if result['workspace']<r['platform']['observation']['workspace']:raise ValueError('ACLNN workspace below Host request')
                 elif a.phase=='compare':
@@ -137,9 +148,10 @@ def main(a):
                         if read_platform(c.verify(observed['platform']['source']),route,opp)!=observed['platform']:raise ValueError('saved PlatformInfo is not the bound raw observation')
                     journal=[json.loads(x) for x in c.verify(runtime['runtime_events']).read_text().splitlines()]
                     validate_runtime(c.read(c.verify(runtime['execution'])),journal)
-                    if loaded_libraries(c.verify(runtime['maps']),opp,Path(prior['current']['cann_root']))!=runtime['loaded_libraries']:raise ValueError('saved loaded libraries differ from raw maps')
+                    if loaded_libraries(c.verify(runtime['maps']),opp,Path(prior['current']['cann_root']),manifest)!=runtime['loaded_libraries']:raise ValueError('saved loaded libraries differ from raw maps')
                     r['atc_report']=c.identity(a.atc_report);r['aclnn_report']=c.identity(a.aclnn_report)
                     r['comparison']=compare(atc['platform'],runtime['platform'])
+                    r['comparison']['dso_identity']=dict(manifest=r['dso_manifest'],aclnn_categories={kind:sum(x['category']==kind for x in runtime['loaded_libraries']) for kind in sorted(dsos.KINDS)},atc_host=atc['platform']['host_dso'],aclnn_host=runtime['platform']['host_dso'],atc_full_maps='NOT_CAPTURED_NO_INVENTED_COMPARISON')
                     for observed in (atc,runtime):runtime_env.assert_invocation(observed['child_environment'],observed['runtime_environment'])
                     r['comparison']['environment_comparison']=runtime_env.compare_invocations(atc['child_environment'],runtime['child_environment'])
                     r['comparison']['atc_elf_environment']=atc['atc_elf_environment']
@@ -155,6 +167,7 @@ def main(a):
             verify_loaded(r.get('loaded_libraries',[]))
             if 'atc_dependencies' in r:atc_deps.verify(r['atc_dependencies'])
             if 'runtime_environment' in r:runtime_env.verify_binding(r['runtime_environment'])
+            if 'dso_manifest' in r:dsos.verify_manifest(c.read(c.verify(r['dso_manifest'])))
             if r['sources']!=sources():raise ValueError('diagnostic source changed')
             c.clean()
         except Exception as e:r.update(status='BLOCKED',integrity_error=str(e))
@@ -167,9 +180,12 @@ def main(a):
 def parse(argv=None):
     p=argparse.ArgumentParser(description=__doc__,allow_abbrev=False)
     p.add_argument('phase',choices=STATES);p.add_argument('--output-dir',type=Path,required=True)
+    p.add_argument('--cann-opp-reference-root',type=Path,help='Hash-bound isolated J3GWjX reference; required for Source')
     p.add_argument('--reference-root',type=Path,help='Read-only audit of the pinned contaminated historical experiment; source phase only')
     for key in ('admission-report','source-report','build-report','atc-report','aclnn-report'):p.add_argument('--'+key,type=Path)
     a=p.parse_args(argv)
+    if a.phase=='source' and not a.cann_opp_reference_root:p.error('--cann-opp-reference-root required for source')
+    if a.cann_opp_reference_root and a.phase!='source':p.error('--cann-opp-reference-root is source-only')
     if a.reference_root and a.phase!='source':p.error('--reference-root is source-only')
     needed={'source':['admission_report'],'build':['source_report'],'atc':['source_report','build_report'],'aclnn':['source_report','build_report'],'compare':['source_report','build_report','atc_report','aclnn_report']}[a.phase]
     for key in needed:

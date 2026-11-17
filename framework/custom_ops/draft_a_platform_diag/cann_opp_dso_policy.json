@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "cann_version": "9.0.0",
+  "basis": "User-confirmed server DSO and hash-bound ACLNN maps, 2026-11-17; no directory-wide trust",
+  "standard_opp": [
+    {
+      "relative": "opp/vendors/customize/op_impl/ai_core/tbe/op_tiling/lib/linux/aarch64/libcust_opmaster_rt2.0.so",
+      "bytes": 1857664,
+      "sha256": "c4a7690e496d013f47154602418f556865071a8927588fac424c9affd6432449",
+      "mode": 420
+    }
+  ],
+  "runtime_lib64": [
+    "libacl_rt.so", "libacl_rt_impl.so", "libascend_dump.so", "libascend_protobuf.so.3.13.0.0",
+    "libascend_trace.so", "libascend_watchdog.so", "libascendalog.so", "libascendcl.so",
+    "libc_sec.so", "libdummy_tls.so", "liberror_manager.so", "libexe_graph.so", "libgraph.so",
+    "libgraph_base.so", "libmetadef.so", "libmmpa.so", "libmsprofiler.so", "libnnopbase.so",
+    "libopp_registry.so", "libops_base.so", "libplatform.so", "libprofapi.so", "libprofimpl.so",
+    "libregister.so", "libruntime.so", "libruntime_common.so", "libruntime_v100.so",
+    "libtsdclient.so", "libunified_dlog.so"
+  ],
+  "builtin_host": [
+    "libophost_comm_legacy.so", "libophost_cv.so", "libophost_legacy.so", "libophost_math.so",
+    "libophost_nn.so", "libophost_oam.so", "libophost_transformer.so"
+  ],
+  "driver": ["lib64/driver/libascend_hal.so"],
+  "reference_files": {
+    "platform.jsonl": {"bytes": 28422, "sha256": "605f4c3424a46c10654983b6ef1d566f4faad2995d708d340610f21866bf06c3"},
+    "execution.json": {"bytes": 293, "sha256": "16f3891af770ec7a0569f054de584ef5fec124fe3cd18972637f9518c10b347c"},
+    "runtime-events.jsonl": {"bytes": 590, "sha256": "f4770627e241e854b20579577d52d30d2647aa128899a816d5bb65e5b4f2abac"},
+    "maps.txt": {"bytes": 33710, "sha256": "510f448eeeaef87f9a94410a09253ff50faa75c409b4706836126d7a6c918aa7"}
+  }
+}

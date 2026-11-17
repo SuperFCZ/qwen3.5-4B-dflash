@@ -68,8 +68,11 @@ def validate_runtime(r,journal):
     if r['device']!=0 or r['explicit_context_created'] is not False:raise ValueError('changed device/context policy')
 
 
-def loaded_libraries(maps,opp,cann):
+def loaded_libraries(maps,opp,cann,manifest=None):
     """Record actual process mappings; inode/device namespace equivalence is not assumed."""
+    if manifest is not None:
+        from dso_manifest import loaded
+        return loaded(maps,opp,cann,manifest)
     paths=set();rows=[];root=Path(opp['install']).resolve();cann=Path(cann).resolve()
     for line in Path(maps).read_text().splitlines():
         fields=line.split(None,5)
@@ -86,13 +89,11 @@ def loaded_libraries(maps,opp,cann):
             group='PRIVATE_DIAGNOSTIC_OPP';found_private=True
         elif 'libcust_op' in target.name or 'libcust_op' in Path(alias).name:
             raise ValueError('different Ascend installation/private OPP: '+alias)
-        elif cann in target.parents:
-            if 'devlib' in target.relative_to(cann).parts:raise ValueError('runtime cannot use CANN stub library: '+alias)
-            group='SELECTED_CANN'
-        elif Path('/usr/local/Ascend/driver') in target.parents:group='DRIVER_SEPARATE_FROM_CANN'
+        elif cann in target.parents:raise ValueError('UNKNOWN CANN DSO without Source manifest: '+alias)
+        elif Path('/usr/local/Ascend/driver') in target.parents:raise ValueError('unbound Driver DSO without Source manifest: '+alias)
         elif '/usr/local/Ascend/' in alias or '/usr/local/Ascend/' in str(target) or 'libcust_op' in target.name:
             raise ValueError('different Ascend installation/private OPP: '+alias)
-        else:group='SYSTEM'
+        else:raise ValueError('UNKNOWN DSO without identity manifest: '+alias)
         rows.append(dict(alias=alias,links=links,file=identity,category=group,
                          mapping_scope='proc maps pathname plus current file SHA; not a mapped-page content hash'))
     if not found_private:raise ValueError('private API/Host library not present in actual process mappings')
@@ -101,6 +102,10 @@ def loaded_libraries(maps,opp,cann):
 
 def verify_loaded(rows):
     for row in rows:
+        if 'backing' in row:
+            from dso_manifest import verify_record
+            verify_record(row)
+            continue
         target,links=c.alias_target(row['alias'])
         if str(target)!=row['file']['path'] or links!=row['links']:raise ValueError('loaded library alias retargeted')
         c.verify(row['file'])

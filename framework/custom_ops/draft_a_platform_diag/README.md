@@ -1,5 +1,7 @@
 # ATC / ACLNN PlatformInfo 单 Shape 诊断
 
+当前 Source 必须使用文末最新的 `--cann-opp-reference-root` 命令；早期命令保留为实现历史，不能省略新增DSO清单门槛。
+
 范围仅为 `DFlashGroupQuantLinear`，M16/K12800/N2560，Device 0。
 这是独立 Host 诊断包，不是 8-Core 准入修复，不执行 Matmul，不重跑 104 Probes，
 不重建四份完整 Draft OM。历史 Kernel、OPP、报告和 Golden 全部只读。
@@ -346,3 +348,118 @@ Linux新增测试实际加载一个独立CPU fixture DSO，证明父环境中同
 这不是CANN/NPU执行证明。本地没有真实Ascend Driver，真实最小Runtime准入按预期BLOCKED，
 不使用CANN devlib冒充Driver。Host/Kernel/Runner C++均无改动，本轮没有新的设备执行或Benchmark。
 服务器新Source/Build/ATC/ACLNN/Compare均NOT_RUN，等待上述分阶段实测。
+
+## 精确绑定标准 CANN OPP DSO（2026-11-17，最新流程）
+
+`a-platform-diag-isolated-J3GWjX` 的四份旧ACLNN产物已由用户只读回传核对：
+全部与失败报告 `retained_runtime` 的bytes/SHA一致。精确pin保存在
+`cann_opp_dso_policy.json::reference_files`。旧环境已去除其他用户私有OPP；两次查询仍为
+GetCoreNum/raw/locked=7、AIC/AIV=8、Workspace=2097152、Execute Calls=0。
+旧ATC聚合/AIC/AIV为8。**这些旧观测不再支持将差异直接归因于上一轮的外部私有OPP。**
+本轮仍不判断7/8的最终SDK原因，不改变Core getter或BlockDim。
+
+本次误报来自对所有 `libcust_op*` 的笼统拒绝。现在不会仅调整if顺序或放行CANN_ROOT，
+而是使用独立的Source/Build身份清单：
+
+| 分类 | 准入依据 |
+|---|---|
+| PRIVATE_DIAGNOSTIC_OPP | 新Build完整私有OPP清单、原Kernel/API SHA、DSO真实文件和别名；不能借用此标签接纳外部库 |
+| PINNED_CANN_STANDARD_OPP | 下述唯一明确路径及用户核实的bytes/SHA/mode；新Source封存链接、stat及映射身份 |
+| STANDARD_CANN_RUNTIME | 用户实际maps中29个lib64和7个built-in Host DSO的精确名称；新Source逐个封存，不扫描/信任整个目录 |
+| ASCEND_DRIVER | 独立Driver根下明确的libascend_hal.so及其完整身份 |
+| SYSTEM | 仅旧哈希绑定maps中实际出现、且真实路径处于系统lib根的库，另行Source封存 |
+| FOREIGN_PRIVATE_OPP / UNKNOWN | 未列入清单的路径、别名、libcust_op、CANN库及其他用户OPP全部拒绝 |
+
+唯一新增标准OPP pin：
+
+- 相对路径：`opp/vendors/customize/op_impl/ai_core/tbe/op_tiling/lib/linux/aarch64/libcust_opmaster_rt2.0.so`
+- 大小：1857664 B；权限：0644。
+- SHA256：`c4a7690e496d013f47154602418f556865071a8927588fac424c9affd6432449`。
+- 当前用户核验realpath与该选中CANN绝对路径相同。
+
+这里的身份依据是用户已核实的安装文件，不是对整个SDK安装目录的供应商签名认证。
+另外两个同名vendor API/proto库**未自动加入标准OPP白名单**；新进程若加载未绑定库，仍BLOCKED。
+普通runtime库的SHA为新Source初次封存，不冒充旧实验已经记录过的SHA。
+
+### 身份、device/inode和overlay
+
+每条清单包含绝对alias、realpath、完整符号链接链、bytes/SHA、权限、stat设备号/inode、
+类别及允许的根。Source输出 `cann-opp-dso-identity.json`；Build输出 `dso-identity.json`，
+引用前者SHA，仅增加新私有OPP中已审核的DSO。后续阶段逐项重核，不再按根目录临时接纳未知文件。
+
+附件中标准OPP的maps设备号为十六进制08:11，stat设备号为十进制69；inode相同。
+既不硬要求overlay两种device数值相等，也不凭inode相同就放行：
+Source/Build对每份已绑定文件做一次 `MAP_PRIVATE | PROT_READ` 的CPU文件映射，
+以完整文件SHA和唯一新VMA确定该文件的backing device/inode。Runtime maps必须与这个
+逐文件证据一致，stat、inode、权限、链接、文件内容和mount namespace均必须继续匹配。
+
+此步骤不dlopen、不执行DSO构造器、不写文件、不设置PROT_EXEC，更不执行NPU。
+它证明的是**被冻结文件与记录的VMA对象身份**，不是对已退出ACLNN进程内存的内容哈希。
+无法识别唯一映射、inode不符、未知设备转换或namespace变化均BLOCKED。
+已有 `maps.txt` 原文仍保留；报告额外保存每个加载区段的地址、权限、offset和device/inode。
+
+### 旧证据、复用和比较边界
+
+`--cann-opp-reference-root` 会重核J3GWjX四份文件的精确pin及实际内容、两次Host查询、
+原Source/Build/ATC报告链接、实际Host DSO身份；输出
+`STANDARD_OPP_BLOCKED_REFERENCE_REVERIFIED_NOT_PROMOTED`。**旧ACLNN报告仍为BLOCKED**。
+新Source清单新增，旧Source/Build/ATC没有此身份合同，因此本轮全部在新目录重新执行。
+仍只编译单个冻结FC AIR，不导出完整Draft、不重跑104 Probes、不运行计算Kernel。
+
+Compare输出真实Core getter、Resource Map、Workspace差异、两路实际callback Host DSO身份、
+ACLNN完整加载库分类和清单SHA、实际环境差异。ATC没有采集完整proc maps，因此该部分明确
+`NOT_CAPTURED_NO_INVENTED_COMPARISON`，不会把ldd静态依赖冒充ATC全部动态加载库。
+
+### 最新服务器命令
+
+以下只使用任务变量及命令级环境，不清空或修改用户全局loader环境。
+旧 `--reference-root` 专用于更早的污染实验，**本次使用新的 `--cann-opp-reference-root`**。
+
+```bash
+cd /home/w00949577/z50058744/qwen3.5-4B-dflash
+git pull --ff-only origin feature/ascend310p-custom-ops
+PY=/home/w00949577/qwen35-dflash-run/venv-hf513-probe/bin/python
+S=$PWD/framework/custom_ops/draft_a_platform_diag
+OLD=/home/w00949577/qwen35-dflash-run/a-platform-diag-isolated-J3GWjX
+ADMIT=$(TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -B -c 'import json,sys,hashlib; from pathlib import Path; r=json.loads(Path(sys.argv[1]).read_text()); x=r["admission_report"]; p=Path(x["path"]); b=p.read_bytes(); assert p.is_absolute() and len(b)==x["bytes"] and hashlib.sha256(b).hexdigest()==x["sha256"]; print(p)' "$OLD/source/report.json")
+NEW=$(mktemp -d /home/w00949577/qwen35-dflash-run/a-platform-diag-pinned-opp-XXXXXX)
+echo "NEW=$NEW"
+```
+
+每阶段成功后才手动执行下一条：
+
+```bash
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -B "$S/run_diag.py" source --admission-report "$ADMIT" --cann-opp-reference-root "$OLD" --output-dir "$NEW/source"
+```
+
+要求：`PLATFORM_DIAG_SOURCE_BOUND`。
+
+```bash
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -B "$S/run_diag.py" build --source-report "$NEW/source/report.json" --output-dir "$NEW/build"
+```
+
+要求：`PLATFORM_DIAG_OPP_RUNNER_BUILT`。
+
+```bash
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -B "$S/run_diag.py" atc --source-report "$NEW/source/report.json" --build-report "$NEW/build/report.json" --output-dir "$NEW/atc"
+```
+
+要求：`PLATFORM_DIAG_ATC_OBSERVED`。
+
+```bash
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -B "$S/run_diag.py" aclnn --source-report "$NEW/source/report.json" --build-report "$NEW/build/report.json" --output-dir "$NEW/aclnn"
+```
+
+要求：`PLATFORM_DIAG_ACLNN_HOST_OBSERVED`；两次GetWorkspaceSize，Execute Calls=0。
+
+```bash
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -B "$S/run_diag.py" compare --source-report "$NEW/source/report.json" --build-report "$NEW/build/report.json" --atc-report "$NEW/atc/report.json" --aclnn-report "$NEW/aclnn/report.json" --output-dir "$NEW/compare"
+```
+
+要求：`PLATFORM_DIAG_COMPARISON_RECORDED`。新阶段当前均NOT_RUN。
+失败时保留原报告并回传error/integrity_error、traceback和对应日志，不修改清单来直接接受漂移文件。
+本轮没有更改Host C++、Runner C++、Kernel、Tiling、ABI、Workspace、环境构造规则或Golden。
+
+本次回归：macOS 68项中66通过、2项Linux专属测试跳过；Docker ARM64 68项全部通过。
+Docker另对真实CANN libascendcl.so完成只读fd/mmap身份检查，结果为LOCAL_ONLY_NOT_SERVER_VERIFIED。
+未运行dlopen、ATC、ACLNN、NPU、完整Draft或Benchmark；未重新编译未改变的C++/Kernel。

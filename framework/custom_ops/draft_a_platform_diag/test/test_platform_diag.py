@@ -102,6 +102,7 @@ class Contracts(unittest.TestCase):
         needs=dict(source=['admission'],build=['source'],atc=['source','build'],aclnn=['source','build'],compare=['source','build','atc','aclnn'])
         for phase,keys in needs.items():
             argv=[phase,'--output-dir',str(self.root/'out')]
+            if phase=='source':argv += ['--cann-opp-reference-root',str(self.root/'old')]
             with patch('sys.stderr'):
                 with self.assertRaises(SystemExit):run_diag.parse(argv)
             for key in keys:argv += ['--'+key+'-report',str(self.root/(key+'.json'))]
