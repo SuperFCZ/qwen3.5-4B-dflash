@@ -6,6 +6,7 @@ from platform_common import c,ec,HERE,sources
 from run_atc import load_stage,bound_admission
 from atc_evidence import payloads,option
 from derive import verify
+import atc_dependency_identity as atc_deps
 from platform_contracts import read_platform,validate_runtime,compare,loaded_libraries,verify_loaded,environment
 
 STATES=dict(source='PLATFORM_DIAG_SOURCE_BOUND',build='PLATFORM_DIAG_OPP_RUNNER_BUILT',atc='PLATFORM_DIAG_ATC_OBSERVED',aclnn='PLATFORM_DIAG_ACLNN_HOST_OBSERVED',compare='PLATFORM_DIAG_COMPARISON_RECORDED')
@@ -50,6 +51,7 @@ def source(a):
 def stage(path,name):
     r=c.read(path);c.verify_tree(r)
     verify_loaded(r.get('loaded_libraries',[]))
+    if name=='source':atc_deps.verify(r['atc_dependencies'])
     if r.get('status')!=STATES[name] or r.get('error') or r.get('integrity_error') or r['sources']!=sources():raise ValueError('diagnostic predecessor/source mismatch')
     return r
 
@@ -62,7 +64,10 @@ def main(a):
         if a.phase=='source':
             r['binding']=source(a);r['admission_report']=c.identity(a.admission_report)
             b=r['binding'];env=c.selected_env(b['prior']['current']['evidence'],b['prior']['reports']['build']['variants']['B']['opp']['install'])
-            r['atc_dependencies']=c.dependencies(b['frozen']['atc_binary'],root/'atc-ldd.log',env)
+            dep_root=root/'atc-dependencies'
+            try:r['atc_dependencies']=atc_deps.audit(b['frozen']['atc_binary'],b['frozen']['command'][0],b['prior']['current']['cann_root'],env,dep_root)
+            finally:
+                if (dep_root/'report.json').is_file():r['atc_dependency_report']=c.identity(dep_root/'report.json')
         else:
             src=stage(a.source_report,'source');r['source_report']=c.identity(a.source_report);binding=src['binding'];prior=binding['prior']
             if ec.previous(prior['root'])['references']!=prior['references']:raise ValueError('old predecessor drift')
@@ -126,6 +131,7 @@ def main(a):
         try:
             c.verify_tree(r)
             verify_loaded(r.get('loaded_libraries',[]))
+            if 'atc_dependencies' in r:atc_deps.verify(r['atc_dependencies'])
             if r['sources']!=sources():raise ValueError('diagnostic source changed')
             c.clean()
         except Exception as e:r.update(status='BLOCKED',integrity_error=str(e))

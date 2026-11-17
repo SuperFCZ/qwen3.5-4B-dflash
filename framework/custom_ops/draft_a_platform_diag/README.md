@@ -166,3 +166,78 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s framework/custom_ops/d
 python3 -B framework/custom_ops/draft_a_platform_diag/local_compile.py \
   --template /work/build/a-raw-sidecar-host-le2oo1y_/CustomOp --output-parent /work/build
 ```
+
+## Source ATC wrapper 依赖检查修复
+
+服务器 `a-platform-diag-LnLfd1/source` 原失败保留为 BLOCKED。
+原因是对 Shell wrapper 执行了 `ldd`，并非已经证明 ATC ELF 缺库。
+2026-11-17 用户只读回传确认：
+
+| 文件 | 真实路径 | Bytes | SHA256 | Mode |
+|---|---|---:|---|---|
+| ATC wrapper | `/usr/local/Ascend/cann-9.0.0/aarch64-linux/bin/atc` | 1233 | `90aa69b5e18a19e65d1f934f1cb68089f9d8092a4dc00e2fb1152ca2b7c15f35` | 0555 |
+| ATC ELF | `/usr/local/Ascend/cann-9.0.0/aarch64-linux/bin/atc.bin` | 670800 | `a32df12914369e4f41a60deff26e8b641c877c070f02ecebfacb121aa5703170` | 0555 |
+
+wrapper别名 `/usr/local/Ascend/cann-9.0.0/bin/atc` 与真实路径、符号链接链都保存。
+该 wrapper 与本地 SDK 文件完整SHA一致，因此本地读取的控制流可作为此服务器脚本的依据：
+
+1. 第1行解释器 `/bin/bash`。
+2. 第13行通过 PATH 调用 `realpath "$0"`。
+3. 第14行通过 PATH 调用 `dirname`；第14–15行 `cd`、`pwd` 为 Bash builtin。
+4. 第20–21行分别在 LD_LIBRARY_PATH、PYTHONPATH 前加入实际 package目录的 lib64、python/site-packages。
+5. 第23行调用 `${PKG_PATH}/bin/atc.bin "$@"`。
+
+新 `atc_dependency_identity.py` 只识别上述完整文件 SHA 对应的已审查流程，
+不实现猜测性的通用Shell解析器，也不执行wrapper进行探测。未知脚本、动态选择目标、
+非ELF helper或无法完整确定的调用链一律 `dependency_audit=INCOMPLETE` / BLOCKED。
+Bash解释器、realpath、dirname、atc.bin四个ELF分别执行ldd；前三者使用继承的库环境，
+atc.bin使用wrapper真实导出的库环境。不会对1233B脚本本身执行ldd。
+直接ELF的入口仍按一个ELF审计。
+
+[Bash官方启动合同](https://www.gnu.org/software/bash/manual/html_node/Bash-Startup-Files.html)
+允许 BASH_ENV 引入额外代码；因此存在相关启动/导出函数/loader覆盖或依赖CWD的库路径时，
+本工具不宣称静态链完整，不静默清除环境变量后继续。
+[ldd的范围](https://man7.org/linux/man-pages/man1/ldd.1.html)是共享对象依赖；本报告不证明
+ATC程序内部的动态启动行为、Python导入或按需dlopen完整集合，也不执行编译器来补齐它们。
+
+每个ELF保存角色、原alias、realpath、bytes/SHA、mode、可执行性、符号链接链、
+ldd命令及returncode、原始stdout/stderr身份和所有解析到的库身份。
+任何 `not found`、非零返回、非空stderr或未识别依赖行均BLOCKED，不跳过错误行。
+后继报告读取及Source finally均重新核验这些文件身份、权限、链接和完整调用链库存。
+原 `raw_common.dependencies/verify/verify_tree` 保持不变。
+
+新证据：
+
+- `source/report.json`: `atc_dependencies` 与 `atc_dependency_report`。
+- `source/atc-dependencies/report.json`: 成功状态 `ATC_STATIC_ELF_DEPENDENCIES_BOUND`。
+- `source/atc-dependencies/{0-bash_interpreter,1-realpath,2-dirname,3-atc.bin}.{stdout,stderr}.log`。
+
+原 Source 成功状态仍为 `PLATFORM_DIAG_SOURCE_BOUND`。
+本修复改变了本目录Source Hash，因此必须新目录重跑Source；历史Precheck/Build/104 Probes
+仅按原身份只读复核，不需要重新执行。本轮在Source之后停止，不运行Build/ATC/ACLNN。
+
+```bash
+cd /home/w00949577/z50058744/qwen3.5-4B-dflash
+git pull --ff-only origin feature/ascend310p-custom-ops
+export CANN_ROOT=/usr/local/Ascend/cann-9.0.0
+source "$CANN_ROOT/set_env.sh"
+export TORCH_DEVICE_BACKEND_AUTOLOAD=0 PYTHONDONTWRITEBYTECODE=1
+PY=/home/w00949577/qwen35-dflash-run/venv-hf513-probe/bin/python
+S=$PWD/framework/custom_ops/draft_a_platform_diag
+OLD=/home/w00949577/qwen35-dflash-run/a-platform-diag-LnLfd1
+ADMIT=$("$PY" -B -c 'import json,sys,hashlib; from pathlib import Path; r=json.loads(Path(sys.argv[1]).read_text()); x=r["admission_report"]; p=Path(x["path"]); b=p.read_bytes(); assert p.is_absolute() and len(b)==x["bytes"] and hashlib.sha256(b).hexdigest()==x["sha256"]; print(p)' "$OLD/source/report.json")
+R=$(mktemp -d /home/w00949577/qwen35-dflash-run/a-platform-diag-atcfix-XXXXXX)
+echo "R=$R"
+"$PY" -B "$S/run_diag.py" source --admission-report "$ADMIT" --output-dir "$R/source"
+```
+
+回传终端状态即可；若失败，再回传 `source/traceback.txt` 和
+`source/atc-dependencies/report.json` 的 error及对应ldd日志。
+不要修改或补齐旧文件。
+
+修复回归：macOS / Docker ARM64均33项CPU测试（原14项 + 新19项）。
+覆盖直接ELF、wrapper、四ELF库存、未知脚本、helper缺失、目标/库SHA漂移、mode与别名漂移、
+缺库、非零ldd、stderr、wrapper原SHA不变。源码/资源/Kernel合同未改。
+本地实际 `atc.bin` 为724048 B、SHA `4d2535f8f27d239d7b26f748aaa14eda392933f2fe55751fb2c4805f2e7a3c4e`，
+与服务器不同；服务器pin拒绝本地替代属于预期结果，不安装其他SDK或放宽pin。
+本地真实ELF的ldd检查只标记 `LOCAL_ONLY_NOT_SERVER_VERIFIED`；ATC、ACLNN、NPU、Benchmark均NOT_RUN。
