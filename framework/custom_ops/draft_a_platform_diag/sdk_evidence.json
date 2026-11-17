@@ -1,0 +1,9 @@
+{
+ "version": "CANN 9.0.0",
+ "files": [
+  {"relative": "aarch64-linux/asc/include/utils/tiling/platform/platform_ascendc.h", "sha256": "44cf3f35292f15a8735b0d43b7e88198ca15d7b4a3bf44719eb3f099697f7f2a", "lines": "96;102-112;130-141", "server_status": "PREVIOUSLY_SERVER_HASH_MATCHED", "apis": "PlatformAscendC(PlatFormInfos*); GetCoreNum/Aic/Aiv; GetCoreMemSize; GetSocVersion; GetCurNpuArch"},
+  {"relative": "aarch64-linux/include/platform/platform_infos_def.h", "sha256": "ca9883b2f7b1aa0eeaf942de1c01196c998a7036360c615e911a24fea6ca9239", "lines": "40-47;60-70", "server_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED", "apis": "GetPlatformResWithLock(map&); raw GetCoreNum/WithLock; independent core_num_ field"},
+  {"relative": "aarch64-linux/include/platform/platform_info.h", "sha256": "415fd286742060c854e8e1cb723e1456473b8c065264f55df8eba50ec3d7298a", "lines": "45-64;155-163", "server_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED", "apis": "Separate general/runtime/per-device PlatformInfo APIs and caches; not evidence of actual runtime values"},
+  {"relative": "aarch64-linux/include/acl/acl_rt.h", "sha256": "7bc8aed5e7d13b273d5236abb0061c8ae4f69c628844f6703cea7d23d50cfbc1", "lines": "1124;1194;1266;1335;2245", "server_status": "LOCAL_ONLY_NOT_SERVER_VERIFIED", "apis": "CreateContext; GetCurrentContext; SetDevice; GetDevice; CreateStream"}
+ ]
+}
