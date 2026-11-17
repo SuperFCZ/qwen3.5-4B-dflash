@@ -17,8 +17,10 @@ def host_text():
 
 def builder_text():
     text=(SIDECAR/'host_build.py').read_text()
-    text=replaced(text,'from sidecar_common import c,audit_host','from platform_common import c\nfrom derive import audit_host')
+    text=replaced(text,'from sidecar_common import c,audit_host','from platform_common import c\nfrom derive import audit_host\nfrom platform_runtime_env import for_prior')
     text=text.replace('host_evidence.h','platform_diag.h')
+    text=replaced(text,"env=c.selected_env(prior['current']['evidence'],install);env.pop('DFLASH_GROUP_QUANT_EVIDENCE_PATH',None)","env,env_binding=for_prior(prior,install,ready=False)")
+    text=replaced(text,"variant=variant,opp=new_opp,base_opp=old_opp,","variant=variant,opp=new_opp,base_opp=old_opp,environment=env,runtime_environment=env_binding,")
     needle="    after=tree(project)"
     text=replaced(text,needle,"    host_cmake=project/'op_host/CMakeLists.txt'\n    with host_cmake.open('a') as f:f.write('\\ntarget_link_libraries(cust_optiling PRIVATE ${CMAKE_DL_LIBS})\\ntarget_link_libraries(cust_op_proto PRIVATE ${CMAKE_DL_LIBS})\\n')\n"+needle)
     text=replaced(text,"changed!={'CMakeLists.txt','op_host/d_flash_group_quant_linear.cpp'}","changed!={'CMakeLists.txt','op_host/CMakeLists.txt','op_host/d_flash_group_quant_linear.cpp'}")

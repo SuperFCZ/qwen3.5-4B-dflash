@@ -4,6 +4,7 @@ import os
 import shutil
 from platform_common import c
 from derive import audit_host
+from platform_runtime_env import for_prior
 
 HOST_LIBS=('libcust_opmaster_rt2.0.so','libcust_opsproto_rt2.0.so')
 
@@ -78,7 +79,7 @@ def build(root,prior,variant='B'):
     if changed!={'CMakeLists.txt','op_host/CMakeLists.txt','op_host/d_flash_group_quant_linear.cpp'} or set(after)-set(before)!={'op_host/platform_diag.h'}:
         raise ValueError('generated project changed beyond approved Host logging/build scope')
     out=root/'host-build';install=root/'opp';cann=Path(prior['current']['cann_root'])
-    env=c.selected_env(prior['current']['evidence'],install);env.pop('DFLASH_GROUP_QUANT_EVIDENCE_PATH',None)
+    env,env_binding=for_prior(prior,install,ready=False)
     c.command(['cmake','-S',project,'-B',out,*preset_options(project,cann)],root/'configure.log',env)
     c.command(['cmake','--build',out,'--target','cust_optiling','cust_op_proto','--parallel','2'],root/'host-build.log',env)
     commands=c.read(out/'compile_commands.json')
@@ -100,7 +101,7 @@ def build(root,prior,variant='B'):
     from opp import preflight
     new_opp=dict(install=str(install),preflight=preflight(install),kind='HOST_EVIDENCE_ONLY_DERIVED_OPP')
     c.verify_opp(new_opp);c.verify_opp(old_opp);c.verify_tree(base)
-    return dict(status='PLATFORM_DIAG_HOST_DSOS_BUILT_NPU_NOT_RUN',variant=variant,opp=new_opp,base_opp=old_opp,
+    return dict(status='PLATFORM_DIAG_HOST_DSOS_BUILT_NPU_NOT_RUN',variant=variant,opp=new_opp,base_opp=old_opp,environment=env,runtime_environment=env_binding,
         project_audit=audit,project_before=before,project_after=after,library_transition=libraries,opp_comparison=comparison,
         compile_commands=c.identity(out/'compile_commands.json'),cmake_cache=c.identity(out/'CMakeCache.txt'),
         kernel_compile='NOT_RUN_FROZEN_BINARY_COPY',old_probes='OLD_OPP_ONLY_NOT_TRANSFERRED',new_probes='NOT_RUN',

@@ -84,7 +84,11 @@ def loaded_libraries(maps,opp,cann):
         if root in target.parents:
             if expected.get(str(target))!=identity['sha256']:raise ValueError('unknown private DSO: '+alias)
             group='PRIVATE_DIAGNOSTIC_OPP';found_private=True
-        elif cann in target.parents:group='SELECTED_CANN'
+        elif 'libcust_op' in target.name or 'libcust_op' in Path(alias).name:
+            raise ValueError('different Ascend installation/private OPP: '+alias)
+        elif cann in target.parents:
+            if 'devlib' in target.relative_to(cann).parts:raise ValueError('runtime cannot use CANN stub library: '+alias)
+            group='SELECTED_CANN'
         elif Path('/usr/local/Ascend/driver') in target.parents:group='DRIVER_SEPARATE_FROM_CANN'
         elif '/usr/local/Ascend/' in alias or '/usr/local/Ascend/' in str(target) or 'libcust_op' in target.name:
             raise ValueError('different Ascend installation/private OPP: '+alias)

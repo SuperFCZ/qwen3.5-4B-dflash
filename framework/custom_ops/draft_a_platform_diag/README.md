@@ -241,3 +241,108 @@ echo "R=$R"
 本地实际 `atc.bin` 为724048 B、SHA `4d2535f8f27d239d7b26f748aaa14eda392933f2fe55751fb2c4805f2e7a3c4e`，
 与服务器不同；服务器pin拒绝本地替代属于预期结果，不安装其他SDK或放宽pin。
 本地真实ELF的ldd检查只标记 `LOCAL_ONLY_NOT_SERVER_VERIFIED`；ATC、ACLNN、NPU、Benchmark均NOT_RUN。
+
+## Runtime 私有 OPP 环境隔离（2026-11-17）
+
+旧实验 `a-platform-diag-fixed-63auyf` 的Source/Build/ATC成功，ACLNN仍为BLOCKED。
+用户只读回传已确认五份 `fc/` 文件与 `retained_runtime` 的bytes/SHA全部一致，
+精确身份保存于 `old_runtime_reference.py::PINS`。两次Host query均完成：
+GetCoreNum/raw/locked=7，AIC/AIV=8，Workspace=2097152，Execute Calls=0。
+旧ATC为GetCoreNum/AIC/AIV/raw/locked=8；其资源字典中ai_cpu_cnt、vector_core_cnt为7。
+这些是**旧环境中的观测**，不证明额外OPP导致Core差异，也不证明vNPU或硬件故障。
+
+旧 `raw_common.selected_env()` 保留了历史环境中不属于H安装根的其他私有OPP；
+因此 customize_dynamic/grouped/quantMatmul 等路径被继续传给了诊断进程。
+新 `platform_runtime_env.py` 不调用该历史环境拼接函数，也不修改它或用户shell。
+
+- 子进程 `ASCEND_CUSTOM_OPP_PATH` 只设为本次 `opp/vendors/customize`。
+  Source只做身份/依赖审计时为空；Build在新私有目录尚未生成前仅登记该输出路径。
+- `ASCEND_OPP_PATH` 固定为选中CANN根下的 `opp`。
+- LD路径从精确列表构造：本次op_api/lib；选中CANN的lib64、标准plugin、built-in OPP、AML库；
+  `/usr/local/Ascend/driver/lib64`及其common/driver目录。按真实目录去重，不追加父进程LD路径。
+- 系统库由系统loader默认目录解析；不将其他用户库、Conda lib目录或CANN devlib加入LD路径。
+- Python路径仅含选中CANN的Python包和built-in TBE；保留已绑定解释器的venv别名，
+  禁用user-site，Native Base仍由原Source Lock导入边界管理。
+- PATH只含选中CANN工具、当前解释器/基解释器bin、历史已绑定工具目录、标准系统bin。
+  若PATH实际选择的工具与原SHA不同，直接BLOCKED。
+- Device选择变量保留不变；不修改Core、BlockDim或调度策略。
+- 只构造 `subprocess env`，不执行shell全局unset/export；被替换的旧路径单独记录。
+
+Source登记标准CANN/Driver库的文件身份，Build和后续阶段重新核对。
+缺少必需CANN库、真实Driver或新私有API、目录越界/链接漂移、文件SHA变化都BLOCKED。
+`loaded_libraries()` 的原拒绝行为保留，并进一步拒绝出现在Diagnostic OPP之外的
+任何 `libcust_op*`，包括CANN目录下未绑定的同名库；Runtime拒绝CANN devlib stub。
+Driver继续独立分类，没有将外部私有库加入白名单。
+
+ATC使用独立 `IsolatedAtcRunner` 显式传递env，不依赖Python进程的隐式环境继承。
+ATC Capture、Worker与外层报告记录实际传递环境；也记录已审核wrapper对LD/Python路径的
+前缀变换。ACLNN记录传给C++进程的完整环境。Compare逐字段输出两进程环境差异：
+除报告目录和诊断route外，启动环境必须一致；ATC ELF的wrapper前缀差异另外列出。
+C++ Runner、两次GetWorkspaceSize、Device/Context/Stream、零Execute及所有原检查均未改。
+
+### 旧证据与ATC复用决策
+
+Source可用 `--reference-root` 对旧实验作只读参考审计：
+五份文件必须同时匹配旧报告和用户回传pin，验证旧Execution/Journal、选中Host DSO、
+原ATC平台文件及Source/Build报告链接。旧maps必须包含已报告的外部私有库。
+旧外部库内容未曾绑定，不会事后生成一个SHA冒充当时身份。
+参考状态为 `CONTAMINATED_RUNTIME_REFERENCE_REVERIFIED_NOT_ADMITTED`，旧报告不改。
+
+**不能复用旧ATC为新正式结果。** 新源码清单和环境合同改变，旧ATC也继承了污染路径，
+不满足Source/Build/Environment严格相等。使用冻结单FC AIR重新执行一次ATC；
+不重新导出模型、不编译四份完整OM、不重跑104 Probes。
+
+### 新目录分阶段命令
+
+保留当前shell；不要为了此次修复手动清空全局OPP/LD变量。命令前缀只影响该子进程。
+先初始化任务变量并提取旧Admission的已绑定路径：
+
+```bash
+cd /home/w00949577/z50058744/qwen3.5-4B-dflash
+git pull --ff-only origin feature/ascend310p-custom-ops
+PY=/home/w00949577/qwen35-dflash-run/venv-hf513-probe/bin/python
+S=$PWD/framework/custom_ops/draft_a_platform_diag
+OLD=/home/w00949577/qwen35-dflash-run/a-platform-diag-fixed-63auyf
+ADMIT=$(TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -B -c 'import json,sys,hashlib; from pathlib import Path; r=json.loads(Path(sys.argv[1]).read_text()); x=r["admission_report"]; p=Path(x["path"]); b=p.read_bytes(); assert p.is_absolute() and len(b)==x["bytes"] and hashlib.sha256(b).hexdigest()==x["sha256"]; print(p)' "$OLD/source/report.json")
+NEW=$(mktemp -d /home/w00949577/qwen35-dflash-run/a-platform-diag-isolated-XXXXXX)
+echo "NEW=$NEW"
+```
+
+每步必须returncode=0及对应精确状态后才手动执行下一步：
+
+```bash
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -B "$S/run_diag.py" source --admission-report "$ADMIT" --reference-root "$OLD" --output-dir "$NEW/source"
+```
+
+成功：`PLATFORM_DIAG_SOURCE_BOUND`。随后：
+
+```bash
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -B "$S/run_diag.py" build --source-report "$NEW/source/report.json" --output-dir "$NEW/build"
+```
+
+成功：`PLATFORM_DIAG_OPP_RUNNER_BUILT`。随后只编译单FC：
+
+```bash
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -B "$S/run_diag.py" atc --source-report "$NEW/source/report.json" --build-report "$NEW/build/report.json" --output-dir "$NEW/atc"
+```
+
+成功：`PLATFORM_DIAG_ATC_OBSERVED`。随后只查询Host：
+
+```bash
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -B "$S/run_diag.py" aclnn --source-report "$NEW/source/report.json" --build-report "$NEW/build/report.json" --output-dir "$NEW/aclnn"
+```
+
+成功：`PLATFORM_DIAG_ACLNN_HOST_OBSERVED`。随后比较：
+
+```bash
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -B "$S/run_diag.py" compare --source-report "$NEW/source/report.json" --build-report "$NEW/build/report.json" --atc-report "$NEW/atc/report.json" --aclnn-report "$NEW/aclnn/report.json" --output-dir "$NEW/compare"
+```
+
+成功：`PLATFORM_DIAG_COMPARISON_RECORDED`。回传Compare输出即可；若失败，回传该阶段
+report中的error/integrity_error、traceback，以及所指日志末尾80行。所有旧产物只读保留。
+
+本地回归：macOS 50项（49通过，Linux ELF加载项跳过）；Docker ARM64 50项全部通过。
+Linux新增测试实际加载一个独立CPU fixture DSO，证明父环境中同名外部私有库不会被选中；
+这不是CANN/NPU执行证明。本地没有真实Ascend Driver，真实最小Runtime准入按预期BLOCKED，
+不使用CANN devlib冒充Driver。Host/Kernel/Runner C++均无改动，本轮没有新的设备执行或Benchmark。
+服务器新Source/Build/ATC/ACLNN/Compare均NOT_RUN，等待上述分阶段实测。

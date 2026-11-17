@@ -7,6 +7,8 @@ from run_atc import load_stage,bound_admission
 from atc_evidence import payloads,option
 from derive import verify
 import atc_dependency_identity as atc_deps
+import platform_runtime_env as runtime_env
+from old_runtime_reference import audit as audit_old_runtime
 from platform_contracts import read_platform,validate_runtime,compare,loaded_libraries,verify_loaded,environment
 
 STATES=dict(source='PLATFORM_DIAG_SOURCE_BOUND',build='PLATFORM_DIAG_OPP_RUNNER_BUILT',atc='PLATFORM_DIAG_ATC_OBSERVED',aclnn='PLATFORM_DIAG_ACLNN_HOST_OBSERVED',compare='PLATFORM_DIAG_COMPARISON_RECORDED')
@@ -52,18 +54,22 @@ def stage(path,name):
     r=c.read(path);c.verify_tree(r)
     verify_loaded(r.get('loaded_libraries',[]))
     if name=='source':atc_deps.verify(r['atc_dependencies'])
+    if 'runtime_environment' in r:runtime_env.verify_binding(r['runtime_environment'])
     if r.get('status')!=STATES[name] or r.get('error') or r.get('integrity_error') or r['sources']!=sources():raise ValueError('diagnostic predecessor/source mismatch')
     return r
 
 
 def main(a):
-    root=c.fresh(a.output_dir,[p.parent for p in (a.admission_report,a.source_report,a.build_report,a.atc_report,a.aclnn_report) if p])
+    protected=[p.parent for p in (a.admission_report,a.source_report,a.build_report,a.atc_report,a.aclnn_report) if p]
+    if a.reference_root:protected.append(a.reference_root)
+    root=c.fresh(a.output_dir,protected)
     r=dict(status='BLOCKED',phase=a.phase,sources=sources(),npu='NOT_RUN',kernel_execute_calls=0,benchmark='NOT_RUN',full_draft='NOT_RUN')
     try:
         c.clean();verify()
         if a.phase=='source':
             r['binding']=source(a);r['admission_report']=c.identity(a.admission_report)
-            b=r['binding'];env=c.selected_env(b['prior']['current']['evidence'],b['prior']['reports']['build']['variants']['B']['opp']['install'])
+            if a.reference_root:r['old_runtime_reference']=audit_old_runtime(a.reference_root)
+            b=r['binding'];env,r['runtime_environment']=runtime_env.for_prior(b['prior'])
             dep_root=root/'atc-dependencies'
             try:r['atc_dependencies']=atc_deps.audit(b['frozen']['atc_binary'],b['frozen']['command'][0],b['prior']['current']['cann_root'],env,dep_root)
             finally:
@@ -71,40 +77,50 @@ def main(a):
         else:
             src=stage(a.source_report,'source');r['source_report']=c.identity(a.source_report);binding=src['binding'];prior=binding['prior']
             if ec.previous(prior['root'])['references']!=prior['references']:raise ValueError('old predecessor drift')
+            standard=runtime_env.standard_identity(src['runtime_environment'])
             if a.phase=='build':
                 req=root/'request.json';dest=root/'package'
                 c.write(req,dict(output=str(dest),prior=prior,variant='B',sources=sources()))
-                c.command([sys.executable,'-B',HERE/'build_worker.py',req],root/'build.log',c.selected_env(prior['current']['evidence'],dest/'opp'))
+                env,initial_binding=runtime_env.for_prior(prior,dest/'opp',ready=False)
+                if runtime_env.standard_identity(initial_binding)!=standard:raise ValueError('standard runtime identity changed after Source')
+                r['build_invocation_environment']=dict(env)
+                c.command([sys.executable,'-B',HERE/'build_worker.py',req],root/'build.log',env)
                 built=c.read(dest/'report.json')
                 if built.get('error') or built.get('integrity_error') or built.get('status')!='PLATFORM_DIAG_HOST_DSOS_BUILT_NPU_NOT_RUN':raise ValueError('diagnostic Host build failed')
                 r['package']=built;r['build_worker']=c.identity(dest/'report.json')
-                env=c.selected_env(prior['current']['evidence'],built['opp']['install'])
+                env,r['runtime_environment']=runtime_env.for_prior(prior,built['opp']['install'])
+                if runtime_env.standard_identity(r['runtime_environment'])!=standard:raise ValueError('standard runtime identity changed during Build')
                 c.command(['cmake','-S',HERE/'runner','-B',root/'runner-build','-DCANN_ROOT='+prior['current']['cann_root'],'-DCOMMON_INCLUDE='+str(c.QUANT/'test'),'-DPRIVATE_OPP='+built['opp']['install']],root/'runner-configure.log',env)
                 c.command(['cmake','--build',root/'runner-build','--parallel','2'],root/'runner-build.log',env)
                 r['runner']=c.identity(root/'runner-build/platform_diag_runner');r['dependencies']=c.dependencies(r['runner'],root/'runner-ldd.log',env);r['environment_contract']=environment(env)
             else:
                 built=stage(a.build_report,'build');r['build_report']=c.identity(a.build_report)
                 if built['source_report']!=r['source_report']:raise ValueError('mixed source/build')
-                opp=built['package']['opp'];c.verify_opp(opp);env=c.selected_env(prior['current']['evidence'],opp['install'])
+                opp=built['package']['opp'];c.verify_opp(opp);env,r['runtime_environment']=runtime_env.for_prior(prior,opp['install'])
+                if runtime_env.standard_identity(r['runtime_environment'])!=standard or r['runtime_environment']['values']!=built['runtime_environment']['values']:raise ValueError('minimal runtime environment/standard identities changed')
                 env.pop('DFLASH_GROUP_QUANT_EVIDENCE_PATH',None)
                 env.pop('DFLASH_PLATFORM_DIAG_PATH',None);env.pop('DFLASH_PLATFORM_DIAG_ROUTE',None)
                 if environment(env)!=built['environment_contract']:raise ValueError('ATC/ACLNN selection environment differs from diagnostic build')
                 r['environment_contract']=environment(env)
                 if a.phase=='atc':
                     req=root/'request.json';dest=root/'fc'
-                    c.write(req,dict(output=str(dest),frozen=binding['frozen'],evidence=prior['current']['evidence'],opp=opp,sources=sources()))
                     env.update(AI_RUN_DIR=str(root),ASCEND_WORK_PATH=str(dest))
+                    runtime_env.assert_invocation(env,r['runtime_environment'])
+                    c.write(req,dict(output=str(dest),frozen=binding['frozen'],evidence=prior['current']['evidence'],opp=opp,sources=sources(),runtime_environment=r['runtime_environment'],environment=env))
                     try:c.command([sys.executable,'-B',HERE/'atc_worker.py',req],root/'atc-worker.log',env)
                     finally:
                         if (dest/'report.json').is_file():
                             r['worker']=c.identity(dest/'report.json');r['captures']=c.read(dest/'report.json').get('captures',[])
                     child=c.read(dest/'report.json')
                     if child.get('status')!='SINGLE_FC_ATC_COMPILED_NOT_EXECUTED' or child.get('integrity_error'):raise ValueError('single FC ATC failed')
+                    r['child_environment']=child['child_environment'];r['atc_elf_environment']=child['elf_environment']
+                    runtime_env.assert_invocation(r['child_environment'],r['runtime_environment'])
                     r['worker']=c.identity(dest/'report.json');r['captures']=child['captures'];r['platform']=read_platform(c.verify(child['platform']),'ATC',opp)
                 elif a.phase=='aclnn':
                     out=root/'fc';out.mkdir();diag=out/'platform.jsonl';diag.touch(exist_ok=False)
                     for name,item in binding['case']['inputs'].items():(out/name).symlink_to(c.verify(item))
                     env.update(DFLASH_PLATFORM_DIAG_PATH=str(diag),DFLASH_PLATFORM_DIAG_ROUTE='ACLNN')
+                    runtime_env.assert_invocation(env,r['runtime_environment']);r['child_environment']=dict(env)
                     if c.dependencies(built['runner'],root/'runner-ldd.log',env)!=built['dependencies']:raise ValueError('Runner library identity drift')
                     try:c.command([c.verify(built['runner']),0,out],out/'runner.log',env)
                     finally:r['retained_runtime']=[c.identity(out/name) for name in ('runner.log','runtime-events.jsonl','execution.json','maps.txt','platform.jsonl') if (out/name).is_file()]
@@ -124,6 +140,12 @@ def main(a):
                     if loaded_libraries(c.verify(runtime['maps']),opp,Path(prior['current']['cann_root']))!=runtime['loaded_libraries']:raise ValueError('saved loaded libraries differ from raw maps')
                     r['atc_report']=c.identity(a.atc_report);r['aclnn_report']=c.identity(a.aclnn_report)
                     r['comparison']=compare(atc['platform'],runtime['platform'])
+                    for observed in (atc,runtime):runtime_env.assert_invocation(observed['child_environment'],observed['runtime_environment'])
+                    r['comparison']['environment_comparison']=runtime_env.compare_invocations(atc['child_environment'],runtime['child_environment'])
+                    r['comparison']['atc_elf_environment']=atc['atc_elf_environment']
+                    r['comparison']['aclnn_process_environment']=runtime['child_environment']
+                    left=atc['atc_elf_environment'];right=runtime['child_environment']
+                    r['comparison']['effective_environment_differences']={k:dict(ATC_ELF=left.get(k),ACLNN=right.get(k)) for k in sorted(set(left)|set(right)) if left.get(k)!=right.get(k)}
                 c.verify_opp(opp)
         r['status']=STATES[a.phase]
     except Exception as e:r['error']=f'{type(e).__name__}: {e}';(root/'traceback.txt').write_text(traceback.format_exc())
@@ -132,6 +154,7 @@ def main(a):
             c.verify_tree(r)
             verify_loaded(r.get('loaded_libraries',[]))
             if 'atc_dependencies' in r:atc_deps.verify(r['atc_dependencies'])
+            if 'runtime_environment' in r:runtime_env.verify_binding(r['runtime_environment'])
             if r['sources']!=sources():raise ValueError('diagnostic source changed')
             c.clean()
         except Exception as e:r.update(status='BLOCKED',integrity_error=str(e))
@@ -144,8 +167,10 @@ def main(a):
 def parse(argv=None):
     p=argparse.ArgumentParser(description=__doc__,allow_abbrev=False)
     p.add_argument('phase',choices=STATES);p.add_argument('--output-dir',type=Path,required=True)
+    p.add_argument('--reference-root',type=Path,help='Read-only audit of the pinned contaminated historical experiment; source phase only')
     for key in ('admission-report','source-report','build-report','atc-report','aclnn-report'):p.add_argument('--'+key,type=Path)
     a=p.parse_args(argv)
+    if a.reference_root and a.phase!='source':p.error('--reference-root is source-only')
     needed={'source':['admission_report'],'build':['source_report'],'atc':['source_report','build_report'],'aclnn':['source_report','build_report'],'compare':['source_report','build_report','atc_report','aclnn_report']}[a.phase]
     for key in needed:
         if getattr(a,key) is None:p.error('--'+key.replace('_','-')+' required')
