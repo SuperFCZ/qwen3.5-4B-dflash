@@ -1,0 +1,28 @@
+{
+  "local_cann_root": "/usr/local/Ascend/cann-9.0.0",
+  "installed_headers": [
+    {"relative":"aarch64-linux/asc/include/utils/tiling/platform/platform_ascendc.h","sha256":"44cf3f35292f15a8735b0d43b7e88198ca15d7b4a3bf44719eb3f099697f7f2a","lines":"96-125;140-141","status":"PREVIOUSLY_SERVER_HASH_MATCHED"},
+    {"relative":"aarch64-linux/include/platform/platform_infos_def.h","sha256":"ca9883b2f7b1aa0eeaf942de1c01196c998a7036360c615e911a24fea6ca9239","lines":"40-47;60-70","status":"BOUND_BY_PREVIOUS_DIAGNOSTIC_SOURCE"},
+    {"relative":"aarch64-linux/include/exe_graph/runtime/tiling_context.h","sha256":"03873ce5d2d66b1aa436f222b2fd6e704dcda2a72fd1a943d3e5ee9290fd3f83","lines":"239-254","status":"LOCAL_ONLY_UNTIL_NEW_SERVER_SOURCE_MATCH"}
+  ],
+  "correlated_upstream": {
+    "commit":"354d1153d73ec4e7c746dae0c18251d5f802dd1f",
+    "tag":"v9.0.0-beta.1",
+    "header_sha256":"44cf3f35292f15a8735b0d43b7e88198ca15d7b4a3bf44719eb3f099697f7f2a",
+    "implementation":"impl/utils/tiling/platform/platform_ascendc.cpp",
+    "implementation_sha256":"f91e2555eb1d4bd6955b11fc282d22c1ff52ca01307e02dff379eb3a6ef3b399",
+    "lines":"77-96 GetCoreNumByType;99-110 GetCoreNumVector;113-125 getters;222-236 CalcTschBlockDim",
+    "url":"https://raw.gitcode.com/cann/asc-devkit/raw/354d1153d73ec4e7c746dae0c18251d5f802dd1f/impl/utils/tiling/platform/platform_ascendc.cpp",
+    "scope":"Exact header match plus correlated public implementation; installed/server object-code equivalence NOT_PROVEN. Actual Host SDK calls remain mandatory."
+  },
+  "rejected_as_exact_version_evidence": {
+    "v9.0.0_header_sha256":"7ba13233d3fb2168b6193fc0e6d18964ae6449d6e5674721b6f8f41d235d4d58",
+    "v9.0.0_impl_sha256":"76f7c3cc36d8f1317bc24646cbe353e68a9a769557dd5925431f3a9186ec7fab",
+    "docs_900_calc_page_sha256":"a062d85e80fe3cce2c40c823b9e4cd58cbad82bc5183cc31e33a7a35b848a4bd",
+    "reason":"Published /900/ page and current v9.0.0 tag use CalcTschNumBlocks; installed reviewed header exposes CalcTschBlockDim. Do not replace the installed API."
+  },
+  "local_libraries": [
+    {"relative":"aarch64-linux/lib64/libtiling_api.a","sha256":"a2e5bb0bc70ffef0abeb33d864213ad069d65ad6156bf8a02daf37ed29992079","status":"LOCAL_ONLY_NOT_SERVER_VERIFIED"},
+    {"relative":"aarch64-linux/lib64/libplatform.so","sha256":"614500012552eda17fcea8378f711f63a144f2654d78306f713b303f59dedeef","status":"LOCAL_ONLY_NOT_SERVER_VERIFIED"}
+  ]
+}
