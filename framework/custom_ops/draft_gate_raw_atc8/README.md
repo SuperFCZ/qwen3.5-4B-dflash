@@ -100,3 +100,5 @@ python3 -B /src/framework/custom_ops/draft_gate_raw_atc8/local_check.py \
 ```
 
 [Local validation](LOCAL_VALIDATION.md) is compile/CPU evidence only. No new server Host callback, model launch, device correctness or timing has been obtained by Codex.
+
+Raw packaging regression: optionally set `GATE8_LOCAL_BUILD_REPORT=/work/build/gate8-check-t6eu9_qo/report.json` when running the CPU tests inside the CANN container. This copies the four existing build artifacts into a temporary package and checks their destinations, hashes and Host ldd; it does not load an OM. The failed `gate-raw-atc8-N9MdiD` Raw staging tree must not be reused: the old copy loop could overwrite its private proto DSO before raising the Python exception.

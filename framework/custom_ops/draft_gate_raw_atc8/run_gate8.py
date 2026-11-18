@@ -51,8 +51,14 @@ def build(root,src,r,source_path):
         r['active_case']=dict(stage='build',mode=mode);folder=root/mode;package=folder/'package';folder.mkdir()
         env,_=host.envs.for_prior(prior,package/'opp',ready=False)
         req=folder/'request.json';c.write(req,dict(variant=mode,sources=sources(),output=str(package),source_report=c.identity(source_path)))
-        command([sys.executable,'-B',HERE/'build_gate.py',req],folder/'builder.log',env)
-        info=package/'report.json';child=c.read(info);require(child['status']=='PRIVATE_GATE_PACKAGE_BUILT','private build failure')
+        info=package/'report.json'
+        try:command([sys.executable,'-B',HERE/'build_gate.py',req],folder/'builder.log',env)
+        except RuntimeError as exc:
+            if info.is_file():
+                r['workers'][mode]=c.identity(info)
+                raise RuntimeError(f"{exc}; {mode} worker: {c.read(info).get('error')} ({info})") from exc
+            raise
+        child=c.read(info);require(child['status']=='PRIVATE_GATE_PACKAGE_BUILT','private build failure')
         r['workers'][mode]=c.identity(info);r['variants'][mode]=child['result']
     verify_build(r,src);r.pop('active_case')
 

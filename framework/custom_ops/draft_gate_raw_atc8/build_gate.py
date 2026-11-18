@@ -77,6 +77,31 @@ def compile_device(project,output,cann,env,mode):
                 config=c.identity(base/(STEM+'.json')),index=c.identity(base/'binary_info_config.json'))
 
 
+def install_raw_outputs(old,install,build,before,kernel,compiler,folder,env):
+    kernel_rel=Path(kernel['elf']['path']).relative_to(old)
+    metadata_rel=Path(kernel['metadata']['path']).relative_to(old)
+    require(kernel_rel.suffix=='.o' and metadata_rel==kernel_rel.with_suffix('.json'),'unexpected Gate object/metadata targets')
+    outputs={kernel_rel:compiler['binary'],metadata_rel:compiler['metadata']}
+    host_paths={}
+    for lib in HOST_LIBS:
+        source=one({p.resolve() for p in build.rglob(lib) if p.is_file()},'ambiguous Host DSO')
+        host_rel=Path(one({v['resolved_relative'] for v in before.values() if Path(v['resolved_relative']).name==lib},'unknown installed Host DSO'))
+        outputs[host_rel]=c.identity(source)
+        host_paths[lib]=host_rel
+    require(len(outputs)==2+len(HOST_LIBS),'overlapping Raw install targets')
+    for target,file in outputs.items():
+        dest=install/target;source=c.verify(file)
+        require(dest.resolve(strict=True)==dest and install in dest.parents and old not in dest.parents,'unsafe package target')
+        require(build in source.parents and source.name==target.name,'wrong Raw artifact for '+str(target))
+    for target,file in outputs.items():
+        dest=install/target
+        shutil.copyfile(c.verify(file),dest)
+        require(dest.stat().st_size==file['bytes'] and c.sha(dest)==file['sha256'],'installed artifact differs: '+str(target))
+    for lib,host_rel in host_paths.items():
+        require(c.dependencies(c.identity(install/host_rel),folder/(lib+'-ldd.log'),env)==c.dependencies(c.identity(old/host_rel),folder/(lib+'-base-ldd.log'),env),'Host link dependencies changed')
+    return {str(target) for target in outputs}
+
+
 def private_build(folder,src,variant,prior):
     anchor=src['off_package'];pack=c.read(c.verify(anchor));opp=pack['opp'];c.verify_opp(opp)
     old=Path(opp['install']).resolve();install=folder/'opp';check_root(install)
@@ -100,8 +125,8 @@ def private_build(folder,src,variant,prior):
     build_env,_=host.envs.for_prior(prior,None)
     require(not build_env['ASCEND_CUSTOM_OPP_PATH'],'private OPP in device compiler environment')
     compiler=compile_device(project,build,Path(src['cann']),dict(build_env,ASCEND_CACHE_PATH=str(cache)),variant)
-    rel=Path(kernel['elf']['path']).relative_to(old)
-    require(Path(compiler['binary']['path']).name==rel.name,'unexpected compiler binary name/dispatch key')
+    kernel_rel=Path(kernel['elf']['path']).relative_to(old)
+    require(Path(compiler['binary']['path']).name==kernel_rel.name,'unexpected compiler binary name/dispatch key')
     configs=install/'vendors/customize/op_impl/ai_core/tbe/kernel/config/ascend310p'
     require(c.read(configs/(STEM+'.json'))==c.read(c.verify(compiler['config'])) and
             c.read(configs/'binary_info_config.json')[GATE]==c.read(c.verify(compiler['index']))[GATE],'Gate registration drift')
@@ -113,20 +138,10 @@ def private_build(folder,src,variant,prior):
                     reason=('Non-executable ELF differences' if old_code==new_code else 'Changed executable sections')+
                            '; underlying compiler/build cause unresolved. Historical numerical acceptance NOT inherited.'))
             raise ValueError('fresh Off ELF differs from accepted Off; see off-elf-drift.json')
-        require((install/rel).resolve()==install/rel,'unsafe control binary target')
-        shutil.copyfile(c.verify(compiler['binary']),install/rel)
+        require((install/kernel_rel).resolve()==install/kernel_rel,'unsafe control binary target')
+        shutil.copyfile(c.verify(compiler['binary']),install/kernel_rel)
     else:
-        def replace(rel,file):
-            dest=install/rel
-            require(dest.resolve(strict=True)==dest and install in dest.parents,'unsafe package target')
-            shutil.copyfile(c.verify(file),dest);allowed.add(str(rel))
-        for lib in HOST_LIBS:
-            libfile=one({p.resolve() for p in build.rglob(lib) if p.is_file()},'ambiguous Host DSO')
-            rel=one({v['resolved_relative'] for v in before.values() if Path(v['resolved_relative']).name==lib},'unknown installed Host DSO')
-            replace(rel,c.identity(libfile))
-            require(c.dependencies(c.identity(install/rel),folder/(lib+'-ldd.log'),env)==c.dependencies(c.identity(old/rel),folder/(lib+'-base-ldd.log'),env),'Host link dependencies changed')
-        # Require stable op name, registration, index and ABI. Do not splice a new dispatch key into the old joint registry.
-        replace(rel,compiler['binary']);replace(rel.with_suffix('.json'),compiler['metadata'])
+        allowed.update(install_raw_outputs(old,install,build,before,kernel,compiler,folder,env))
         # Source packages can contain the same device configuration in the dynamic implementation directory.
         for dest in sorted({p.resolve(strict=True) for p in install.rglob(HEADER)}):
             require(c.sha(dest)==OFF_HEADER and install in dest.parents,'unbound installed configuration')
