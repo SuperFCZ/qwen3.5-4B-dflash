@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.16)
+project(draft_a_raw_runner LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_library(ACL_LIBRARY ascendcl PATHS "${CANN_ROOT}/lib64" "${CANN_ROOT}/aarch64-linux/lib64" "${CANN_ROOT}/x86_64-linux/lib64" NO_DEFAULT_PATH REQUIRED)
+add_executable(raw_om_runner runner.cpp)
+target_include_directories(raw_om_runner PRIVATE "${CANN_ROOT}/include" "${COMMON_INCLUDE}")
+target_link_libraries(raw_om_runner PRIVATE "${ACL_LIBRARY}")

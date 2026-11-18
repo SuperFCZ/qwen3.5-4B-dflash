@@ -1,0 +1,423 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "phase",
+    "status",
+    "sources",
+    "predecessors",
+    "device_execution",
+    "benchmark"
+  ],
+  "properties": {
+    "phase": {
+      "enum": [
+        "source",
+        "build",
+        "host-query",
+        "projection-smoke",
+        "export",
+        "full-smoke",
+        "benchmark"
+      ]
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/file"
+      }
+    },
+    "predecessors": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/file"
+      }
+    }
+  },
+  "$defs": {
+    "file": {
+      "type": "object",
+      "required": [
+        "path",
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "source"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "enum": [
+              "BLOCKED",
+              "FLOW_SOURCE_PASS"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "build"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "enum": [
+              "BLOCKED",
+              "FLOW_BUILD_PASS"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "host-query"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "enum": [
+              "BLOCKED",
+              "FLOW_HOST_QUERY_PASS"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "projection-smoke"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "enum": [
+              "BLOCKED",
+              "FLOW_PROJECTION_SMOKE_PASS"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "export"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "enum": [
+              "BLOCKED",
+              "FLOW_EXPORT_PASS"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "full-smoke"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "enum": [
+              "BLOCKED",
+              "FLOW_FULL_SMOKE_PASS"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "benchmark"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "enum": [
+              "BLOCKED",
+              "FLOW_BENCHMARK_PASS"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "source"
+          },
+          "status": {
+            "const": "FLOW_SOURCE_PASS"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "binding"
+        ],
+        "properties": {
+          "binding": {
+            "type": "object",
+            "required": [
+              "fc_reports",
+              "host_source",
+              "cases",
+              "models",
+              "standard_manifest"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "build"
+          },
+          "status": {
+            "const": "FLOW_BUILD_PASS"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "variants"
+        ],
+        "properties": {
+          "variants": {
+            "type": "object",
+            "required": [
+              "A",
+              "B"
+            ],
+            "maxProperties": 2
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "host-query"
+          },
+          "status": {
+            "const": "FLOW_HOST_QUERY_PASS"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "runs",
+          "plans"
+        ],
+        "properties": {
+          "runs": {
+            "type": "object",
+            "minProperties": 104,
+            "maxProperties": 104
+          },
+          "plans": {
+            "type": "object",
+            "minProperties": 104,
+            "maxProperties": 104
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "projection-smoke"
+          },
+          "status": {
+            "const": "FLOW_PROJECTION_SMOKE_PASS"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "runs",
+          "plans"
+        ],
+        "properties": {
+          "runs": {
+            "type": "object",
+            "minProperties": 104,
+            "maxProperties": 104
+          },
+          "plans": {
+            "type": "object",
+            "minProperties": 104,
+            "maxProperties": 104
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "export"
+          },
+          "status": {
+            "const": "FLOW_EXPORT_PASS"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "atc",
+          "models",
+          "atc_pairs",
+          "attribution"
+        ],
+        "properties": {
+          "atc": {
+            "type": "string"
+          },
+          "models": {
+            "type": "object",
+            "required": [
+              "A/16",
+              "B/16",
+              "A/64",
+              "B/64"
+            ],
+            "maxProperties": 4
+          },
+          "atc_pairs": {
+            "type": "object",
+            "required": [
+              "16",
+              "64"
+            ]
+          },
+          "attribution": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "full-smoke"
+          },
+          "status": {
+            "const": "FLOW_FULL_SMOKE_PASS"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "runs",
+          "attribution"
+        ],
+        "properties": {
+          "runs": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "attribution": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "benchmark"
+          },
+          "status": {
+            "const": "FLOW_BENCHMARK_PASS"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "runs",
+          "statistics",
+          "attribution"
+        ],
+        "properties": {
+          "runs": {
+            "type": "array",
+            "minItems": 12,
+            "maxItems": 12
+          },
+          "statistics": {
+            "type": "object",
+            "required": [
+              "16",
+              "64"
+            ]
+          },
+          "attribution": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}
