@@ -1,0 +1,248 @@
+{
+  "cann_root": "/usr/local/Ascend/cann-9.0.0",
+  "pre_maps_sha256": "559869b7e8cf364cc0500e705a7b2543fb1878350f3cc8033593a0e77c6a18e4",
+  "records": [
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libacl_mdl.so",
+      "bytes": 67400,
+      "sha256": "7287fe3c29cdbcc6dab4523d490a555f8d2ab471c689bc5b4dc9950d546395dd",
+      "mode": 292,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49033122
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libacl_mdl_impl.so",
+      "bytes": 718752,
+      "sha256": "2d26b1ca7cd85eb37d0c02ae08c4554bc3bdc636d813d6e0a50b1101eb1a341d",
+      "mode": 292,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49033123
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libaicore_utils.so",
+      "bytes": 2788456,
+      "sha256": "aec204462f83cfd088c33685ef1dc63e0372d45121382b035b7371fe39a6c2ec",
+      "mode": 292,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49033140
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libaicpu_const_folding.so",
+      "bytes": 59272,
+      "sha256": "cc0abf8a4209a4aa8812b17889a012f4150bd979b34cb0b36955e9c9fa4f50ab",
+      "mode": 292,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49033141
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libaicpu_engine_common.so",
+      "bytes": 1181616,
+      "sha256": "6a0a3b527bc4accca65b9520c9acccf6eee8ec391c70e51332ce04a01b3351a3",
+      "mode": 292,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49033144
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libconstant_folding_ops.so",
+      "bytes": 59325632,
+      "sha256": "7cc906b19dd007101f971a43a669fd370721edeb53ec69652d2730b8f57cc4af",
+      "mode": 365,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49033183
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libdavinci_executor.so",
+      "bytes": 5004376,
+      "sha256": "777084f3ce11d3b2f5b08011771ad21ec58d7af45dbed5580f9c9d31443ce8e5",
+      "mode": 292,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49033186
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libge_common.so",
+      "bytes": 1104760,
+      "sha256": "555ed88062cef1dcde0ce346bd6227a6c07f4eb03f4077c89446f80f42df04ce",
+      "mode": 292,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49033208
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libge_common_base.so",
+      "bytes": 5446392,
+      "sha256": "ea217ba699773c97fb8aba8d50f85ea6f1862469382c19cb2f6f18772c428a6e",
+      "mode": 292,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49033209
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libge_executor.so",
+      "bytes": 1083320,
+      "sha256": "c3d20e27cad3fb8887e9320b5ee76a45916c9e1ffd17c9082b9c9b0d43b224d9",
+      "mode": 292,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49033211
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libgert.so",
+      "bytes": 8199752,
+      "sha256": "a8ac7b6b02c162546379aca357a078d4fab93530acdd0c3800a4b800bc6b07cf",
+      "mode": 292,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49033214
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libhybrid_executor.so",
+      "bytes": 4180088,
+      "sha256": "eb0466282157c7d5459e36c46e0c37da6d6f975fd74ab5ba66d00c00295367dd",
+      "mode": 292,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49033233
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/liblowering.so",
+      "bytes": 743312,
+      "sha256": "6102086362e253e29d87c8d281d90e1f18e115f7b68f03f17c01f4d05948683c",
+      "mode": 292,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49033238
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/aarch64-linux/lib64/libops_host_cpu.so",
+      "bytes": 13664320,
+      "sha256": "209722841333aacbe9a83a4103b2fe606852bb50fbd1497df34f4376e902d2e0",
+      "mode": 365,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49033258
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/opp/built-in/op_graph/lib/linux/aarch64/libopgraph_cv.so",
+      "bytes": 526152,
+      "sha256": "cdebba88d68f15da8f0db032a48fb43a4f74fe0b7c8b4b09ef1a0e72955e1df3",
+      "mode": 493,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49036043
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/opp/built-in/op_graph/lib/linux/aarch64/libopgraph_legacy.so",
+      "bytes": 5625368,
+      "sha256": "d27fe4d44b41b0ec991fa282274f36aa3a5cfafd976c0c56e44458aaa8cd553d",
+      "mode": 493,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49036044
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/opp/built-in/op_graph/lib/linux/aarch64/libopgraph_math.so",
+      "bytes": 1443656,
+      "sha256": "66a9463611bb20fb4740148eafe79832914701974da768cedcc24cf7230d27d2",
+      "mode": 493,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49036045
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/opp/built-in/op_graph/lib/linux/aarch64/libopgraph_nn.so",
+      "bytes": 870488,
+      "sha256": "8c96c36af8920afe837fd89cfc5a0b29d6404c87206adb6d917aaf3b2bb2b548",
+      "mode": 493,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49036046
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/opp/built-in/op_graph/lib/linux/aarch64/libopgraph_transformer.so",
+      "bytes": 722760,
+      "sha256": "13628676b4f2f8801247886f1b6e99626326359758977932c389b931115430d5",
+      "mode": 493,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49036047
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/opp/built-in/op_impl/ai_core/tbe/op_tiling/lib/linux/aarch64/liboptiling.so",
+      "bytes": 43526016,
+      "sha256": "e1f065ba7ddb169b93efe51b932fac17520b861997925bcbcd314146f661feda",
+      "mode": 493,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49156745
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/opp/built-in/op_proto/lib/linux/aarch64/libopsproto.so",
+      "bytes": 35986120,
+      "sha256": "69b36a0b2655587ce3eb4baeb8d63a24791671925452df97bfc5c4f4681eea80",
+      "mode": 493,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 49156804
+    },
+    {
+      "alias": "/usr/local/Ascend/cann-9.0.0/opp/vendors/customize/op_proto/lib/linux/aarch64/libcust_opsproto_rt2.0.so",
+      "bytes": 640976,
+      "sha256": "4c8ab5da89bcaa4b97624f8f4db7036553051b702a8e604be350f3202559d875",
+      "mode": 420,
+      "maps_device": [
+        8,
+        17
+      ],
+      "inode": 109196554
+    }
+  ]
+}
