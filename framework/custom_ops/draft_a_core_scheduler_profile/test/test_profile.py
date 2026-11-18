@@ -9,7 +9,7 @@ import unittest
 
 HERE=Path(__file__).resolve().parents[1];sys.path.insert(0,str(HERE))
 import attribution as a
-from collect_profile import sender
+from collect_profile import capture_command,sender
 from profile_common import c
 
 
@@ -72,8 +72,22 @@ class ProfileContracts(unittest.TestCase):
         proc=subprocess.run([sys.executable,'-B',HERE/'exec_shim.py',q],capture_output=True)
         self.assertNotEqual(proc.returncode,0);self.assertFalse((self.root/'shim.json').exists())
 
+    def test_application_argv_boundaries(self):
+        args=capture_command('/sdk/msprof',self.root/'profile data','/venv/bin/python',
+                             self.root/'exec shim.py',self.root/'request file.json')
+        self.assertEqual(args[-6:],['--output='+str(self.root/'profile data'),'/venv/bin/python','-I','-B',
+                                    str(self.root/'exec shim.py'),str(self.root/'request file.json')])
+        self.assertFalse(any(x.startswith('--application') for x in args))
+
     @unittest.skipUnless(sys.platform=='linux','Linux gate credentials')
     def test_real_shim_exec_pid_and_socket(self):
+        self.check_exec_gate()
+
+    @unittest.skipUnless(sys.platform=='linux' and os.getenv('DFLASH_TEST_MSPROF'), 'optional real msprof with CPU-only application')
+    def test_msprof_positional_exec_gate(self):
+        self.check_exec_gate(os.environ['DFLASH_TEST_MSPROF'])
+
+    def check_exec_gate(self,msprof=None):
         import shutil
         from textwrap import dedent
         if not shutil.which('cc'):self.skipTest('cc absent')
@@ -88,10 +102,18 @@ class ProfileContracts(unittest.TestCase):
             p.settimeout(5);p.setsockopt(socket.SOL_SOCKET,socket.SO_PASSCRED,1)
             fd=ch.fileno();q=self.root/'request.json'
             c.write(q,dict(argv=[str(runner),'0','unused',str(self.root),str(fd)],endpoint=os.readlink('/proc/self/fd/'+str(fd))))
-            with subprocess.Popen([sys.executable,'-I','-B',HERE/'exec_shim.py',q],pass_fds=(fd,)) as proc:
+            args=(capture_command(msprof,self.root/'capture',sys.executable,HERE/'exec_shim.py',q) if msprof else
+                  [sys.executable,'-I','-B',HERE/'exec_shim.py',q])
+            with (self.root/'launcher.log').open('wb') as log,subprocess.Popen(args,pass_fds=(fd,),cwd=self.root,stdout=log,stderr=subprocess.STDOUT) as proc:
                 ch.close()
                 try:
-                    self.assertEqual(sender(p),proc.pid);self.assertEqual(Path('/proc',str(proc.pid),'exe').resolve(),runner)
-                    self.assertEqual(c.read(self.root/'shim.json')['pid'],proc.pid)
-                    p.sendall(b'G');self.assertEqual(proc.wait(timeout=5),0)
+                    pid=sender(p)
+                    if not msprof:self.assertEqual(pid,proc.pid)
+                    self.assertEqual(Path('/proc',str(pid),'exe').resolve(),runner)
+                    witness=c.read(self.root/'shim.json')
+                    self.assertEqual(witness['pid'],pid)
+                    self.assertEqual(os.readlink('/proc/'+str(pid)+'/fd/'+str(fd)),witness['endpoint'])
+                    p.sendall(b'G');rc=proc.wait(timeout=30)
+                    if not msprof:self.assertEqual(rc,0)
+                    elif rc:self.assertIn('Failed to find profiling data',(self.root/'launcher.log').read_text())
                 finally:p.close()

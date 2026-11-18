@@ -1,7 +1,6 @@
 import os
 from pathlib import Path
 import select
-import shlex
 import signal
 import socket
 import struct
@@ -11,10 +10,15 @@ import time
 from profile_common import HERE,FLAGS,c,flow,resume,require
 
 
+def capture_command(msprof,output,python,shim,request):
+    return [str(msprof),*FLAGS,'--output='+str(output),str(python),'-I','-B',str(shim),str(request)]
+
+
 def sender(conn):
     size=struct.calcsize('3i')
     data,items,flags,_=conn.recvmsg(1,socket.CMSG_SPACE(size))
-    require(data==b'?' and not(flags & socket.MSG_CTRUNC),'no original Runner gate token')
+    require(data!=b'', 'gate EOF before Runner request; inspect msprof.log, application/shim.json and runner.log')
+    require(data==b'?' and not(flags & socket.MSG_CTRUNC),'invalid original Runner gate token/credentials')
     creds=[struct.unpack('3i',val) for level,typ,val in items if level==socket.SOL_SOCKET and typ==socket.SCM_CREDENTIALS]
     require(len(creds)==1 and creds[0][1]==os.getuid(),'missing/wrong Runner SCM_CREDENTIALS')
     return creds[0][0]
@@ -47,7 +51,7 @@ def run(out,b,gear,r):
         argv=list(map(str,[c.verify(runner),0,c.verify(case['om']),folder,folder/'inputs',folder/'golden','benchmark',fd]))
         endpoint=os.readlink('/proc/self/fd/'+str(fd))
         request=out/'request.json';c.write(request,dict(argv=argv,endpoint=endpoint))
-        cmd=[b['msprof_alias'],*FLAGS,'--output='+str(out/'profiler'),'--application='+shlex.join([sys.executable,'-I','-B',str(HERE/'exec_shim.py'),str(request)])]
+        cmd=capture_command(b['msprof_alias'],out/'profiler',sys.executable,HERE/'exec_shim.py',request)
         c.write(out/'msprof-command.json',dict(argv=cmd,env=env,pass_fds=[fd],runner=runner,om=case['om']))
         with subprocess.Popen(cmd,pass_fds=(fd,),cwd=out,env=env,stdout=log,stderr=subprocess.STDOUT,start_new_session=True) as proc:
             child.close()
@@ -72,6 +76,9 @@ def run(out,b,gear,r):
                     try:proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         os.killpg(proc.pid,signal.SIGKILL);proc.wait()
+                r['msprof_returncode']=proc.returncode
+                r['shim_witness_present']=(folder/'shim.json').is_file()
+                r['pre_maps_present']=(folder/'pre-maps.txt').is_file()
     resume.check_maps(maps(folder/'post-maps.txt'),records)
     row=dict(execution=c.identity(folder/'execution.json'),outputs={name:[c.identity(folder/(name+'-'+suffix)) for suffix in ('actual-0.bin','actual-1.bin','benchmark-last.bin','postcheck.bin')] for name in flow.OUTPUTS})
     validation=flow.verify_run(row,spec,0,True)
