@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Independent Down DMA report",
+  "type": "object",
+  "required": [
+    "schema",
+    "track",
+    "phase",
+    "status",
+    "root",
+    "sources",
+    "predecessors",
+    "error",
+    "integrity_error",
+    "device_execution",
+    "atc",
+    "benchmark"
+  ],
+  "$defs": {
+    "identity": {
+      "type": "object",
+      "required": [
+        "path",
+        "bytes",
+        "sha256"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  },
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "track": {
+      "const": "down-copy"
+    },
+    "phase": {
+      "enum": [
+        "source",
+        "build",
+        "atc",
+        "smoke",
+        "benchmark"
+      ]
+    },
+    "status": {
+      "enum": [
+        "BLOCKED",
+        "DOWN_NO_GO",
+        "DOWN_SOURCE_PASS",
+        "DOWN_BUILD_PASS",
+        "DOWN_ATC_PASS",
+        "DOWN_SMOKE_PASS",
+        "DOWN_BENCHMARK_PASS"
+      ]
+    },
+    "root": {
+      "type": "string",
+      "pattern": "^/"
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/identity"
+      }
+    },
+    "predecessors": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/identity"
+      }
+    },
+    "error": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "integrity_error": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "device_execution": {
+      "enum": [
+        "NOT_RUN",
+        "ATTEMPTED",
+        "COMPLETED"
+      ]
+    },
+    "atc": {
+      "enum": [
+        "NOT_RUN",
+        "ATTEMPTED",
+        "TWO_FROZEN_AIR_OMS_COMPILED"
+      ]
+    },
+    "benchmark": {
+      "enum": [
+        "NOT_RUN",
+        "ATTEMPTED",
+        "MEASURED"
+      ]
+    }
+  },
+  "allOf": [
+    {"if":{"properties":{"status":{"enum":["DOWN_SOURCE_PASS"]}}},"then":{"required":["binding","down"],"properties":{"phase":{"const":"source"},"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"NOT_RUN"}}}},
+    {"if":{"properties":{"status":{"enum":["DOWN_BUILD_PASS"]}}},"then":{"required":["candidate","worker","runner"],"properties":{"phase":{"const":"build"},"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"NOT_RUN"}}}},
+    {"if":{"properties":{"status":{"enum":["DOWN_ATC_PASS"]}}},"then":{"required":["models"],"properties":{"phase":{"const":"atc"},"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"NOT_RUN"}}}},
+    {"if":{"properties":{"status":{"enum":["DOWN_SMOKE_PASS"]}}},"then":{"required":["runs"],"properties":{"phase":{"const":"smoke"},"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"COMPLETED"}}}},
+    {"if":{"properties":{"status":{"enum":["DOWN_BENCHMARK_PASS","DOWN_NO_GO"]}}},"then":{"required":["runs","statistics"],"properties":{"phase":{"const":"benchmark"},"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"COMPLETED"}}}},
+    {"if":{"properties":{"status":{"pattern":"^(BLOCKED|NO_TESTABLE_OVERLAP)"}}},"then":{"anyOf":[{"properties":{"error":{"type":"string","minLength":1}}},{"properties":{"integrity_error":{"type":"string","minLength":1}}}]}}
+  ]
+}

@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "W16 isolated experiment stage evidence",
+  "type": "object",
+  "required": [
+    "schema",
+    "phase",
+    "status",
+    "root",
+    "folder",
+    "history_roots",
+    "sources",
+    "predecessors",
+    "error",
+    "integrity_error",
+    "atc",
+    "device_execution",
+    "benchmark",
+    "production"
+  ],
+  "$defs": {
+    "identity": {
+      "type": "object",
+      "required": [
+        "path",
+        "bytes",
+        "sha256"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  },
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "root": {
+      "type": "string",
+      "pattern": "^/"
+    },
+    "folder": {
+      "type": "string",
+      "pattern": "^/"
+    },
+    "history_roots": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^/"
+      }
+    },
+    "phase": {
+      "enum": [
+        "source",
+        "build",
+        "atc",
+        "static",
+        "smoke",
+        "schedule-benchmark",
+        "net-benchmark",
+        "compare",
+        "five-c16-atc",
+        "five-c16-static",
+        "five-c16-smoke",
+        "five-c16-benchmark",
+        "five-c64-smoke",
+        "five-c64-benchmark",
+        "full-atc",
+        "full-static",
+        "full-smoke",
+        "full-benchmark",
+        "resource-benchmark"
+      ]
+    },
+    "status": {
+      "enum": [
+        "BLOCKED",
+        "BLOCKED_STATIC_ADMISSION",
+        "NO_TESTABLE_OVERLAP",
+        "W16_NO_GO",
+        "W16_SOURCE_PASS",
+        "W16_BUILD_PASS",
+        "W16_ATC_PASS",
+        "W16_STATIC_PASS",
+        "W16_SMOKE_PASS",
+        "W16_SCHEDULE_BENCHMARK_PASS",
+        "W16_NET_BENCHMARK_PASS",
+        "W16_COMPARE_PASS",
+        "W16_FIVE_C16_ATC_PASS",
+        "W16_FIVE_C16_STATIC_PASS",
+        "W16_FIVE_C16_SMOKE_PASS",
+        "W16_FIVE_C16_BENCHMARK_PASS",
+        "W16_FIVE_C64_SMOKE_PASS",
+        "W16_FIVE_C64_BENCHMARK_PASS",
+        "W16_FULL_ATC_PASS",
+        "W16_FULL_STATIC_PASS",
+        "W16_FULL_SMOKE_PASS",
+        "W16_FULL_BENCHMARK_PASS",
+        "W16_RESOURCE_BENCHMARK_PASS"
+      ]
+    },
+    "error": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "integrity_error": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "production": {
+      "const": "NOT_MODIFIED"
+    },
+    "predecessors": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/identity"
+      }
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/identity"
+      }
+    },
+    "device_execution": {
+      "enum": [
+        "NOT_RUN",
+        "ATTEMPTED",
+        "COMPLETED"
+      ]
+    },
+    "atc": {
+      "enum": [
+        "NOT_RUN",
+        "ATTEMPTED",
+        "FROZEN_AIR_COMPILED_AND_EMBEDDED_ELF_CAPTURED"
+      ]
+    },
+    "benchmark": {
+      "enum": [
+        "NOT_RUN",
+        "ATTEMPTED",
+        "FRESH_RESIDENT_EXECUTE_SYNC_MEASURED"
+      ]
+    }
+  },
+  "allOf": [
+    {"if":{"properties":{"phase":{"const":"source"}}},"then":{"properties":{"status":{"enum":["BLOCKED","W16_SOURCE_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_SOURCE_PASS","W16_NO_GO"]}}},"then":{"required":["binding"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"NOT_RUN"},"atc":{"const":"NOT_RUN"},"benchmark":{"const":"NOT_RUN"}}}}]}},
+    {"if":{"properties":{"phase":{"const":"build"}}},"then":{"properties":{"status":{"enum":["BLOCKED","W16_BUILD_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_BUILD_PASS","W16_NO_GO"]}}},"then":{"required":["workers","variants"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"NOT_RUN"},"atc":{"const":"NOT_RUN"},"benchmark":{"const":"NOT_RUN"}}}}]}},
+    {"if":{"properties":{"phase":{"const":"atc"}}},"then":{"properties":{"status":{"enum":["BLOCKED","W16_ATC_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_ATC_PASS","W16_NO_GO"]}}},"then":{"required":["models","captures","baseline_images"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"NOT_RUN"},"atc":{"const":"FROZEN_AIR_COMPILED_AND_EMBEDDED_ELF_CAPTURED"},"benchmark":{"const":"NOT_RUN"}}}}]}},
+    {"if":{"properties":{"phase":{"const":"static"}}},"then":{"properties":{"status":{"enum":["BLOCKED","BLOCKED_STATIC_ADMISSION","NO_TESTABLE_OVERLAP","W16_STATIC_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_STATIC_PASS","W16_NO_GO"]}}},"then":{"required":["proofs","review_commit"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"NOT_RUN"},"atc":{"const":"NOT_RUN"},"benchmark":{"const":"NOT_RUN"},"proofs":{"type":"object","minProperties":1}}}}]}},
+    {"if":{"properties":{"phase":{"const":"smoke"}}},"then":{"properties":{"status":{"enum":["BLOCKED","W16_SMOKE_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_SMOKE_PASS","W16_NO_GO"]}}},"then":{"required":["runs","cross_variant_output_sha256"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"COMPLETED"},"atc":{"const":"NOT_RUN"},"benchmark":{"const":"NOT_RUN"},"runs":{"type":"array","minItems":1,"items":{"type":"object","required":["mode","layer","gear","runner","om","opp_root","atc_plan","gate","maps","outputs","bit_mismatches","validation","launch_authorized"],"properties":{"launch_authorized":{"const":true},"bit_mismatches":{"const":0},"profiled":{"const":false},"gate":{"type":"object","required":["pid","child_pid","fd","endpoint","runner","control_token","live_pre_maps_equal"]}}}}}}}]}},
+    {"if":{"properties":{"phase":{"const":"schedule-benchmark"}}},"then":{"properties":{"status":{"enum":["BLOCKED","W16_SCHEDULE_BENCHMARK_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_SCHEDULE_BENCHMARK_PASS","W16_NO_GO"]}}},"then":{"required":["runs","statistics","cross_variant_output_sha256"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"COMPLETED"},"atc":{"const":"NOT_RUN"},"benchmark":{"const":"FRESH_RESIDENT_EXECUTE_SYNC_MEASURED"},"runs":{"type":"array","minItems":1,"items":{"type":"object","required":["mode","layer","gear","runner","om","opp_root","atc_plan","gate","maps","outputs","bit_mismatches","validation","launch_authorized"],"properties":{"launch_authorized":{"const":true},"bit_mismatches":{"const":0},"profiled":{"const":false},"gate":{"type":"object","required":["pid","child_pid","fd","endpoint","runner","control_token","live_pre_maps_equal"]}}}}}}}]}},
+    {"if":{"properties":{"phase":{"const":"net-benchmark"}}},"then":{"properties":{"status":{"enum":["BLOCKED","W16_NET_BENCHMARK_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_NET_BENCHMARK_PASS","W16_NO_GO"]}}},"then":{"required":["runs","statistics","cross_variant_output_sha256"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"COMPLETED"},"atc":{"const":"NOT_RUN"},"benchmark":{"const":"FRESH_RESIDENT_EXECUTE_SYNC_MEASURED"},"runs":{"type":"array","minItems":1,"items":{"type":"object","required":["mode","layer","gear","runner","om","opp_root","atc_plan","gate","maps","outputs","bit_mismatches","validation","launch_authorized"],"properties":{"launch_authorized":{"const":true},"bit_mismatches":{"const":0},"profiled":{"const":false},"gate":{"type":"object","required":["pid","child_pid","fd","endpoint","runner","control_token","live_pre_maps_equal"]}}}}}}}]}},
+    {"if":{"properties":{"phase":{"const":"compare"}}},"then":{"properties":{"status":{"enum":["BLOCKED","W16_NO_GO","W16_COMPARE_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_COMPARE_PASS","W16_NO_GO"]}}},"then":{"required":["comparison"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"NOT_RUN"},"atc":{"const":"NOT_RUN"},"benchmark":{"const":"NOT_RUN"}}}}]}},
+    {"if":{"properties":{"phase":{"const":"five-c16-atc"}}},"then":{"properties":{"status":{"enum":["BLOCKED","W16_FIVE_C16_ATC_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_FIVE_C16_ATC_PASS","W16_NO_GO"]}}},"then":{"required":["models","captures","baseline_images"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"NOT_RUN"},"atc":{"const":"FROZEN_AIR_COMPILED_AND_EMBEDDED_ELF_CAPTURED"},"benchmark":{"const":"NOT_RUN"}}}}]}},
+    {"if":{"properties":{"phase":{"const":"five-c16-static"}}},"then":{"properties":{"status":{"enum":["BLOCKED","BLOCKED_STATIC_ADMISSION","NO_TESTABLE_OVERLAP","W16_FIVE_C16_STATIC_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_FIVE_C16_STATIC_PASS","W16_NO_GO"]}}},"then":{"required":["proofs","review_commit"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"NOT_RUN"},"atc":{"const":"NOT_RUN"},"benchmark":{"const":"NOT_RUN"},"proofs":{"type":"object","minProperties":1}}}}]}},
+    {"if":{"properties":{"phase":{"const":"five-c16-smoke"}}},"then":{"properties":{"status":{"enum":["BLOCKED","W16_FIVE_C16_SMOKE_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_FIVE_C16_SMOKE_PASS","W16_NO_GO"]}}},"then":{"required":["runs","cross_variant_output_sha256"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"COMPLETED"},"atc":{"const":"NOT_RUN"},"benchmark":{"const":"NOT_RUN"},"runs":{"type":"array","minItems":1,"items":{"type":"object","required":["mode","layer","gear","runner","om","opp_root","atc_plan","gate","maps","outputs","bit_mismatches","validation","launch_authorized"],"properties":{"launch_authorized":{"const":true},"bit_mismatches":{"const":0},"profiled":{"const":false},"gate":{"type":"object","required":["pid","child_pid","fd","endpoint","runner","control_token","live_pre_maps_equal"]}}}}}}}]}},
+    {"if":{"properties":{"phase":{"const":"five-c16-benchmark"}}},"then":{"properties":{"status":{"enum":["BLOCKED","W16_NO_GO","W16_FIVE_C16_BENCHMARK_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_FIVE_C16_BENCHMARK_PASS","W16_NO_GO"]}}},"then":{"required":["runs","statistics","cross_variant_output_sha256"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"COMPLETED"},"atc":{"const":"NOT_RUN"},"benchmark":{"const":"FRESH_RESIDENT_EXECUTE_SYNC_MEASURED"},"runs":{"type":"array","minItems":1,"items":{"type":"object","required":["mode","layer","gear","runner","om","opp_root","atc_plan","gate","maps","outputs","bit_mismatches","validation","launch_authorized"],"properties":{"launch_authorized":{"const":true},"bit_mismatches":{"const":0},"profiled":{"const":false},"gate":{"type":"object","required":["pid","child_pid","fd","endpoint","runner","control_token","live_pre_maps_equal"]}}}}}}}]}},
+    {"if":{"properties":{"phase":{"const":"five-c64-smoke"}}},"then":{"properties":{"status":{"enum":["BLOCKED","W16_FIVE_C64_SMOKE_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_FIVE_C64_SMOKE_PASS","W16_NO_GO"]}}},"then":{"required":["runs","cross_variant_output_sha256"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"COMPLETED"},"atc":{"const":"NOT_RUN"},"benchmark":{"const":"NOT_RUN"},"runs":{"type":"array","minItems":1,"items":{"type":"object","required":["mode","layer","gear","runner","om","opp_root","atc_plan","gate","maps","outputs","bit_mismatches","validation","launch_authorized"],"properties":{"launch_authorized":{"const":true},"bit_mismatches":{"const":0},"profiled":{"const":false},"gate":{"type":"object","required":["pid","child_pid","fd","endpoint","runner","control_token","live_pre_maps_equal"]}}}}}}}]}},
+    {"if":{"properties":{"phase":{"const":"five-c64-benchmark"}}},"then":{"properties":{"status":{"enum":["BLOCKED","W16_NO_GO","W16_FIVE_C64_BENCHMARK_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_FIVE_C64_BENCHMARK_PASS","W16_NO_GO"]}}},"then":{"required":["runs","statistics","cross_variant_output_sha256"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"COMPLETED"},"atc":{"const":"NOT_RUN"},"benchmark":{"const":"FRESH_RESIDENT_EXECUTE_SYNC_MEASURED"},"runs":{"type":"array","minItems":1,"items":{"type":"object","required":["mode","layer","gear","runner","om","opp_root","atc_plan","gate","maps","outputs","bit_mismatches","validation","launch_authorized"],"properties":{"launch_authorized":{"const":true},"bit_mismatches":{"const":0},"profiled":{"const":false},"gate":{"type":"object","required":["pid","child_pid","fd","endpoint","runner","control_token","live_pre_maps_equal"]}}}}}}}]}},
+    {"if":{"properties":{"phase":{"const":"full-atc"}}},"then":{"properties":{"status":{"enum":["BLOCKED","W16_FULL_ATC_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_FULL_ATC_PASS","W16_NO_GO"]}}},"then":{"required":["models","captures","baseline_images"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"NOT_RUN"},"atc":{"const":"FROZEN_AIR_COMPILED_AND_EMBEDDED_ELF_CAPTURED"},"benchmark":{"const":"NOT_RUN"}}}}]}},
+    {"if":{"properties":{"phase":{"const":"full-static"}}},"then":{"properties":{"status":{"enum":["BLOCKED","BLOCKED_STATIC_ADMISSION","NO_TESTABLE_OVERLAP","W16_FULL_STATIC_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_FULL_STATIC_PASS","W16_NO_GO"]}}},"then":{"required":["proofs","review_commit"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"NOT_RUN"},"atc":{"const":"NOT_RUN"},"benchmark":{"const":"NOT_RUN"},"proofs":{"type":"object","minProperties":1}}}}]}},
+    {"if":{"properties":{"phase":{"const":"full-smoke"}}},"then":{"properties":{"status":{"enum":["BLOCKED","W16_FULL_SMOKE_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_FULL_SMOKE_PASS","W16_NO_GO"]}}},"then":{"required":["runs","cross_variant_output_sha256"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"COMPLETED"},"atc":{"const":"NOT_RUN"},"benchmark":{"const":"NOT_RUN"},"runs":{"type":"array","minItems":1,"items":{"type":"object","required":["mode","layer","gear","runner","om","opp_root","atc_plan","gate","maps","outputs","bit_mismatches","validation","launch_authorized"],"properties":{"launch_authorized":{"const":true},"bit_mismatches":{"const":0},"profiled":{"const":false},"gate":{"type":"object","required":["pid","child_pid","fd","endpoint","runner","control_token","live_pre_maps_equal"]}}}}}}}]}},
+    {"if":{"properties":{"phase":{"const":"full-benchmark"}}},"then":{"properties":{"status":{"enum":["BLOCKED","W16_NO_GO","W16_FULL_BENCHMARK_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_FULL_BENCHMARK_PASS","W16_NO_GO"]}}},"then":{"required":["runs","statistics","cross_variant_output_sha256"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"COMPLETED"},"atc":{"const":"NOT_RUN"},"benchmark":{"const":"FRESH_RESIDENT_EXECUTE_SYNC_MEASURED"},"runs":{"type":"array","minItems":1,"items":{"type":"object","required":["mode","layer","gear","runner","om","opp_root","atc_plan","gate","maps","outputs","bit_mismatches","validation","launch_authorized"],"properties":{"launch_authorized":{"const":true},"bit_mismatches":{"const":0},"profiled":{"const":false},"gate":{"type":"object","required":["pid","child_pid","fd","endpoint","runner","control_token","live_pre_maps_equal"]}}}}}}}]}},
+    {"if":{"properties":{"phase":{"const":"resource-benchmark"}}},"then":{"properties":{"status":{"enum":["BLOCKED","W16_RESOURCE_BENCHMARK_PASS"]}},"allOf":[{"if":{"properties":{"status":{"enum":["W16_RESOURCE_BENCHMARK_PASS","W16_NO_GO"]}}},"then":{"required":["runs","statistics","cross_variant_output_sha256"],"properties":{"error":{"type":"null"},"integrity_error":{"type":"null"},"device_execution":{"const":"COMPLETED"},"atc":{"const":"NOT_RUN"},"benchmark":{"const":"FRESH_RESIDENT_EXECUTE_SYNC_MEASURED"},"runs":{"type":"array","minItems":1,"items":{"type":"object","required":["mode","layer","gear","runner","om","opp_root","atc_plan","gate","maps","outputs","bit_mismatches","validation","launch_authorized"],"properties":{"launch_authorized":{"const":true},"bit_mismatches":{"const":0},"profiled":{"const":false},"gate":{"type":"object","required":["pid","child_pid","fd","endpoint","runner","control_token","live_pre_maps_equal"]}}}}}}}]}},
+    {"if":{"properties":{"status":{"pattern":"^(BLOCKED|NO_TESTABLE_OVERLAP)"}}},"then":{"anyOf":[{"properties":{"error":{"type":"string","minLength":1}}},{"properties":{"integrity_error":{"type":"string","minLength":1}}}]}}
+  ]
+}
