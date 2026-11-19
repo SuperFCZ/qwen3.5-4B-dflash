@@ -1,0 +1,11 @@
+# Head：独立评审，不接入旧 C
+
+**已测/用户回传，同一旧 Off 实验，不是新 Raw profile**：C16、C64 的编译 OM 节点均为 `MatMul → ArgMaxV2`。两档 op_summary 对应描述符均为 FP16 FRACTAL_NZ `160,1,16,16;15520,160,16,16`，输出 FP16 ND `15,248320`。这支持 M=15、K=2560、N=248320 的逻辑计算及实际 NZ 操作数，不把 padded M16 当作 16 个有效行。权重 checkpoint 为 [V,K]，逻辑乘法为 X[15,K] × Wᵀ[K,V]。旧 v3 没发现被检路径上的显式 weight TransData；不能说绝无预排布、片内转换或重读。旧 provisional 6.781158 / 6.756520 ms/Execute（C16/C64），不是新 Raw 的 Head 时间。路径：a-only-draft-profile-OC8pCW/analysis-v3/{c16,c64}/head.json；新分析分别保留 OM graph、精确节点、类型、描述符、邻接/Top1 路径和计时。
+
+**容量、复用与带宽**：全词表权重 248320×2560×2 = 1,271,398,400 B。物理 NZ 权重尺寸也给出相同元素数；不等于恰好读一次 DRAM。一次完整 FP16 logits 为 7,449,600 B；显式物化且完整读回时写+读为 14,899,200 B。若权重只读一遍，除以上述 Off 时间仅得到等效 187.5 / 188.2 GB/s（十进制），不是带宽计数器。Native Cube 的 base/depth/DB、分核、15 行是否共享同一次权重加载、cache 命中和实际总读取量均 UNRESOLVED；不能移用 Gate 或自定义 C 的 Tiling。当 PipeUtilization 有 MTE2 时间也不能转换成 DRAM 字节。若将来能得到精确绑定此任务的 GM/DRAM read bytes 和实际任务时间，再比较 reads/逻辑权重字节与 bytes/time，分清 cache 层级、其他张量和多核重复记录；没有这些字段就不报实测带宽。
+
+**已有方案做过什么**：draft_head/op_host/head_host.h:40–54 请求 M16/N64/完整 K2560、FixSplit(16,64,128)、转置 GM ND B；这是自定义 C 的 Host 配置，不是 native Head 的 Cube 配置。op_kernel/head_kernel.h:54–131 每核暂存/补齐 hidden，按列循环 3880 个 N64 tile（全核合计）；每个 tile 同时处理候选行，SetTensorB(weight+begin*K,true)，Iterate、GetTensorC 到 FP32，compare_select 处理溢出边界，再转 FP16。源码地址分区表明没有显式逐行重新绑定整块权重，不能据此证明真实 HBM 只读一次。随后逐行 Vector winner、更新 partial，写出对齐的 partial_max FP16 / partial_id INT64；所有核心参与 SyncAll，由 core 0 做最终归约。正式版不物化全词表 logits，审计版保留 logits。
+
+**为什么旧独立结果不能移植**：C_RELEASE.md 中历史 M15 独立 Native Top1 约 23.26 ms，Custom Vector 约 17.1 ms（Scalar 约 46.5 ms）。draft_ac/c-profile-analysis.md 中同步口径的完整图历史：C16 C−off +9.3474 ms、AC−A +9.3077 ms；C64 +9.3457 / +9.3134 ms。这证明替换后整图变慢；不是“同步耗时 9.3 ms”的测量。完整图 native 是 immutable/prepacked 输入和优化后的 MatMul/ArgMax，独立 Native 的布局、权重/调度边界及比较协议不同。旧 C 的 ND 权重路径、3880 轮绑定和取局部结果、每行比较/标量交接、屏障及跨核合并，都是具体的额外工作或可能的效率差异；哪个占主导尚无同图 A/B 因果拆分。不能把独立 native 23.26 ms 当今天的分母。
+
+**后续方向**：保持全词表、原 hidden 和同一权重；优先把同一 immutable NZ 权重的 native MatMul+ArgMax 做成可对齐的独立参考。如果研究流式 partial Top1，按 N 分区、一次处理全部有效行、每列做完整 K 的同序 FP32 归约，只在与 native 相同的 FP16 舍入/溢出语义之后比较。对并列取最小全局 ID，±0 等价，NaN/Inf 遵循已冻结的 Native case，而非任意假设输入 NaN 如何传播。审计版逐 logits 位型 + 全部 15 IDs，比对跨 tile/core tie、接近 FP16 中点、非有限值、行置换、Poison、Guard、Readonly、Repeat、失败核心的同步/无效 ID。通过后才对一个布局或分块变量做未插桩配对；全层验证独立进行。本轮不实现、不重新集成旧 C、不用 W8 Head，也不缩词表。

@@ -1,0 +1,91 @@
+{
+  "scope": "LOCAL_SDK_NAMED_PLATFORM_NOT_FORMAL_CONTEXT",
+  "UB": 262144,
+  "L0B": 65536,
+  "queries": [
+    {
+      "scratch": 185600,
+      "get_tiling_rc": 0,
+      "base": [
+        16,
+        64,
+        256
+      ],
+      "depth": [
+        1,
+        1
+      ],
+      "db": [
+        2,
+        2,
+        1
+      ],
+      "transLength": 34816,
+      "cube_hex": "0100000010000000004c0000000a000000010000100000004000000000010000100000004000000000010000010000000100000001000000010000000000000000880000000000000000000000a00000001000000008000001000000010000000100000001000000010000000100000000000000000000000200000002000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "scratch": 152832,
+      "get_tiling_rc": 0,
+      "base": [
+        16,
+        64,
+        256
+      ],
+      "depth": [
+        1,
+        1
+      ],
+      "db": [
+        2,
+        2,
+        1
+      ],
+      "transLength": 34816,
+      "cube_hex": "0100000010000000004c0000000a000000010000100000004000000000010000100000004000000000010000010000000100000001000000010000000000000000880000000000000000000000a00000001000000008000001000000010000000100000001000000010000000100000000000000000000000200000002000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "same_accepted_geometry_and_cube": true,
+  "off_parent_historical_format_check": "ee2d5b1e3c35105c56aeaeec79c79d0bef64074ee774d3715618e7c2390b751a",
+  "raw_parent_from_local_cube": "0bbc0ee73d673d9141065d6bb73bee22b9714cc96bfe2e03c0477dfa68eae1a3",
+  "local_sdk_result": "/work/build/w16-sdk-Y9R5Vg/result.json",
+  "cube_sha256": "745b846a7e3b31de10827caa5e493026d3984e282dd698177d2da380b826359a",
+  "status": "LOCAL_TILING_FEASIBLE_EVENT_LIFECYCLE_BLOCKED",
+  "sdk_root": "/usr/local/Ascend/cann-9.0.0",
+  "sdk_sha256": {
+    "aarch64-linux/lib64/libtiling_api.a": "a2e5bb0bc70ffef0abeb33d864213ad069d65ad6156bf8a02daf37ed29992079",
+    "aarch64-linux/lib64/libplatform.so": "614500012552eda17fcea8378f711f63a144f2654d78306f713b303f59dedeef",
+    "aarch64-linux/asc/include/utils/tiling/platform/platform_ascendc.h": "44cf3f35292f15a8735b0d43b7e88198ca15d7b4a3bf44719eb3f099697f7f2a"
+  },
+  "accounting": {
+    "raw_codes": [
+      0,
+      32768
+    ],
+    "raw_scales": [
+      32768,
+      33280
+    ],
+    "W0": [
+      33280,
+      66048
+    ],
+    "W1": [
+      66048,
+      98816
+    ],
+    "broadcast": [
+      98816,
+      101120
+    ],
+    "matmul": [
+      101120,
+      253952
+    ],
+    "brcb_reserve": [
+      253952,
+      262144
+    ],
+    "scope": "proposed logical byte intervals, not TPipe physical addresses",
+    "user_including_reserve": 109312
+  }
+}
