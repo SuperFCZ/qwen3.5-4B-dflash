@@ -7,6 +7,7 @@ import struct
 import sys
 
 from w16_common import CUBE_SHA, GATE, GATE8, SHAPE, SHAPE_KEY, c, command, flow, historical, one, require, tree
+from w16_graph import protected_graph
 from gate_common import config_graph, sources as worker_sources
 from gate_plan import CUBE, embedded, node_binding, non_gate, schema, sha
 from export_gate import verify_compiled_graph
@@ -109,37 +110,6 @@ def plans(folder, worker, opp, baseline, *, replay=None):
     if replay is not None:
         require(replay == results, "ATC callback replay differs")
     return results
-
-
-def protected_graph(raw_path, new_path, gates):
-    """Compare graph wiring/descriptors and non-target launch identities, including native Head."""
-
-    def inventory(path):
-        nodes = read_om_json(path)
-        by_name = {node["name"]: node for node in nodes}
-        require(len(by_name) == len(nodes), "duplicate compiled graph node")
-        return by_name
-
-    old, new = inventory(raw_path), inventory(new_path)
-    require(old.keys() == new.keys(), "compiled graph node inventory changed")
-    allowed = {"_kernelname", "_kernel_bin_id", "_tbeKernelSize"}
-
-    def structural(node):
-        return {k: v for k, v in node.items() if k not in ("attributes", "serialized_descriptors")}
-
-    for name in old:
-        a, b = old[name], new[name]
-        if name in gates:
-            require(
-                structural(a) == structural(b)
-                and a["serialized_descriptors"] == b["serialized_descriptors"]
-                and [x for x in a["attributes"] if x["key"] not in allowed]
-                == [x for x in b["attributes"] if x["key"] not in allowed],
-                "Gate graph/ABI drift: " + name,
-            )
-        else:
-            require(a == b, "protected compiled node/Head changed: " + name)
-    return len(old) - len(gates)
 
 
 def native_images(model):
@@ -321,7 +291,13 @@ def check_model(model, src, selected, baseline, full):
                 a[name]["sha256"] != b[name]["sha256"],
                 "selected Gate is still the frozen single-W ELF: " + name,
             )
-    protected_graph(c.verify(baseline["dump"]), c.verify(model["dump"]), gates)
+    protected_graph(
+        c.verify(baseline["dump"]),
+        c.verify(model["dump"]),
+        gates,
+        raw_opp_root=baseline["opp_root"],
+        new_opp_root=selected["opp"]["install"],
+    )
     if full:
         old_images, new_images = native_images(baseline), native_images(model)
         require(

@@ -435,7 +435,11 @@ def run(args):
                     r["atc"] = "ATTEMPTED"
                     r["models"] = {m: compile_down(out / m, src, s, d, m) for m, s in selected.items()}
                     protected_graph(
-                        c.verify(r["models"][LOOP]["dump"]), c.verify(r["models"][TWO]["dump"]), {d["node"]}
+                        c.verify(r["models"][LOOP]["dump"]),
+                        c.verify(r["models"][TWO]["dump"]),
+                        {d["node"]},
+                        raw_opp_root=selected[LOOP]["opp"]["install"],
+                        new_opp_root=selected[TWO]["opp"]["install"],
                     )
                     r["atc"] = "TWO_FROZEN_AIR_OMS_COMPILED"
                 else:

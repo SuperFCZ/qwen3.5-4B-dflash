@@ -12,6 +12,23 @@ B/C 共用 [同一个模板循环](kernel/tile_schedule.h)、[同一组设备操
 
 保留 DFlashGroupQuantLinear 的注册名与原始 GE ABI，以便原 AIR 直接编译；每版在独立根中构建/运行，不向全局 CANN 安装。历史 7-block ACLNN 结果不参与。正式回调要求 Scheduler A、core_limit=0、实际 blockDim=8、304 个 N tile 各有唯一 owner、每 block 38 个。完整父序列化 224 B，首 24 B 仅允许 matmulUbBytes 从 185600 变成 152832。后 200 B 的 50 字段及 SHA256 必须与冻结 Raw 完全一致，L0B 保持 65536 B。单算子 Workspace 从正式回调读取；Runner 的整 OM work/weight 分配另行核对。
 
+## 只读复核 O34Eaf 的 ATC 图比较
+
+`gate-w16-atc8-O34Eaf` 在比较 `arg2_1` 时退出。服务器回传中两边都是 Data 节点。按键对齐后，Data 和两个 Const 节点的属性值和出现次数一致。Gate 和 NetOutput 的 TensorDesc 中有重复键。已观察到的换序是 `origin_shape_initialized` 的两个布尔值，以及 GroupQuant 第 2 个输入（NZ 权重）上 `format_for_int` 的两个整数 29、100663325。Gate 的专用 ELF 大小为 19608 / 32304 B，`custom_op_file_path` 分别指向两份私有包。
+
+CANN 9.0 安装文件 `include/proto/ge_ir.proto` 第 339、359 行把 descriptor 和 operator 的 attr 定义为 map，第 356、375–376 行把输入边和输入/输出 descriptor 定义为 repeated。文件 SHA256 为 `20cde9c443d712d802c46de87a6c1214ad96858ac3bee9b2056eb2e29dcebb7e`。比较器按键比较 dump 中的属性条目，保留完整值、类型和重数，上述两类同键换序按实际值配对。其他同键异值仍检查出现顺序。输入边、槽位、维度、属性内部的列表保持位置比较。GroupQuant 的包路径在两侧分别核对到该侧已绑定的 `vendors/customize`。非目标节点的代码身份继续严格比较。
+
+在仓库根目录拉取修复后，可直接读取已封存的两个 dump 和两个 OM。该命令只打印结果。
+
+```bash
+BASE=/home/w00949577/qwen35-dflash-run
+PY="$BASE/venv-hf513-probe/bin/python"
+S="$PWD/framework/custom_ops/draft_gate_w16_atc8"
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -B "$S/recheck_graph.py" --root "$BASE/gate-w16-atc8-O34Eaf"
+```
+
+预期为 `ARCHIVED_W16_GRAPH_MATCH`，并显示 `archived_atc_status=BLOCKED`。历史 Raw / serial dump SHA256 分别为 `e2993d7c751c21789d536a6794e6ff9307333790b9ac8ab5928534bd56eb1d10`、`30cdb4778c408e7f292ea3dd766449c68bacf489e9ad04721a09720e49d4d63e`。正式阶段按全模块源码清单绑定前驱，本次验证器修复改变了清单。使用下方的新实验目录逐次执行 source、build、atc，再单独进行 static。
+
 ## 服务器命令
 
 仓库下执行以下初始化。当前 shell 已启用该机原 CANN 环境和历史 venv。

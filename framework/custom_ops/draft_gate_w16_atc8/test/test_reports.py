@@ -46,12 +46,13 @@ class ReportContracts(unittest.TestCase):
         def read(which):
             return old if which == "old" else new
 
-        with patch("w16_export.read_om_json", read):
-            self.assertEqual(protected_graph("old", "new", {"g"}), 3)
+        with patch("w16_graph.read_om_json", read):
+            roots = dict(raw_opp_root="/raw/opp", new_opp_root="/candidate/opp")
+            self.assertEqual(protected_graph("old", "new", {"g"}, **roots), 3)
             for i in (1, 2, 3):
                 new[i]["inputs"].append("other")
                 with self.assertRaises(ValueError):
-                    protected_graph("old", "new", {"g"})
+                    protected_graph("old", "new", {"g"}, **roots)
                 new[i]["inputs"].pop()
 
     def test_schema_matches_all_manual_phases(self):
