@@ -10,7 +10,7 @@ import struct
 from archive import ARCHIVE, archived, c, require
 from graph_data import nodes, compare_for_diagnosis, consumer_keys, short
 from w16_export import native_images
-from w16_static import sections
+from elf_layout import table
 from om_constants import weight_partition
 
 
@@ -50,7 +50,7 @@ def blob(stream, record):
 
 
 def sections_by_name(data):
-    all_ = sections(data)
+    _, all_ = table(data)
     require(len({s["name"] for s in all_}) == len(all_), "duplicate ELF section")
     return {s["name"]: s for s in all_}
 
@@ -65,7 +65,12 @@ def native_delta(a, b):
             if x["sha256"] == y["sha256"]:
                 continue
             l, r = blob(fa, x), blob(fb, y)
-            ls, rs = sections_by_name(l), sections_by_name(r)
+            try:
+                ls, rs = sections_by_name(l), sections_by_name(r)
+            except ValueError as exc:
+                counts[("UNSUPPORTED", str(exc))] += 1
+                examples[("UNSUPPORTED", str(exc))] = (name, x["symbol"])
+                continue
             delta = tuple(
                 k
                 for k in sorted(ls.keys() | rs.keys())
@@ -91,13 +96,21 @@ def native_delta(a, b):
                             ],
                         )
                     )
-                examples[key] = (name, x["symbol"], changes)
+                hs = [struct.unpack_from("<16sHHIQQQIHHHHHH", v)[1:] for v in (l, r)]
+                inventory = [
+                    [(s["name"], s["type"], s["flags"], s["bytes"]) for s in seq.values()] for seq in (ls, rs)
+                ]
+                examples[key] = (name, x["symbol"], changes, hs, inventory)
     for k, num in counts.items():
         print("NATIVE GROUP (text_equal,sections)", k, "nodes", num, examples[k])
 
 
-def main(archive):
+def main(archive, native_only=False):
     _, _, a, b = archived(archive)
+    if native_only:
+        native_delta(a, b)
+        print("DIAGNOSTIC_ONLY ATC=NOT_RUN DEVICE=NOT_RUN")
+        return
     for label, model in (("Raw", a), ("Transpose", b)):
         print("PARTITIONS", label, part_data(model))
     l, r = (nodes(c.verify(m["dump"])) for m in (a, b))
@@ -131,4 +144,8 @@ def main(archive):
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     p.add_argument("--archive", type=Path, default=ARCHIVE)
-    main(p.parse_args().archive)
+    p.add_argument(
+        "--native-only", action="store_true", help="inspect native images after an existing graph audit"
+    )
+    args = p.parse_args()
+    main(args.archive, args.native_only)
