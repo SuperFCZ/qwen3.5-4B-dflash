@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.16)
+project(gate_scale_sdk_cpu LANGUAGES CXX)
+find_package(tikicpulib REQUIRED CONFIG PATHS "${CANN_ROOT}/tools/tikicpulib/lib/cmake" NO_DEFAULT_PATH)
+add_executable(scale_cpu scale_cpu.cpp)
+target_link_libraries(scale_cpu PRIVATE tikicpulib::Ascend310P3)
