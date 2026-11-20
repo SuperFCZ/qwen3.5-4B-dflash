@@ -50,6 +50,28 @@ scale_stage source
 
 采用**中位延迟降低至少 3%**、三轮中位延迟全部改善、总体 P95 无回退作为本次研究信号，门槛在采样前固定。Compare 的 NO_GO 退出 3，阻断退出 1。GO 只允许讨论五个 Gate 的新实验。此次没有完整 Draft 或生产部署入口。
 
+## 从 ABnQDE 的已编译 OM 续接 CPU Review
+
+`gate-scale-broadcast-ABnQDE` 的 Source、Build 和 ATC 通过。旧 Review 因把 Gate8 的历史编译器记录当作新包的字段格式而触发 `KeyError('tools')`。Gate8 记录在 `compiler.command_path_tools[name]`，内含 `alias` 和 `file`。修复后的 Review 验证别名的实际目标、执行权限、大小和 SHA256，直接运行所绑定的 CMake 和 C++ 工具。报告保存这两份完整记录，并复核 configure/build 的 argv 和 cwd。
+
+服务器在仓库根目录执行：
+
+```bash
+git pull --ff-only origin feature/ascend310p-custom-ops
+BASE=/home/w00949577/qwen35-dflash-run
+PY="$BASE/venv-hf513-probe/bin/python"
+S="$PWD/framework/custom_ops/draft_gate_scale_broadcast"
+OLD="$BASE/gate-scale-broadcast-ABnQDE"
+R=$(mktemp -d "$BASE/gate-scale-reviewfix-XXXXXX")
+echo "R=$R"
+scale_fixed() { TORCH_DEVICE_BACKEND_AUTOLOAD=0 "$PY" -B "$S/run_scale.py" "$@" --root "$R" --resume-from "$OLD"; }
+scale_fixed review
+```
+
+只对这一次封存失败开放续接。程序以服务器回传的失败报告 SHA256 `a5395a1786568096ae734d2a7c4978a2da8878dc810600cd61dba372921a0c32` 及三个成功阶段的独立摘要校验原件。原锁定源码以提交 `6ddb9cbe1353b08707f7e85f0beb27f84b655291` 的 Git blob 核验本次替换的文件，其他旧依赖须与磁盘一致。三个阶段在旧路径重新执行证据校验，保留完整 OPP、OM、回调和数值资源合同。新报告的 `reuse` 记录原报告、来源提交和源文件迁移摘要，`predecessors` 直接引用原件。CPU 输出写入新根。旧 Review 继续保留 BLOCKED。
+
+仅当新报告为 `SCALE_REVIEW_PASS`，下一条手动设备命令才是 `scale_fixed smoke --allow-device`。其后沿用同一函数和新根，分别执行 `scale_fixed benchmark --allow-device` 和 `scale_fixed compare`。
+
 ## 本地证据和复现
 
 - 真实 ARM64 CANN 9.0 CPU 模型（tikicpulib::Ascend310P3，对应 dav_2002）对全部 65536 个位型进行了对照，控制/候选各 1048576 个展开元素以及源、前后 canary、rear，错误数为 0。`/work/build/scale-sdk-cpu-p4B7qs/probe.log` SHA256 为 `eca7cd6d6a90af9def41468bd6ddbead200625da461e3b544a44333d79f13dc5`。此文件是 CPU 数据，本地没有真实 310P3 输出或延迟。

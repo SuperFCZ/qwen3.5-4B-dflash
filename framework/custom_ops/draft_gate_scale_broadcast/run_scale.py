@@ -30,6 +30,7 @@ from scale_contracts import (
 )
 from scale_build import validate_package
 from scale_review import check_model, compile_candidate, run_cpu, validate_cpu
+from scale_reuse import PREFIX, open_prefix
 from w16_runtime import case_run, verify_runtime_row
 from raw_protocol import stats
 
@@ -184,7 +185,7 @@ def verify(phase, out, r, chain, ctx):
             r["resource_evidence"] == chain["atc"]["safety"] and r["layout"] == layout_contract(),
             "review for another OM or algorithm",
         )
-        validate_cpu(r["sdk_cpu"], out / "sdk-cpu", src, binding["frozen"]["s_gn.bin"])
+        validate_cpu(r["sdk_cpu"], out / "sdk-cpu", src, binding["frozen"]["s_gn.bin"], raw)
     elif phase in DEVICE:
         require(
             activity(out, phase, src, raw, control, chain, r) == r["statistics"],
@@ -199,8 +200,12 @@ def verify(phase, out, r, chain, ctx):
 
 
 @contextmanager
-def stage_dir(root, phase, archive):
-    for p in (c.REPO, archive, Path("/usr/local/Ascend")):
+def stage_dir(root, phase, archive, reuse=None):
+    protected = [c.REPO, archive, Path("/usr/local/Ascend")]
+    if reuse is not None:
+        require(phase not in PREFIX, "a resumed run begins at review")
+        protected.append(reuse)
+    for p in protected:
         require(
             root != p and root not in p.parents and p not in root.parents,
             "output overlaps read-only evidence/source",
@@ -209,15 +214,16 @@ def stage_dir(root, phase, archive):
         not any((p / "source/report.json").is_file() for p in root.parents),
         "output nested inside an existing experiment",
     )
-    if phase == "source":
+    initial = phase == "source" or (reuse is not None and phase == "review")
+    if initial:
         root.mkdir(exist_ok=True, parents=True)
     fd = os.open(root, os.O_RDONLY)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        if phase == "source":
-            require(not any(root.iterdir()), "Source needs a fresh empty directory")
+        if initial:
+            require(not any(root.iterdir()), "initial stage needs a fresh empty directory")
         for s in STAGES[: STAGES.index(phase)]:
-            f = root / s / "report.json"
+            f = (reuse if reuse and s in PREFIX else root) / s / "report.json"
             require(
                 f.is_file() and f.resolve() == f and c.read(f).get("status") == STATUS[s],
                 "missing/blocked predecessor " + s,
@@ -232,9 +238,11 @@ def stage_dir(root, phase, archive):
 def run(args):
     root = args.root.resolve()
     archive = args.archive.resolve(strict=True)
+    reuse_arg = getattr(args, "resume_from", None)
+    reuse = reuse_arg.resolve(strict=True) if reuse_arg else None
     phase = args.phase
     require((phase in DEVICE) == args.allow_device, "only smoke/benchmark require and accept --allow-device")
-    with stage_dir(root, phase, archive) as out:
+    with stage_dir(root, phase, archive, reuse) as out:
         base = dict(
             schema=1,
             root=str(root),
@@ -256,15 +264,22 @@ def run(args):
         )
         try:
             c.clean()
+            if reuse:
+                archived_base, verified_old, receipt = open_prefix(reuse, archive, base)
+                base["reuse"] = r["reuse"] = receipt
             ctx = read_baseline(archive)
             binding, src, raw, control = ctx
             chain = {}
             for s in STAGES[: STAGES.index(phase)]:
-                path = root / s / "report.json"
+                imported = reuse is not None and s in PREFIX
+                path = (reuse if imported else root) / s / "report.json"
                 item = c.identity(path)
+                if imported:
+                    require(item == receipt["reports"][s], "archived predecessor identity changed: " + s)
                 p = c.read(c.verify(item))
+                header = archived_base if imported else base
                 require(
-                    all(p[k] == v for k, v in base.items())
+                    all(p[k] == v for k, v in header.items())
                     and p["phase"] == s
                     and p["folder"] == str(path.parent)
                     and p["predecessors"] == r["predecessors"]
@@ -272,7 +287,7 @@ def run(args):
                     and not p["integrity_error"],
                     "mixed predecessor " + s,
                 )
-                historical.verify_tree(p, {})
+                historical.verify_tree(p, dict(verified_old) if imported else {})
                 require(
                     verify(s, path.parent, p, chain, ctx) == p["status"] == STATUS[s],
                     "predecessor evidence changed: " + s,
@@ -375,6 +390,11 @@ if __name__ == "__main__":
     p.add_argument("phase", choices=STAGES)
     p.add_argument("--root", type=Path, required=True)
     p.add_argument("--archive", type=Path, default=GATE8_ROOT)
+    p.add_argument(
+        "--resume-from",
+        type=Path,
+        help="revalidate the sealed ABnQDE Source/Build/ATC in place; write review and later stages under a fresh --root",
+    )
     p.add_argument("--allow-device", action="store_true")
     try:
         sys.exit(run(p.parse_args()))

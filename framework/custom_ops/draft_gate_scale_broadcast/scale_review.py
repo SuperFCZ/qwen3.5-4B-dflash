@@ -1,5 +1,6 @@
 """Bind the real GE node, unchanged Cube plan, and installed SDK CPU layout witness."""
 
+import os
 from pathlib import Path
 import shutil
 import struct
@@ -233,7 +234,53 @@ def expected_line(n):
     return f"CPU_SCALE_WORDS {n} EXPANDED_PER_VARIANT {n * 16} PAYLOAD_GUARD_READONLY_ERRORS 0"
 
 
-def validate_cpu(r, out, src, scale):
+def cpu_build_tools(raw):
+    records = raw["compiler"].get("command_path_tools", {})
+    require(isinstance(records, dict), "invalid Gate8 compiler.command_path_tools")
+    tools = {}
+    for name in ("cmake", "c++"):
+        entry = records.get(name)
+        require(
+            isinstance(entry, dict) and set(entry) == {"alias", "file"},
+            "missing or malformed Gate8 compiler.command_path_tools entry: " + name,
+        )
+        alias = Path(entry["alias"])
+        target = c.verify(entry["file"])
+        require(
+            alias.is_absolute()
+            and alias.name == name
+            and alias.resolve(strict=True) == target
+            and os.access(target, os.X_OK),
+            "Gate8 compiler tool alias/permission drift: " + str(alias),
+        )
+        tools[name] = entry
+    return tools
+
+
+def cpu_build_commands(out, cann, tools):
+    cmake = tools["cmake"]["file"]["path"]
+    return {
+        "configure": [
+            cmake,
+            "-S",
+            str(HERE / "test/sdk"),
+            "-B",
+            str(out / "build"),
+            "-DCANN_ROOT=" + cann,
+            "-DCMAKE_CXX_COMPILER=" + tools["c++"]["file"]["path"],
+        ],
+        "compile": [cmake, "--build", str(out / "build"), "--parallel", "2"],
+    }
+
+
+def compile_cpu_checker(out, cann, raw, env):
+    tools = cpu_build_tools(raw)
+    for name, argv in cpu_build_commands(out, cann, tools).items():
+        command(argv, out / (name + ".log"), env, cwd=out)
+    return tools, c.identity(out / "build" / "scale_cpu")
+
+
+def validate_cpu(r, out, src, scale, raw):
     require(
         r["scope"] == "SDK_CPU_MODEL_ONLY"
         and r["frozen_scale"] == scale
@@ -241,6 +288,15 @@ def validate_cpu(r, out, src, scale):
         "CPU witness uses different scales",
     )
     require(c.verify(r["binary"]) == out / "build" / "scale_cpu", "redirected CPU model checker")
+    tools = cpu_build_tools(raw)
+    require(r["compiler_tools"] == tools, "CPU review compiler differs from frozen Gate8 build")
+    for name, argv in cpu_build_commands(out, src["cann"], tools).items():
+        record = c.identity(out / (name + ".command.json"))
+        require(record in r["build_logs"], "missing bound CPU compiler journal: " + name)
+        journal = c.read(c.verify(record))
+        require(
+            journal["argv"] == argv and journal["cwd"] == str(out), "CPU compiler invocation drift: " + name
+        )
     require(r["sdk"] == sdk_files(src["cann"]), "CPU model/SDK identity drift")
     files = {v["file"]["sha256"] for v in r["dependencies"]}
     for rel in (
@@ -271,34 +327,14 @@ def run_cpu(out, src, raw):
     env, _ = host.envs.for_prior(prior, None)
     env.update(TMPDIR=str(out), LC_ALL="C")
     require(not env["ASCEND_CUSTOM_OPP_PATH"], "private OPP leaked into independent CPU reference")
-    tools = raw["compiler"]["tools"]
-    command(
-        [
-            c.verify(tools["cmake"]),
-            "-S",
-            HERE / "test/sdk",
-            "-B",
-            out / "build",
-            "-DCANN_ROOT=" + src["cann"],
-            "-DCMAKE_CXX_COMPILER=" + str(c.verify(tools["c++"])),
-        ],
-        out / "configure.log",
-        env,
-        cwd=out,
-    )
-    command(
-        [c.verify(tools["cmake"]), "--build", out / "build", "--parallel", "2"],
-        out / "compile.log",
-        env,
-        cwd=out,
-    )
-    binary = c.identity(out / "build" / "scale_cpu")
+    tools, binary = compile_cpu_checker(out, src["cann"], raw, env)
     deps = c.dependencies(binary, out / "ldd.log", env)
     pattern = out / "words.bin"
     pattern.write_bytes(struct.pack("<65536H", *range(65536)))
     scale = src["cases"]["16"][FIRST]["inputs"]["s_gn.bin"]
     r = dict(
         scope="SDK_CPU_MODEL_ONLY",
+        compiler_tools=tools,
         binary=binary,
         dependencies=deps,
         patterns=c.identity(pattern),
@@ -321,5 +357,5 @@ def run_cpu(out, src, raw):
         log = work / "model.log"
         command([c.verify(binary), c.verify(item)], log, env, cwd=work)
         r[name] = dict(log=c.identity(log), command=c.identity(log.with_suffix(".command.json")))
-    validate_cpu(r, out, src, scale)
+    validate_cpu(r, out, src, scale, raw)
     return r
