@@ -161,6 +161,91 @@ class Contracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             ca.intermediates(self.root / "cache")
 
+    def test_inspect_mode_scans_the_package_and_the_atc_invocation_separately(self):
+        atc_dir = self.root / "atc/serial/gate"
+        compiled = atc_dir / "compiled"
+        artifacts = compiled / "artifacts"
+        (atc_dir / "compiler-cache").mkdir(parents=True)
+
+        def write(path, data):
+            return self.put(path, data if isinstance(data, bytes) else json.dumps(data).encode())
+
+        pkg_bc = write("package/device-build/tmp/kernel.bc", b"package bitcode")
+        obj = write("package/device-build/bin/kernel.o", b"package object")
+        atc_asm = write(compiled / "tmp/kernel.s", b"atc assembly")
+        write(self.root / "unrelated/outside.ll", b"outside")
+        tool = write("tools/bisheng", b"fixture compiler")
+        atc = write("tools/atc", b"fixture ATC")
+        staged = write(artifacts / "air/model.air", b"AIR")
+        original = write("original/model.air", b"AIR")
+        air = write(artifacts / "air.json", {"graphs": [{"air": {"path": "air/model.air"}}]})
+        dep = write(artifacts / "deployment.json", {"air_manifest": air})
+        argv = [atc["path"], "--model=" + staged["path"], "--output=" + str(artifacts / "om/fixture")]
+        frozen = dict(
+            air=air,
+            atc_binary=atc,
+            command=[
+                atc["path"],
+                "--model=" + original["path"],
+                "--output=" + str(self.root / "original/fixture"),
+            ],
+            payloads={"air/model.air": original},
+        )
+        cann = self.root / "sdk"
+        base_env = {"ASCEND_OPP_PATH": str(cann / "opp"), "BISHENG_REAL_PATH": tool["path"]}
+        env = dict(
+            base_env,
+            AI_RUN_DIR=str(atc_dir),
+            ASCEND_WORK_PATH=str(compiled),
+            ASCEND_CACHE_PATH=str(atc_dir / "compiler-cache"),
+            DFLASH_PLATFORM_DIAG_ROUTE="ATC",
+            DFLASH_PLATFORM_DIAG_PATH=str(compiled / "platform.jsonl"),
+            DFLASH_SCHEDULER_EVIDENCE_PATH=str(compiled / "scheduling.jsonl"),
+        )
+        cap = dict(
+            argv=argv,
+            atc=atc,
+            returncode=0,
+            environment=env,
+            stdout=write(compiled / "stdout", b"output"),
+            stderr=write(compiled / "stderr", b""),
+        )
+        worker = write(
+            compiled / "report.json",
+            dict(captures=[cap], atc_command=argv, child_environment=env, elf_environment=env),
+        )
+        model = dict(
+            worker_report=worker,
+            dump=write(atc_dir / "om-graph.json", {}),
+            deployment=dep,
+            om=write(artifacts / "om/fixture.om", b"OM"),
+        )
+        build = dict(
+            env={"values": base_env},
+            compiler=dict(binary=obj, tools={"bisheng": tool}),
+            generated_sources={"op_kernel/" + k.STEM + ".cpp": {"file": original}},
+        )
+        ctx = SimpleNamespace(
+            built={k.SERIAL: build},
+            models={k.SERIAL: model},
+            raw={},
+            src={"singles": {k.FIRST: frozen}, "cann": str(cann)},
+            caps={k.SERIAL: {"elf": obj}},
+        )
+        with patch.object(ca, "atc_entry", return_value={"wrapper_exports": {}}), patch.object(
+            ca, "dispatch", return_value={}
+        ), patch.object(ca, "package_command", return_value={}):
+            result = ca.inspect_mode(ctx, k.SERIAL)
+            self.assertEqual([i["file"] for i in result["package_intermediates"]], [pkg_bc])
+            self.assertEqual([i["file"] for i in result["atc_intermediates"]], [atc_asm])
+            env["ASCEND_CACHE_PATH"] = str(self.root / "shared")
+            model["worker_report"] = write(
+                compiled / "report.json",
+                dict(captures=[cap], atc_command=argv, child_environment=env, elf_environment=env),
+            )
+            with self.assertRaisesRegex(ValueError, "isolated private build"):
+                ca.inspect_mode(ctx, k.SERIAL)
+
     def test_fail_closed_flags_non_private_source_and_production_status(self):
         v = self.root / "opp" / "vendors/customize"
         v.mkdir(parents=True)

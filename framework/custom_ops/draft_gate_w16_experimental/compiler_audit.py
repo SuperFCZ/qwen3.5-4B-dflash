@@ -118,13 +118,13 @@ def inspect_mode(ctx, mode):
     cap = one_capture(worker["captures"], argv)
     env = cap["environment"]
     require(env == worker["child_environment"], "ATC capture/environment mismatch")
-    folder = c.verify(model["dump"]).parent
+    atc_dir = c.verify(model["dump"]).parent
     compiled = c.verify(model["worker_report"]).parent
     expected_env = dict(
         build["env"]["values"],
-        AI_RUN_DIR=str(folder),
+        AI_RUN_DIR=str(atc_dir),
         ASCEND_WORK_PATH=str(compiled),
-        ASCEND_CACHE_PATH=str(folder / "compiler-cache"),
+        ASCEND_CACHE_PATH=str(atc_dir / "compiler-cache"),
         DFLASH_PLATFORM_DIAG_ROUTE="ATC",
         DFLASH_PLATFORM_DIAG_PATH=str(compiled / "platform.jsonl"),
         DFLASH_SCHEDULER_EVIDENCE_PATH=str(compiled / "scheduling.jsonl"),
@@ -150,7 +150,7 @@ def inspect_mode(ctx, mode):
     effective = dict(env, **chain["wrapper_exports"])
     same(effective, worker["elf_environment"], "wrong effective ATC environment")
     require(effective["ASCEND_OPP_PATH"] == str(Path(ctx.src["cann"]) / "opp"), "wrong standard OPP")
-    cache = c.verify(model["dump"]).parent / "compiler-cache"
+    cache = atc_dir / "compiler-cache"
     require(
         effective.get("ASCEND_CACHE_PATH") == str(cache) and cache.resolve(strict=True) == cache,
         "ATC cache not private to the archived invocation",
@@ -164,8 +164,10 @@ def inspect_mode(ctx, mode):
         build["compiler"], build["generated_sources"]["op_kernel/" + STEM + ".cpp"]["file"]
     )
     # Inspect existing scoped directories only. A nearby .bc/.s cannot identify a linked ATC image.
-    folder = c.verify(build["compiler"]["binary"]).parents
-    build_dir = one((p for p in folder if p.name == "device-build"), "package device-build root")
+    package_object = c.verify(build["compiler"]["binary"])
+    build_dir = one(
+        (p for p in package_object.parents if p.name == "device-build"), "package device-build root"
+    )
     return dict(
         package=package,
         private_dispatch=source,
@@ -177,7 +179,7 @@ def inspect_mode(ctx, mode):
         om=model["om"],
         selected_elf=ctx.caps[mode]["elf"],
         package_intermediates=intermediates(build_dir),
-        atc_intermediates=intermediates(folder),
+        atc_intermediates=intermediates(atc_dir),
         atc_internal_frontend_argv="NOT_ATTESTED_BY_OUTER_CAPTURE",
         compiler_output_relation="Private source/GE vendor, captured ATC invocation and embedded ELF; no IR-to-ELF attestation.",
     )
