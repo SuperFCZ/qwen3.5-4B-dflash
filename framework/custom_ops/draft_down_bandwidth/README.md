@@ -33,3 +33,17 @@ Cube baseK=256。第一个 K4864 面板初始化 FP32 L0C，第二个面板继�
 分别测量 Raw↔W1、Raw↔W2 和 W1↔W2，每组 3 轮正反序配对，每轮每版 5 次预热、30 次正式 Execute+Sync。GO 需要每轮同向、总体 Median 下降至少 3%、P95 无回退。若单 W16 相对 Raw 已通过，双 W16 还须在直接配对中通过才能取代它。每版每对均有 90 个新样本。打包、加载和读回在计时外。表中吞吐按 796,917,760 FLOP 和单遍 25,686,016 个逻辑字节折算。实测范围限于单 Down 投影。
 
 CPU 回归可用 `python3 -B -m unittest discover -s framework/custom_ops/draft_down_bandwidth/test`。可设置 `GATE_TEST_GE_DESCRIPTOR` 运行基于 CANN 实际 schema 的图描述和权重检查。
+
+## 310P3 服务器结果
+
+在独立 `gate310p` 环境中，三版实际 ATC 均为 8 block、baseK256。稠密合成和跨边界输入的全部 40,960 个 FP16 输出逐位一致，两种 Poison、Guard、Readonly、Repeat 和同步均通过。下表单位为 ms，每组每版 90 个新样本。
+
+| 直接配对 | 对照 Median | 候选 Median | 对照 P95 | 候选 P95 | 加速比 | 决策 |
+|---|---:|---:|---:|---:|---:|---|
+| Raw/Brcb → 单 W16 | 1.008680 | 0.273900 | 1.013190 | 0.279830 | 3.6827× | GO |
+| Raw/Brcb → 双 W16 | 1.011605 | 0.264185 | 1.018780 | 0.271960 | 3.8292× | GO |
+| 单 W16 → 双 W16 | 0.275080 | 0.268345 | 0.281600 | 0.274470 | 1.0251× | NO_GO |
+
+本轮选用 **l1-k4864-w1**。相对 Raw 的 Median 降低 72.85%，P95 同时降低。双 W16 在直接配对中再省 0.006735 ms，Median 降低 2.45%，未达到 3% 门槛。单 W16 在 Raw 配对中的矩阵等效吞吐为 2.910 TFLOP/s，按单遍逻辑字节折算为 93.78 GB/s。实验为 C16 单投影的未插桩 Execute+Sync。
+
+实现提交 `e662ae4`。服务器原始报告为 `/home/w00949577/z50058744/qwen35-dflash-run/runs/down-bandwidth-tfiUoB/experiment/result.json`。
