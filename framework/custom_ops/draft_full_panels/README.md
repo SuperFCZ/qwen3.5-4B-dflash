@@ -16,10 +16,26 @@ bash framework/custom_ops/draft_full_panels/run.sh
 | 只导出 AIR，使用 CPU | `--prepare-only` |
 | 到 ATC / OM 检查为止 | `--compile-only` |
 | 测整图正式延迟 | `--no-profile` |
+| 使用已完成的正式计时，只做分模块采集 | `--profile-only full-draft-panels-XXXXXX` |
 | 继续已完成的阶段 | `--resume full-draft-panels-XXXXXX`，使用原档位和输入参数 |
 | 使用自己的 Draft replay | `--inputs-dir /绝对路径/输入` |
 
-续跑创建新目录，通过前次 `stages.json` 引用各阶段产物。可先用 `--no-profile` 测完整延迟，再用 `--resume` 加上同样的档位和输入参数做模块测量。变更了输入合同的阶段会在新目录重建。ATC 子进程使用同一工作区里较短的私有临时目录，避免 Python SyncManager 超过 Linux Unix socket 地址长度；每次 ATC 启动前都用同一环境验证真实 Manager 连接。错误的阶段保留现场，终端和 `terminal.log` 均能看到报错。
+续跑创建新目录，通过前次 `stages.json` 引用各阶段产物。可先用 `--no-profile` 测完整延迟，再用 `--profile-only` 指定已测运行。该入口按阶段报告的 SHA256、前驱、实际输出和原始样本复核所选档位，直接使用原输入、参考和优化 OM。它只启动需要采集的优化版进程。变更了输入合同的阶段会在新目录重建。ATC 子进程使用同一工作区里较短的私有临时目录，避免 Python SyncManager 超过 Linux Unix socket 地址长度；每次 ATC 启动前都用同一环境验证真实 Manager 连接。错误的阶段保留现场，终端和 `terminal.log` 均能看到报错。
+
+运行 `full-draft-panels-UFqlys` 已取得以下无插桩整图 Execute+Sync 数据，每档每版 90 个样本。原始样本和各轮倍率在该运行的 `latency.json`。
+
+| 档位 | 对照 Median / P95 (ms) | 优化 Median / P95 (ms) | Median 加速比 |
+|---|---:|---:|---:|
+| C16 | 28.5018 / 28.5502 | 19.0455 / 19.0974 | 1.4965× |
+| C64 | 29.3286 / 29.3827 | 19.8906 / 19.9452 | 1.4745× |
+
+从该运行补采两个优化 OM 的模块时间，在仓库根目录执行：
+
+```bash
+bash framework/custom_ops/draft_full_panels/run.sh --profile-only full-draft-panels-UFqlys
+```
+
+新目录的 `profile-source.json` 记录引用的正式报告，`msprof-tool.json` 记录所选 CANN 安装内的可执行文件、SHA256 和已验证的采集参数。工具优先查找 `tools/profiler/bin/msprof`。
 
 ## 模型与比较范围
 

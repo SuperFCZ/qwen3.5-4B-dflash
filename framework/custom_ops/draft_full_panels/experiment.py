@@ -25,13 +25,24 @@ class Stages:
         if prior:
             self.previous = c.read(prior / "stages.json")
 
+    def _read_receipt(self, name):
+        ref = self.previous[name]
+        row = c.read(c.verify(ref))
+        require(row["name"] == name and row["status"] == "PASS", "invalid prior receipt: " + name)
+        digest = hashlib.sha256(json.dumps(row["contract"], sort_keys=True).encode()).hexdigest()
+        require(row["contract_sha256"] == digest, "invalid prior contract digest: " + name)
+        return row
+
+    def completed(self, name):
+        require(name in self.previous, "profiling requires a completed stage: " + name)
+        row = self._read_receipt(name)
+        self.refs[name] = self.previous[name]
+        return row
+
     def run(self, name, contract, action):
         key = hashlib.sha256(json.dumps(contract, sort_keys=True).encode()).hexdigest()
         ref = self.previous.get(name)
-        row = None
-        if ref:
-            row = c.read(c.verify(ref))
-            require(row["name"] == name and row["status"] == "PASS", "invalid prior receipt: " + name)
+        row = self._read_receipt(name) if ref else None
         if row is not None and row["contract_sha256"] == key:
             print("Reusing", name, flush=True)
         else:
@@ -49,6 +60,16 @@ class Stages:
         return row["result"]
 
 
+def profile_completed(stages, prior, cann, gears):
+    from panel_profiler import profile_modules
+    from profile_archive import measured_cases
+
+    pkg, runner, cases = measured_cases(stages, prior, cann, gears)
+    env = environment(cann, {}, pkg["opp"]["install"])
+    dsos = seal(stages.folder / "dso-binding", pkg, runner, env)
+    profile_modules(stages, cann, env, pkg, runner, dsos, cases)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--gear", choices=("16", "64", "both"), default="both")
@@ -59,12 +80,21 @@ def main():
     group = p.add_mutually_exclusive_group()
     for flag in ("prepare-only", "compile-only", "no-profile"):
         group.add_argument("--" + flag, action="store_true")
+    group.add_argument(
+        "--profile-only",
+        metavar="COMPLETED_RUN",
+        help="profile the measured optimized OMs using sealed reports",
+    )
     a = p.parse_args()
+    if a.profile_only and (a.resume or a.inputs_dir):
+        p.error(
+            "--profile-only takes the measured run and its original inputs; omit --resume and --inputs-dir"
+        )
     out = Path(os.environ["DFLASH_OUTPUT"])
     runs = Path(os.environ["DFLASH_RUN_ROOT"]) / "runs"
     prior = None
-    if a.resume:
-        value = Path(a.resume)
+    if a.resume or a.profile_only:
+        value = Path(a.profile_only or a.resume)
         prior = (runs / value).resolve(strict=True)
         require(
             prior.parent == runs.resolve() and prior.name.startswith("full-draft-panels-") and prior != out,
@@ -74,9 +104,12 @@ def main():
     if a.inputs_dir:
         a.inputs_dir = a.inputs_dir.resolve(strict=True)
     cann = Path(os.environ["CANN_ROOT"]).resolve(strict=True)
+    gears = [16, 64] if a.gear == "both" else [int(a.gear)]
+    if a.profile_only:
+        profile_completed(s, prior, cann, gears)
+        return
     tools = {n: c.identity(shutil.which(n)) for n in ("msopgen", "atc", "cmake")}
     base = environment(cann, tools)
-    gears = [16, 64] if a.gear == "both" else [int(a.gear)]
     descriptor = out / "cann-ge.desc"
     draft = Path(os.environ["DFLASH_DRAFT_CHECKPOINT"]).resolve(strict=True)
     target = Path(os.environ["DFLASH_TARGET_CHECKPOINT"]).resolve(strict=True)
@@ -267,49 +300,18 @@ def main():
     c.write(out / "latency.json", measurements)
     if a.no_profile:
         return
-    from module_profile import analyze
-    from profile_common import FLAGS
+    from panel_profiler import profile_modules
 
-    profiler = cann / "bin/msprof"
-    require(profiler.is_file(), "CANN msprof unavailable")
-    for gear in gears:
-        key = dict(
-            runkey(gear), benchmark=s.refs[f"benchmark-c{gear}"], flags=FLAGS, cli=c.identity(profiler)
+    profile_cases = {
+        gear: dict(
+            graph=graphs["gears"][str(gear)],
+            io=cases[gear],
+            reference=references[gear],
+            model=models[gear]["optimized"],
         )
-
-        def profile(d):
-            row = per_run(d, gear, "optimized", "benchmark", references[gear], str(profiler))
-            raw = d / "profiler"
-            files = [
-                c.identity(p)
-                for p in sorted(raw.rglob("*"))
-                if p.is_file()
-                and (
-                    (p.name.startswith("msprof") and p.suffix == ".json")
-                    or (p.name.startswith(("op_summary", "step_trace")) and p.suffix == ".csv")
-                )
-            ]
-            return dict(row, profiler=str(raw), exported=files)
-
-        capture = s.run(f"profile-c{gear}", key, profile)
-        for item in capture["exported"]:
-            c.verify(item)
-        name = f"modules-c{gear}"
-        summary = s.run(
-            name,
-            dict(capture=s.refs[f"profile-c{gear}"], code=recipes("module_profile.py")),
-            lambda d: analyze(d, capture, models[gear]["optimized"], graphs["gears"][str(gear)]),
-        )
-        print(
-            f"C{gear} optimized | per Execute task sums (ms) | {summary['scope']} | {summary['unmapped']}/{summary['timed_tasks']} unmapped",
-            flush=True,
-        )
-        print("  module / layer                       Median       P95    calls")
-        for row in [*summary["modules"], *summary["layers"]]:
-            p50, p95 = row["p50_task_sum_ms"], row["p95_task_sum_ms"]
-            timing = f"{p50:9.4f} {p95:9.4f}" if p50 is not None else "        -         -"
-            print(f"  {row['module']:32s} {timing}   {row['calls_observed']}/30")
-        print("Module CSV", Path(s.refs[name]["path"]).parent / "module-latency.csv", flush=True)
+        for gear in gears
+    }
+    profile_modules(s, cann, env, pkg, runner, dsos, profile_cases)
 
 
 if __name__ == "__main__":
