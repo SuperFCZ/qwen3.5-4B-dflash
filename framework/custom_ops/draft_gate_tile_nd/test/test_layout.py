@@ -203,6 +203,21 @@ class TileND(unittest.TestCase):
             nz = bytes(K * N)
             scale_bits = b"\x00\x3c" * (K // 128 * N)
             original = model_proto(types, nz, scale_bits)
+            original_nodes = {n.name: n for n in original.graph[0].op}
+            w, gate = original_nodes["weight"], original_nodes[OLD_OP]
+            self.assertEqual(
+                [
+                    n.name
+                    for n in original.graph[0].op
+                    if "_out_shape_locked" in n.attr and n.attr["_out_shape_locked"].b
+                ],
+                [w.name],
+            )
+            self.assertEqual(w.output_desc[0], w.attr["value"].t.desc)
+            self.assertEqual(w.output_desc[0], gate.input_desc[1])
+            self.assertEqual(list(w.output_desc[0].attr["origin_shape"].list.i), [N, K])
+            self.assertEqual(list(w.output_desc[0].shape.dim), [K // 32, N // 16, 16, 32])
+            self.assertEqual(w.attr["value"].t.data, nz)
             src = root / "source.air"
             dest = root / "tile.air"
             src.write_bytes(original.SerializeToString())
@@ -211,6 +226,8 @@ class TileND(unittest.TestCase):
             after = types[0].FromString(dest.read_bytes())
             nodes = {n.name: n for n in after.graph[0].op}
             self.assertEqual(nodes[OLD_OP].type, OP)
+            self.assertTrue(nodes["weight"].attr["_out_shape_locked"].b)
+            self.assertNotIn("_out_shape_locked", nodes[OLD_OP].attr)
             for desc in (
                 nodes["weight"].output_desc[0],
                 nodes["weight"].attr["value"].t.desc,

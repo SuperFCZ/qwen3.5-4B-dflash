@@ -1,9 +1,10 @@
 """Build a static GE single-Gate AIR with immutable NZ weight and GN scale."""
 
-from layout import K, M, N, NZ, OLD_OP
+from layout import K, M, N, NZ, OLD_OP, require
 
 
 def model_proto(types, nz, gn):
+    require(len(nz) == N * K and len(gn) == 2 * (K // 128) * N, "wrong immutable weight or GN scale extent")
     msg = types[0]()
     msg.name = "c16_gate_up"
     graph = msg.graph.add()
@@ -29,6 +30,9 @@ def model_proto(types, nz, gn):
     descriptor(w.output_desc.add(), "w_nz", 3, NZ, "FRACTAL_NZ")
     w.attr["value"].t.desc.CopyFrom(w.output_desc[0])
     w.attr["value"].t.data = nz
+    # Match normalize_ac_constants: GE shape inference otherwise interprets
+    # the already-packed four-dimensional Const as logical ND and tiles it again.
+    w.attr["_out_shape_locked"].b = True
     s = graph.op.add(name="scale", type="Const")
     descriptor(s.output_desc.add(), "s", 2, [K // 128, N])
     s.attr["value"].t.desc.CopyFrom(s.output_desc[0])
