@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.16)
+project(vector_probe_cpu_test LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+find_package(tikicpulib REQUIRED CONFIG PATHS "${CANN_ROOT}/tools/tikicpulib/lib/cmake" NO_DEFAULT_PATH)
+add_executable(vector_probe_cpu cpu.cpp)
+target_include_directories(vector_probe_cpu PRIVATE .. ../../draft_gate_scale_broadcast/kernel)
+target_link_libraries(vector_probe_cpu PRIVATE tikicpulib::Ascend310P3)
