@@ -76,16 +76,24 @@ def summarize(entries, expected=()):
             busy = union([(e["lo"], e["hi"]) for e in es])
             sums.append(float(duration) / 1000)
             unions.append(float(busy) / 1000)
-            calls.append(dict(module=name, call=call, tasks=len(es), sum_ms=sums[-1], union_ms=unions[-1]))
+            calls.append(
+                dict(
+                    module=name,
+                    call=call,
+                    tasks=len(es),
+                    sum_ms=sums[-1] if es else None,
+                    union_ms=unions[-1] if es else None,
+                )
+            )
         counts = [len(groups[name][call]) for call in range(7, 37)]
         rows.append(
             dict(
                 module=name,
                 calls_observed=sum(x > 0 for x in counts),
                 tasks=sum(counts),
-                p50_task_sum_ms=median(sums) if any(counts) else None,
-                p95_task_sum_ms=sorted(sums)[math.ceil(0.95 * len(sums)) - 1] if any(counts) else None,
-                mean_task_union_ms=sum(unions) / 30 if any(counts) else None,
+                p50_task_sum_ms=median(sums) if all(counts) else None,
+                p95_task_sum_ms=sorted(sums)[math.ceil(0.95 * len(sums)) - 1] if all(counts) else None,
+                mean_task_union_ms=sum(unions) / 30 if all(counts) else None,
             )
         )
     return rows, calls

@@ -7,8 +7,15 @@ if [[ ${1:-} == --help || ${1:-} == -h ]]; then
 fi
 source "$here/../ascend310p_workspace/run_root.sh"
 source "$here/../ascend310p_workspace/gate_conda.sh"
+export DFLASH_RUN_ROOT=/home/w00949577/z50058744/qwen35-dflash-run
 dflash_new_run full-draft-panels
+# CPython appends /pymp-XXXXXXXX/listener-XXXXXXXX to TMPDIR. sun_path is 108 bytes on Linux.
+mkdir -p "$DFLASH_RUN_ROOT/t"
+ipc_tmp=$(mktemp -d "$DFLASH_RUN_ROOT/t/d-XXXXXX")
+ln -s "$ipc_tmp" "$DFLASH_OUTPUT/ipc-tmp"
+export TMPDIR="$ipc_tmp" TMP="$ipc_tmp" TEMP="$ipc_tmp"
 dflash_gate_conda
+export XDG_CACHE_HOME="$DFLASH_RUN_ROOT/cache" HF_HOME="$DFLASH_RUN_ROOT/cache/huggingface" TORCH_HOME="$DFLASH_RUN_ROOT/cache/torch"
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0 HF_HUB_OFFLINE=1 OMP_NUM_THREADS=2
 export DFLASH_DRAFT_CHECKPOINT="${DRAFT_W8A16_DIR:-${DRAFT_DIR:-/home/w00949577/model_weights/qwen3.5-4b-dflash-w8a16}}"
 export DFLASH_TARGET_CHECKPOINT="${TARGET_DIR:-/home/w00949577/model_weights/Qwen3.5-4B}"

@@ -19,7 +19,7 @@ bash framework/custom_ops/draft_full_panels/run.sh
 | 继续已完成的阶段 | `--resume full-draft-panels-XXXXXX`，使用原档位和输入参数 |
 | 使用自己的 Draft replay | `--inputs-dir /绝对路径/输入` |
 
-续跑创建新目录，通过前次 `stages.json` 引用各阶段产物。可先用 `--no-profile` 测完整延迟，再用 `--resume` 加上同样的档位和输入参数做模块测量。错误的阶段保留现场，终端和 `terminal.log` 均能看到报错。
+续跑创建新目录，通过前次 `stages.json` 引用各阶段产物。可先用 `--no-profile` 测完整延迟，再用 `--resume` 加上同样的档位和输入参数做模块测量。变更了输入合同的阶段会在新目录重建。ATC 子进程使用同一工作区里较短的私有临时目录，避免 Python SyncManager 超过 Linux Unix socket 地址长度；每次 ATC 启动前都用同一环境验证真实 Manager 连接。错误的阶段保留现场，终端和 `terminal.log` 均能看到报错。
 
 ## 模型与比较范围
 
@@ -44,6 +44,6 @@ bash framework/custom_ops/draft_full_panels/run.sh
 - `latency.json` 与 `benchmark-c{16,64}/report.json` 保存正式的完整 Draft Execute+Stream Sync。每档三轮交错，每轮每版 5 次预热、30 次正式计时，输出 90 个原始样本、Median、P95 及各轮倍率。边界从已加载 OM 和已就绪设备输入开始，到整图输出流同步为止。
 - `profile-c{16,64}/` 另起优化 OM 进程做 msprof。每进程 38 个 Execute/Sync，只使用下标 7 到 36 的 30 次。正式 benchmark 在采集前已落盘。
 - `modules-c{16,64}/module-latency.csv` 为设备任务按模块、按调用聚合的耗时，单位 ms，含 Median、P95、任务数、出现调用数及区间并集。覆盖各层 Gate/Up、Down、Q、O、KV、Attention、Norm、RoPE、SwiGLU、缓存更新，以及 FC、embedding、Head MatMul 与 Top1。`layers.csv` 汇总可定位到单层的任务，`module-calls.csv`、`timed-tasks.csv`、`task-ownership.csv` 保留逐调用、逐任务及归属依据。
-- 优先使用校验通过的 device steps。若 step 证据不足，则仅将完整落入唯一 Host Execute/Sync 窗口的任务标记为 `PROVISIONAL_HOST_ENCLOSURE`。跨窗口/重复任务保留状态。跨模块 fusion 单独列出，无法识别的作为 `Unmapped`；某模块观测次数为 0 时耗时留空。并发会让任务区间重叠，因此每行任务耗时之和不能直接代表整图墙钟时间。
+- 优先使用校验通过的 device steps。若 step 证据不足，则仅将完整落入唯一 Host Execute/Sync 窗口的任务标记为 `PROVISIONAL_HOST_ENCLOSURE`。跨窗口/重复任务保留状态。跨模块 fusion 单独列出，无法识别的作为 `Unmapped`；某模块未覆盖全部 30 次时，其整段 Median/P95 留空，已观测的逐次耗时仍在明细中。并发会让任务区间重叠，因此每行任务耗时之和不能直接代表整图墙钟时间。
 
 CPU 回归可在装有 CPU Torch、transformers、NumPy、protobuf 的 Python 中执行。将 `DFLASH_GE_DESCRIPTOR` 设为一次新运行生成的 `cann-ge.desc` 后运行 `python -B -m unittest discover -s framework/custom_ops/draft_full_panels/test -v`。完整五层缩小宽度的 CPU 用例在两档检查 26 个投影，逐位比较 GE 算子语义与独立 PyTorch 前向的全部 11 个输出。

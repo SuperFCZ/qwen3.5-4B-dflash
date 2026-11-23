@@ -2,6 +2,7 @@
 
 from collections import defaultdict
 import json
+import sys
 from pathlib import Path
 
 from joint import c, gate, down, OLD_OP, require
@@ -67,6 +68,14 @@ def compiled(out, gear, mode, graph, pkg, cann, env, control):
         "--deterministic=0",
     ]
     c.write(out / "atc-command.json", argv)
+    # Exercise the same CPython listener and isolated environment used by CANN's TBE process.
+    command(
+        [sys.executable, "-I", "-B", Path(__file__).with_name("ipc_check.py")],
+        out / "ipc-check.log",
+        env,
+        out,
+    )
+    print((out / "ipc-check.log").read_text().strip(), flush=True)
     command(argv, out / "atc.log", env, out)
     om = out / "draft.om"
     dump = out / "om-graph.json"

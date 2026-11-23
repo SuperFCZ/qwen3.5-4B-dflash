@@ -27,15 +27,16 @@ class Stages:
 
     def run(self, name, contract, action):
         key = hashlib.sha256(json.dumps(contract, sort_keys=True).encode()).hexdigest()
-        if name in self.previous:
-            ref = self.previous[name]
+        ref = self.previous.get(name)
+        row = None
+        if ref:
             row = c.read(c.verify(ref))
-            require(
-                row["contract_sha256"] == key and row["name"] == name and row["status"] == "PASS",
-                "saved stage has a different input or program: " + name + "; use a fresh run",
-            )
+            require(row["name"] == name and row["status"] == "PASS", "invalid prior receipt: " + name)
+        if row is not None and row["contract_sha256"] == key:
             print("Reusing", name, flush=True)
         else:
+            if row is not None:
+                print("Rebuilding changed stage in new directory:", name, flush=True)
             print("Starting", name, flush=True)
             folder = self.folder / name
             folder.mkdir()
@@ -300,14 +301,14 @@ def main():
             lambda d: analyze(d, capture, models[gear]["optimized"], graphs["gears"][str(gear)]),
         )
         print(
-            f"C{gear} optimized, task sum Median (ms/Execute), {summary['scope']}, {summary['unmapped']}/{summary['timed_tasks']} unmapped",
+            f"C{gear} optimized | per Execute task sums (ms) | {summary['scope']} | {summary['unmapped']}/{summary['timed_tasks']} unmapped",
             flush=True,
         )
-        for row in summary["modules"]:
-            if row["p50_task_sum_ms"] is not None:
-                print(
-                    f"  {row['module']:32s} {row['p50_task_sum_ms']:9.4f}  ({row['calls_observed']}/30 calls)"
-                )
+        print("  module / layer                       Median       P95    calls")
+        for row in [*summary["modules"], *summary["layers"]]:
+            p50, p95 = row["p50_task_sum_ms"], row["p95_task_sum_ms"]
+            timing = f"{p50:9.4f} {p95:9.4f}" if p50 is not None else "        -         -"
+            print(f"  {row['module']:32s} {timing}   {row['calls_observed']}/30")
         print("Module CSV", Path(s.refs[name]["path"]).parent / "module-latency.csv", flush=True)
 
 

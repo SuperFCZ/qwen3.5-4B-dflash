@@ -183,6 +183,47 @@ class TestFull(unittest.TestCase):
         a, _ = summarize([dict(module="a", lo=0, hi=1000, call=i) for i in range(7, 37)], ["a", "b"])
         self.assertEqual((a[0]["p50_task_sum_ms"], a[1]["p50_task_sum_ms"]), (1, None))
 
+    def test_incomplete_profile_is_reported_as_missing(self):
+        rows, calls = summarize([dict(module="q", call=i, lo=0, hi=1000) for i in range(7, 36)])
+        self.assertEqual(rows[0]["calls_observed"], 29)
+        self.assertIsNone(rows[0]["p50_task_sum_ms"])
+        self.assertIsNone(calls[-1]["sum_ms"])
+
+    def test_original_server_tempdir_exceeds_linux_socket_limit(self):
+        from unittest.mock import patch
+        from ipc_check import check
+
+        with tempfile.TemporaryDirectory() as tmp:
+            long = Path(tmp).resolve() / ("x" * 80)
+            long.mkdir()
+            with (
+                patch.dict(os.environ, {"TMPDIR": str(long)}),
+                patch("tempfile.gettempdir", return_value=str(long)),
+            ):
+                with self.assertRaisesRegex(ValueError, "AF_UNIX path too long"):
+                    check()
+        old = "/home/w00949577/z50058744/qwen35-dflash-run/runs/full-draft-panels-DTohsw/tmp/pymp-XXXXXXXX/listener-XXXXXXXX"
+        new = "/home/w00949577/z50058744/qwen35-dflash-run/t/d-XXXXXX/pymp-XXXXXXXX/listener-XXXXXXXX"
+        self.assertGreater(len(os.fsencode(old)), 107)
+        self.assertLessEqual(len(os.fsencode(new)), 107)
+
+    def test_resume_rebuilds_only_a_changed_stage(self):
+        from experiment import Stages
+
+        with tempfile.TemporaryDirectory() as tmp:
+            a, b = (Path(tmp) / n for n in ("old", "new"))
+            a.mkdir()
+            b.mkdir()
+            old = Stages(a, None)
+            old.run("air", {"v": 1}, lambda d: 42)
+            old.run("atc", {"v": 1}, lambda d: 1)
+            saved = (a / "atc/report.json").read_bytes()
+            new = Stages(b, a)
+            self.assertEqual(new.run("air", {"v": 1}, lambda _: self.fail("unexpected rebuild")), 42)
+            self.assertEqual(new.run("atc", {"v": 2}, lambda d: 2), 2)
+            self.assertEqual(new.refs["air"], old.refs["air"])
+            self.assertEqual((a / "atc/report.json").read_bytes(), saved)
+
     def test_capture_checks_whole_kv_and_untouched_rows(self):
         from joint import c
 
