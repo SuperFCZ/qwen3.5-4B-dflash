@@ -71,30 +71,24 @@ def write_preset(template, dest, cann):
     c.write(dest, data)
 
 
-def generate(out, schema, env):
+def generate(out, schema, env, *, operators=()):
     project = out / "CustomOp"
     msopgen = shutil.which("msopgen", path=env["PATH"])
     require(msopgen, "msopgen not found in CANN PATH")
     with Path(msopgen).open("rb") as fp:
         shebang = fp.readline(256)
     generator = [sys.executable, msopgen] if shebang.startswith(b"#!") and b"python" in shebang else [msopgen]
-    command(
-        [
-            *generator,
-            "gen",
-            "-i",
-            schema,
-            "-c",
-            "ai_core-Ascend310P3",
-            "-lan",
-            "cpp",
-            "-out",
-            project,
-        ],
-        out / "generate.log",
-        env,
-        out,
-    )
+    argv = [*generator, "gen", "-i", schema, "-c", "ai_core-Ascend310P3", "-lan", "cpp", "-out", project]
+    if operators:
+        for index, op in enumerate(operators):
+            command(
+                [*argv, "-op", op, *(["-m", "1"] if index else [])],
+                out / ("generate-" + op + ".log"),
+                env,
+                out,
+            )
+    else:
+        command(argv, out / "generate.log", env, out)
 
     return project
 
@@ -144,10 +138,8 @@ def make_package(out, snapshot, cann, env, *, tiled=True):
     )
 
 
-def install_project(out, project, cann, env, op, stem, headers, kind):
+def build_install(out, project, cann, env):
     install = out / "opp"
-    dev = project / "op_kernel" / (stem + ".cpp")
-    reg = project / "op_host" / (stem + ".cpp")
     build = out / "build"
     env = dict(env, ASCEND_CACHE_PATH=str(out / "build-cache"))
     Path(env["ASCEND_CACHE_PATH"]).mkdir()
@@ -176,6 +168,13 @@ def install_project(out, project, cann, env, op, stem, headers, kind):
     require(len(installers) == 1, "expected one isolated Gate operator installer")
     install.mkdir()
     command(["bash", installers[0], "--install-path=" + str(install)], out / "install.log", env, out)
+    return install
+
+
+def install_project(out, project, cann, env, op, stem, headers, kind):
+    install = build_install(out, project, cann, env)
+    dev = project / "op_kernel" / (stem + ".cpp")
+    reg = project / "op_host" / (stem + ".cpp")
     vendor = install / "vendors/customize"
     binaries = list((vendor / "op_impl/ai_core/tbe/kernel/ascend310p").rglob("*.o"))
     require(len(binaries) == 1 and binaries[0].parent.name == stem, "unexpected private kernel inventory")
