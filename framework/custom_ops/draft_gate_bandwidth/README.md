@@ -60,3 +60,14 @@ CPU 回归可用 `python3 -B -m unittest discover -s framework/custom_ops/draft_
 | 2560 | 1.319765 | 0.505715 | 1.334920 | 0.524270 | 2.6097× |
 
 K2560 由另一次独立配对测得，报告为同一运行根下的 `gate-bandwidth-VL4yZa/experiment/result.json`。两组输入、两种 Poison 及全部输出位型检查通过。等效矩阵吞吐 3.152 TFLOP/s，单遍逻辑字节除以耗时为 101.42 GB/s（条件峰值 204.8 GB/s 的 49.5%）。0.55971 ms 的独立 copy 微基准包含同步和观测写回，不能据此限定完整算子的最短时间。
+
+### 相同完整 K 的 W16 直接配对
+
+服务器运行 `gate-bandwidth-6BCgLO/experiment/result.json` 复用了 VL4yZa 的单 W16 对照 OM（SHA256 `ad5e7562f8b131982bbd028ff6033483534cde686181062cf187956b39249a92`）。两版的 8-block、baseK256、完整 Cube Tiling 及每个 N64 的一次 Matmul 均通过准入。两组输入、每组两种 Poison 的 311,296 个 FP16 输出及 Guard 验证通过。
+
+| 版本 | Median (ms) | P95 (ms) | 本次样本数 |
+|---|---:|---:|---:|
+| K2560 单 W16 | 0.505895 | 0.515930 | 90 |
+| K2560 双 W16 | **0.469815** | **0.481390** | 90 |
+
+三轮同向，Median 下降 7.13%，倍率 1.0768×，判定 **GO**。最快版本的等效矩阵吞吐为 3.392 TFLOP/s，逻辑吞吐为 109.17 GB/s。在单遍 204.8 GB/s 模型下对应约 53.3%。这些数据来自合成 C16 单 Gate/Up 的未插桩 Execute+Sync；本次没有采集外存事务或硬件流水时间线。
