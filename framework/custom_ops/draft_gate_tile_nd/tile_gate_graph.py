@@ -1,17 +1,13 @@
-"""Synthetic offline GE fixture for tests only. The hardware runner always reads the frozen Layer0 AIR."""
+"""Build a static GE single-Gate AIR with immutable NZ weight and GN scale."""
 
-from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from layout import K, M, N, NZ, OLD_OP
 
 
 def model_proto(types, nz, gn):
     msg = types[0]()
-    msg.name = "gate_fixture"
+    msg.name = "c16_gate_up"
     graph = msg.graph.add()
-    graph.name = "gate_fixture"
+    graph.name = "c16_gate_up"
 
     def descriptor(d, name, dtype, shape, layout="ND"):
         d.name = name

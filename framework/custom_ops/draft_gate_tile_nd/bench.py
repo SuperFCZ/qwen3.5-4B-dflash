@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import sys
 
-from layout import HERE, K, M, N, OP, TILE, require
+from layout import HERE, K, M, N, OP, OLD_OP, NZ, TILE, require
 from package import make_package, command
 from scale_contracts import c, flow, host, one, FIRST, FIRST_HASHES, SHAPE, SHAPE_KEY, read_om_json
 from gate_common import ABI
@@ -103,7 +103,7 @@ def atc_args(argv, air, prefix):
     return new
 
 
-def selected_image(node, block_dim):
+def selected_image(node, block_dim, op=OP):
     def field(key, kind):
         return one(
             (x["value"][kind] for x in node["attributes"] if x.get("key") == key),
@@ -114,7 +114,7 @@ def selected_image(node, block_dim):
     symbol = field("_kernelname", "s")
     size = int(field("_tbeKernelSize", "i"))
     require(
-        node["type"] == OP
+        node["type"] == op
         and re.fullmatch(r".+[0-9a-f]{64}", key)
         and re.fullmatch(re.escape(key[:-64]) + r"__kernel\d+", symbol)
         and 64 < size < 16 << 20
@@ -162,7 +162,7 @@ def prepare_air(out, src, env, original, files):
     return packing
 
 
-def compile_candidate(out, control, pkg, env, argv, packing):
+def compile_gate(out, pkg, env, argv, op, weight):
     air = out / "gate.air"
     platform = out / "platform.jsonl"
     schedule = out / "scheduling.jsonl"
@@ -185,19 +185,10 @@ def compile_candidate(out, control, pkg, env, argv, packing):
     dump = out / "om-graph.json"
     command([argv[0], "--mode=1", "--om=" + str(om), "--json=" + str(dump)], out / "inspect.log", env, out)
     q = flow.read_query(platform, schedule, pkg["opp"], "ATC", "A", SHAPE)
-    old = control["plans"][SHAPE_KEY]
-    ref = old["query"]
-    require(
-        q["tiling_sha256"] == ref["tiling_sha256"] == PARENT
-        and q["schedule"] == ref["schedule"]
-        and {k: v for k, v in q["platform"].items() if k != "host_dso"}
-        == {k: v for k, v in ref["platform"].items() if k != "host_dso"},
-        "real ATC Cube, workspace or scheduling differs",
-    )
     nodes = read_om_json(dump)
     operators = [n for n in nodes if n["type"] not in ("Data", "Const", "FileConstant", "NetOutput")]
     node = one(operators, "candidate OM requires exactly one compute node")
-    image = selected_image(node, q["platform"]["blockDim"])
+    image = selected_image(node, q["platform"]["blockDim"], op)
     require(len(node["input_desc"]) == len(node["inputs"]) == 3, "wrong compiled graph/entry")
     vendor = one(
         (item["value"] for item in node["attributes"] if item["key"] == "custom_op_file_path"),
@@ -207,29 +198,22 @@ def compile_candidate(out, control, pkg, env, argv, packing):
         vendor == {"s": str(Path(pkg["opp"]["install"]) / "vendors/customize")}, "ATC selected another OPP"
     )
     w = node["input_desc"][1]
+    layout, shape = ("ND", TILE) if op == OP else ("FRACTAL_NZ", NZ)
     require(
-        w["layout"] == "ND" and [int(x) for x in w["shape"]["dim"]] == list(TILE),
-        "ATC changed the tiled weight format or shape",
+        w["layout"] == layout and list(map(int, w["shape"]["dim"])) == list(shape),
+        f"ATC changed the {op} weight descriptor: {w}",
+    )
+    require(
+        q["platform"]["blockDim"] == 8 and q["tiling_sha256"] == PARENT,
+        "ATC did not select the C16 Gate 8-block K256 plan",
     )
     bins = embedded(om, [image])
-    before = one(control["atc_kernels"].values(), "missing control ELF")
     storage = allocated_sections({"om": c.identity(om), "atc_kernels": bins}, node["name"])
-    require(
-        storage["writable"] == allocated_sections(control, before["node"])["writable"],
-        "selected Gate writable storage changed",
-    )
-    require(
-        bins[node["name"]]["executable_sections"] != before["executable_sections"],
-        "ATC selected unchanged executable code",
-    )
-    weights = c.identity(out / "weights.tile-nd.bin")
-    require(
-        weights["sha256"] == packing["tile_sha256"] and weights["bytes"] == N * K, "packed weight changed"
-    )
-    data = c.verify(weights).read_bytes()
+    data = c.verify(weight).read_bytes()
+    require(len(data) == N * K, "wrong compiled weight extent")
     with om.open("rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as view:
         offset = view.find(data)
-        require(offset >= 0, "compiled OM does not contain the exact prepacked tile-ND weights")
+        require(offset >= 0, "OM does not contain the supplied weight bytes")
     receipt = out / "compile.json"
     c.write(
         receipt,
@@ -238,31 +222,56 @@ def compile_candidate(out, control, pkg, env, argv, packing):
             air=c.identity(air),
             om=c.identity(om),
             dump=c.identity(dump),
-            weights=weights,
+            weights=weight,
             packed_constant_offset=offset,
             declared_storage=storage,
             selected=image,
-            pack=packing,
             query=q,
         ),
     )
-    return (
-        dict(
-            mode=TILE_MODE,
-            key=FIRST,
-            scope="projection",
-            abi=ABI,
-            air=c.identity(air),
-            om=c.identity(om),
-            deployment=c.identity(receipt),
-            dump=c.identity(dump),
-            atc_kernels=bins,
-            plans={SHAPE_KEY: dict(query=q, contract=old["contract"])},
-            opp_root=pkg["opp"]["install"],
-            private_kernel=pkg["kernel"],
-        ),
-        packing,
+    return dict(
+        mode=TILE_MODE if op == OP else NZ_MODE,
+        key=FIRST,
+        scope="projection",
+        abi=ABI,
+        air=c.identity(air),
+        om=c.identity(om),
+        deployment=c.identity(receipt),
+        dump=c.identity(dump),
+        atc_kernels=bins,
+        plans={SHAPE_KEY: dict(query=q, contract={"block_dim": q["platform"]["blockDim"]})},
+        opp_root=pkg["opp"]["install"],
+        private_kernel=pkg["kernel"],
     )
+
+
+def compile_candidate(out, control, pkg, env, argv, packing):
+    weight = c.identity(out / "weights.tile-nd.bin")
+    require(weight["sha256"] == packing["tile_sha256"], "packed Gate weights changed")
+    model = compile_gate(out, pkg, env, argv, OP, weight)
+    q = model["plans"][SHAPE_KEY]["query"]
+    old = control["plans"][SHAPE_KEY]
+    ref = old["query"]
+    require(
+        q["tiling_sha256"] == ref["tiling_sha256"] == PARENT
+        and q["schedule"] == ref["schedule"]
+        and {k: v for k, v in q["platform"].items() if k != "host_dso"}
+        == {k: v for k, v in ref["platform"].items() if k != "host_dso"},
+        "real ATC Cube, workspace or scheduling differs",
+    )
+    (old_image,) = control["atc_kernels"].values()
+    (new_image,) = model["atc_kernels"].values()
+    require(
+        allocated_sections(model, new_image["node"])["writable"]
+        == allocated_sections(control, old_image["node"])["writable"],
+        "selected Gate writable storage changed",
+    )
+    require(
+        new_image["executable_sections"] != old_image["executable_sections"],
+        "unchanged executable Gate kernel",
+    )
+    model["plans"][SHAPE_KEY]["contract"] = old["contract"]
+    return model, packing
 
 
 def paired(rows):
@@ -372,8 +381,8 @@ if __name__ == "__main__":
     import traceback
 
     root, out = map(Path, sys.argv[1:])
-    if out.resolve() != out or out.parent != root.resolve() or not out.is_dir() or any(out.iterdir()):
-        sys.exit("ERROR: expected a fresh empty experiment directory directly under the run root")
+    if out.resolve() != out or not out.is_dir() or any(out.iterdir()):
+        sys.exit("ERROR: expected a fresh empty experiment output directory")
     r = {"status": "FAILED"}
     try:
         r["timing"] = run(root, out, r)

@@ -7,23 +7,14 @@ if [[ ${1:-} == --help || ${1:-} == -h ]]; then
 fi
 
 src=$(cd "$(dirname "$0")" && pwd)
-cann=${CANN_ROOT:-/usr/local/Ascend/cann-9.0.0}
-if [[ ! -r "$cann/set_env.sh" ]]; then
-    echo "ERROR: $cann/set_env.sh is missing. Set CANN_ROOT to the installed CANN 9.0 directory." >&2
-    exit 1
-fi
-load_cann() { source "$cann/set_env.sh"; }
-if ! load_cann; then
-    echo "ERROR: failed to initialize $cann/set_env.sh" >&2
-    exit 1
-fi
+source "$src/../ascend310p_workspace/run_root.sh"
+dflash_new_run vector
+dflash_load_cann
+cann=$CANN_ROOT
 set -u
-build=$(mktemp -d "${TMPDIR:-/tmp}/dflash-vector-XXXXXX")
-cleanup() {
-    local rc=$?
-    if (( rc == 0 )); then rm -rf -- "$build"; else echo "Build/log directory: $build" >&2; fi
-}
-trap cleanup EXIT
+build="$DFLASH_OUTPUT/build"
+mkdir "$build"
+cd "$DFLASH_OUTPUT"
 build_step() {
     local log=$1 rc
     shift

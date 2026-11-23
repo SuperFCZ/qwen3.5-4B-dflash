@@ -8,7 +8,8 @@ import sys
 from layout import HEADER, HEADER_SHA, HERE, OLD_OP, OLD_STEM, OP, STEM, host_source, kernel_source, require
 
 sys.path.insert(0, str(HERE.parent / "draft_gate_scale_broadcast"))
-from scale_contracts import c
+from scale_contracts import c, render
+from a3_launch import configure_build
 from flow_build import preset_options
 
 
@@ -22,15 +23,66 @@ def command(argv, log, env, cwd):
         raise RuntimeError(f"{argv[0]} returned {rc}, log: {log}")
 
 
-def make_package(out, snapshot, cann, env):
+def tracked_template(out, preset, cann):
+    source = out / "gate-template"
+    host = source / "op_host"
+    dev = source / "op_kernel"
+    host.mkdir(parents=True)
+    dev.mkdir()
+    flow = HERE.parent / "draft_a_core_scheduler_flow/op_host"
+    for name in (OLD_STEM + ".cpp", "platform_diag.h", "scheduler_evidence.h"):
+        shutil.copyfile(flow / name, host / name)
+    for name in (OLD_STEM + "_tiling.h", OLD_STEM + "_contract.h"):
+        shutil.copyfile(c.QUANT / "op_host" / name, host / name)
+    (host / "scheduler_variant.h").write_text("#pragma once\n#define DFLASH_SCHEDULER_POLICY 0\n")
+    configure_build(
+        host / HEADER,
+        source / "build-config.json",
+        0,
+        "batched",
+        dev / HEADER,
+        "prefetch",
+        "a-ub",
+        "broadcast",
+        256,
+        "loop",
+        "raw",
+    )
+    (dev / (OLD_STEM + ".cpp")).write_bytes(
+        render((c.QUANT / "op_kernel" / (OLD_STEM + ".cpp")).read_bytes())
+    )
+    data = c.read(preset)
+    (default,) = [p for p in data["configurePresets"] if p["name"] == "default"]
+    for key, value in dict(
+        ASCEND_CANN_PACKAGE_PATH=str(cann),
+        ASCEND_COMPUTE_UNIT="ascend310p",
+        ASCEND_PYTHON_EXECUTABLE=sys.executable,
+        ENABLE_BINARY_PACKAGE="True",
+        ENABLE_SOURCE_PACKAGE="True",
+        ENABLE_CROSS_COMPILE="False",
+        ASCEND_PACK_SHARED_LIBRARY="False",
+    ).items():
+        default["cacheVariables"][key]["value"] = value
+    c.write(source / "CMakePresets.json", data)
+    return {str(p.relative_to(source)): {"file": c.identity(p)} for p in source.rglob("*") if p.is_file()}
+
+
+def make_package(out, snapshot, cann, env, *, tiled=True):
     project = out / "CustomOp"
     install = out / "opp"
+    op, stem = (OP, STEM) if tiled else (OLD_OP, OLD_STEM)
+    schema = HERE / (op + ".json") if tiled else c.QUANT / (op + ".json")
+    msopgen = shutil.which("msopgen", path=env["PATH"])
+    require(msopgen, "msopgen not found in CANN PATH")
+    with Path(msopgen).open("rb") as fp:
+        shebang = fp.readline(256)
+    generator = [sys.executable, msopgen] if shebang.startswith(b"#!") and b"python" in shebang else [msopgen]
     command(
         [
-            "msopgen",
+            *generator,
             "gen",
             "-i",
-            HERE / (OP + ".json"),
+            schema,
             "-c",
             "ai_core-Ascend310P3",
             "-lan",
@@ -43,20 +95,25 @@ def make_package(out, snapshot, cann, env):
         out,
     )
 
+    if snapshot is None:
+        snapshot = tracked_template(out, project / "CMakePresets.json", cann)
+
     def original(rel):
         return c.verify(snapshot[rel]["file"])
 
-    dev = project / "op_kernel" / (STEM + ".cpp")
-    reg = project / "op_host" / (STEM + ".cpp")
+    dev = project / "op_kernel" / (stem + ".cpp")
+    reg = project / "op_host" / (stem + ".cpp")
     require(dev.is_file() and reg.is_file(), "unexpected generated op or kernel name")
-    dev.write_bytes(kernel_source(original("op_kernel/" + OLD_STEM + ".cpp").read_bytes()))
-    reg.write_text(host_source(original("op_host/" + OLD_STEM + ".cpp").read_text()))
+    b16 = original("op_kernel/" + OLD_STEM + ".cpp").read_bytes()
+    dev.write_bytes(kernel_source(b16) if tiled else b16)
+    host = original("op_host/" + OLD_STEM + ".cpp").read_text()
+    reg.write_text(host_source(host) if tiled else host)
     for sub in ("op_host", "op_kernel"):
         source = original(sub + "/" + HEADER)
         require(c.sha(source) == HEADER_SHA, "not the accepted Gate B16 build header")
         shutil.copyfile(source, project / sub / HEADER)
-    tiling = original("op_host/" + OLD_STEM + "_tiling.h").read_text().replace(OLD_OP, OP)
-    (project / "op_host" / (STEM + "_tiling.h")).write_text(tiling)
+    tiling = original("op_host/" + OLD_STEM + "_tiling.h").read_text().replace(OLD_OP, op)
+    (project / "op_host" / (stem + "_tiling.h")).write_text(tiling)
     for name in (
         OLD_STEM + "_contract.h",
         "scheduler_variant.h",
@@ -97,11 +154,11 @@ def make_package(out, snapshot, cann, env):
     command(["bash", installers[0], "--install-path=" + str(install)], out / "install.log", env, out)
     vendor = install / "vendors/customize"
     binaries = list((vendor / "op_impl/ai_core/tbe/kernel/ascend310p").rglob("*.o"))
-    require(len(binaries) == 1 and binaries[0].parent.name == STEM, "unexpected private kernel inventory")
+    require(len(binaries) == 1 and binaries[0].parent.name == stem, "unexpected private kernel inventory")
     elf = c.identity(binaries[0])
     meta = c.identity(binaries[0].with_suffix(".json"))
     require(c.read(c.verify(meta))["sha256"] == elf["sha256"], "installed SDK kernel metadata mismatch")
-    dyn = list(vendor.rglob(STEM + ".cpp"))
+    dyn = list(vendor.rglob(stem + ".cpp"))
     require(
         len(dyn) == 1 and c.sha(dyn[0]) == c.sha(dev) and c.sha(dyn[0].parent / HEADER) == HEADER_SHA,
         "ATC dynamic source/header differs from built candidate",
@@ -112,7 +169,7 @@ def make_package(out, snapshot, cann, env):
         if p.is_file() and (p.suffix in (".h", ".so", ".json") or ".so." in p.name)
     ]
     row = dict(
-        op=OP,
+        op=op,
         binary=elf["path"],
         sha256=elf["sha256"],
         bytes=elf["bytes"],
@@ -121,7 +178,7 @@ def make_package(out, snapshot, cann, env):
         json_bytes=meta["bytes"],
     )
     opp = dict(
-        kind="PRIVATE_GATE_TILE_ND",
+        kind="PRIVATE_GATE_TILE_ND" if tiled else "PRIVATE_GATE_NZ_B16",
         install=str(install),
         preflight=dict(vendor=str(vendor), files=files, kernels=[row]),
     )

@@ -27,6 +27,23 @@ def protobuf_classes(descriptor):
 
 
 def classes(cann, work):
+    # The stand-alone Conda benchmark compiles the installed CANN schema without TorchAir.
+    if importlib.util.find_spec("grpc_tools"):
+        schema = cann / "include/proto/ge_ir.proto"
+        path = work / "ge.desc"
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "grpc_tools.protoc",
+                "-I" + str(schema.parent),
+                "--descriptor_set_out=" + str(path),
+                schema.name,
+            ],
+            cwd=schema.parent,
+            check=True,
+        )
+        return protobuf_classes(path.read_bytes())
     protoc = shutil.which("protoc")
     torch = importlib.util.find_spec("torch")
     if not protoc and torch and torch.origin:

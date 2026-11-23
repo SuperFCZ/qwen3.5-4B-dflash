@@ -28,7 +28,7 @@ from layout import (
 )
 from bench import NZ_MODE, TILE_MODE, atc_args, paired, selected_image
 from air import protobuf_classes, transform
-from fixture import model_proto
+from tile_gate_graph import model_proto
 import scale_contracts as scale
 from a3_launch import configure_build
 

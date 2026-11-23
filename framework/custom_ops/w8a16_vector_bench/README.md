@@ -1,12 +1,12 @@
 # 310P3 Vector 吞吐微基准
 
-在服务器仓库根目录运行下面一条命令。默认测设备 0 的 UB 向量运算，以及 Gate/Up 和 Down 两种实际权重尺寸的 GM 读入。脚本在临时目录用 CANN 9.0 编译并直调一个 dav-m200 AiCore 核函数，结果直接打印在终端。无须模型、OPP 安装或 msprof。
+在服务器仓库根目录运行下面一条命令。默认测设备 0 的 UB 向量运算，以及 Gate/Up 和 Down 两种实际权重尺寸的 GM 读入。脚本在本次实验目录用 CANN 9.0 编译并直调一个 dav-m200 AiCore 核函数，结果直接打印在终端。无须模型、OPP 安装或 msprof。
 
 ```bash
 bash framework/custom_ops/w8a16_vector_bench/run.sh
 ```
 
-只看 Vector 时在末尾加 `--vector-only`。可用 `--device 1` 指定设备，或用 `--blocks 8` 对齐已测的 ATC 启动宽度。默认通过 ACL 查询 AI Core 数，查询不可用时尝试当前线程的 Cube core 资源值。终端打印所用查询和实际请求的 block 数。安装目录默认 `/usr/local/Ascend/cann-9.0.0`，可用 `CANN_ROOT` 指定。编译失败直接展开日志。运行错误带测试行、ACL 调用及返回码。临时目录在失败时保留。
+只看 Vector 时在末尾加 `--vector-only`。可用 `--device 1` 指定设备，或用 `--blocks 8` 对齐已测的 ATC 启动宽度。默认通过 ACL 查询 AI Core 数，查询不可用时尝试当前线程的 Cube core 资源值。终端打印所用查询和实际请求的 block 数。安装目录默认 `/usr/local/Ascend/cann-9.0.0`，可用 `CANN_ROOT` 指定。编译失败直接展开日志。运行错误带测试行、ACL 调用及返回码。每次的终端副本和编译日志保存在 `/home/w00949577/z50058744/qwen35-dflash-run/runs/vector-*/`，终端开头会打印完整路径。
 
 ## 怎么读结果
 

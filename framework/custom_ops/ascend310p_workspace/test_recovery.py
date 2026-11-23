@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import ModuleType
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from recover_inputs import recover, GATE
@@ -30,6 +31,27 @@ class Recovery(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"preserved"):
                 recover([root],dest,expected)
             self.assertEqual((dest/"x.bin").read_bytes(),b"bad")
+
+    def test_torchair_can_be_an_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base=Path(tmp).resolve()/"conda"
+            venv=Path(tmp).resolve()/"overlay"
+            packages={}
+            for name,folder in (("torch",base),("torch_npu",base),("torchair",base),("transformers",venv)):
+                module=ModuleType("torch_npu.dynamo.torchair" if name=="torchair" else name)
+                p=folder/name/"__init__.py"
+                p.parent.mkdir(parents=True)
+                p.write_text("pass")
+                module.__file__=str(p)
+                module.__version__="5.13.1" if name=="transformers" else "test"
+                packages[name]=module
+            init=ModuleType("transformers.initialization")
+            init.copy_=lambda: None
+            packages[init.__name__]=init
+            with patch.dict(sys.modules,packages),patch.object(sys,"prefix",str(venv)),patch.object(sys,"base_prefix",str(base)),patch.object(sys,"path",list(sys.path)):
+                state=snapshot(venv,base)
+            self.assertEqual(state["torchair"]["module"],"torch_npu.dynamo.torchair")
+            self.assertFalse(state["historical_init_files_match"])
 
     def test_reject_symlink_destination_and_wrong_python(self):
         with tempfile.TemporaryDirectory() as tmp:

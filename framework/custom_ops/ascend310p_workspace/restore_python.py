@@ -32,11 +32,14 @@ def snapshot(venv, base):
     if transformers.__version__ != "5.13.1" or not callable(copy_):
         raise ValueError("missing transformers 5.13.1 initialization.copy_")
     result = {}
-    for package, prefix in ((transformers, venv), (torch, base), (torch_npu, base), (torchair, base)):
+    for name, package, prefix in (
+        ("transformers", transformers, venv), ("torch", torch, base),
+        ("torch_npu", torch_npu, base), ("torchair", torchair, base),
+    ):
         path = Path(package.__file__).resolve(strict=True)
         if prefix not in path.parents:
             raise ValueError(f"{package.__name__} loaded from unexpected location: {path}")
-        result[package.__name__] = dict(path=str(path), sha256=file_sha(path),
+        result[name] = dict(module=package.__name__, path=str(path), sha256=file_sha(path),
                                         version=str(getattr(package,"__version__","unknown")))
     result["historical_init_files_match"] = all(result[k]["sha256"] == v for k,v in HISTORICAL.items())
     result["python"] = dict(executable=sys.executable, version=sys.version, base=str(base))
