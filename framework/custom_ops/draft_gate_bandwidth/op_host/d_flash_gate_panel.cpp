@@ -49,15 +49,17 @@ static ge::graphStatus TilingFunc(gert::TilingContext* ctx)
     const uint64_t scratch = ub - UserBytes;
     using namespace matmul_tiling;
     MatmulApiTiling mm(platform);
-    mm.SetAType(TPosition::GM, CubeFormat::ND, DataType::DT_FLOAT16);
-    mm.SetBType(TPosition::VECOUT, CubeFormat::NZ, DataType::DT_FLOAT16, false);
+    mm.SetAType(FullL1 ? TPosition::A1 : TPosition::GM, FullL1 ? CubeFormat::NZ : CubeFormat::ND, DataType::DT_FLOAT16);
+    mm.SetBType(FullL1 ? TPosition::B1 : TPosition::VECOUT, CubeFormat::NZ, DataType::DT_FLOAT16, false);
     mm.SetCType(TPosition::GM, CubeFormat::ND, DataType::DT_FLOAT16);
     mm.SetBiasType(TPosition::GM, CubeFormat::ND, DataType::DT_FLOAT);
     mm.SetBias(false);
     mm.SetShape(M, Columns, PanelK);
     mm.SetOrgShape(M, N, K, PanelK);
     mm.SetFixSplit(M, Columns, 256);
-    mm.SetBufferSpace(-1,-1,static_cast<int>(scratch));
+    const auto l1Capacity = capacity(Mem::L1);
+    if (l1Capacity <= ResidentL1) return ge::GRAPH_FAILED;
+    mm.SetBufferSpace(FullL1 ? static_cast<int>(l1Capacity-ResidentL1) : -1, -1, static_cast<int>(scratch));
     DFlashGatePanelTilingData td;
     auto& cube = td.cubeTilingData;
     if (mm.GetTiling(cube) != 0 || cube.get_singleCoreM() != M || cube.get_singleCoreN() != Columns ||
@@ -71,9 +73,9 @@ static ge::graphStatus TilingFunc(gert::TilingContext* ctx)
         return ge::GRAPH_FAILED;
     }
     const uint64_t a = M*256*2, b = Columns*256*2, c = M*Columns*4;
-    const uint64_t l1 = a*cube.get_depthA1() + b*cube.get_depthB1();
+    const uint64_t l1 = ResidentL1 + a*cube.get_depthA1() + b*cube.get_depthB1();
     const uint64_t l0a = a*cube.get_dbL0A(), l0b = b*cube.get_dbL0B(), l0c = c*cube.get_dbL0C();
-    if (l1>capacity(Mem::L1) || l0a>capacity(Mem::L0_A) || l0b>capacity(Mem::L0_B) ||
+    if (l1>l1Capacity || l0a>capacity(Mem::L0_A) || l0b>capacity(Mem::L0_B) ||
         l0c>capacity(Mem::L0_C)) return ge::GRAPH_FAILED;
     td.set_globalM(M); td.set_globalK(K); td.set_globalN(N); td.set_tileK(PanelK); td.set_matmulUbBytes(scratch);
     ctx->SetTilingKey(0);

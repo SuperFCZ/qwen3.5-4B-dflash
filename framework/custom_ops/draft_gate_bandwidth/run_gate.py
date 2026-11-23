@@ -14,6 +14,7 @@ from fresh_dso import seal
 from package import make_package
 from air import classes
 from tile_gate_graph import model_proto
+from measurement import mismatch_evidence
 import numpy as np
 
 FLOPS = 2 * M * K * N
@@ -198,9 +199,25 @@ def run(root, panels, real, reuse, compile_only, r):
     def execute(folder, mode, data, iteration, timed):
         r["phase"] = str(folder.relative_to(root))
         c.verify_opp(pkgs[mode]["opp"])
-        return run_child(
-            folder, runner, models[mode], envs[mode], dsos[mode], data, timed, reference, iteration
-        )
+        try:
+            return run_child(
+                folder, runner, models[mode], envs[mode], dsos[mode], data, timed, reference, iteration
+            )
+        except Exception:
+            differences = mismatch_evidence(folder, {"golden": {"y": data["golden.bin"]}})
+            r["output_differences"] = differences
+            for item in differences:
+                print(
+                    "Output mismatch",
+                    mode,
+                    item.get("bit_mismatches"),
+                    "first",
+                    item.get("first"),
+                    "max finite ULP",
+                    item.get("max_finite_ulp"),
+                    flush=True,
+                )
+            raise
 
     for m in models:
         for case, data in (("dense", files), ("boundaries", stress)):
@@ -238,7 +255,7 @@ def run(root, panels, real, reuse, compile_only, r):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--panels", default="256,512,1280", help="comma-separated K panels")
+    p.add_argument("--panels", default="256,512,1280,2560", help="comma-separated K panels")
     p.add_argument("--compile-only", action="store_true")
     p.add_argument("--layer0", action="store_true")
     p.add_argument(

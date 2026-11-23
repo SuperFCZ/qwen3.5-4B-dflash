@@ -20,7 +20,7 @@ from tile_gate_graph import model_proto
 
 OP = "DFlashGatePanel"
 STEM = "d_flash_gate_panel"
-PANELS = (256, 512, 1280)
+PANELS = (256, 512, 1280, 2560)
 
 
 def pack_inputs(nz, gn, panel, *, k=K, n=N):
@@ -107,8 +107,11 @@ def build(folder, cann, env, panel):
     project = generate(folder, op_schema, env)
     hdr = panel_header(panel)
     for sub in ("op_kernel", "op_host"):
-        shutil.copyfile(HERE / sub / (STEM + ".cpp"), project / sub / (STEM + ".cpp"))
+        name = "full_l1.cpp" if panel == K and sub == "op_kernel" else STEM + ".cpp"
+        shutil.copyfile(HERE / sub / name, project / sub / (STEM + ".cpp"))
         (project / sub / "panel_spec.h").write_bytes(hdr)
+    helpers = HERE / "panel_vector.h"
+    shutil.copyfile(helpers, project / "op_kernel" / helpers.name)
     tiling = (c.QUANT / "op_host" / (OLD_STEM + "_tiling.h")).read_text().replace(OLD_OP, OP)
     (project / "op_host" / (STEM + "_tiling.h")).write_text(tiling)
     for name in ("platform_diag.h", "scheduler_evidence.h"):
@@ -118,7 +121,14 @@ def build(folder, cann, env, panel):
     preset = project / "CMakePresets.json"
     write_preset(preset, preset, cann)
     return install_project(
-        folder, project, cann, env, OP, STEM, {"panel_spec.h": sha(hdr)}, "PRIVATE_GATE_CUBE_PANEL"
+        folder,
+        project,
+        cann,
+        env,
+        OP,
+        STEM,
+        {"panel_spec.h": sha(hdr), helpers.name: c.sha(helpers)},
+        "PRIVATE_GATE_CUBE_PANEL",
     )
 
 
@@ -135,10 +145,12 @@ def validate_plan(query, base, panel):
     require(
         sched["baseline_assignments"] == baseline["schedule"]["baseline_assignments"], "N64 ownership differs"
     )
-    banks = 1 if panel == 1280 else 2
-    codes = banks * (32 if panel == 1280 else 64) * panel
+    banks = 1 if panel in (1280, K) else 2
+    raw_columns = {256: 64, 512: 64, 1280: 32, 2560: 16}[panel]
+    codes = banks * raw_columns * panel
     scales = banks * 2 * (panel // 128) * 64
-    w = 2 * 64 * panel
+    w = 2 * (16 if panel == K else 64) * panel
+    l1_inputs = 2 * K * (M + 64) if panel == K else 0
     user = codes + scales + w + 8192
     scratch = platform["capacity"]["UB"] - user
     data = bytes.fromhex(sched["tiling_hex"])
@@ -171,7 +183,7 @@ def validate_plan(query, base, panel):
         user_ub=user,
         scratch=scratch,
         workspace=platform["workspace"],
-        l1_used=8192 * cube["depthA1"] + 32768 * cube["depthB1"],
+        l1_used=l1_inputs + 8192 * cube["depthA1"] + 32768 * cube["depthB1"],
         l0a_used=8192 * cube["dbL0A"],
         l0b_used=32768 * cube["dbL0B"],
         l0c_used=4096 * cube["dbL0C"],
@@ -182,6 +194,7 @@ def validate_plan(query, base, panel):
         cube=cube,
         resources=resources,
         outer_iterates_per_n64=K // panel,
+        resident_l1_input_bytes=l1_inputs,
         fp32_base_k=256,
         tiling_sha256=query["tiling_sha256"],
     )

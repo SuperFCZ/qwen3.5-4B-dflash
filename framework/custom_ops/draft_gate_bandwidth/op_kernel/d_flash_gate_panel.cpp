@@ -1,6 +1,7 @@
 #include "kernel_operator.h"
 #include "lib/matmul_intf.h"
 #include "panel_spec.h"
+#include "panel_vector.h"
 
 using namespace AscendC;
 using namespace matmul;
@@ -10,22 +11,6 @@ using A = MatmulType<TPosition::GM, CubeFormat::ND, half>;
 using B = MatmulType<TPosition::VECOUT, CubeFormat::NZ, half, false>;
 using C = MatmulType<TPosition::GM, CubeFormat::ND, half>;
 using Bias = MatmulType<TPosition::GM, CubeFormat::ND, float>;
-
-// Each 16-lane vector block contains one K row and 16 consecutive output channels.
-// All chunks have an even number of 128-lane repeats. Split at <= 255 repeats.
-template<uint32_t Count>
-__aicore__ inline void CastCodes(LocalTensor<half> w, LocalTensor<int8_t> q)
-{
-    constexpr uint32_t calls = (Count + 128 * 255 - 1) / (128 * 255);
-    static_assert(Count % (128 * calls) == 0, "complete Cast repeats required");
-    constexpr uint32_t count = Count / calls;
-    constexpr uint32_t repeats = count / 128;
-    static_assert(repeats > 0 && repeats <= 255, "Cast repeat overflow");
-    const UnaryRepeatParams dense{1, 1, 8, 4};
-    for (uint32_t i = 0; i < calls; ++i) {
-        Cast(w[i * count], q[i * count], RoundMode::CAST_NONE, uint64_t(128), uint8_t(repeats), dense);
-    }
-}
 
 template<uint32_t Slabs>
 __aicore__ inline void ScaleSlabs(LocalTensor<half> w, LocalTensor<half> s, uint32_t firstSlab)
@@ -39,14 +24,6 @@ __aicore__ inline void ScaleSlabs(LocalTensor<half> w, LocalTensor<half> s, uint
             Mul(part, part, s[group * Columns + slab * 16], uint64_t(128), uint8_t(16), broadcast16);
         }
     }
-}
-
-template<HardEvent Direction>
-__aicore__ inline void Handoff(TPipe& pipe)
-{
-    const auto id = pipe.FetchEventID(Direction);
-    SetFlag<Direction>(id);
-    WaitFlag<Direction>(id);
 }
 
 __aicore__ inline void LoadPanel(LocalTensor<int8_t> q, LocalTensor<half> s,

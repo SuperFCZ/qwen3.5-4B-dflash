@@ -20,15 +20,17 @@ def cpu_headers(tmp):
     inc = tmp / "cpu"
     shutil.copytree(panels.c.QUANT / "test/cpu_kernel_include", inc)
     h = inc / "kernel_operator.h"
-    text = h.read_text()
+    text = once(
+        h.read_text(), "using TEventID = int;", "using TEventID = int; constexpr uint32_t QUE_MAX_EVENT=8;"
+    )
     if sys.platform.startswith("linux") and platform.machine() == "aarch64":
         text = once(text, "using half = _Float16;", "using half = __fp16;")
-    text = once(text, "{ MTE2_S, MTE2_V, V_S }", "{ MTE2_S, MTE2_V, V_S, V_MTE2 }")
-    text = once(text, "std::array<std::array<Event, 8>, 3>", "std::array<std::array<Event, 8>, 4>")
+    text = once(text, "{ MTE2_S, MTE2_V, V_S }", "{ MTE2_S, MTE2_V, V_S, V_MTE2, V_MTE3, MTE3_V }")
+    text = once(text, "std::array<std::array<Event, 8>, 3>", "std::array<std::array<Event, 8>, 6>")
     text = once(
         text,
         "event.fence = E == HardEvent::V_S ?",
-        "event.fence = (E == HardEvent::V_S || E == HardEvent::V_MTE2) ?",
+        "event.fence = (E == HardEvent::V_S || E == HardEvent::V_MTE2 || E == HardEvent::V_MTE3) ?",
     )
     text = once(
         text,
@@ -36,6 +38,10 @@ def cpu_headers(tmp):
         """    if constexpr (E == HardEvent::V_MTE2) {
         Require(cpuSync.vectorIssued == event.fence, "wrong Vector to MTE2 fence generation");
         cpuSync.vectorAccesses.clear();
+    } else if constexpr (E == HardEvent::V_MTE3) {
+        cpuSync.storeReady = event.fence;
+    } else if constexpr (E == HardEvent::MTE3_V) {
+        FinishStores();
     } else if constexpr (E == HardEvent::V_S) {""",
     )
     text = once(
@@ -47,6 +53,56 @@ def cpu_headers(tmp):
         text,
         "mask==128 && repeats==64 && p.dstBlkStride",
         "mask==128 && repeats==16 && p.src1RepStride==0 && p.dstBlkStride",
+    )
+    text = once(text, "GM, VECIN, VECOUT, VECCALC", "GM, VECIN, VECOUT, VECCALC, A1, B1")
+    text = once(
+        text,
+        "struct SyncModel {",
+        """struct SyncModel {
+        Range l1B{0,0};
+        std::deque<Dma> stores;
+        uint64_t storeReady=0;""",
+    )
+    text = once(
+        text,
+        "inline void DrainDma(",
+        """inline void FinishStores() {
+        for(auto task:cpuSync.stores) std::memcpy(reinterpret_cast<void*>(task.target.begin),task.source,task.target.bytes);
+        cpuSync.stores.clear();
+    }
+    inline void DrainDma(""",
+    )
+    text = once(
+        text,
+        "    CheckReadable(src, false);",
+        """    CheckReadable(src, false);
+        for(auto task:cpuSync.stores)
+            Require(!Overlaps(dst,Bytes(task.source,task.target.bytes)), "W16 overwritten during UB-to-L1 copy");""",
+    )
+    text = once(
+        text, "        DrainDma(cpuSync.dmaIssued);", "        FinishStores(); DrainDma(cpuSync.dmaIssued);"
+    )
+    text = once(
+        text,
+        "        buffer.Allocate(bytes);",
+        """        buffer.Allocate(bytes);
+        if constexpr(P==TPosition::B1) cpuSync.l1B=Bytes(buffer.template Get<uint8_t>(bytes).data,bytes);""",
+    )
+    text = once(
+        text,
+        "    for (auto range : cpuSync.vectorAccesses) Require(!Overlaps(target, range)",
+        """    if (cpuSync.l1B.bytes && Overlaps(target,cpuSync.l1B)) {
+        Require(cpuSync.storeReady==cpuSync.vectorIssued,"UB-to-L1 copy before final Mul");
+        cpuSync.stores.push_back({target,src.data,0}); ++cpuMetrics.copies;return;
+    }
+    for (auto range : cpuSync.vectorAccesses) Require(!Overlaps(target, range)""",
+    )
+    text = once(
+        text,
+        "    else assert((sizeof(T)==1 && params.blockCount==8",
+        """    else if(sizeof(T)==2 && params.blockCount==16)
+        assert(params.blockLen==1 && params.srcStride==159 && params.dstStride==0);
+    else assert((sizeof(T)==1 && params.blockCount==8""",
     )
     h.write_text(text)
     h = inc / "lib/matmul_intf.h"
@@ -66,6 +122,16 @@ def cpu_headers(tmp):
         text,
         "w_.GetValue(n * tiling_.singleK + term.first)",
         "w_.GetValue(((n/16)*tiling_.singleK+term.first)*16+n%16)",
+    )
+    text = once(
+        text,
+        "assert(tiling_.singleM == 80 && tiling_.orgKa == 128);",
+        "static_assert(A::position==AscendC::TPosition::A1 && A::format==CubeFormat::NZ); assert(tiling_.singleM==16 && tiling_.orgKa==2560);",
+    )
+    text = once(
+        text,
+        "x_.GetValue(m * tiling_.orgKa + k)",
+        "x_.GetValue(A::position==AscendC::TPosition::A1 ? ((k/16)*tiling_.singleM+m)*16+k%16 : m*tiling_.orgKa+k)",
     )
     h.write_text(text)
     return inc
@@ -116,22 +182,44 @@ class CubePanels(unittest.TestCase):
                     (root / "scales").write_bytes(sc)
                     (root / "panel_spec.h").write_bytes(panels.panel_header(p))
                     exe = root / "portable"
-                    subprocess.run(
-                        [
-                            "c++",
-                            "-std=c++17",
-                            "-O2",
-                            "-ffp-contract=off",
-                            "-I" + str(inc),
-                            "-I" + str(root),
-                            "-I" + str(HERE / "op_kernel"),
-                            str(HERE / "test/portable_gate.cpp"),
-                            "-o",
-                            exe,
-                        ],
-                        check=True,
-                    )
+                    compiler = [
+                        "c++",
+                        "-std=c++17",
+                        "-O2",
+                        "-ffp-contract=off",
+                        "-I" + str(inc),
+                        "-I" + str(root),
+                        "-I" + str(HERE / "op_kernel"),
+                        "-I" + str(HERE),
+                        str(HERE / "test/portable_gate.cpp"),
+                        "-o",
+                        exe,
+                    ]
+                    subprocess.run(compiler, check=True)
                     subprocess.run([exe, root], check=True)
+                    if p == 2560:
+                        source = (HERE / "op_kernel/full_l1.cpp").read_text()
+                        for fence, hazard in (
+                            (
+                                "if(slab!=0) Pair<HardEvent::MTE3_V>(weightStored);",
+                                "W16 overwritten during UB-to-L1 copy",
+                            ),
+                            (
+                                "Pair<HardEvent::V_MTE2>(rawConsumed);",
+                                "raw bank reused before vector completion",
+                            ),
+                        ):
+                            (root / "full_l1.cpp").write_text(once(source, fence, "// CPU fault injection"))
+                            subprocess.run(compiler, check=True)
+                            fault = subprocess.run(
+                                [exe, root],
+                                cwd=root,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                text=True,
+                            )
+                            self.assertNotEqual(fault.returncode, 0)
+                            self.assertIn(hazard, fault.stdout)
 
     def test_paired_statistics(self):
         mode = "panel-k512"

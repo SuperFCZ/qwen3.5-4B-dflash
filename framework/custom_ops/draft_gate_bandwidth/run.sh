@@ -2,7 +2,7 @@
 set -eo pipefail
 here=$(cd "$(dirname "$0")" && pwd -P)
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then
-    echo 'Usage: bash run.sh [--panels 256,512,1280] [--reuse-build gate-tile-nd-ZHIxuE] [--compile-only] [--layer0]'
+    echo 'Usage: bash run.sh [--panels 256,512,1280,2560] [--reuse-build gate-tile-nd-ZHIxuE] [--compile-only] [--layer0]'
     exit 0
 fi
 source "$here/../ascend310p_workspace/run_root.sh"
