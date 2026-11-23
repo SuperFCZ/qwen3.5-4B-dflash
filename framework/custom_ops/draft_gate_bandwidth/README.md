@@ -8,6 +8,16 @@ git pull --ff-only origin feature/ascend310p-custom-ops && bash framework/custom
 
 省略 `--reuse-build` 可从 Git 和已安装的 CANN 重新构建对照。默认在独立 Conda 环境 `gate310p` 使用与 QyzcNC 相同种子的合成数据。可选 `--panels 512` 单测一个候选，`--compile-only` 停在 ATC，`--layer0` 使用新根下四个身份匹配的真实张量。终端打印每一对的 Median、P95、倍率和最终目录。原始样本保存在 `/home/w00949577/z50058744/qwen35-dflash-run/runs/gate-bandwidth-*/experiment/result.json`。
 
+### 以已测 K2560 为对照，只测 W16 双缓冲
+
+```bash
+git pull --ff-only origin feature/ascend310p-custom-ops && bash framework/custom_ops/draft_gate_bandwidth/run.sh --w16-pair gate-bandwidth-VL4yZa
+```
+
+此入口只编译 `panel-k2560-w2`。它复核指定报告中单 W16 的 GO、源文件、Host 回调、私有 OPP、内嵌 ELF 和两份常量，复用已验收 K2560 的 AIR、OM 和 runner；两边重新做完整 Smoke 与三轮配对。两版使用同一份原始 AIR 字节，ATC 产生的 200 B Cube Tiling 必须相等。两份 W16 各占 80 KiB，应用增加 81,920 B UB，SDK scratch 从 128,512 B 降到 46,592 B，raw 区、A1/B1 和 GM Workspace 均保持相同。
+
+每个 N64 有四个 N16 分片。双缓冲按 0、1、0、1 交替写 W16。分片 1 可以在 bank1 上 Cast/Mul，同时分片 0 由 MTE3 从 bank0 写 B1。分片 1 的最后一次 Mul 后，先等待分片 0 的存储，再交接分片 1；因此分片 2 可以覆写 bank0。分片 2 同样等分片 1 的存储，保护分片 3 对 bank1 的覆写。最后的全流水栅栏确保 B1 四片到齐才启动 Cube。CPU 回归对仍在读取的 UB 区间延迟拷贝，并注入缺失这两处等待的错误。
+
 ## 数据流
 
 X 是 FP16 [16,2560]，Y 是 FP16 [16,19456]。对照为已经测得 1.324100 ms 的 tile-ND/B16。候选保持 Scheduler A 的循环 N64 分工。离线把 INT8 权重排列成 [N64 tile,K panel,4,K within panel,16 channels]，把原 FP16 GN scale 排列成 [N64 tile,20,64]。两种变换都对每个元素做逆映射验证，参数总字节与对照相同。在线 Cast 后的 W16 自然是逻辑 B[K,N] 的 FP16 NZ 布局，交给非转置的 `SetTensorB`。在 310P3 的 SDK 分支，局部 NZ 的 `CopyNZ2NZImpl` 可用一次有步长的 DataCopy 搬运一个 Cube B 子块。
@@ -47,3 +57,6 @@ CPU 回归可用 `python3 -B -m unittest discover -s framework/custom_ops/draft_
 | 256 | 1.323200 | 1.160330 | 1.356490 | 1.231820 | 1.1404× |
 | 512 | 1.321860 | 0.977770 | 1.351610 | 1.022070 | 1.3519× |
 | 1280 | 1.323035 | 0.762700 | 1.348720 | 0.818070 | 1.7347× |
+| 2560 | 1.319765 | 0.505715 | 1.334920 | 0.524270 | 2.6097× |
+
+K2560 由另一次独立配对测得，报告为同一运行根下的 `gate-bandwidth-VL4yZa/experiment/result.json`。两组输入、两种 Poison 及全部输出位型检查通过。等效矩阵吞吐 3.152 TFLOP/s，单遍逻辑字节除以耗时为 101.42 GB/s（条件峰值 204.8 GB/s 的 49.5%）。0.55971 ms 的独立 copy 微基准包含同步和观测写回，不能据此限定完整算子的最短时间。

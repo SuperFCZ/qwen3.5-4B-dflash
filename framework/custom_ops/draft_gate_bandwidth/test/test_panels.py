@@ -41,7 +41,7 @@ def cpu_headers(tmp):
     } else if constexpr (E == HardEvent::V_MTE3) {
         cpuSync.storeReady = event.fence;
     } else if constexpr (E == HardEvent::MTE3_V) {
-        FinishStores();
+        ++storeWaits; FinishStores();
     } else if constexpr (E == HardEvent::V_S) {""",
     )
     text = once(
@@ -58,7 +58,8 @@ def cpu_headers(tmp):
     text = once(
         text,
         "struct SyncModel {",
-        """struct SyncModel {
+        """inline uint64_t storeWaits=0, vectorWhileStorePending=0;
+    struct SyncModel {
         Range l1B{0,0};
         std::deque<Dma> stores;
         uint64_t storeReady=0;""",
@@ -76,6 +77,7 @@ def cpu_headers(tmp):
         text,
         "    CheckReadable(src, false);",
         """    CheckReadable(src, false);
+        if(!cpuSync.stores.empty()) ++vectorWhileStorePending;
         for(auto task:cpuSync.stores)
             Require(!Overlaps(dst,Bytes(task.source,task.target.bytes)), "W16 overwritten during UB-to-L1 copy");""",
     )
@@ -175,12 +177,12 @@ class CubePanels(unittest.TestCase):
                     acc[row] += np.float32(x[row, kk]) * w
             x.tofile(root / "x")
             acc.astype("<f2").tofile(root / "reference")
-            for p in panels.PANELS:
-                with self.subTest(panel=p):
+            for p, banks in [(p, 1) for p in panels.PANELS] + [(panels.K, 2)]:
+                with self.subTest(panel=p, w16_banks=banks):
                     codes, sc, _ = panels.pack_inputs(nz, gn.tobytes(), p)
                     (root / "codes").write_bytes(codes)
                     (root / "scales").write_bytes(sc)
-                    (root / "panel_spec.h").write_bytes(panels.panel_header(p))
+                    (root / "panel_spec.h").write_bytes(panels.panel_header(p, banks))
                     exe = root / "portable"
                     compiler = [
                         "c++",
@@ -201,7 +203,11 @@ class CubePanels(unittest.TestCase):
                         source = (HERE / "op_kernel/full_l1.cpp").read_text()
                         for fence, hazard in (
                             (
-                                "if(slab!=0) Pair<HardEvent::MTE3_V>(weightStored);",
+                                (
+                                    "if(slab!=0) Pair<HardEvent::MTE3_V>(weightStored);"
+                                    if banks == 1
+                                    else "if (slab == 1 || slab == 2) Pair<HardEvent::MTE3_V>(weightStored);"
+                                ),
                                 "W16 overwritten during UB-to-L1 copy",
                             ),
                             (
@@ -220,6 +226,7 @@ class CubePanels(unittest.TestCase):
                             )
                             self.assertNotEqual(fault.returncode, 0)
                             self.assertIn(hazard, fault.stdout)
+                        (root / "full_l1.cpp").unlink()
 
     def test_paired_statistics(self):
         mode = "panel-k512"
@@ -242,6 +249,28 @@ class CubePanels(unittest.TestCase):
         self.assertEqual(pair_statistics(rows, mode)["decision"], "NO_GO")
         with self.assertRaises(ValueError):
             pair_statistics(rows[:-1], mode)
+
+    def test_w16_pair_uses_new_single_w_control_samples(self):
+        control, mode = "panel-k2560", "panel-k2560-w2"
+        rows = []
+        for i in range(3):
+            for m in ((control, mode) if i % 2 == 0 else (mode, control)):
+                rows.append(
+                    dict(
+                        mode=m,
+                        round=i,
+                        folder=str((m, i)),
+                        bit_mismatches=0,
+                        launch_authorized=True,
+                        profiled=False,
+                        validation={"timing": {"samples_ms": [0.50 if m == control else 0.46] * 30}},
+                    )
+                )
+        self.assertEqual(pair_statistics(rows, mode, control)["decision"], "GO")
+        with self.assertRaisesRegex(ValueError, "invalid paired schedule"):
+            pair_statistics(rows, mode)
+        with self.assertRaisesRegex(ValueError, "identical"):
+            pair_statistics(rows, mode, mode)
 
     @unittest.skipUnless(os.getenv("GATE_TEST_GE_DESCRIPTOR"), "requires CANN GE descriptor")
     def test_compiled_input_contracts(self):

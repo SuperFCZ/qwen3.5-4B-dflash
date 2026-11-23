@@ -45,5 +45,9 @@ int main(int argc,char** argv) {
        cpuMetrics.outputs!=Tiles || cpuMetrics.fullBarriers!=fullFences ||
        cpuMetrics.copies!=dmaCalls || cpuMetrics.brcbCalls!=0 ||
        cpuMetrics.mulCalls!=Tiles*Panels*4*Groups || cpuMetrics.ends!=8)return 4;
+    if constexpr (FullL1) {
+        if (AscendC::storeWaits != Tiles * (W16Banks == 1 ? 3 : 2)) return 5;
+        if ((AscendC::vectorWhileStorePending > 0) != (W16Banks == 2)) return 6;
+    }
     std::cout<<"all outputs and tile owners match\n";
 }

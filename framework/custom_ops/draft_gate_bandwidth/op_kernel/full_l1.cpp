@@ -50,7 +50,7 @@ extern "C" __global__ __aicore__ void d_flash_gate_panel(GM_ADDR x, GM_ADDR w_ti
     const auto b=bbuf.Get<half>(Columns*K);
     const auto q=qbuf.Get<int8_t>(Stripe);
     const auto scales=sbuf.Get<half>(Groups*Columns);
-    const auto w=wbuf.Get<half>(Stripe);
+    const auto weights=wbuf.Get<half>(W16Banks * Stripe);
     GlobalTensor<int8_t> qgm;
     GlobalTensor<half> sgm, xgm, ygm;
     qgm.SetGlobalBuffer(reinterpret_cast<__gm__ int8_t*>(w_tiles),N*K);
@@ -76,8 +76,11 @@ extern "C" __global__ __aicore__ void d_flash_gate_panel(GM_ADDR x, GM_ADDR w_ti
         DataCopy(q,qgm[nt*Columns*K],Stripe);
         for(uint32_t slab=0;slab<4;++slab) {
             Pair<HardEvent::MTE2_V>(inputReady);
-            // Only our own explicit UB->B1 copy still reads w. Matmul sees b, never w.
-            if(slab!=0) Pair<HardEvent::MTE3_V>(weightStored);
+            // The last reader of this UB bank is our copy to B1. Matmul only sees B1.
+            if constexpr (W16Banks == 1) {
+                if(slab!=0) Pair<HardEvent::MTE3_V>(weightStored);
+            }
+            auto w = weights[(slab % W16Banks) * Stripe];
             CastCodes<Stripe>(w,q);
             if(slab+1<4) {
                 Pair<HardEvent::V_MTE2>(rawConsumed);
@@ -88,6 +91,12 @@ extern "C" __global__ __aicore__ void d_flash_gate_panel(GM_ADDR x, GM_ADDR w_ti
                 auto part=w[g*Group*16];
                 Mul(part,part,scales[g*Columns+slab*16],uint64_t(128),uint8_t(16),
                     BinaryRepeatParams{1,1,0,8,8,0});
+            }
+            if constexpr (W16Banks == 2) {
+                // Slab 1 can compute in bank 1 while store 0 reads bank 0. Retire store
+                // 0 here before slab 2 overwrites bank 0; likewise store 1 at slab 2.
+                // The final all-pipe fence retires stores 2 and 3 before Cube starts.
+                if (slab == 1 || slab == 2) Pair<HardEvent::MTE3_V>(weightStored);
             }
             Pair<HardEvent::V_MTE3>(weightReady);
             DataCopy(b[slab*Stripe],w,Stripe);

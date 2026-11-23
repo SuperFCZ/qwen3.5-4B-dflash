@@ -93,19 +93,21 @@ def make_air(folder, types, files, panel):
     )
 
 
-def panel_header(panel):
+def panel_header(panel, w16_banks=1):
     require(panel in PANELS, "unsupported Gate panel")
-    return f"#define DFLASH_PANEL_K {panel}U\n".encode() + (HERE / "panel_spec.h").read_bytes()
+    require(w16_banks == 1 or (panel == K and w16_banks == 2), "invalid W16 buffer count")
+    config = f"#define DFLASH_PANEL_K {panel}U\n#define DFLASH_W16_BANKS {w16_banks}U\n"
+    return config.encode() + (HERE / "panel_spec.h").read_bytes()
 
 
-def build(folder, cann, env, panel):
+def build(folder, cann, env, panel, *, w16_banks=1):
     folder.mkdir()
     rows = c.read(OPS / "draft_gate_tile_nd/DFlashGateTileNd.json")
     rows[0]["op"] = OP
     op_schema = folder / (OP + ".json")
     c.write(op_schema, rows)
     project = generate(folder, op_schema, env)
-    hdr = panel_header(panel)
+    hdr = panel_header(panel, w16_banks)
     for sub in ("op_kernel", "op_host"):
         name = "full_l1.cpp" if panel == K and sub == "op_kernel" else STEM + ".cpp"
         shutil.copyfile(HERE / sub / name, project / sub / (STEM + ".cpp"))
@@ -132,7 +134,8 @@ def build(folder, cann, env, panel):
     )
 
 
-def validate_plan(query, base, panel):
+def validate_plan(query, base, panel, *, w16_banks=1):
+    require(w16_banks == 1 or (panel == K and w16_banks == 2), "invalid W16 plan")
     platform = query["platform"]
     baseline = base["plans"][SHAPE_KEY]["query"]
     require(
@@ -149,7 +152,7 @@ def validate_plan(query, base, panel):
     raw_columns = {256: 64, 512: 64, 1280: 32, 2560: 16}[panel]
     codes = banks * raw_columns * panel
     scales = banks * 2 * (panel // 128) * 64
-    w = 2 * (16 if panel == K else 64) * panel
+    w = w16_banks * 2 * (16 if panel == K else 64) * panel
     l1_inputs = 2 * K * (M + 64) if panel == K else 0
     user = codes + scales + w + 8192
     scratch = platform["capacity"]["UB"] - user
@@ -195,22 +198,47 @@ def validate_plan(query, base, panel):
         resources=resources,
         outer_iterates_per_n64=K // panel,
         resident_l1_input_bytes=l1_inputs,
+        w16_banks=w16_banks,
         fp32_base_k=256,
         tiling_sha256=query["tiling_sha256"],
     )
 
 
-def compile_panel(folder, pkg, env, argv, base, packing):
+def validate_w16_pair(query, base, air):
+    ref = base["plans"][SHAPE_KEY]["query"]
+    require(
+        base["mode"] == f"panel-k{K}" and c.sha(air) == base["air"]["sha256"],
+        "W16 pair requires the measured full-K control and identical AIR",
+    )
+    a, b = ref["schedule"], query["schedule"]
+    require(
+        bytes.fromhex(a["tiling_hex"])[24:] == bytes.fromhex(b["tiling_hex"])[24:],
+        "W16 buffering changed the serialized Cube tiling",
+    )
+    fixed = set(a["resources"]) - {"user_ub", "weight_bytes", "scratch"}
+    require(
+        all(a["resources"][k] == b["resources"][k] for k in fixed)
+        and a["resources"]["weight_bytes"] == 81920
+        and b["resources"]["weight_bytes"] == 163840
+        and b["resources"]["user_ub"] - a["resources"]["user_ub"] == 81920
+        and a["resources"]["scratch"] - b["resources"]["scratch"] == 81920,
+        "unexpected W16 UB, L1 or workspace delta",
+    )
+
+
+def compile_panel(folder, pkg, env, argv, base, packing, *, w16_banks=1):
     panel = packing["panel_k"]
     args, om, dump, q, node, image = compile_image(folder, pkg, env, argv, OP)
-    contract = validate_plan(q, base, panel)
+    contract = validate_plan(q, base, panel, w16_banks=w16_banks)
+    if w16_banks == 2:
+        validate_w16_pair(q, base, folder / "gate.air")
     offsets = []
     with om.open("rb") as fp, mmap.mmap(fp.fileno(), 0, access=mmap.ACCESS_READ) as view:
         for desc, shape, item in zip(
             node["input_desc"][1:], packing["physical_shapes"], packing["constants"]
         ):
             require(
-                desc["layout"] == "ND" and tuple(map(int, desc["shape"]["dim"])) == shape,
+                desc["layout"] == "ND" and tuple(map(int, desc["shape"]["dim"])) == tuple(shape),
                 "ATC changed panel constant descriptor",
             )
             offset = view.find(c.verify(item).read_bytes())
@@ -224,7 +252,7 @@ def compile_panel(folder, pkg, env, argv, base, packing):
     receipt = folder / "compile.json"
     c.write(receipt, dict(argv=args, packing=packing, constant_offsets=offsets, selected=bins, query=q))
     return dict(
-        mode=f"panel-k{panel}",
+        mode=f"panel-k{panel}" + ("-w2" if w16_banks == 2 else ""),
         key=FIRST,
         scope="projection",
         abi=ABI,

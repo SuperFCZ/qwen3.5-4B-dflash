@@ -46,13 +46,14 @@ def boundary_case(folder, files):
     return dict(files, **{key: c.identity(folder / key) for key in ("x.bin", "golden.bin")})
 
 
-def pair_statistics(rows, mode):
+def pair_statistics(rows, mode, control_mode=TILE_MODE):
+    require(mode != control_mode, "identical modes in pair")
     order = [r["mode"] for r in rows]
     require(
         len(rows) == 6
         and len({r["folder"] for r in rows}) == 6
         and all(
-            set(order[i : i + 2]) == {TILE_MODE, mode}
+            set(order[i : i + 2]) == {control_mode, mode}
             and [r["round"] for r in rows[i : i + 2]] == [i // 2] * 2
             for i in (0, 2, 4)
         )
@@ -65,11 +66,11 @@ def pair_statistics(rows, mode):
     )
     per = {}
     summary = {}
-    for key in (TILE_MODE, mode):
+    for key in (control_mode, mode):
         per[key] = [stats(r["validation"]["timing"]["samples_ms"], 30) for r in rows if r["mode"] == key]
         summary[key] = stats([v for rd in per[key] for v in rd["samples_ms"]], 90)
-    ctrl, cand = summary[TILE_MODE], summary[mode]
-    ratios = [a["median_ms"] / b["median_ms"] for a, b in zip(per[TILE_MODE], per[mode])]
+    ctrl, cand = summary[control_mode], summary[mode]
+    ratios = [a["median_ms"] / b["median_ms"] for a, b in zip(per[control_mode], per[mode])]
     ms = cand["median_ms"]
     return dict(
         variants=summary,
@@ -87,14 +88,12 @@ def pair_statistics(rows, mode):
     )
 
 
-def run(root, panels, real, reuse, compile_only, r):
+def run(root, panels, real, reuse, compile_only, r, w16_pair=None):
     cann = Path(os.environ["CANN_ROOT"]).resolve(strict=True)
     tools = {name: c.identity(shutil.which(name)) for name in ("atc", "msopgen", "cmake")}
     env = environment(cann, tools)
     files, label = data_files(root, real)
     reference = "supplied Gate FP16 reference checked in process"
-    runner = runner_binary(root, cann, env, reference)
-    types = classes(cann, root)
     atc = [
         str(cann / "bin/atc"),
         "--mode=0",
@@ -122,52 +121,78 @@ def run(root, panels, real, reuse, compile_only, r):
     )
     models, pkgs = r["models"], r["packages"]
     print(f"{label}  M{M} K{K} N{N}  single Gate/Up OM", flush=True)
-    if reuse:
-        from reuse_build import load_build
+    control_mode = TILE_MODE
+    if w16_pair:
+        from w16_control import load_control, CONTROL
 
-        old, ref = load_build(reuse, tools, files, label)
+        control_mode = CONTROL
+        model, pkg, runner, original_packing, ref = load_control(
+            w16_pair, tools, files, label, pair_statistics
+        )
+        models[control_mode], pkgs[control_mode] = model, pkg
         r["control_receipt"] = ref
-        models[TILE_MODE] = old["models"][TILE_MODE]
-        pkgs[TILE_MODE] = old["packages"][TILE_MODE]
-        print("Verified tile-ND/B16 control OM", models[TILE_MODE]["om"]["sha256"], flush=True)
+        print("Verified single-W K2560 OM", model["om"]["sha256"], flush=True)
     else:
-        r["phase"] = "build tile-ND control"
-        source = root / "source.air"
-        proto = model_proto(
-            types, c.verify(files["w_nz.bin"]).read_bytes(), c.verify(files["s_gn.bin"]).read_bytes()
-        )
-        source.write_bytes(proto.SerializeToString())
-        del proto
-        d = root / "control-atc"
-        prepare_air(d, {"cann": str(cann)}, env, source, files)
-        work = root / "control-build"
-        work.mkdir()
-        pkg = make_package(work, None, cann, env)
-        models[TILE_MODE] = compile_gate(
-            d,
-            pkg,
-            environment(cann, tools, pkg["opp"]["install"]),
-            atc,
-            OP,
-            c.identity(d / "weights.tile-nd.bin"),
-        )
-        pkgs[TILE_MODE] = pkg
+        runner = runner_binary(root, cann, env, reference)
+        types = classes(cann, root)
+        if reuse:
+            from reuse_build import load_build
+
+            old, ref = load_build(reuse, tools, files, label)
+            r["control_receipt"] = ref
+            models[TILE_MODE] = old["models"][TILE_MODE]
+            pkgs[TILE_MODE] = old["packages"][TILE_MODE]
+            print("Verified tile-ND/B16 control OM", models[TILE_MODE]["om"]["sha256"], flush=True)
+        else:
+            r["phase"] = "build tile-ND control"
+            source = root / "source.air"
+            proto = model_proto(
+                types, c.verify(files["w_nz.bin"]).read_bytes(), c.verify(files["s_gn.bin"]).read_bytes()
+            )
+            source.write_bytes(proto.SerializeToString())
+            del proto
+            d = root / "control-atc"
+            prepare_air(d, {"cann": str(cann)}, env, source, files)
+            work = root / "control-build"
+            work.mkdir()
+            pkg = make_package(work, None, cann, env)
+            models[TILE_MODE] = compile_gate(
+                d,
+                pkg,
+                environment(cann, tools, pkg["opp"]["install"]),
+                atc,
+                OP,
+                c.identity(d / "weights.tile-nd.bin"),
+            )
+            pkgs[TILE_MODE] = pkg
     r["runner"] = runner
-    control = models[TILE_MODE]
+    r["control_mode"] = control_mode
+    control = models[control_mode]
     executable_images = {
         tuple(i["sha256"] for i in next(iter(control["atc_kernels"].values()))["executable_sections"])
     }
     for panel in panels:
-        mode = f"panel-k{panel}"
+        mode = f"panel-k{panel}" + ("-w2" if w16_pair else "")
         r["phase"] = "compile " + mode
         folder = root / mode
         folder.mkdir()
         print("Packing, building and compiling", mode, flush=True)
         try:
-            packing = make_air(folder / "atc", types, files, panel)
-            pkg = build(folder / "build", cann, env, panel)
+            if w16_pair:
+                packing = original_packing
+                (folder / "atc").mkdir()
+                shutil.copyfile(c.verify(control["air"]), folder / "atc/gate.air")
+            else:
+                packing = make_air(folder / "atc", types, files, panel)
+            pkg = build(folder / "build", cann, env, panel, w16_banks=2 if w16_pair else 1)
             model = compile_panel(
-                folder / "atc", pkg, environment(cann, tools, pkg["opp"]["install"]), atc, control, packing
+                folder / "atc",
+                pkg,
+                environment(cann, tools, pkg["opp"]["install"]),
+                atc,
+                control,
+                packing,
+                w16_banks=2 if w16_pair else 1,
             )
             signature = tuple(
                 i["sha256"] for i in next(iter(model["atc_kernels"].values()))["executable_sections"]
@@ -187,7 +212,7 @@ def run(root, panels, real, reuse, compile_only, r):
             f"Iterate/N64={proof['outer_iterates_per_n64']}  scratch={proof['resources']['scratch']}",
             flush=True,
         )
-    modes = [m for m in models if m != TILE_MODE]
+    modes = [m for m in models if m != control_mode]
     require(modes, "no candidate passed Build and actual ATC resource admission")
     if compile_only:
         return "COMPILED_NOT_EXECUTED"
@@ -225,7 +250,7 @@ def run(root, panels, real, reuse, compile_only, r):
         print("Bitwise + guards PASS", m, "(two inputs, two poisons each)", flush=True)
     for i in range(3):
         for m in modes[i % len(modes) :] + modes[: i % len(modes)]:
-            order = [TILE_MODE, m] if (i + modes.index(m)) % 2 == 0 else [m, TILE_MODE]
+            order = [control_mode, m] if (i + modes.index(m)) % 2 == 0 else [m, control_mode]
             print("Round", i + 1, " → ".join(order), flush=True)
             for kind in order:
                 r["runs"].append(
@@ -235,9 +260,9 @@ def run(root, panels, real, reuse, compile_only, r):
     print("Full Gate/Up Execute+Sync, milliseconds; 90 fresh samples per side and per pair")
     print("candidate       control_p50  cand_p50  control_p95  cand_p95  speedup  logical_GB/s  GEMM_TF/s")
     for m in modes:
-        t = pair_statistics([row for row in r["runs"] if row["pair"] == m], m)
+        t = pair_statistics([row for row in r["runs"] if row["pair"] == m], m, control_mode)
         r["statistics"][m] = t
-        a, b = t["variants"][TILE_MODE], t["variants"][m]
+        a, b = t["variants"][control_mode], t["variants"][m]
         print(
             f"{m:15} {a['median_ms']:11.6f} {b['median_ms']:9.6f} {a['p95_ms']:11.6f} "
             f"{b['p95_ms']:9.6f} {t['speedup']:7.4f}x {t['logical_gbps']:12.2f} "
@@ -255,7 +280,11 @@ def run(root, panels, real, reuse, compile_only, r):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--panels", default="256,512,1280,2560", help="comma-separated K panels")
+    selection = p.add_mutually_exclusive_group()
+    selection.add_argument("--panels", help="comma-separated K panels")
+    selection.add_argument(
+        "--w16-pair", metavar="RUN", help="compare two W16 banks directly to a measured single-W K2560 run"
+    )
     p.add_argument("--compile-only", action="store_true")
     p.add_argument("--layer0", action="store_true")
     p.add_argument(
@@ -263,7 +292,10 @@ def main():
     )
     args = p.parse_args()
     try:
-        panels = [int(k) for k in args.panels.split(",")]
+        require(not (args.reuse_build and args.w16_pair), "--w16-pair already supplies its control")
+        require(args.w16_pair is None or args.w16_pair.strip(), "empty single-W run path")
+        selection = "256,512,1280,2560" if args.panels is None else args.panels
+        panels = [K] if args.w16_pair else [int(k) for k in selection.split(",")]
         require(len(panels) == len(set(panels)) and set(panels) <= set(PANELS) and panels, "invalid K panels")
     except ValueError as exc:
         p.error(str(exc))
@@ -280,6 +312,7 @@ def main():
             reuse,
             args.compile_only,
             r,
+            run_root / "runs" / args.w16_pair if args.w16_pair else None,
         )
     except Exception as error:
         r["error"] = repr(error)
