@@ -162,7 +162,7 @@ def prepare_air(out, src, env, original, files):
     return packing
 
 
-def compile_gate(out, pkg, env, argv, op, weight):
+def compile_image(out, pkg, env, argv, op):
     air = out / "gate.air"
     platform = out / "platform.jsonl"
     schedule = out / "scheduling.jsonl"
@@ -197,6 +197,12 @@ def compile_gate(out, pkg, env, argv, op, weight):
     require(
         vendor == {"s": str(Path(pkg["opp"]["install"]) / "vendors/customize")}, "ATC selected another OPP"
     )
+    return args, om, dump, q, node, image
+
+
+def compile_gate(out, pkg, env, argv, op, weight):
+    air = out / "gate.air"
+    args, om, dump, q, node, image = compile_image(out, pkg, env, argv, op)
     w = node["input_desc"][1]
     layout, shape = ("ND", TILE) if op == OP else ("FRACTAL_NZ", NZ)
     require(

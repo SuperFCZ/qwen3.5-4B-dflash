@@ -51,7 +51,12 @@ def tracked_template(out, preset, cann):
     (dev / (OLD_STEM + ".cpp")).write_bytes(
         render((c.QUANT / "op_kernel" / (OLD_STEM + ".cpp")).read_bytes())
     )
-    data = c.read(preset)
+    write_preset(preset, source / "CMakePresets.json", cann)
+    return {str(p.relative_to(source)): {"file": c.identity(p)} for p in source.rglob("*") if p.is_file()}
+
+
+def write_preset(template, dest, cann):
+    data = c.read(template)
     (default,) = [p for p in data["configurePresets"] if p["name"] == "default"]
     for key, value in dict(
         ASCEND_CANN_PACKAGE_PATH=str(cann),
@@ -63,15 +68,11 @@ def tracked_template(out, preset, cann):
         ASCEND_PACK_SHARED_LIBRARY="False",
     ).items():
         default["cacheVariables"][key]["value"] = value
-    c.write(source / "CMakePresets.json", data)
-    return {str(p.relative_to(source)): {"file": c.identity(p)} for p in source.rglob("*") if p.is_file()}
+    c.write(dest, data)
 
 
-def make_package(out, snapshot, cann, env, *, tiled=True):
+def generate(out, schema, env):
     project = out / "CustomOp"
-    install = out / "opp"
-    op, stem = (OP, STEM) if tiled else (OLD_OP, OLD_STEM)
-    schema = HERE / (op + ".json") if tiled else c.QUANT / (op + ".json")
     msopgen = shutil.which("msopgen", path=env["PATH"])
     require(msopgen, "msopgen not found in CANN PATH")
     with Path(msopgen).open("rb") as fp:
@@ -95,6 +96,13 @@ def make_package(out, snapshot, cann, env, *, tiled=True):
         out,
     )
 
+    return project
+
+
+def make_package(out, snapshot, cann, env, *, tiled=True):
+    op, stem = (OP, STEM) if tiled else (OLD_OP, OLD_STEM)
+    schema = HERE / (op + ".json") if tiled else c.QUANT / (op + ".json")
+    project = generate(out, schema, env)
     if snapshot is None:
         snapshot = tracked_template(out, project / "CMakePresets.json", cann)
 
@@ -124,6 +132,22 @@ def make_package(out, snapshot, cann, env, *, tiled=True):
         if "op_host/" + name in snapshot:
             shutil.copyfile(original("op_host/" + name), project / "op_host" / name)
     shutil.copyfile(original("CMakePresets.json"), project / "CMakePresets.json")
+    return install_project(
+        out,
+        project,
+        cann,
+        env,
+        op,
+        stem,
+        {HEADER: HEADER_SHA},
+        "PRIVATE_GATE_TILE_ND" if tiled else "PRIVATE_GATE_NZ_B16",
+    )
+
+
+def install_project(out, project, cann, env, op, stem, headers, kind):
+    install = out / "opp"
+    dev = project / "op_kernel" / (stem + ".cpp")
+    reg = project / "op_host" / (stem + ".cpp")
     build = out / "build"
     env = dict(env, ASCEND_CACHE_PATH=str(out / "build-cache"))
     Path(env["ASCEND_CACHE_PATH"]).mkdir()
@@ -160,7 +184,9 @@ def make_package(out, snapshot, cann, env, *, tiled=True):
     require(c.read(c.verify(meta))["sha256"] == elf["sha256"], "installed SDK kernel metadata mismatch")
     dyn = list(vendor.rglob(stem + ".cpp"))
     require(
-        len(dyn) == 1 and c.sha(dyn[0]) == c.sha(dev) and c.sha(dyn[0].parent / HEADER) == HEADER_SHA,
+        len(dyn) == 1
+        and c.sha(dyn[0]) == c.sha(dev)
+        and all(c.sha(dyn[0].parent / name) == digest for name, digest in headers.items()),
         "ATC dynamic source/header differs from built candidate",
     )
     files = [
@@ -178,7 +204,7 @@ def make_package(out, snapshot, cann, env, *, tiled=True):
         json_bytes=meta["bytes"],
     )
     opp = dict(
-        kind="PRIVATE_GATE_TILE_ND" if tiled else "PRIVATE_GATE_NZ_B16",
+        kind=kind,
         install=str(install),
         preflight=dict(vendor=str(vendor), files=files, kernels=[row]),
     )
