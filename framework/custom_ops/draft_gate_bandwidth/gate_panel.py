@@ -24,8 +24,16 @@ PANELS = (256, 512, 1280, 2560)
 
 
 def pack_inputs(nz, gn, panel, *, k=K, n=N):
+    require(panel in PANELS, "unsupported Gate panel")
+    return pack_cube_panels(nz, gn, panel, k=k, n=n)
+
+
+def pack_cube_panels(nz, gn, panel, *, k, n):
     require(
-        panel in PANELS
+        k > 0
+        and n > 0
+        and panel > 0
+        and panel % 128 == 0
         and k % panel == 0
         and n % 64 == 0
         and len(nz) == n * k
@@ -54,27 +62,35 @@ def pack_inputs(nz, gn, panel, *, k=K, n=N):
 
 
 def make_air(folder, types, files, panel):
+    require(panel in PANELS, "unsupported Gate panel")
+    return make_projection_air(
+        folder, types, files, panel, shape=(M, K, N), op_type=OP, model_name="gate", graph_name="c16_gate_up"
+    )
+
+
+def make_projection_air(folder, types, files, panel, *, shape, op_type, model_name, graph_name):
+    m, k, n = shape
     folder.mkdir()
     nz = c.verify(files["w_nz.bin"]).read_bytes()
     gn = c.verify(files["s_gn.bin"]).read_bytes()
-    codes, scales, ms = pack_inputs(nz, gn, panel)
-    model = model_proto(types, nz, gn)
+    codes, scales, ms = pack_cube_panels(nz, gn, panel, k=k, n=n)
+    model = model_proto(types, nz, gn, projection_shape=shape, name=graph_name)
     graph = model.graph[0]
     nodes = {node.name: node for node in graph.op}
     op = nodes[OLD_OP]
-    op.type = OP
-    shapes = ((N // 64, K // panel, panel * 64), (N // 64, K // 128, 64))
+    op.type = op_type
+    shapes = ((n // 64, k // panel, panel * 64), (n // 64, k // 128, 64))
     constants = []
-    for i, (name, port, shape, data) in enumerate(
+    for i, (name, port, dims, data) in enumerate(
         zip(("weight", "scale"), ("w_tiles", "s"), shapes, (codes, scales)), 1
     ):
         node = nodes[name]
         desc = node.output_desc[0]
         desc.name = port
         desc.layout = "ND"
-        desc.shape.dim[:] = shape
+        desc.shape.dim[:] = dims
         desc.attr["format_for_int"].i = 2
-        desc.attr["origin_shape"].list.i[:] = shape
+        desc.attr["origin_shape"].list.i[:] = dims
         node.attr["value"].t.desc.CopyFrom(desc)
         op.input_desc[i].CopyFrom(desc)
         node.attr["value"].t.data = data
@@ -82,7 +98,7 @@ def make_air(folder, types, files, panel):
         file = folder / (name + ".bin")
         file.write_bytes(data)
         constants.append(c.identity(file))
-    (folder / "gate.air").write_bytes(model.SerializeToString())
+    (folder / (model_name + ".air")).write_bytes(model.SerializeToString())
     return dict(
         panel_k=panel,
         pack_ms=ms,

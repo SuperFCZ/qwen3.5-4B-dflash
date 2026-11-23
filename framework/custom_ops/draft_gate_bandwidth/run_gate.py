@@ -21,15 +21,28 @@ FLOPS = 2 * M * K * N
 LOGICAL_BYTES = N * K + 2 * (K // 128) * N + 2 * M * K + 2 * M * N
 
 
-def boundary_case(folder, files):
+def boundary_case(folder, files, *, shape=(M, K, N), pairs=None):
     """Two signed terms/row across packing and reduction boundaries, same compiled weights/scale."""
+    m_rows, k_dim, n_dim = shape
     folder.mkdir()
-    codes = np.frombuffer(c.verify(files["w_nz.bin"]).read_bytes(), dtype=np.int8).reshape(K // 32, N, 32)
-    gn = np.frombuffer(c.verify(files["s_gn.bin"]).read_bytes(), dtype="<f2").reshape(K // 128, N)
-    pairs = ((0, 2559), (15, 16), (31, 32), (127, 128), (255, 256), (511, 512), (1279, 1280), (2431, 2432))
-    x = np.zeros((M, K), dtype="<f2")
-    y = np.empty((M, N), dtype="<f2")
-    for m in range(M):
+    codes = np.frombuffer(c.verify(files["w_nz.bin"]).read_bytes(), dtype=np.int8).reshape(
+        k_dim // 32, n_dim, 32
+    )
+    gn = np.frombuffer(c.verify(files["s_gn.bin"]).read_bytes(), dtype="<f2").reshape(k_dim // 128, n_dim)
+    if pairs is None:
+        pairs = (
+            (0, 2559),
+            (15, 16),
+            (31, 32),
+            (127, 128),
+            (255, 256),
+            (511, 512),
+            (1279, 1280),
+            (2431, 2432),
+        )
+    x = np.zeros((m_rows, k_dim), dtype="<f2")
+    y = np.empty((m_rows, n_dim), dtype="<f2")
+    for m in range(m_rows):
         left, right = pairs[m % len(pairs)]
         x[m, left] = np.float16(1 + m / 64)
         x[m, right] = np.float16(-1 + (m - 8) / 128)
@@ -46,7 +59,7 @@ def boundary_case(folder, files):
     return dict(files, **{key: c.identity(folder / key) for key in ("x.bin", "golden.bin")})
 
 
-def pair_statistics(rows, mode, control_mode=TILE_MODE):
+def pair_statistics(rows, mode, control_mode=TILE_MODE, *, flops=FLOPS, logical_bytes=LOGICAL_BYTES):
     require(mode != control_mode, "identical modes in pair")
     order = [r["mode"] for r in rows]
     require(
@@ -78,8 +91,8 @@ def pair_statistics(rows, mode, control_mode=TILE_MODE):
         round_ratios=ratios,
         speedup=ctrl["median_ms"] / ms,
         reduction_pct=100 * (1 - ms / ctrl["median_ms"]),
-        equivalent_matrix_tflops=FLOPS / ms / 1e9,
-        logical_gbps=LOGICAL_BYTES / ms / 1e6,
+        equivalent_matrix_tflops=flops / ms / 1e9,
+        logical_gbps=logical_bytes / ms / 1e6,
         decision=(
             "GO"
             if ms <= 0.97 * ctrl["median_ms"] and min(ratios) > 1 and cand["p95_ms"] <= ctrl["p95_ms"]

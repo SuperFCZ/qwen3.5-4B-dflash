@@ -56,7 +56,7 @@ def data_files(out, real_dir):
     return files, label
 
 
-def runner_binary(out, cann, env, reference):
+def runner_binary(out, cann, env, reference, *, abi=ABI):
     # Compile the original guarded single-Gate runner. Give its generated report the actual reference name.
     dest = out / "runner-src"
     source = HERE.parent / "draft_gate_raw_atc8/runner"
@@ -67,6 +67,24 @@ def runner_binary(out, cann, env, reference):
         original.count("single Gate frozen Native Golden checked in process") == 1,
         "unknown Gate runner report format",
     )
+    if abi != ABI:
+        for side in ("inputs", "outputs"):
+            require(len(abi[side]) == 1, "single-projection runner requires one tensor per side")
+            item = abi[side][0]
+            require(
+                item["dtype"] == "float16"
+                and item["name"] == ABI[side][0]["name"]
+                and len(item["shape"]) == 2
+                and all(type(v) is int and v > 0 for v in item["shape"]),
+                "invalid static FP16 projection ABI",
+            )
+            old = (
+                side + "[0].shape!=std::vector<int64_t>({" + ",".join(map(str, ABI[side][0]["shape"])) + "})"
+            )
+            new = side + "[0].shape!=std::vector<int64_t>({" + ",".join(map(str, item["shape"])) + "})"
+            require(original.count(old) == 1, "unknown compiled runner ABI anchor")
+            original = original.replace(old, new)
+        original = original.replace("expected frozen Gate projection ABI", "unexpected projection ABI")
     cpp.write_text(
         original.replace("single Gate frozen Native Golden checked in process", reference).replace(
             "nonfinite Native Golden", "nonfinite reference"
@@ -92,9 +110,10 @@ def runner_binary(out, cann, env, reference):
     return c.identity(build / "gate_om_runner")
 
 
-def run_child(folder, runner, model, env, records, files, timed, reference, round_number):
+def run_child(folder, runner, model, env, records, files, timed, reference, round_number, *, abi=ABI):
+    require(model["abi"] == abi, "cross-wired projection ABI")
     folder.mkdir(parents=True)
-    for side, names in ABI.items():
+    for side, names in abi.items():
         (folder / (side + ".tsv")).write_text(
             "".join(i["name"] + " " + i["dtype"] + " " + " ".join(map(str, i["shape"])) + "\n" for i in names)
         )
@@ -181,7 +200,7 @@ def run_child(folder, runner, model, env, records, files, timed, reference, roun
     for name in ["actual-0", "actual-1"] + (["benchmark-last", "postcheck"] if timed else []):
         require(
             c.sha(folder / ("y-" + name + ".bin")) == files["golden.bin"]["sha256"],
-            "Gate FP16 output differs from reference: " + name,
+            "projection FP16 output differs from reference: " + name,
         )
     t = execution["timing"]
     require(

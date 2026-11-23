@@ -162,8 +162,8 @@ def prepare_air(out, src, env, original, files):
     return packing
 
 
-def compile_image(out, pkg, env, argv, op):
-    air = out / "gate.air"
+def compile_image(out, pkg, env, argv, op, *, shape=SHAPE, model_name="gate"):
+    air = out / (model_name + ".air")
     platform = out / "platform.jsonl"
     schedule = out / "scheduling.jsonl"
     platform.touch(exist_ok=False)
@@ -179,12 +179,12 @@ def compile_image(out, pkg, env, argv, op):
         DFLASH_PLATFORM_DIAG_ROUTE="ATC",
         DFLASH_SCHEDULER_EVIDENCE_PATH=str(schedule),
     )
-    args = atc_args(argv, air, out / "gate")
+    args = atc_args(argv, air, out / model_name)
     command(args, out / "atc.log", atc_env, out)
-    om = out / "gate.om"
+    om = out / (model_name + ".om")
     dump = out / "om-graph.json"
     command([argv[0], "--mode=1", "--om=" + str(om), "--json=" + str(dump)], out / "inspect.log", env, out)
-    q = flow.read_query(platform, schedule, pkg["opp"], "ATC", "A", SHAPE)
+    q = flow.read_query(platform, schedule, pkg["opp"], "ATC", "A", shape)
     nodes = read_om_json(dump)
     operators = [n for n in nodes if n["type"] not in ("Data", "Const", "FileConstant", "NetOutput")]
     node = one(operators, "candidate OM requires exactly one compute node")
