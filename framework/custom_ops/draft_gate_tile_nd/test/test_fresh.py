@@ -54,3 +54,51 @@ class FreshStart(unittest.TestCase):
             p.write_text("111000-112000 r-xp 00000000 08:11 123 /home/other/libcust_opapi.so\n")
             with self.assertRaisesRegex(ValueError, "unbound OM DSO"):
                 check_maps(p, {})
+
+    def test_nss_match_uses_cache_soname_arch_and_system_boundary(self):
+        from fresh_dso import nss_files
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp).resolve()
+            system = folder / "usr/lib"
+            system.mkdir(parents=True)
+            elf = bytearray(20)
+            elf[:6] = b"\x7fELF\x02\x01"
+            elf[18:20] = (183).to_bytes(2, "little")
+            real = system / "libnss_files-2.31.so"
+            real.write_bytes(elf)
+            alias = system / "libnss_files.so.2"
+            alias.symlink_to(real)
+            entry = f" libnss_files.so.2 (libc6,AArch64) => {alias}\n"
+            self.assertEqual(nss_files(entry, [system]), [real])
+            self.assertEqual(
+                nss_files(entry.replace(" libnss_files.so.2 ", " libnss_other.so.2 "), [system]), []
+            )
+            elf[18:20] = (62).to_bytes(2, "little")
+            real.write_bytes(elf)
+            self.assertEqual(nss_files(entry, [system]), [])
+            other = folder / "foreign/libnss_files-2.31.so"
+            other.parent.mkdir()
+            other.write_bytes(elf)
+            alias.unlink()
+            alias.symlink_to(other)
+            with self.assertRaisesRegex(ValueError, "escapes system"):
+                nss_files(entry, [system])
+
+    def test_reuse_requires_complete_compile_or_prelaunch_failure(self):
+        from reuse_build import eligible
+
+        modes = dict.fromkeys(("raw-transpose-b16", "tile-nd-b16"))
+        old = dict(
+            status="FAILED",
+            phase="smoke raw-transpose-b16",
+            error="ValueError('unbound OM DSO: X')",
+            runs=[],
+            smoke=[],
+            models=modes,
+            packages=modes,
+        )
+        eligible(old)
+        for field, value in (("runs", [1]), ("smoke", [1]), ("error", "numerical mismatch"), ("models", {})):
+            with self.assertRaises(ValueError):
+                eligible(dict(old, **{field: value}))

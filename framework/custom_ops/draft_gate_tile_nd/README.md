@@ -21,6 +21,8 @@ git pull --ff-only origin feature/ascend310p-custom-ops && bash framework/custom
 
 打包使用 `NZ[kt*8+plane, nt*4+row/16, row%16, lane] → tile[nt,kt,row,plane*32+lane]`，每个元素做逆映射验证。新 GE 端口 `w_tiles` 在 Const、输入描述和 Host 中统一使用四维 ND；Host 只接收上述固定形状。检查实际编译 OM 中的权重字节、唯一计算节点、真实 blockDim、Cube Tiling、UB 和 Workspace。双 Raw bank、原始 Event、PIPE_V/V_S/PIPE_ALL 以及十次 K256 累加来自冻结 Gate 源码。新项目在独立目录构建、安装和运行。
 
+若两份 OM 已编好，首次 Smoke 在加载库准入时停止，使用 `--reuse-build gate-tile-nd-XXXXXX` 指向那次新实验。程序复核两份 OM 的 SHA256、私有 OPP、内嵌 ELF、实际 ATC Tiling、权重和参考输出，然后在新目录重新做 Smoke 和本次的全部计时。系统 NSS files 模块由本机 `ldconfig -p` 中精确的 SONAME 绑定，仍须核对实际 maps 的文件身份。
+
 ## 已有真实输入时
 
 - `--layer0` 使用新根 `inputs/c16-layer0-gate/` 中的 `x.bin`、`w_nz.bin`、`s_gn.bin`、`golden.bin`。四份历史 SHA256 全部匹配后，新建两份 OM 并测量。

@@ -216,18 +216,7 @@ def environment(cann, tools, opp=None):
     return env
 
 
-def run(out, cann, real_dir, result, compile_only):
-    tools = {}
-    for name in ("msopgen", "atc", "cmake"):
-        alias = shutil.which(name)
-        require(alias is not None, "missing SDK/build tool on PATH: " + name)
-        tools[name] = c.identity(alias)
-    base = environment(cann, tools)
-    result["phase"] = "inputs"
-    files, label = data_files(out, real_dir)
-    reference = "frozen Native Layer0 Golden" if real_dir else "seeded exact integer CPU reference"
-    result.update(inputs=files, data_source=label, tools=tools)
-    print(f"{label} | FP16 [{M},{K}] x W8 [{N},{K}] | 311296 output values", flush=True)
+def compile_pair(out, cann, base, tools, files, reference, result):
     nz_dir = out / "nz-atc"
     nz_dir.mkdir()
     air = nz_dir / "gate.air"
@@ -254,7 +243,6 @@ def run(out, cann, real_dir, result, compile_only):
     ]
     runner = runner_binary(out, cann, base, reference)
     packages = {}
-    envs = {}
     models = {}
     result.update(runner=runner, models=models, packages=packages)
     for mode in MODES:
@@ -270,13 +258,38 @@ def run(out, cann, real_dir, result, compile_only):
             model = compile_gate(nz_dir, pkg, env, argv, OLD_OP, files["w_nz.bin"])
         else:
             model, _ = compile_candidate(nd_dir, models[NZ_MODE], pkg, env, argv, packing)
-        envs[mode] = env
         models[mode] = model
         packages[mode] = pkg
+
+
+def run(out, cann, real_dir, result, compile_only, reuse=None):
+    tools = {}
+    for name in ("msopgen", "atc", "cmake"):
+        alias = shutil.which(name)
+        require(alias is not None, "missing SDK/build tool on PATH: " + name)
+        tools[name] = c.identity(alias)
+    base = environment(cann, tools)
+    result["phase"] = "inputs"
+    files, label = data_files(out, real_dir)
+    reference = "frozen Native Layer0 Golden" if real_dir else "seeded exact integer CPU reference"
+    result.update(inputs=files, data_source=label, tools=tools)
+    print(f"{label} | FP16 [{M},{K}] x W8 [{N},{K}] | 311296 output values", flush=True)
+    if reuse is None:
+        compile_pair(out, cann, base, tools, files, reference, result)
+    else:
+        from reuse_build import load_build
+
+        result["phase"] = "verify saved Gate build"
+        old, receipt = load_build(reuse, tools, files, label)
+        result.update({key: old[key] for key in ("runner", "packing", "models", "packages")})
+        result["reused_compile_report"] = receipt
+        print("Verified and reused two Gate OMs; no rebuild:", reuse, flush=True)
+    runner, packages, models = result["runner"], result["packages"], result["models"]
     print("ATC: both Gate/Up OMs use 8 blocks and identical serialized Cube tiling.", flush=True)
     if compile_only:
         return "COMPILED_NOT_EXECUTED"
     result["phase"] = "pre-launch DSO binding"
+    envs = {mode: environment(cann, tools, pkg["opp"]["install"]) for mode, pkg in packages.items()}
     manifests = {mode: seal(out / ("dso-" + mode), packages[mode], runner, envs[mode]) for mode in MODES}
     result["smoke"] = []
     result["runs"] = []
@@ -300,6 +313,7 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--layer0-inputs", type=Path)
     parser.add_argument("--compile-only", action="store_true")
+    parser.add_argument("--reuse-build", type=Path)
     args = parser.parse_args()
     out = args.out.resolve()
     out.mkdir(exist_ok=False)
@@ -311,6 +325,7 @@ def main():
             args.layer0_inputs,
             result,
             args.compile_only,
+            args.reuse_build,
         )
     except Exception as error:
         result["error"] = repr(error)

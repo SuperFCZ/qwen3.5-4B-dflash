@@ -10,6 +10,30 @@ from scale_contracts import resume
 SYSTEM = tuple(map(Path, ("/lib", "/lib64", "/usr/lib", "/usr/lib64")))
 
 
+def nss_files(cache, roots=SYSTEM):
+    """Resolve glibc's dlopen-only NSS files SONAME from the system loader cache."""
+    result = set()
+    for line in cache.splitlines():
+        match = re.fullmatch(r"\s*libnss_files\.so\.2\s+\([^)]+\)\s+=>\s+(/\S+)\s*", line)
+        if not match:
+            continue
+        alias = Path(match.group(1))
+        real = alias.resolve(strict=True)
+        require(
+            alias.name == "libnss_files.so.2"
+            and any(root in alias.parents for root in roots)
+            and any(root.resolve() in real.parents for root in roots)
+            and re.fullmatch(r"libnss_files(?:-[0-9]+(?:\.[0-9]+)+)?\.so(?:\.2)?", real.name),
+            "NSS files binding escapes system library roots or changed basename: " + str(alias),
+        )
+        with real.open("rb") as handle:
+            h = handle.read(20)
+        require(len(h) == 20 and h[:4] == b"\x7fELF", "invalid NSS files ELF: " + str(real))
+        if h[4:6] == bytes((2, 1)) and int.from_bytes(h[18:20], "little") == 183:
+            result.add(real)
+    return sorted(result)
+
+
 def seal(folder, pkg, runner, env):
     folder.mkdir()
     cann = Path(env["CANN_ROOT"]).resolve(strict=True)
@@ -56,6 +80,17 @@ def seal(folder, pkg, runner, env):
     for p, owner, kind, pin in named:
         if p.exists():
             bind(p, owner, kind, pin)
+    # NSS backends are loaded by glibc at runtime and are absent from DT_NEEDED / ldd.
+    ldconfig = next((p for p in map(Path, ("/sbin/ldconfig", "/usr/sbin/ldconfig")) if p.is_file()), None)
+    require(ldconfig is not None, "system ldconfig is required for NSS files binding")
+    cache = subprocess.check_output([str(ldconfig), "-p"], env=env, text=True)
+    nss = nss_files(cache)
+    for path in nss:
+        bind(path, next(root.resolve() for root in SYSTEM if root.resolve() in path.parents), "SYSTEM")
+    c.write(
+        folder / "nss-files.json",
+        {"source": "ldconfig -p", "soname": "libnss_files.so.2", "libraries": [records[str(p)] for p in nss]},
+    )
     # Bind the concrete OS dependencies of this runner and the permitted CANN/Driver DSOs.
     # No path discovered for the first time in the device process may authorize itself.
     system = set()
