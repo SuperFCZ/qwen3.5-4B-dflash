@@ -177,8 +177,36 @@ def plan(q, mode, original):
     )
 
 
-def compile_q(out, types, pkg, env, argv, mode, source):
+def copy_panel_air(out, control, files):
+    """Preserve even the original protobuf map-entry order across separate ATC processes."""
+    packing = control["packing"]
+    require(
+        control["mode"] == PANEL
+        and control["op"] == OP
+        and control["abi"] == ABI
+        and packing["panel_k"] == K
+        and packing["original_nz"] == files["w_nz.bin"]
+        and packing["original_gn"] == files["s_gn.bin"],
+        "different Q AIR/weight binding",
+    )
+    require(
+        [tuple(shape) for shape in packing["physical_shapes"]]
+        == [(N // 64, 1, K * 64), (N // 64, K // 128, 64)]
+        and len(packing["constants"]) == 2,
+        "different packed Q shape",
+    )
+    for item in packing["constants"]:
+        c.verify(item)
+    air = c.verify(control["air"])
+    out.mkdir()
+    shutil.copyfile(air, out / "q.air")
+    require(c.sha(out / "q.air") == control["air"]["sha256"], "Q AIR copy changed")
+    return packing
+
+
+def compile_q(out, types, pkg, env, argv, mode, source, *, packed_control=None):
     files = source["weights"]
+    require(not (mode == CONTROL and packed_control is not None), "raw Q requires its NZ AIR")
     if mode == CONTROL:
         out.mkdir()
         parts = [files["w_nz.bin"], files["s_gn.bin"]]
@@ -196,6 +224,8 @@ def compile_q(out, types, pkg, env, argv, mode, source):
         graph.output[:] = [name + ":0"]
         (out / "q.air").write_bytes(proto.SerializeToString())
         packing = dict(constants=parts, physical_shapes=((K // 32, N // 16, 16, 32), (K // 128, N)))
+    elif packed_control is not None:
+        packing = copy_panel_air(out, packed_control, files)
     else:
         packing = gate.make_projection_air(
             out, types, files, K, shape=SHAPE, op_type=OP, model_name="q", graph_name="c16_q"

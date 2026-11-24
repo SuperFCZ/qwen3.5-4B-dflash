@@ -52,3 +52,15 @@ bash framework/custom_ops/draft_q_bandwidth/run.sh --next-n q-bandwidth-ZSCliO
 新候选在当前 N64 的 B1 全部就绪且原始全流水屏障通过之后，先发出本核下一 N64 的 scale、第一片 codes DMA 及对应 MTE2→V 交接。当前 Cube 的 Iterate 提交后、原有全流水屏障之前，下一片的 Cast/Mul 仅访问 raw、scale 和 W0。当前 Matmul 的输入是 A1/B1，SDK 临时区独立。该屏障同时保护下一片 raw 的覆写，GetTensorC 后再搬下一 N64 的第二片 codes。下一轮开始才把已就绪的 W0 写入 B1。最后一个本核 tile 不再预取，失败的 Iterate 会排空已发操作后退出。
 
 两版须有完全相同的 AIR、全部 tiling 序列化、8 个 block、46,592 B SDK scratch、UB/L1/L0 地址分配顺序与容量。CPU 延迟执行测试在逐次 Iterate 与 GetTensorC 的边界统计已发 Cast，检查首尾 tile、失败的前两次 Iterate、B1 读写和全输出位型。设备上的实际重叠程度由直接配对及单独采集判断。
+
+### zygJUl 直接配对结果
+
+`q-bandwidth-zygJUl/result.json`（设备实现提交 `2ac5cea`）已取得 `MEASURED_AND_PROFILED`。两份 OM 的 8-block、完整 Cube tiling 及 scratch 都一致，三组输入、两种 poison 均通过。每边 90 个新鲜正式样本。**选中 `q-k2560-w2-next-n`。**
+
+| 测量 | 单 raw 双 W16 | 跨 N64 双 W16 |
+|---|---:|---:|
+| 单 OM Execute+Sync Median / P95 | 0.154565 / 0.165560 ms | **0.142175 / 0.147570 ms** |
+| Q 设备任务 Median / P95 | 83.55 / 83.70 µs | **72.60 / 73.02 µs** |
+| 设备任务的逻辑吞吐 | 130.01 GB/s | **149.61 GB/s** |
+
+直接配对的正式 Median 再降 8.02%，P95 降 10.87%，判定 GO。独立的设备采集为 `PROVISIONAL_HOST_ENCLOSURE`，设备任务 Median 再降 13.11%。与 53.04 µs 的条件单遍参照相差 19.56 µs。汇报范围为 C16 单 Layer0 Q。此后的复现实验直接复制已测对照 AIR 的原始字节，避免不同进程的 protobuf map 序列化顺序影响严格身份比较。

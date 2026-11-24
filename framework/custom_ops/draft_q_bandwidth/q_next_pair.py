@@ -125,7 +125,7 @@ def build(folder, cann, env, baseline):
 
 def compile_next(out, types, pkg, env, atc, archive):
     base = archive["model"]
-    m = q.compile_q(out / "compiled", types, pkg, env, atc, q.PANEL, archive["source"])
+    m = q.compile_q(out / "compiled", types, pkg, env, atc, q.PANEL, archive["source"], packed_control=base)
     q.require(
         m["air"]["sha256"] == base["air"]["sha256"]
         and m["query"]["schedule"]["tiling_hex"] == base["query"]["schedule"]["tiling_hex"]

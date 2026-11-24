@@ -132,9 +132,19 @@ def run(out, args, state):
                 pkg=pkg,
                 atc=tools["atc"],
                 mode=mode,
+                packed_control_air=models[q.PANEL]["air"] if mode == q.PREFETCH else None,
                 code=code(q.HERE / "q_panel.py"),
             ),
-            lambda d: q.compile_q(d / "compiled", types, pkg, envs[mode], args_atc, mode, src),
+            lambda d: q.compile_q(
+                d / "compiled",
+                types,
+                pkg,
+                envs[mode],
+                args_atc,
+                mode,
+                src,
+                packed_control=models[q.PANEL] if mode == q.PREFETCH else None,
+            ),
         )
         c.verify(models[mode]["om"])
         proof = models[mode]["contract"]

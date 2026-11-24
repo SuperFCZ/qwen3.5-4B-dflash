@@ -137,6 +137,36 @@ class TestQ(unittest.TestCase):
                         self.assertNotEqual(bad.returncode, 0)
                         self.assertIn(msg, bad.stderr)
 
+    def test_pair_reuses_exact_archived_air_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def bind(name, value):
+                p = root / name
+                p.write_bytes(value)
+                return q.c.identity(p)
+
+            # Unknown protobuf fields and the serialization's original ordering must survive a transfer.
+            air = bind("original.air", bytes.fromhex("a00601a20503616263"))
+            nz = bind("nz", b"original codes")
+            gn = bind("gn", b"original scales")
+            data = {"w_nz.bin": nz, "s_gn.bin": gn}
+            packing = dict(
+                constants=[bind("codes", b"packed"), bind("scales", b"scale")],
+                panel_k=q.K,
+                original_nz=nz,
+                original_gn=gn,
+                physical_shapes=[[q.N // 64, 1, q.K * 64], [q.N // 64, q.K // 128, 64]],
+            )
+            base = dict(mode=q.PANEL, op=q.OP, abi=q.ABI, packing=packing, air=air)
+            self.assertEqual(q.copy_panel_air(root / "copy", base, data), packing)
+            self.assertEqual((root / "copy/q.air").read_bytes(), (root / "original.air").read_bytes())
+            with self.assertRaisesRegex(ValueError, "weight binding"):
+                q.copy_panel_air(root / "wrong", base, dict(data, **{"s_gn.bin": nz}))
+            (root / "original.air").write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "identity changed"):
+                q.copy_panel_air(root / "drift", base, data)
+
     def test_cross_tile_requires_unchanged_complete_tiling(self):
         from q_next_pair import compile_next, NEXT
 
