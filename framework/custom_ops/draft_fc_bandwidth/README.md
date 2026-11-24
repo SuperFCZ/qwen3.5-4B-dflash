@@ -1,0 +1,32 @@
+# Ascend 310P3 · 完整 Draft 的入口 FC 投影
+
+在 310P3 的仓库根目录运行：
+
+```bash
+git pull --ff-only origin feature/ascend310p-custom-ops && bash framework/custom_ops/draft_fc_bandwidth/run.sh
+```
+
+默认两档。终端打印每档三行直接配对和独立的设备任务时间。报告位于 `/home/w00949577/z50058744/qwen35-dflash-run/runs/fc-bandwidth-*/result.json`，使用已有的独立 `gate310p` 环境。可加 `--gear 16`、`--gear 64`、`--compile-only`、`--no-profile` 或 `--resume fc-bandwidth-XXXXXX`。编译产品和失败日志按阶段留在运行目录，生产部署使用既有配置。
+
+## 对照与数据流
+
+从 `full-draft-panels-UFqlys` 取真实 W8A16 checkpoint 的 `proj_fc`。C16 和 C64 分别为 [16,12800,2560] 和 [64,12800,2560]。两档共用 NZ 权重（SHA256 `6f316939…`）和 GN scale（`cab921d5…`），各自绑定原始 features、valid_rows、ATC 执行段及父 tiling。对照单 FC 必须命中原完整 OM 的相同执行段和资源。按原 AIR 的行可见性运算还原 FP16 features，逐字核对 mask 和 reshape；UFqlys 的两档均使用全有效行。本次输入来自真实 checkpoint、固定种子的整图回放。
+
+| 版本 | 每个 N64 的 K 归约 | 激活 | 权重 |
+|---|---|---|---|
+| `raw-nz-brcb` | 50 × K256 | 原 FC 路径 | 原 NZ + Group128 |
+| `fc-a1-k2560-next` | 5 × K2560 | C16 每核缓存完整 A1，C64 每个 K 面板将当前 64 行从 GM scatter 到 A1 | K2560 的 N16 分片，两个 80 KiB W16 |
+| `fc-gm-k6400-next` | 2 × K6400 | SDK 从 GM 按原始行跨距 12800 取 A | 每个 N16 分为五个 K1280，两个 40 KiB W16 |
+
+两版都离线无损重排 INT8 和 FP16 scale。每个 N64 的同一份 W16 供整个 M16/M64 计算，C64 避免按四个 M16 重新反量化。每核负责五个循环分配的 N64。按 K 递增调用 Iterate，首段初始化，中间段保留 FP32 L0C，最后一次 GetTensorC 写 FP16。当前 A/B 完全就绪后，在独立的 UB 中预备下一 K 面板（或本核下一个 N64）的首段，移动的有效性以设备测量为准。SDK scratch、原有全流水屏障及 W16/原始码的双向事件各自保留。
+
+真实 ATC 回调核对 8 个 block、全部 N64 恰好覆盖、baseK256、A/B 深度、L1/L0/UB 容量、2 MiB workspace、OM 内执行段及实际常量字节。A1/K2560 的 C64 方案使用完整的每核 1 MiB L1，其通过条件包括实际资源合同。
+
+## 验收和数字口径
+
+1. 在原 FC OM 上采集原始 features 和稠密变换输入的参考；另有跨 Group128、K2560/K6400 首尾边界的独立两项参考。每份 OM、每组输入各用两种输出 poison，检查全部 40,960 / 163,840 个 FP16 输出、输入只读、Guard、同步和实际加载 DSO。
+2. 三轮交错，每轮每边 5 次预热、30 次正式 Execute+Sync。原 FC 各与两份候选配对，候选再直接配对。按 gear 独立选择，门槛为 Median 下降至少 3%、三轮同向且 P95 无回退。正式原始样本保存在 `benchmark-c16/report.json` 和 `benchmark-c64/report.json`。
+3. msprof 在独立进程中测原版及两版候选的设备 FC 任务，使用 38 次 Execute/Sync 中下标 7–36 的 30 个窗口。输出实际归属、设备 Median/P95、逻辑 GB/s、等效矩阵 TFLOP/s、可核对的流水计数。正式配对先于 profiling 落盘。
+4. INT8 权重有 32,768,000 B，scale 有 512,000 B。按权重、scale、X、Y 各经过一次外存及 204.8 GB/s 的条件峰值，C16 为 33,771,520 B、**164.90 µs**，C64 为 35,246,080 B、**172.10 µs**。FC 权重与 scale 大于 SDK 所列的 16 MiB L2。逻辑吞吐分子为上述单遍字节；profile 中的 MAC/MTE 等活动时间可重叠，真实 DDR 事务需要单独计数。
+
+CPU 合同测试可用 `python -B -m unittest discover -s framework/custom_ops/draft_fc_bandwidth/test -v`，设置 `DFLASH_GE_DESCRIPTOR` 可同时验证原 GE 输入选择。延迟 DMA 模型运行两套实际 kernel 源码的 C16/C64 分支，覆盖每个输出的数值、写入次数和核归属，每个 K 面板的 FP32 接续、首尾失败清理及遗漏 W16 消费者 fence 的故障注入。
