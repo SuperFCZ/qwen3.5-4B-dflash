@@ -1,6 +1,8 @@
 # Ascend 310P3 完整 Draft 的 26 个 W8A16 投影
 
-服务器仓库根目录运行一条命令即可取得两档正式整图延迟和优化图的分模块数据。
+310P3 已完成 C16 和 C64 两档的整图配对与模块采集。全部 26 个 W8A16 投影集成后，正式 Median/P95 分别为 **13.601305/13.660620 ms** 和 **13.964895/14.013520 ms**。[整图、各模块和五层的实测结果](MEASURED.md)
+
+在服务器仓库根目录可用一条命令复现。
 
 ```bash
 git pull --ff-only origin feature/ascend310p-custom-ops && bash framework/custom_ops/draft_all_w8/run.sh
