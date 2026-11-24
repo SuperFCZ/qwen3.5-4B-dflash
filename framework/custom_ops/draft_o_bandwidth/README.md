@@ -28,3 +28,15 @@ git pull --ff-only origin feature/ascend310p-custom-ops && bash framework/custom
 - 每份 OM 每组使用两种 poison，检查 40,960 个 FP16 输出、Readonly、Guard、Repeat、Sync、加载 DSO 和 pre-execute socket。正式基准使用封存输入对应的 Attention 激活。三轮正反序，每边每轮 5 次预热、30 次 Execute+Sync，各 90 个正式样本。GO 条件为 Median 下降至少 3%、三轮同向且 P95 无回退。
 - msprof 另起进程，分别给出原 O 和候选的单设备任务 Median/P95、任务归属和逻辑 GB/s。使用 38 个窗口中的 30 个正式窗口，每窗须有唯一 O 任务。单遍逻辑流量为 10,862,592 B，矩阵乘为 335,544,320 FLOP。在 204.8 GB/s 条件下，单遍参照为 **53.04 µs**。同一 O 的权重和 scale 合计 10.16 MiB，小于 SDK 所列的 16 MiB L2，重复执行可能命中缓存；本次用设备任务时间衡量距离，实际 DDR 事务数另需硬件计数。
 - CPU 回归使用 `python -B -m unittest discover -s framework/custom_ops/draft_o_bandwidth/test -v`。设置 `DFLASH_GE_DESCRIPTOR` 后，有 CPU Torch 和 transformers 的环境还会逐位对照截取前后的五层前向。CPU 延迟 DMA 模型执行真实候选源文件，包括两处缺失事件的故障注入。
+
+## 310P3 实测
+
+设备实现提交 `16405b7`。服务器回传 `/home/w00949577/z50058744/qwen35-dflash-run/runs/o-bandwidth-F1HnBO/result.json`，状态 `MEASURED_AND_PROFILED`。两份 OM 均通过三组输入、两种 poison 的全部 40,960 个 FP16 输出及 Guard 检查。正式比较每边 90 个新样本。
+
+| 测量 | 原 O | `o-k4096-v2048-next-n` |
+|---|---:|---:|
+| Execute+Sync Median / P95 (ms) | 0.478685 / 0.485290 | **0.143595 / 0.151420** |
+| O 设备任务 Median / P95 (µs) | 413.37 / 413.67 | **73.70 / 74.19** |
+| 设备任务折算的逻辑吞吐 (GB/s) | 26.28 | **147.39** |
+
+正式 Median 降低 70.00%，加速 3.3336×，三轮同向，判定 **GO**。独立 msprof 采集的归属为 `PROVISIONAL_HOST_ENCLOSURE`。设备任务中位数距单遍条件参照 53.04 µs 约 20.66 µs，逻辑吞吐约为条件峰值的 72%。已选 Q 在其独立实验中的设备任务中位数为 72.60 µs。该证据支持保留 Q 的跨 N64 调度和 O 的 K2048 反量化分片，验收范围为 C16 单个 Layer0 O。
