@@ -66,7 +66,7 @@ def fixture():
     return net, ops
 
 
-def execute(graph, inputs):
+def execute(graph, inputs, *, panel_types=()):
     vals = {}
     dtype = {v: k for k, v in PROTO.items()}
     for n in graph.graph.op:
@@ -117,17 +117,20 @@ def execute(graph, inputs):
             v = x @ args[1]
         elif t == "MatMul":
             v = x @ (args[1].T if a["transpose_x2"].b else args[1])
-        elif t in (fe.RAW, fe.GATE, fe.DOWN):
+        elif t in (fe.RAW, fe.GATE, fe.DOWN, *panel_types):
             codes, s = args[1:]
+            if t in panel_types and x.ndim == 3:
+                x = x.permute(1, 0, 2).reshape(x.shape[1], -1)
             k = x.shape[-1]
             if t == fe.RAW:
                 n_out = s.shape[1]
                 q = codes.permute(1, 2, 0, 3).reshape(n_out, k)
             else:
-                n_out = codes.shape[0] * 64
-                panel_k = codes.shape[-1] // 64
+                width = s.shape[-1]
+                n_out = codes.shape[0] * width
+                panel_k = codes.shape[-1] // width
                 q = (
-                    codes.reshape(n_out // 64, k // panel_k, 4, panel_k, 16)
+                    codes.reshape(n_out // width, k // panel_k, width // 16, panel_k, 16)
                     .permute(0, 2, 4, 1, 3)
                     .reshape(n_out, k)
                 )

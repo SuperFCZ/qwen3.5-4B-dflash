@@ -175,6 +175,50 @@ def packed_weights(nz, gn, n, k, width, pk):
     return data, bits
 
 
+def nd_desc(d, name, dt, shape):
+    d.name = name
+    d.dtype = dt
+    d.layout = "ND"
+    d.shape.dim[:] = shape
+    d.attr["format_for_int"].i = 2
+    d.attr["origin_format_for_int"].i = 2
+    d.attr["origin_shape"].list.val_type = 2
+    d.attr["origin_shape"].list.i[:] = shape
+    d.attr["origin_format_is_set"].b = True
+    d.attr["origin_shape_initialized"].b = True
+
+
+def append_activation_pack(g, source, m, k, prefix):
+    """Append the measured FP16 ND -> [K/16,M,16] input conversion fed by source port zero."""
+    table = {source.name: source}
+    for name, data in ((f"{prefix}_dims", (m, k // 16, 16)), (f"{prefix}_order", (1, 0, 2))):
+        p = g.op.add(name=name, type="Const", id=len(g.op))
+        d = p.output_desc.add()
+        nd_desc(d, "y", 7, [3])
+        p.attr["value"].t.desc.CopyFrom(d)
+        p.attr["value"].t.data = np.array(data, "<i4").tobytes()
+        table[name] = p
+    for name, t, edges, ports, shape in (
+        (f"{prefix}_rows", "Reshape", (source.name, f"{prefix}_dims"), ("x", "shape"), (m, k // 16, 16)),
+        (
+            f"{prefix}_pack",
+            "Transpose",
+            (f"{prefix}_rows", f"{prefix}_order"),
+            ("x", "perm"),
+            (k // 16, m, 16),
+        ),
+    ):
+        p = g.op.add(name=name, type=t, id=len(g.op))
+        for edge, port in zip(edges, ports):
+            p.input.append(edge + ":0")
+            dd = p.input_desc.add()
+            dd.CopyFrom(table[edge].output_desc[0])
+            dd.name = port
+        nd_desc(p.output_desc.add(), "y", 2, shape)
+        table[name] = p
+    return table[f"{prefix}_pack"]
+
+
 def add_pack_graph(
     model, width, pk, weights, scales, *, m=M, k=K, n=N, op_type=OP, prefix="fc_a", pack_activation=True
 ):
@@ -182,46 +226,11 @@ def add_pack_graph(
     original = list(g.op)
     del g.op[:]
 
-    def desc(d, name, dt, shape):
-        d.name = name
-        d.dtype = dt
-        d.layout = "ND"
-        d.shape.dim[:] = shape
-        d.attr["format_for_int"].i = 2
-        d.attr["origin_format_for_int"].i = 2
-        d.attr["origin_shape"].list.val_type = 2
-        d.attr["origin_shape"].list.i[:] = shape
-        d.attr["origin_format_is_set"].b = True
-        d.attr["origin_shape_initialized"].b = True
-
     table = {}
     for node in original:
         if node.type == f.OLD_OP and pack_activation:
-            for name, data in ((f"{prefix}_dims", (m, k // 16, 16)), (f"{prefix}_order", (1, 0, 2))):
-                p = g.op.add(name=name, type="Const", id=len(g.op))
-                d = p.output_desc.add()
-                desc(d, "y", 7, [3])
-                p.attr["value"].t.desc.CopyFrom(d)
-                p.attr["value"].t.data = np.array(data, "<i4").tobytes()
-                table[name] = p
-            for name, t, edges, ports, shape in (
-                (f"{prefix}_rows", "Reshape", ("x", f"{prefix}_dims"), ("x", "shape"), (m, k // 16, 16)),
-                (
-                    f"{prefix}_pack",
-                    "Transpose",
-                    (f"{prefix}_rows", f"{prefix}_order"),
-                    ("x", "perm"),
-                    (k // 16, m, 16),
-                ),
-            ):
-                p = g.op.add(name=name, type=t, id=len(g.op))
-                for edge, port in zip(edges, ports):
-                    p.input.append(edge + ":0")
-                    dd = p.input_desc.add()
-                    dd.CopyFrom(table[edge].output_desc[0])
-                    dd.name = port
-                desc(p.output_desc.add(), "y", 2, shape)
-                table[name] = p
+            pack = append_activation_pack(g, table["x"], m, k, prefix)
+            table[pack.name] = pack
         p = g.op.add()
         p.CopyFrom(node)
         p.id = len(g.op) - 1
@@ -230,7 +239,7 @@ def add_pack_graph(
             is_w = p.name == "weight"
             d = p.output_desc[0]
             d.Clear()
-            desc(
+            nd_desc(
                 d,
                 "w_tiles" if is_w else "s",
                 3 if is_w else 2,

@@ -36,6 +36,11 @@ def scopes(graph, nodes):
             result[n["name"]] = next(iter(known))
         elif known:
             result[n["name"]] = "Fused/" + ",".join(sorted(known | ({"Unmapped"} if unknown else set())))
+    for role, bound in graph.get("verified_projections", {}).items():
+        name = bound["node"]
+        if not any(n["name"] == name and n["type"] == bound["op"] for n in nodes):
+            raise ValueError("missing bound projection in profiled OM: " + role)
+        result[name] = role
     return source, result
 
 
@@ -160,6 +165,16 @@ def analyze(folder, capture, model, graph):
         folder / "task-ownership.csv", rows, ["event_index", "call", "state", "op_name", "op_type", "basis"]
     )
     return dict(
+        files={
+            name: c.identity(folder / name)
+            for name in (
+                "module-latency.csv",
+                "layers.csv",
+                "module-calls.csv",
+                "timed-tasks.csv",
+                "task-ownership.csv",
+            )
+        },
         scope=scope,
         strict=timeline["device_assignment"],
         reasons=timeline["assignment_evidence"]["remaining_failure_reasons"],

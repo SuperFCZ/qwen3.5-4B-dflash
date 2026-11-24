@@ -36,10 +36,7 @@ def projection_sites(nodes, roles):
     return resolved
 
 
-def compiled(out, gear, mode, graph, pkg, cann, env, control):
-    air = c.verify(graph[mode])
-    shapes = {tuple(r[d] for d in ("m", "k", "n")) for r in graph["projections"].values()}
-    require(len(shapes) == 6, "expected six distinct projection shapes")
+def compile_air(out, air, cann, env):
     cache = out / "cache"
     cache.mkdir()
     plat = out / "platform.jsonl"
@@ -81,6 +78,14 @@ def compiled(out, gear, mode, graph, pkg, cann, env, control):
     dump = out / "om-graph.json"
     command([atc, "--mode=1", "--om=" + str(om), "--json=" + str(dump)], out / "inspect.log", env, out)
     pp, ss = grouped(plat), grouped(schedule)
+    return om, dump, pp, ss
+
+
+def compiled(out, gear, mode, graph, pkg, cann, env, control):
+    air = c.verify(graph[mode])
+    shapes = {tuple(r[d] for d in ("m", "k", "n")) for r in graph["projections"].values()}
+    require(len(shapes) == 6, "expected six distinct projection shapes")
+    om, dump, pp, ss = compile_air(out, air, cann, env)
     require(set(pp) == set(ss) == shapes, "ATC callback shape inventory changed")
     plans = {}
     for shape in sorted(shapes):

@@ -43,7 +43,7 @@ def bind_msprof(out, cann, env):
     return binding
 
 
-def profile_modules(stages, cann, env, pkg, runner, dsos, cases):
+def profile_modules(stages, cann, env, pkg, runner, dsos, cases, *, concise=False):
     cli = bind_msprof(stages.folder, cann, env)
     capture_sources = {
         str(p): c.sha(p)
@@ -55,6 +55,7 @@ def profile_modules(stages, cann, env, pkg, runner, dsos, cases):
         )
     }
     for gear, case in cases.items():
+        case_env, case_pkg, case_dsos = case.get("runtime", (env, pkg, dsos))
         key = dict(
             benchmark=stages.refs[f"benchmark-c{gear}"],
             cli=cli["file"],
@@ -66,15 +67,15 @@ def profile_modules(stages, cann, env, pkg, runner, dsos, cases):
 
         def profile(d):
             require(c.identity(cli["alias"]) == cli["file"], "bound msprof changed before collection")
-            c.verify_opp(pkg["opp"])
+            c.verify_opp(case_pkg["opp"])
             row = run_om(
                 d,
                 case["graph"]["abi"],
                 case["io"],
                 case["model"],
                 runner,
-                env,
-                dsos,
+                case_env,
+                case_dsos,
                 "benchmark",
                 case["reference"],
                 profiler=cli["alias"],
@@ -97,7 +98,12 @@ def profile_modules(stages, cann, env, pkg, runner, dsos, cases):
         name = f"modules-c{gear}"
         summary = stages.run(
             name,
-            dict(capture=stages.refs[f"profile-c{gear}"], code=c.sha(HERE / "module_profile.py")),
+            dict(
+                capture=stages.refs[f"profile-c{gear}"],
+                code=c.sha(HERE / "module_profile.py"),
+                owners=case["graph"]["modules"],
+                verified=case["graph"].get("verified_projections", {}),
+            ),
             lambda d: analyze(d, capture, case["model"], case["graph"]),
         )
         print(
@@ -105,9 +111,10 @@ def profile_modules(stages, cann, env, pkg, runner, dsos, cases):
             f"{summary['unmapped']}/{summary['timed_tasks']} unmapped",
             flush=True,
         )
-        print("  module / layer                       Median       P95    calls")
-        for row in [*summary["modules"], *summary["layers"]]:
-            p50, p95 = row["p50_task_sum_ms"], row["p95_task_sum_ms"]
-            timing = f"{p50:9.4f} {p95:9.4f}" if p50 is not None else "        -         -"
-            print(f"  {row['module']:32s} {timing}   {row['calls_observed']}/30")
+        if not concise:
+            print("  module / layer                       Median       P95    calls")
+            for row in [*summary["modules"], *summary["layers"]]:
+                p50, p95 = row["p50_task_sum_ms"], row["p95_task_sum_ms"]
+                timing = f"{p50:9.4f} {p95:9.4f}" if p50 is not None else "        -         -"
+                print(f"  {row['module']:32s} {timing}   {row['calls_observed']}/30")
         print("Module CSV", Path(stages.refs[name]["path"]).parent / "module-latency.csv", flush=True)
