@@ -5,7 +5,7 @@ from pathlib import Path
 import shutil
 
 import kv_panel as kv
-from kv_archive import winner
+from kv_archive import winner, wide_winner
 from experiment import Stages
 from run_kv import measurements, select
 from run_q import run_path
@@ -24,6 +24,15 @@ def run(out, args, state, old):
         return stages.run(name, key, action)
 
     gears = (16, 64) if args.gear == "both" else (int(args.gear),)
+    control = kv.DIRECT
+    candidates = tuple(kv.WIDE)
+    admit = winner
+    if args.fused_a:
+        kv.require(args.gear != "16", "the in-kernel packing comparison uses C64")
+        gears = (64,)
+        control = "kv-n128-k1280"
+        candidates = (kv.VECTOR_A,)
+        admit = wide_winner
     cann = Path(os.environ["CANN_ROOT"]).resolve(strict=True)
     tools = {n: kv.c.identity(shutil.which(n)) for n in ("atc", "cmake", "msopgen")}
     env = environment(cann, tools)
@@ -42,7 +51,7 @@ def run(out, args, state, old):
     state.update(
         parent_run=str(old),
         parent_result=record,
-        control=kv.DIRECT,
+        control=control,
         gears={},
         bandwidth_assumption_GB_s=204.8,
     )
@@ -56,7 +65,7 @@ def run(out, args, state, old):
                 gear=gear,
                 code=kv.c.sha(kv.HERE / "kv_archive.py"),
             ),
-            lambda d: winner(d, old, gear, select),
+            lambda d: admit(d, old, gear, select),
         )
     pkgs = {}
     runtime_id = {
@@ -68,11 +77,12 @@ def run(out, args, state, old):
             kv.OPS / "draft_gate_tile_nd/fresh_run.py",
         )
     }
-    for mode in kv.WIDE:
+    for mode in candidates:
         key = dict(
             mode=mode,
             tools=tools,
             header=kv.sha(kv.header(mode)),
+            activation=kv.c.sha(kv.HERE / "kv_prologue.h") if args.fused_a else None,
             device=kv.sha(kv.device_source(mode).encode()),
             code=[
                 kv.c.sha(kv.HERE / "kv_panel.py"),
@@ -87,9 +97,9 @@ def run(out, args, state, old):
         a = archives[gear]
         exe = a["runner"]
         kv.c.verify(exe)
-        pkgs[kv.DIRECT] = a["package"]
+        pkgs[control] = a["package"]
         pkgs[kv.RAW] = a["source"]["pkg"]
-        models = {kv.DIRECT: a["control"], kv.RAW: a["raw"]}
+        models = {control: a["control"], kv.RAW: a["raw"]}
         cases = a["cases"]
         kv.c.verify_tree(cases)
         envs = {}
@@ -102,10 +112,11 @@ def run(out, args, state, old):
             if cli is None:
                 from panel_profiler import bind_msprof
 
-                cli = bind_msprof(out, cann, envs[kv.DIRECT])
+                cli = bind_msprof(out, cann, envs[control])
             return cli
 
-        for mode, width in kv.WIDE.items():
+        for mode in candidates:
+            width = kv.PANEL_WIDTHS[mode]
             models[mode] = stage(
                 f"atc-c{gear}-" + mode,
                 dict(
@@ -115,14 +126,32 @@ def run(out, args, state, old):
                     width=width,
                 ),
                 lambda d: kv.compile_model(
-                    d / "compiled", types, pkgs[mode], envs[mode], argv, gear, mode, a["source"]
+                    d / "compiled",
+                    types,
+                    pkgs[mode],
+                    envs[mode],
+                    argv,
+                    gear,
+                    mode,
+                    a["source"],
+                    shared_air=a["control"]["air"] if args.fused_a else None,
                 ),
+            )
+        if args.fused_a:
+            before, after = models[control], models[kv.VECTOR_A]
+            kv.require(
+                before["air"]["sha256"] == after["air"]["sha256"]
+                and before["query"]["schedule"]["tiling_hex"] == after["query"]["schedule"]["tiling_hex"]
+                and before["contract"] == after["contract"]
+                and [(p["bytes"], p["sha256"]) for p in before["constants"]]
+                == [(p["bytes"], p["sha256"]) for p in after["constants"]],
+                "activation-only experiment changed AIR, Cube plan, scratch or constants",
             )
         texts = []
         for mode, model in models.items():
             kv.c.verify(model["om"])
             pf = model["contract"]
-            width = kv.WIDE.get(mode, 64)
+            width = kv.PANEL_WIDTHS.get(mode, 64)
             txt = pf["cube"]
             kv.require(
                 model["selected"]["executable_sections"] not in texts and not model["prep_nodes"],
@@ -153,8 +182,8 @@ def run(out, args, state, old):
                 cases,
                 (exe, models, envs, dsos),
                 None if args.no_profile else get_profiler,
-                control=kv.DIRECT,
-                candidates=tuple(kv.WIDE),
+                control=control,
+                candidates=candidates,
             )
     return (
         "COMPILED_NOT_EXECUTED"

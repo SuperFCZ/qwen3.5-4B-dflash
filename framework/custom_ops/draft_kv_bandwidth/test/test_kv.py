@@ -8,6 +8,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -23,6 +24,58 @@ sys.path.insert(0, str(kv.OPS / "draft_q_bandwidth/test"))
 from test_q import q_cpu_headers
 
 
+def kv_cpu_headers(d):
+    inc = q_cpu_headers(d)
+    h = inc / "kernel_operator.h"
+    hs = once(
+        h.read_text(),
+        "sizeof(T)==2 && params.blockCount==80;",
+        "sizeof(T)==2 && params.blockCount==80 && params.blockLen==8;",
+    )
+    hs = once(
+        hs,
+        "sizeof(T)==2 && params.blockCount==160",
+        "sizeof(T)==2 && (params.blockCount==80 || params.blockCount==160)",
+    )
+    h.write_text(once(hs, "params.dstStride==15);", "(params.dstStride==31 || params.dstStride==79));"))
+    mat = inc / "lib/matmul_intf.h"
+    v = once(
+        mat.read_text(),
+        "tiling_.singleM==16 && tiling_.orgKa==2560",
+        "(tiling_.singleM==32 || tiling_.singleM==80) && (tiling_.orgKa==1280 || tiling_.orgKa==2560)",
+    )
+    v = once(
+        v,
+        "tiling_.singleN == 64);",
+        "(tiling_.singleN==64 || tiling_.singleN==128 || tiling_.singleN==256));",
+    )
+    mat.write_text(once(v, "globalIndex % tiling_.orgN / 64", "globalIndex % tiling_.orgN / tiling_.singleN"))
+    h = inc / "kernel_operator.h"
+    source = once(
+        h.read_text(),
+        "    T GetValue(uint32_t offset) const {",
+        "    template<class U> Tensor<U> ReinterpretCast() const { static_assert(sizeof(T)==sizeof(U)); return {reinterpret_cast<U*>(data),count}; }\n    T GetValue(uint32_t offset) const {",
+    )
+    source = once(source, "Range l1B{0,0};", "Range l1B{0,0},l1A{0,0},vecOut{0,0};")
+    source = once(
+        source,
+        "if constexpr(P==TPosition::B1) cpuSync.l1B",
+        "if constexpr(P==TPosition::A1) cpuSync.l1A=Bytes(buffer.template Get<uint8_t>(bytes).data,bytes);\n        if constexpr(P==TPosition::VECOUT) cpuSync.vecOut=Bytes(buffer.template Get<uint8_t>(bytes).data,bytes);\n        if constexpr(P==TPosition::B1) cpuSync.l1B",
+    )
+    source = once(
+        source,
+        "if (cpuSync.l1B.bytes && Overlaps(target,cpuSync.l1B)) {",
+        "if ((cpuSync.l1B.bytes && Overlaps(target,cpuSync.l1B)) || (Overlaps(target,cpuSync.l1A) && Overlaps(Bytes(src.data, count*sizeof(T)),cpuSync.vecOut))) {",
+    )
+    source = once(
+        source,
+        "    else if(sizeof(T)==2 && (params.blockCount==80 || params.blockCount==160))",
+        "    else if(sizeof(T)==2 && params.blockLen==16) assert((params.blockCount==32 || params.blockCount==80) && params.srcStride==144 && params.dstStride==0);\n    else if(sizeof(T)==2 && (params.blockCount==80 || params.blockCount==160))",
+    )
+    h.write_text(source)
+    return inc
+
+
 class TestKV(unittest.TestCase):
     def test_kernel_all_outputs_and_staging(self):
         k, n = kv.K, kv.N
@@ -33,37 +86,9 @@ class TestKV(unittest.TestCase):
         w, s, _ = kv.gate.pack_cube_panels(nz, gn.tobytes(), k, k=k, n=n)
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
-            inc = q_cpu_headers(d)
-            h = inc / "kernel_operator.h"
-            hs = once(
-                h.read_text(),
-                "sizeof(T)==2 && params.blockCount==80;",
-                "sizeof(T)==2 && params.blockCount==80 && params.blockLen==8;",
-            )
-            hs = once(
-                hs,
-                "sizeof(T)==2 && params.blockCount==160",
-                "sizeof(T)==2 && (params.blockCount==80 || params.blockCount==160)",
-            )
-            h.write_text(
-                once(hs, "params.dstStride==15);", "(params.dstStride==31 || params.dstStride==79));")
-            )
-            mat = inc / "lib/matmul_intf.h"
-            v = once(
-                mat.read_text(),
-                "tiling_.singleM==16 && tiling_.orgKa==2560",
-                "(tiling_.singleM==32 || tiling_.singleM==80) && (tiling_.orgKa==1280 || tiling_.orgKa==2560)",
-            )
-            v = once(
-                v,
-                "tiling_.singleN == 64);",
-                "(tiling_.singleN==64 || tiling_.singleN==128 || tiling_.singleN==256));",
-            )
-            mat.write_text(
-                once(v, "globalIndex % tiling_.orgN / 64", "globalIndex % tiling_.orgN / tiling_.singleN")
-            )
+            inc = kv_cpu_headers(d)
             executables = []
-            for mode in (*kv.CANDIDATES, *kv.WIDE):
+            for mode in (*kv.CANDIDATES, *kv.PANEL_WIDTHS):
                 (d / (kv.STEM + ".cpp")).write_text(kv.device_source(mode))
                 (d / "kv_spec.h").write_bytes(kv.header(mode))
                 # Quoted includes must resolve against the same generated header as device packaging.
@@ -81,6 +106,9 @@ class TestKV(unittest.TestCase):
                     "-o",
                     str(exe),
                 ]
+                if mode == kv.VECTOR_A:
+                    (d / "kv_prologue.h").write_bytes((HERE / "kv_prologue.h").read_bytes())
+                    cc[1:1] = ["-DKV_TEST_VOR", "-include", str(HERE / "test/cpu_vor.h")]
                 subprocess.run(cc, check=True)
                 executables.append(exe)
             for m in (32, 80):
@@ -97,15 +125,51 @@ class TestKV(unittest.TestCase):
                 x.reshape(m, k // 16, 16).transpose(1, 0, 2).tofile(d / "packed")
                 acc.astype("<f2").tofile(d / "gold")
                 for exe in executables:
-                    if exe.name in kv.WIDE:
-                        width = kv.WIDE[exe.name]
+                    if exe.name in kv.PANEL_WIDTHS:
+                        width = kv.PANEL_WIDTHS[exe.name]
                         codes, scales = kv.packed_panel.packed_weights(nz, gn.tobytes(), n, k, width, 1280)
                     else:
                         codes, scales = w, s
                     (d / "w").write_bytes(codes)
                     (d / "s").write_bytes(scales)
-                    for fail in (-1, 0, 1 if exe.name in kv.WIDE else 3):
+                    for fail in (-1, 0, 1 if exe.name in kv.PANEL_WIDTHS else 3):
                         subprocess.run([exe, d, str(m), str(fail)], check=True)
+
+    def test_bitwise_prologue_and_required_handoffs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            inc = kv_cpu_headers(d)
+            (d / "kv_spec.h").write_bytes(kv.header(kv.VECTOR_A))
+            code = (HERE / "kv_prologue.h").read_text()
+            exe = d / "bits"
+            cc = [
+                "c++",
+                "-std=c++17",
+                "-O2",
+                "-I" + str(d),
+                "-I" + str(inc),
+                "-I" + str(kv.gate.HERE),
+                str(HERE / "test/portable_bits.cpp"),
+                "-o",
+                str(exe),
+            ]
+            for missing in (
+                None,
+                "Pair<HardEvent::MTE2_V>(ready);",
+                "if (k0) Pair<HardEvent::MTE3_V>(outputFree);",
+                "Pair<HardEvent::V_MTE2>(inputFree);",
+                "Pair<HardEvent::V_MTE3>(outputReady);",
+            ):
+                (d / "kv_prologue.h").write_text(
+                    once(code, missing, "/* missing test dependency */") if missing else code
+                )
+                subprocess.run(cc, check=True)
+                run = subprocess.run([exe], cwd=d, capture_output=True, text=True)
+                if missing:
+                    self.assertNotEqual(run.returncode, 0, missing)
+                    self.assertRegex(run.stderr, "before|overwritten|reused")
+                else:
+                    self.assertEqual(run.returncode, 0, run.stderr)
 
     def test_resource_contract_and_floor(self):
         for gear, values, one_pass in (
@@ -248,6 +312,39 @@ class TestKV(unittest.TestCase):
         self.assertEqual(select(kv.CANDIDATES, measure), kv.PACKED)
         self.assertEqual(select(kv.CANDIDATES, lambda a, b: {"decision": "NO_GO"}), kv.RAW)
         self.assertEqual(select(tuple(kv.WIDE), lambda a, b: {"decision": "NO_GO"}, kv.DIRECT), kv.DIRECT)
+
+    @unittest.skipUnless(os.environ.get("DFLASH_GE_DESCRIPTOR"), "CANN GE descriptor")
+    def test_vor_reuses_exact_n128_air(self):
+        types = protobuf_classes(Path(os.environ["DFLASH_GE_DESCRIPTOR"]).read_bytes())
+        m, k, n = 80, 2560, 128
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+
+            def bind(name, b):
+                f = d / name
+                f.write_bytes(b)
+                return kv.c.identity(f)
+
+            files = {"w_nz.bin": bind("w", bytes(k * n)), "s_gn.bin": bind("s", bytes(2 * (k // 128) * n))}
+            src = dict(weights=files, kv_node="proj_layer0_kv")
+            with patch.object(kv, "shape", return_value=(m, k, n)), patch.object(
+                kv, "compile_graph", side_effect=RuntimeError("stop at ATC")
+            ):
+                with self.assertRaisesRegex(RuntimeError, "stop at ATC"):
+                    kv.compile_model(d / "control", types, None, None, None, 64, "kv-n128-k1280", src)
+                air = kv.c.identity(d / "control/kv.air")
+                with self.assertRaisesRegex(RuntimeError, "stop at ATC"):
+                    kv.compile_model(
+                        d / "same", types, None, None, None, 64, kv.VECTOR_A, src, shared_air=air
+                    )
+                self.assertEqual(air["sha256"], kv.c.sha(d / "same/kv.air"))
+                graph = types[0].FromString(kv.c.verify(air).read_bytes())
+                graph.graph[0].op[0].name = "wrong_x"
+                wrong = bind("changed.air", graph.SerializeToString())
+                with self.assertRaisesRegex(ValueError, "measured N128 AIR differs"):
+                    kv.compile_model(
+                        d / "bad", types, None, None, None, 64, kv.VECTOR_A, src, shared_air=wrong
+                    )
 
     def test_quarantine_distinguishes_device_failures(self):
         with tempfile.TemporaryDirectory() as tmp:

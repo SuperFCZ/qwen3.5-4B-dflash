@@ -22,6 +22,8 @@ RAW = "raw-nz-brcb"
 DIRECT, STAGED, PACKED = "kv-k2560-next-n", "kv-k2560-ub-stage", "kv-k2560-packed-a"
 CANDIDATES = (DIRECT, STAGED, PACKED)
 WIDE = {"kv-n128-k1280": 128, "kv-n256-k1280": 256}
+VECTOR_A = "kv-n128-a-vor"
+PANEL_WIDTHS = dict(WIDE, **{VECTOR_A: 128})
 WIDE_SDK = {
     (32, 128): (128, 10, 10, 10, 10),
     (80, 128): (128, 10, 1, 10, 2),
@@ -51,21 +53,30 @@ def logical_bytes(gear):
 
 
 def header(mode):
-    if mode in WIDE:
+    if mode in PANEL_WIDTHS:
         return (
-            f"#define DFLASH_KV_INPUT 0\n#define DFLASH_KV_WIDTH {WIDE[mode]}\n".encode()
+            f"#define DFLASH_KV_INPUT 0\n#define DFLASH_KV_WIDTH {PANEL_WIDTHS[mode]}\n".encode()
             + (HERE / "kv_wide_spec.h").read_bytes()
         )
     return f"#define DFLASH_KV_INPUT {INPUT_PATH[mode]}\n".encode() + (HERE / "kv_spec.h").read_bytes()
 
 
 def device_source(mode=DIRECT):
-    if mode in WIDE:
+    if mode in PANEL_WIDTHS:
         source = (OPS / "draft_fc_bandwidth/op_kernel/d_flash_fc_panel.cpp").read_text()
         source = once(source, '"fc_spec.h"', '"kv_spec.h"')
         source = once(source, "namespace fc_panel", "namespace kv_panel")
         source = once(source, "void d_flash_fc_panel(", "void d_flash_kv_panel(")
         source = once(source, "td.globalM == 16) Project<16>", "td.globalM == 32) Project<32>")
+        if mode == VECTOR_A:
+            source = once(source, '#include "kv_spec.h"', '#include "kv_spec.h"\n#include "kv_prologue.h"')
+            source = once(
+                source,
+                "LoadActivation<M, K>(abuf.Get<half>(M * K), xgm, 0);",
+                """if (!PackActivation<M>(pipe, abuf.Get<half>(M * K), xgm, weights)) {
+            PipeBarrier<PIPE_ALL>(); mm.End(); return;
+        }""",
+            )
         return once(source, "td.globalM == 64) Project<64>", "td.globalM == 80) Project<80>")
 
     # Use the actual measured Q stripe pipeline, including the barriers and failed-Iterate cleanup.
@@ -106,8 +117,10 @@ def build(out, cann, env, mode):
     shutil.copyfile(HERE / "d_flash_kv_panel_host.cpp", host / (STEM + ".cpp"))
     (dev / (STEM + ".cpp")).write_text(device_source(mode))
     helpers = [gate.HERE / "panel_vector.h"]
-    if mode not in WIDE:
+    if mode not in PANEL_WIDTHS:
         helpers.append(HERE / "kv_activation.h")
+    if mode == VECTOR_A:
+        helpers.append(HERE / "kv_prologue.h")
     for h in helpers:
         shutil.copyfile(h, dev / h.name)
     (host / (STEM + "_tiling.h")).write_text(
@@ -116,7 +129,7 @@ def build(out, cann, env, mode):
     shutil.copyfile(c.QUANT / "op_host" / (OLD_STEM + "_contract.h"), host / (OLD_STEM + "_contract.h"))
     for name in ("scheduler_evidence.h", "platform_diag.h"):
         shutil.copyfile(OPS / "draft_a_core_scheduler_flow/op_host" / name, host / name)
-    if mode in WIDE:
+    if mode in PANEL_WIDTHS:
         schedule = host / "scheduler_evidence.h"
         schedule.write_text(
             once(
@@ -135,11 +148,11 @@ def build(out, cann, env, mode):
 
 def plan(query, original, gear, mode):
     m, k, n = shape(gear)
-    width = WIDE.get(mode, WIDTH)
-    pk = 1280 if mode in WIDE else k
+    width = PANEL_WIDTHS.get(mode, WIDTH)
+    pk = 1280 if mode in PANEL_WIDTHS else k
     p, s = query["platform"], query["schedule"]
     require(
-        mode in (RAW, *CANDIDATES, *WIDE)
+        mode in (RAW, *CANDIDATES, *PANEL_WIDTHS)
         and p["blockDim"] == p["availableCores"] == 8
         and p["coreLimit"] == 0
         and p["workspace"] == 2097152
@@ -160,7 +173,7 @@ def plan(query, original, gear, mode):
         )
     else:
         bk, sa, sb, da, db = (256, 10, 10, 10, 10) if m == 32 else (160, 4, 2, 8, 4)
-        if mode in WIDE:
+        if mode in PANEL_WIDTHS:
             bk, sa, sb, da, db = WIDE_SDK[m, width]
         fixed = dict(
             singleCoreM=m,
@@ -214,14 +227,17 @@ def plan(query, original, gear, mode):
         block_dim=p["blockDim"],
         cube=cube,
         resources=s["resources"],
-        **{("iterates_per_tile" if mode in WIDE else "iterates_per_n64"): k // s["resources"]["tile_k"]},
+        **{
+            ("iterates_per_tile" if mode in PANEL_WIDTHS else "iterates_per_n64"): k
+            // s["resources"]["tile_k"]
+        },
     )
 
 
-def compile_model(out, types, pkg, env, argv, gear, mode, src):
+def compile_model(out, types, pkg, env, argv, gear, mode, src, *, shared_air=None):
     m, k, n = shape(gear)
-    width = WIDE.get(mode, WIDTH)
-    pk = 1280 if mode in WIDE else k
+    width = PANEL_WIDTHS.get(mode, WIDTH)
+    pk = 1280 if mode in PANEL_WIDTHS else k
     files = src["weights"]
     nz, gn = (c.verify(files[name]).read_bytes() for name in ("w_nz.bin", "s_gn.bin"))
     out.mkdir()
@@ -246,7 +262,15 @@ def compile_model(out, types, pkg, env, argv, gear, mode, src):
                 node.input[idx] = name + ":0"
     g.output[:] = [name + ":0"]
     air = out / "kv.air"
-    air.write_bytes(model.SerializeToString(deterministic=True))
+    if shared_air is not None:
+        original = c.verify(shared_air).read_bytes()
+        require(
+            mode == VECTOR_A and types[0].FromString(original) == model,
+            "measured N128 AIR differs in public graph, projection, weights or scales",
+        )
+        air.write_bytes(original)
+    else:
+        air.write_bytes(model.SerializeToString(deterministic=True))
     args, om, dump, query, nodes = compile_graph(
         out, pkg, env, argv, shape=(m, k, n), model_name="kv", tile_n=width
     )

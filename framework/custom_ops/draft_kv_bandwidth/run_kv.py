@@ -218,10 +218,10 @@ def measurements(
 
 def run(out, args, state):
     runs = Path(os.environ["DFLASH_RUN_ROOT"]) / "runs"
-    if args.wide:
+    if args.wide or args.fused_a:
         from kv_wide_run import run as run_wide
 
-        return run_wide(out, args, state, run_path(runs, args.wide, "kv-bandwidth-"))
+        return run_wide(out, args, state, run_path(runs, args.wide or args.fused_a, "kv-bandwidth-"))
     old = run_path(runs, args.full_run, "full-draft-panels-")
     prior = run_path(runs, args.resume, "kv-bandwidth-") if args.resume else None
     stages = Stages(out, prior)
@@ -447,6 +447,11 @@ def main():
     graph.add_argument("--full-run", default="full-draft-panels-UFqlys")
     graph.add_argument(
         "--wide", metavar="MEASURED_KV_RUN", help="directly retest the measured N64 winner against N128/N256"
+    )
+    graph.add_argument(
+        "--fused-a",
+        metavar="N128_KV_RUN",
+        help="C64 only, charge one integrated activation pack against the N128 winner",
     )
     p.add_argument("--resume")
     flags = p.add_mutually_exclusive_group()

@@ -67,3 +67,19 @@ bash framework/custom_ops/draft_kv_bandwidth/run.sh --wide kv-bandwidth-a6xFlL
 两种宽度各与同一冻结 N64 用新样本配对。若均通过，则两种宽度之间另做新鲜直接配对。中位数门槛、P95 和正确性合同与首轮一致。
 
 宽列胜出后再与封存的原版 Raw OM 补一组新鲜直接配对，用于报告最终相对原版的加速比。
+
+## nafZjO 宽列设备结果
+
+C16 保留 N64。N128 和 N256 对其直接配对分别为 1.0284× 和 1.0019×，均未过线。C64 选中 N128/K1280；在同轮试验中，N64 → N128 的正式 Median/P95 为 0.166750/0.174280 → 0.147870/0.154940 ms，1.1277×。N256 对 N128 的直接比值为 0.9799×。C64 原版与 N128 的新鲜直接配对为 **1.032330/1.050300 → 0.148085/0.167990 ms，6.9712×**。两档所有宽列候选均通过完整位型检查。报告在 `/home/w00949577/z50058744/qwen35-dflash-run/runs/kv-bandwidth-nafZjO/result.json`。
+
+在这次独立采集中，C16 N64 为 47.27 µs（1.723× 单遍参照），C64 N128 为 85.53 µs（2.890×）。C64 的 N64 / N128 / N256 分别有 27.78 / 34.34 / 43.64 µs 的 MTE2 活动和 41.87 / 23.81 / 19.87 µs 的 MTE3 活动。各流水可重叠，计数没有给出 DDR 读字节。
+
+## C64 N128 的单变量激活搬运试验
+
+```bash
+bash framework/custom_ops/draft_kv_bandwidth/run.sh --fused-a kv-bandwidth-nafZjO
+```
+
+复核两轮封存的判定，使用上一轮 N128 的原始 AIR 字节，仅改变私有 Kernel 的激活装入方式。原始公开 ND 输入、两段 K 归约、权重与 Scale、UB、MatMul scratch 和序列化 Cube tiling 保持一致。C64 激活沿 K 切成 10 个 256 元素宽的块。每块从 80 行各读连续 512 B，放入第一份尚空闲的 W16。两条 128-lane 的 uint16 `Or(src,src)` 按块和 repeat 步长重排至第二份 W16，一条连续搬运将 40,960 B 写入 A1。本机 dav_m200 SDK 的通用 Vector Copy 报 unsupported；`Or<uint16_t>` 使用 `vor` 实现，可保留有符号零和 NaN payload。四个方向的同步分别保护输入就绪、输入复用、输出就绪和输出复用，最终全流水屏障后才开始常规权重反量化。
+
+CPU 合同覆盖全部 65,536 种 uint16 位型、每个 A1 坐标、四种删除 handoff 的失败注入，以及实际 Kernel 的全尺寸累加。服务器单独复核已归档的 Runner 和真实设备样本。两组正式配对均将候选的片上准备计入 Execute+Sync；通过 N128 对照后才追加与原版的配对。

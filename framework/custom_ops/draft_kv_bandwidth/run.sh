@@ -2,7 +2,7 @@
 set -eo pipefail
 here=$(cd "$(dirname "$0")" && pwd -P)
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then
-    echo 'Usage: bash run.sh [--gear 16|64|both] [--full-run full-draft-panels-UFqlys | --wide MEASURED_KV_RUN] [--compile-only | --no-profile] [--resume kv-bandwidth-XXXXXX]'
+    echo 'Usage: bash run.sh [--gear 16|64|both] [--full-run full-draft-panels-UFqlys | --wide MEASURED_KV_RUN | --fused-a N128_KV_RUN] [--compile-only | --no-profile] [--resume kv-bandwidth-XXXXXX]'
     exit 0
 fi
 source "$here/../ascend310p_workspace/run_root.sh"

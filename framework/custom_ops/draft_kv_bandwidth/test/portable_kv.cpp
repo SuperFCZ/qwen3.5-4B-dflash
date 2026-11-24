@@ -40,7 +40,12 @@ int main(int argc,char** argv) {
     if(fail>=0) return cpuMetrics.ends==1?0:5;
 #ifdef DFLASH_KV_WIDTH
     const auto calls=Tiles*Panels;
-    return cpuMetrics.ends==8 && cpuMetrics.iterations==calls && cpuMetrics.fullBarriers==3*calls &&
+#ifdef KV_TEST_VOR
+    const uint32_t initialFences=8;
+#else
+    const uint32_t initialFences=0;
+#endif
+    return cpuMetrics.ends==8 && cpuMetrics.iterations==calls && cpuMetrics.fullBarriers==3*calls+initialFences &&
            cpuMetrics.partials==Tiles*(Panels-1) && cpuMetrics.outputs==Tiles &&
            cpuMetrics.castCalls==Pieces*calls && cpuMetrics.mulCalls==Pieces*Groups*calls ? 0:7;
 #else
