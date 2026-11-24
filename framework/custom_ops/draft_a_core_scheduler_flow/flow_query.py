@@ -16,9 +16,10 @@ def cpu_plan(tiles,generic,aic,aiv):
     return dict(baseline=min(tiles,generic),slice_num=slices,expected_calc=calc)
 
 
-def read_query(platform_path,scheduling_path,opp,route,variant,shape):
-    m,k,n=shape;tiles=n//64
-    if n%64 or tiles<=0:raise ValueError('partial N tile')
+def read_query(platform_path,scheduling_path,opp,route,variant,shape,*,tile_n=64):
+    if type(tile_n) is not int or tile_n <= 0 or tile_n % 16:raise ValueError("invalid scheduled column width")
+    m,k,n=shape;tiles=n//tile_n
+    if n%tile_n or tiles<=0:raise ValueError('partial N tile')
     ps=[json.loads(x,object_pairs_hook=unique_object) for x in Path(platform_path).read_text().splitlines()]
     ss=[json.loads(x,object_pairs_hook=unique_object) for x in Path(scheduling_path).read_text().splitlines()]
     if not ps or len(ps)!=len(ss) or (route=='ACLNN' and len(ps)!=1):raise ValueError('callback evidence count differs')
@@ -31,7 +32,7 @@ def read_query(platform_path,scheduling_path,opp,route,variant,shape):
     if any(type(p[x]) is not int or p[x]<0 for x in (*CORE,'workspace')):raise ValueError('platform numeric type')
     if p['coreLimit']!=0 or p['availableCores']!=p['GetCoreNum'] or p['platform_raw_core']!=p['platform_raw_core_locked'] or p['GetCoreNum']!=p['platform_raw_core']:raise ValueError('generic Core view changed')
     model=cpu_plan(tiles,p['GetCoreNum'],p['GetCoreNumAic'],p['GetCoreNumAiv'])
-    want=dict(schema=1,variant=variant,route=route,m=m,k=k,n=n,tile_n=64,n_tiles=tiles,core_limit=0,
+    want=dict(schema=1,variant=variant,route=route,m=m,k=k,n=n,tile_n=tile_n,n_tiles=tiles,core_limit=0,
         generic=p['GetCoreNum'],aic=p['GetCoreNumAic'],aiv=p['GetCoreNumAiv'],slice_num=model['slice_num'],
         calc_tsch_block_dim=model['expected_calc'],baseline_block_dim=model['baseline'],
         selected_block_dim=model['baseline'] if variant=='A' else model['expected_calc'],

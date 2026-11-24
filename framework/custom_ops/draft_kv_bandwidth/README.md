@@ -44,3 +44,26 @@ CANN 9.0 主机 tiling 查询的结果如下。板上 ATC 会再次读取回调�
 每种 OM 对测量输入、稠密压力输入、跨 Group128 和 Cube 边界的稀疏输入分别施加两种 poison，逐位比较两个输出半区，检查 Guard、Readonly、Repeat、Sync 和 DSO。每组配对三轮正反序，每轮每边 5 次预热和 30 次正式计时。候选必须在与原版的新鲜配对中达到 Median 降幅至少 3%、三轮同向且 P95 无回退。多个候选通过时，逐对与当前胜者直接复测；每个比较使用自己的对照数据。msprof 单独运行，覆盖 30 个正式调用。
 
 CPU 合同测试可用 `python -B -m unittest discover -s framework/custom_ops/draft_kv_bandwidth/test -v`。提供 `DFLASH_GE_DESCRIPTOR`、Torch 和 Transformers 后还会将两档截取的参考图与五层原图的中间值及缓存逐位比较。`test/sdk_plan.cpp` 在无 NPU 环境调用本机 SDK 的主机 tiling API。
+
+## a6xFlL 首轮设备结果
+
+真实 Layer0 上，两档均选择 `kv-k2560-next-n`。所有参与者在各自 gear 的 3 组输入和 2 种 poison 中通过全量 bitwise、Guard、Readonly、Repeat 和 Sync。原始报告位于服务器 `/home/w00949577/z50058744/qwen35-dflash-run/runs/kv-bandwidth-a6xFlL/result.json`。
+
+| Gear | 原版 → N64 正式 Median / P95（ms，各 90 个样本） | 加速比 | N64 设备 Median / P95 | 与单遍参照之比 |
+|---|---|---:|---:|---:|
+| C16 | 0.287850 / 0.301360 → 0.113165 / 0.116960 | 2.5436× | 47.37 / 47.92 µs | 1.726× |
+| C64 | 1.024485 / 1.551510 → 0.168640 / 0.245160 | 6.0750× | 102.94 / 106.07 µs | 3.478× |
+
+上表为各自原版与胜者的直接配对。C64 的该批 P95 波动较大，其余候选对 N64 的两个直接配对中，N64 的 P95 分别为 0.183590 和 0.172090 ms。C16 片上 UB 暂存相对 N64 的同期中位数改善未达 3%。C64 图内预打包的 KV 本体为 84.80 µs，计入打包的区间为 109.95 µs。首轮胜者的设备归属均为 `PROVISIONAL_HOST_ENCLOSURE`。
+
+## 宽输出列的独立对照
+
+```bash
+bash framework/custom_ops/draft_kv_bandwidth/run.sh --wide kv-bandwidth-a6xFlL
+```
+
+此入口重新核对既有胜者的实际 ELF、原始配对、三份输入和参考，直接复用 N64 OM 与 Runner。只编译新增的 N128/K1280 和 N256/K1280。在相同公开 ND 输入、无在线重排的条件下，每核输出 tile 写回次数从 4 降到 2 或 1。两份 K1280 均按原序累加，第一个初始化 FP32 L0C、第二个 partial，最后一次写 FP16。N128 每核缓存完整 A1 给两个列组复用，N256 的每核只负责一个列组并按 K 面板搬运 A。每个完整 N64/128/256 输出列组内的权重反量化供全部 M 行使用。实测决定减少写回与改变 Cube 分块的净影响；计数器本身无法定位关键路径。
+
+两种宽度各与同一冻结 N64 用新样本配对。若均通过，则两种宽度之间另做新鲜直接配对。中位数门槛、P95 和正确性合同与首轮一致。
+
+宽列胜出后再与封存的原版 Raw OM 补一组新鲜直接配对，用于报告最终相对原版的加速比。

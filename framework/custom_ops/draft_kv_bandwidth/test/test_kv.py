@@ -35,26 +35,36 @@ class TestKV(unittest.TestCase):
             d = Path(tmp)
             inc = q_cpu_headers(d)
             h = inc / "kernel_operator.h"
+            hs = once(
+                h.read_text(),
+                "sizeof(T)==2 && params.blockCount==80;",
+                "sizeof(T)==2 && params.blockCount==80 && params.blockLen==8;",
+            )
+            hs = once(
+                hs,
+                "sizeof(T)==2 && params.blockCount==160",
+                "sizeof(T)==2 && (params.blockCount==80 || params.blockCount==160)",
+            )
             h.write_text(
-                once(
-                    h.read_text(),
-                    "params.dstStride==15);",
-                    "(params.dstStride==31 || params.dstStride==79));",
-                )
+                once(hs, "params.dstStride==15);", "(params.dstStride==31 || params.dstStride==79));")
             )
             mat = inc / "lib/matmul_intf.h"
-            mat.write_text(
-                once(
-                    mat.read_text(),
-                    "tiling_.singleM==16 && tiling_.orgKa==2560",
-                    "(tiling_.singleM==32 || tiling_.singleM==80) && tiling_.orgKa==2560",
-                )
+            v = once(
+                mat.read_text(),
+                "tiling_.singleM==16 && tiling_.orgKa==2560",
+                "(tiling_.singleM==32 || tiling_.singleM==80) && (tiling_.orgKa==1280 || tiling_.orgKa==2560)",
             )
-            (d / "w").write_bytes(w)
-            (d / "s").write_bytes(s)
-            (d / (kv.STEM + ".cpp")).write_text(kv.device_source())
+            v = once(
+                v,
+                "tiling_.singleN == 64);",
+                "(tiling_.singleN==64 || tiling_.singleN==128 || tiling_.singleN==256));",
+            )
+            mat.write_text(
+                once(v, "globalIndex % tiling_.orgN / 64", "globalIndex % tiling_.orgN / tiling_.singleN")
+            )
             executables = []
-            for mode in kv.CANDIDATES:
+            for mode in (*kv.CANDIDATES, *kv.WIDE):
+                (d / (kv.STEM + ".cpp")).write_text(kv.device_source(mode))
                 (d / "kv_spec.h").write_bytes(kv.header(mode))
                 # Quoted includes must resolve against the same generated header as device packaging.
                 (d / "kv_activation.h").write_bytes((HERE / "kv_activation.h").read_bytes())
@@ -87,7 +97,14 @@ class TestKV(unittest.TestCase):
                 x.reshape(m, k // 16, 16).transpose(1, 0, 2).tofile(d / "packed")
                 acc.astype("<f2").tofile(d / "gold")
                 for exe in executables:
-                    for fail in (-1, 0, 3):
+                    if exe.name in kv.WIDE:
+                        width = kv.WIDE[exe.name]
+                        codes, scales = kv.packed_panel.packed_weights(nz, gn.tobytes(), n, k, width, 1280)
+                    else:
+                        codes, scales = w, s
+                    (d / "w").write_bytes(codes)
+                    (d / "s").write_bytes(scales)
+                    for fail in (-1, 0, 1 if exe.name in kv.WIDE else 3):
                         subprocess.run([exe, d, str(m), str(fail)], check=True)
 
     def test_resource_contract_and_floor(self):
@@ -155,6 +172,66 @@ class TestKV(unittest.TestCase):
                 kv.plan(wrong, q, gear, kv.DIRECT)
             self.assertAlmostEqual(kv.logical_bytes(gear) / 204800, one_pass)
 
+    def test_wide_sdk_resources_and_coverage(self):
+        # Results of the host SDK SetShape / SetOrgShape / GetTiling for both public geometries.
+        cases = ((16, 128, 901120), (64, 128, 1007616), (16, 256, 950272), (64, 256, 1028096))
+        for gear, width, l1 in cases:
+            m, k, n = kv.shape(gear)
+            mode = next(v for v in kv.WIDE if kv.WIDE[v] == width)
+            bk, sa, sb, da, db = kv.WIDE_SDK[m, width]
+            sc = 262144 - (5 * 20480 + 20 * width + 8192)
+            raw = bytearray(224)
+            struct.pack_into("<4IQ", raw, 0, m, k, n, 1280, sc)
+            offsets = {f["name"]: 24 + f["offset"] for f in kv.schema()}
+            for name, value in dict(
+                singleCoreM=m,
+                singleCoreN=width,
+                singleCoreK=1280,
+                baseM=m,
+                baseN=width,
+                baseK=bk,
+                stepKa=sa,
+                stepKb=sb,
+                depthA1=da,
+                depthB1=db,
+                dbL0A=2,
+                dbL0B=2,
+                dbL0C=1,
+                transLength=2 * m * width,
+            ).items():
+                struct.pack_into("<I", raw, offsets[name], value)
+            p = dict(
+                blockDim=8,
+                availableCores=8,
+                coreLimit=0,
+                workspace=2097152,
+                capacity=dict(UB=262144, L1=1048576, L0A=65536, L0B=65536, L0C=262144),
+            )
+            resources = dict(
+                user_ub=262144 - sc,
+                scratch=sc,
+                workspace=p["workspace"],
+                tile_k=1280,
+                raw_banks=1,
+                codes_bytes=20480,
+                weight_bytes=81920,
+                scale_bytes=20 * width,
+                l1_used=l1,
+                l0a_used=4 * m * bk,
+                l0b_used=4 * width * bk,
+                l0c_used=4 * m * width,
+            )
+            sched = dict(
+                tiling_hex=raw.hex(),
+                resources=resources,
+                baseline_assignments=[list(range(i, n // width, 8)) for i in range(8)],
+            )
+            query = dict(platform=p, schedule=sched, tiling_sha256=kv.sha(raw))
+            self.assertEqual(kv.plan(query, query, gear, mode)["iterates_per_tile"], 2)
+            sched["baseline_assignments"][-1].clear()
+            with self.assertRaisesRegex(ValueError, "ownership"):
+                kv.plan(query, query, gear, mode)
+
     def test_deployment_selection_requires_direct_pairs(self):
         outcomes = {
             (kv.RAW, kv.DIRECT): "GO",
@@ -170,6 +247,7 @@ class TestKV(unittest.TestCase):
         outcomes[kv.DIRECT, kv.PACKED] = "GO"
         self.assertEqual(select(kv.CANDIDATES, measure), kv.PACKED)
         self.assertEqual(select(kv.CANDIDATES, lambda a, b: {"decision": "NO_GO"}), kv.RAW)
+        self.assertEqual(select(tuple(kv.WIDE), lambda a, b: {"decision": "NO_GO"}, kv.DIRECT), kv.DIRECT)
 
     def test_quarantine_distinguishes_device_failures(self):
         with tempfile.TemporaryDirectory() as tmp:

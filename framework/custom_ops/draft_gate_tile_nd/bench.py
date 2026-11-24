@@ -162,7 +162,7 @@ def prepare_air(out, src, env, original, files):
     return packing
 
 
-def compile_graph(out, pkg, env, argv, *, shape, model_name):
+def compile_graph(out, pkg, env, argv, *, shape, model_name, tile_n=64):
     air = out / (model_name + ".air")
     platform = out / "platform.jsonl"
     schedule = out / "scheduling.jsonl"
@@ -184,7 +184,7 @@ def compile_graph(out, pkg, env, argv, *, shape, model_name):
     om = out / (model_name + ".om")
     dump = out / "om-graph.json"
     command([argv[0], "--mode=1", "--om=" + str(om), "--json=" + str(dump)], out / "inspect.log", env, out)
-    q = flow.read_query(platform, schedule, pkg["opp"], "ATC", "A", shape)
+    q = flow.read_query(platform, schedule, pkg["opp"], "ATC", "A", shape, tile_n=tile_n)
     return args, om, dump, q, read_om_json(dump)
 
 

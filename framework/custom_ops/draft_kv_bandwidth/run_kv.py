@@ -37,11 +37,11 @@ def benchmark(out, call, files, gear, left, right):
     )
 
 
-def select(modes, pair):
+def select(modes, pair, control=kv.RAW):
     """All challengers need a fresh win over raw; promotions also need a direct incumbent win."""
-    accepted = [mode for mode in modes if pair(kv.RAW, mode)["decision"] == "GO"]
+    accepted = [mode for mode in modes if pair(control, mode)["decision"] == "GO"]
     if not accepted:
-        return kv.RAW
+        return control
     best = accepted[0]
     for mode in accepted[1:]:
         if pair(best, mode)["decision"] == "GO":
@@ -67,8 +67,161 @@ def numeric_rejection(folder):
     return None
 
 
+def measurements(
+    gear,
+    gear_result,
+    stages,
+    stage,
+    runtime_id,
+    cases,
+    runtime,
+    profiler,
+    control=kv.RAW,
+    candidates=kv.CANDIDATES,
+):
+    out = stages.folder
+    exe, ms, envs, dsos = runtime
+    m, k, n = kv.shape(gear)
+    logical, abi = kv.logical_bytes(gear), kv.abi(gear)
+
+    def call(path, mode, files, timed, i):
+        return o_runtime.execute(
+            path, exe, ms[mode], envs[mode], dsos[mode], files, timed, i, abi=abi, reference=kv.SCOPE
+        )
+
+    def smoke(d, mode):
+        rows = {key: call(d / key, mode, files, False, -1) for key, files in cases.items()}
+        print(
+            f"C{gear} bitwise + guards PASS {mode}: {m*n:,} outputs, three inputs, two poisons",
+            flush=True,
+        )
+        return rows
+
+    def smoke_stage(mode):
+        return stage(
+            f"smoke-c{gear}-" + mode,
+            dict(cases=cases, model=ms[mode]["om"], runner=exe, protocol=runtime_id),
+            lambda d: smoke(d, mode),
+        )
+
+    admitted = []
+    gear_result["rejected"] = {}
+    for mode in (control, *candidates):
+        smoke_name = f"smoke-c{gear}-" + mode
+        try:
+            smoke_stage(mode)
+        except ValueError:
+            rejected = numeric_rejection(out / smoke_name) if mode != control else None
+            if not rejected:
+                raise
+            gear_result["rejected"][mode] = rejected
+            print(f"C{gear} {mode} REJECTED: {rejected['reason']} ({rejected['case']})", flush=True)
+            continue
+        if mode != control:
+            admitted.append(mode)
+    kv.require(admitted, f"C{gear}: all KV candidates failed correctness")
+    gear_result["pairs"] = {}
+
+    def measure(left, right):
+        pair_id = left + "__" + right
+        name = f"benchmark-c{gear}-" + pair_id
+        result = stage(
+            name,
+            dict(
+                runner=exe,
+                smoke=[stages.refs[f"smoke-c{gear}-" + v] for v in (left, right)],
+                inputs=cases["measured"],
+                protocol=runtime_id,
+                stats=kv.c.sha(kv.OPS / "draft_gate_bandwidth/run_gate.py"),
+            ),
+            lambda d: benchmark(d, call, cases["measured"], gear, left, right),
+        )
+        stat = result["statistics"]
+        a, b = (stat["variants"][v] for v in (left, right))
+        gear_result["pairs"][pair_id] = dict(
+            report=stages.refs[name],
+            speedup=stat["speedup"],
+            decision=stat["decision"],
+            reduction_pct=stat["reduction_pct"],
+            round_ratios=stat["round_ratios"],
+            median_ms=[a["median_ms"], b["median_ms"]],
+            p95_ms=[a["p95_ms"], b["p95_ms"]],
+        )
+        print(
+            f"C{gear} KV Execute+Sync incl. input prep {left} → {right}: "
+            f"{a['median_ms']:.6f}/{a['p95_ms']:.6f} → {b['median_ms']:.6f}/{b['p95_ms']:.6f} ms "
+            f"(Median/P95, 90/90) {stat['speedup']:.4f}x {stat['decision']}",
+            flush=True,
+        )
+        return stat
+
+    best = select(admitted, measure, control)
+    if control != kv.RAW and best != control:
+        smoke_stage(kv.RAW)
+        if measure(kv.RAW, best)["decision"] != "GO":
+            best = control
+    gear_result["selected"] = best
+    print(f"Selected C{gear}: {best}", flush=True)
+    if profiler is None:
+        return
+    cli = profiler()
+
+    def profile(d, mode):
+        row = o_runtime.profile(
+            d,
+            exe,
+            ms[mode],
+            envs[mode],
+            dsos[mode],
+            cases["measured"],
+            cli,
+            abi=abi,
+            role=kv.ROLE,
+            reference=kv.SCOPE,
+            logical_bytes=logical,
+        )
+        row["pipeline"] = pipeline_times(d, row, module=kv.ROLE)
+        row["span"] = charged_span(d, ms[mode], row, module=kv.ROLE, logical_bytes=logical)
+        if row["span"]["status"] != "UNRESOLVED":
+            row["span"]["equivalent_gemm_tflops"] = 2 * m * k * n / row["span"]["median_us"] / 1e6
+        return row
+
+    gear_result["profiles"] = {}
+    for mode in (control, *admitted):
+        name = f"profile-c{gear}-" + mode
+        row = stage(
+            name,
+            dict(
+                smoke=stages.refs[f"smoke-c{gear}-" + mode],
+                cli=cli["file"],
+                runner=exe,
+                inputs=cases["measured"],
+                protocol=runtime_id,
+            ),
+            lambda d: profile(d, mode),
+        )
+        gear_result["profiles"][mode] = stages.refs[name]
+        span = row["span"]
+        print(f"C{gear} {mode} device KV {row['kernel']['p50_task_sum_ms']*1000:.2f} us", end="; ")
+        if span["status"] == "UNRESOLVED":
+            print("prep→KV interval UNRESOLVED", span["reason"], flush=True)
+        else:
+            print(
+                f"prep→KV Median/P95 {span['median_us']:.2f}/{span['p95_us']:.2f} us, "
+                f"{span['logical_gbps']:.2f} logical GB/s, {span['equivalent_gemm_tflops']:.3f} GEMM TF/s, "
+                f"{span['floor_ratio']:.3f}x one-pass, "
+                f"{span['status']}",
+                flush=True,
+            )
+        print("  matched counters", row["pipeline"]["joined"], row["pipeline"]["medians"], flush=True)
+
+
 def run(out, args, state):
     runs = Path(os.environ["DFLASH_RUN_ROOT"]) / "runs"
+    if args.wide:
+        from kv_wide_run import run as run_wide
+
+        return run_wide(out, args, state, run_path(runs, args.wide, "kv-bandwidth-"))
     old = run_path(runs, args.full_run, "full-draft-panels-")
     prior = run_path(runs, args.resume, "kv-bandwidth-") if args.resume else None
     stages = Stages(out, prior)
@@ -153,6 +306,15 @@ def run(out, args, state):
         kv.c.verify_opp(pkg[mode]["opp"])
         envs[mode] = environment(cann, tools, pkg[mode]["opp"]["install"])
     cli = None
+
+    def get_profiler():
+        nonlocal cli
+        if cli is None:
+            from panel_profiler import bind_msprof
+
+            cli = bind_msprof(out, cann, envs[kv.RAW])
+        return cli
+
     state.update(gears={}, archive=old_index, bandwidth_assumption_GB_s=204.8)
     for gear in gears:
         s = src[gear]
@@ -261,132 +423,16 @@ def run(out, args, state):
         )
         kv.c.verify_tree(cases)
 
-        def call(path, mode, files, timed, i):
-            return o_runtime.execute(
-                path, exe, ms[mode], envs[mode], dsos[mode], files, timed, i, abi=abi, reference=kv.SCOPE
-            )
-
-        def smoke(d, mode):
-            rows = {key: call(d / key, mode, files, False, -1) for key, files in cases.items()}
-            print(
-                f"C{gear} bitwise + guards PASS {mode}: {m*n:,} outputs, three inputs, two poisons",
-                flush=True,
-            )
-            return rows
-
-        admitted = []
-        gear_result["rejected"] = {}
-        for mode in modes:
-            smoke_name = f"smoke-c{gear}-" + mode
-            try:
-                stage(
-                    smoke_name,
-                    dict(cases=cases, model=ms[mode]["om"], runner=exe, protocol=runtime_id),
-                    lambda d: smoke(d, mode),
-                )
-            except ValueError:
-                rejected = numeric_rejection(out / smoke_name) if mode != kv.RAW else None
-                if not rejected:
-                    raise
-                gear_result["rejected"][mode] = rejected
-                print(f"C{gear} {mode} REJECTED: {rejected['reason']} ({rejected['case']})", flush=True)
-                continue
-            if mode != kv.RAW:
-                admitted.append(mode)
-        kv.require(admitted, f"C{gear}: all KV candidates failed correctness")
-        gear_result["pairs"] = {}
-
-        def measure(left, right):
-            pair_id = left + "__" + right
-            name = f"benchmark-c{gear}-" + pair_id
-            result = stage(
-                name,
-                dict(
-                    runner=exe,
-                    smoke=[stages.refs[f"smoke-c{gear}-" + v] for v in (left, right)],
-                    inputs=cases["measured"],
-                    protocol=runtime_id,
-                    stats=kv.c.sha(kv.OPS / "draft_gate_bandwidth/run_gate.py"),
-                ),
-                lambda d: benchmark(d, call, cases["measured"], gear, left, right),
-            )
-            stat = result["statistics"]
-            a, b = (stat["variants"][v] for v in (left, right))
-            gear_result["pairs"][pair_id] = dict(
-                report=stages.refs[name],
-                speedup=stat["speedup"],
-                decision=stat["decision"],
-                reduction_pct=stat["reduction_pct"],
-                round_ratios=stat["round_ratios"],
-                median_ms=[a["median_ms"], b["median_ms"]],
-                p95_ms=[a["p95_ms"], b["p95_ms"]],
-            )
-            print(
-                f"C{gear} KV Execute+Sync incl. input prep {left} → {right}: "
-                f"{a['median_ms']:.6f}/{a['p95_ms']:.6f} → {b['median_ms']:.6f}/{b['p95_ms']:.6f} ms "
-                f"(Median/P95, 90/90) {stat['speedup']:.4f}x {stat['decision']}",
-                flush=True,
-            )
-            return stat
-
-        best = select(admitted, measure)
-        gear_result["selected"] = best
-        print(f"Selected C{gear}: {best}", flush=True)
-        if args.no_profile:
-            continue
-        from panel_profiler import bind_msprof
-
-        if cli is None:
-            cli = bind_msprof(out, cann, envs[kv.RAW])
-
-        def profile(d, mode):
-            row = o_runtime.profile(
-                d,
-                exe,
-                ms[mode],
-                envs[mode],
-                dsos[mode],
-                cases["measured"],
-                cli,
-                abi=abi,
-                role=kv.ROLE,
-                reference=kv.SCOPE,
-                logical_bytes=logical,
-            )
-            row["pipeline"] = pipeline_times(d, row, module=kv.ROLE)
-            row["span"] = charged_span(d, ms[mode], row, module=kv.ROLE, logical_bytes=logical)
-            if row["span"]["status"] != "UNRESOLVED":
-                row["span"]["equivalent_gemm_tflops"] = 2 * m * k * n / row["span"]["median_us"] / 1e6
-            return row
-
-        gear_result["profiles"] = {}
-        for mode in (kv.RAW, *admitted):
-            name = f"profile-c{gear}-" + mode
-            row = stage(
-                name,
-                dict(
-                    smoke=stages.refs[f"smoke-c{gear}-" + mode],
-                    cli=cli["file"],
-                    runner=exe,
-                    inputs=cases["measured"],
-                    protocol=runtime_id,
-                ),
-                lambda d: profile(d, mode),
-            )
-            gear_result["profiles"][mode] = stages.refs[name]
-            span = row["span"]
-            print(f"C{gear} {mode} device KV {row['kernel']['p50_task_sum_ms']*1000:.2f} us", end="; ")
-            if span["status"] == "UNRESOLVED":
-                print("prep→KV interval UNRESOLVED", span["reason"], flush=True)
-            else:
-                print(
-                    f"prep→KV Median/P95 {span['median_us']:.2f}/{span['p95_us']:.2f} us, "
-                    f"{span['logical_gbps']:.2f} logical GB/s, {span['equivalent_gemm_tflops']:.3f} GEMM TF/s, "
-                    f"{span['floor_ratio']:.3f}x one-pass, "
-                    f"{span['status']}",
-                    flush=True,
-                )
-            print("  matched counters", row["pipeline"]["joined"], row["pipeline"]["medians"], flush=True)
+        measurements(
+            gear,
+            gear_result,
+            stages,
+            stage,
+            runtime_id,
+            cases,
+            (exe, ms, envs, dsos),
+            None if args.no_profile else get_profiler,
+        )
     return (
         "COMPILED_NOT_EXECUTED"
         if args.compile_only
@@ -397,7 +443,11 @@ def run(out, args, state):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--gear", choices=("16", "64", "both"), default="both")
-    p.add_argument("--full-run", default="full-draft-panels-UFqlys")
+    graph = p.add_mutually_exclusive_group()
+    graph.add_argument("--full-run", default="full-draft-panels-UFqlys")
+    graph.add_argument(
+        "--wide", metavar="MEASURED_KV_RUN", help="directly retest the measured N64 winner against N128/N256"
+    )
     p.add_argument("--resume")
     flags = p.add_mutually_exclusive_group()
     flags.add_argument("--no-profile", action="store_true")
