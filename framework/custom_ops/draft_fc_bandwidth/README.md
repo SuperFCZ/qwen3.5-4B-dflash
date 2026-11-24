@@ -6,7 +6,7 @@
 git pull --ff-only origin feature/ascend310p-custom-ops && bash framework/custom_ops/draft_fc_bandwidth/run.sh
 ```
 
-默认两档。终端打印每档三行直接配对和独立的设备任务时间。报告位于 `/home/w00949577/z50058744/qwen35-dflash-run/runs/fc-bandwidth-*/result.json`，使用已有的独立 `gate310p` 环境。可加 `--gear 16`、`--gear 64`、`--compile-only`、`--no-profile` 或 `--resume fc-bandwidth-XXXXXX`。编译产品和失败日志按阶段留在运行目录，生产部署使用既有配置。
+默认两档。终端打印每档的直接配对和独立的设备任务时间。报告位于 `/home/w00949577/z50058744/qwen35-dflash-run/runs/fc-bandwidth-*/result.json`，使用已有的独立 `gate310p` 环境。可加 `--gear 16`、`--gear 64`、`--compile-only`、`--no-profile` 或 `--resume fc-bandwidth-XXXXXX`。编译产品和失败日志按阶段留在运行目录，生产部署使用既有配置。
 
 ## 对照与数据流
 
@@ -25,8 +25,20 @@ git pull --ff-only origin feature/ascend310p-custom-ops && bash framework/custom
 ## 验收和数字口径
 
 1. 在原 FC OM 上采集原始 features 和稠密变换输入的参考；另有跨 Group128、K2560/K6400 首尾边界的独立两项参考。每份 OM、每组输入各用两种输出 poison，检查全部 40,960 / 163,840 个 FP16 输出、输入只读、Guard、同步和实际加载 DSO。
-2. 三轮交错，每轮每边 5 次预热、30 次正式 Execute+Sync。原 FC 各与两份候选配对，候选再直接配对。按 gear 独立选择，门槛为 Median 下降至少 3%、三轮同向且 P95 无回退。正式原始样本保存在 `benchmark-c16/report.json` 和 `benchmark-c64/report.json`。
-3. msprof 在独立进程中测原版及两版候选的设备 FC 任务，使用 38 次 Execute/Sync 中下标 7–36 的 30 个窗口。输出实际归属、设备 Median/P95、逻辑 GB/s、等效矩阵 TFLOP/s、可核对的流水计数。正式配对先于 profiling 落盘。
+2. 三轮交错，每轮每边 5 次预热、30 次正式 Execute+Sync。原 FC 与通过准入的 A1/K2560 直接配对。按 gear 独立选择，门槛为 Median 下降至少 3%、三轮同向且 P95 无回退。正式原始样本保存在 `benchmark-c16/report.json` 和 `benchmark-c64/report.json`。
+3. msprof 在独立进程中测原版及通过准入的候选的设备 FC 任务，使用 38 次 Execute/Sync 中下标 7–36 的 30 个窗口。输出实际归属、设备 Median/P95、逻辑 GB/s、等效矩阵 TFLOP/s、可核对的流水计数。正式配对先于 profiling 落盘。
 4. INT8 权重有 32,768,000 B，scale 有 512,000 B。按权重、scale、X、Y 各经过一次外存及 204.8 GB/s 的条件峰值，C16 为 33,771,520 B、**164.90 µs**，C64 为 35,246,080 B、**172.10 µs**。FC 权重与 scale 大于 SDK 所列的 16 MiB L2。逻辑吞吐分子为上述单遍字节；profile 中的 MAC/MTE 等活动时间可重叠，真实 DDR 事务需要单独计数。
 
 CPU 合同测试可用 `python -B -m unittest discover -s framework/custom_ops/draft_fc_bandwidth/test -v`，设置 `DFLASH_GE_DESCRIPTOR` 可同时验证原 GE 输入选择。延迟 DMA 模型运行两套实际 kernel 源码的 C16/C64 分支，覆盖每个输出的数值、写入次数和核归属，每个 K 面板的 FP32 接续、首尾失败清理及遗漏 W16 消费者 fence 的故障注入。
+
+## qR8ETP 正确性记录
+
+服务器在 C16 上完成原 FC、A1/K2560 的三组逐位检查。GM/K6400 在 features 输入的第一个快照有 5,868 / 40,960 项不同，Guard 完整。差异集中在第一个循环波次的 N64 编号 0、1、3、4、5、6、7，后 32 个 N64 全部相等。错误形态不能单独确定具体硬件原因。该版本退出默认设备路径，现有失败快照只读保留。
+
+从这个已经建好的目录继续做两档 A1 对照：
+
+```bash
+bash framework/custom_ops/draft_fc_bandwidth/run.sh --resume fc-bandwidth-qR8ETP
+```
+
+续跑复核原包和已通过的 ATC 收据，沿用 C16 的设备参考，重新封存只含原 FC 和 A1/K2560 的 smoke。C64 单独获得并核对自己的设备参考。

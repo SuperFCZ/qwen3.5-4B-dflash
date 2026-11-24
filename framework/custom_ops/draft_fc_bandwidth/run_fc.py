@@ -17,38 +17,26 @@ from fresh_dso import seal
 from run_q import run_path
 from run_gate import pair_statistics, boundary_case
 
-PAIRS = ((fc.CONTROL, fc.LOCAL), (fc.CONTROL, fc.GLOBAL), (fc.LOCAL, fc.GLOBAL))
+# qR8ETP: GM/K6400 failed the C16 device Golden. It cannot enter any timing or device launch.
+ADMITTED_MODES = (fc.CONTROL, fc.LOCAL)
+PAIRS = ((fc.CONTROL, fc.LOCAL),)
 
 
-def benchmark(out, m, call, files):
+def benchmark(folder, m, call, files):
     rows = []
     for i in range(3):
-        for pair in PAIRS[i:] + PAIRS[:i]:
-            seq = pair[::-1] if (i + PAIRS.index(pair) + int(m == 64)) % 2 else pair
-            tag = "__".join(pair)
-            print(f"C{m} round {i+1}: " + " → ".join(seq), flush=True)
-            for mode in seq:
-                rows.append(dict(call(out / str(i) / tag / mode, mode, files, True, i), pair=tag))
-    all_stats = {}
-    for a, b in PAIRS:
-        tag = a + "__" + b
-        all_stats[tag] = pair_statistics(
-            [r for r in rows if r["pair"] == tag],
-            b,
-            a,
-            flops=2 * m * fc.K * fc.N,
-            logical_bytes=fc.logical_bytes(m),
-        )
-
-    def passed(a, b):
-        return all_stats[a + "__" + b]["decision"] == "GO"
-
-    chosen = (
-        fc.GLOBAL
-        if passed(fc.CONTROL, fc.GLOBAL) and (not passed(fc.CONTROL, fc.LOCAL) or passed(fc.LOCAL, fc.GLOBAL))
-        else fc.LOCAL if passed(fc.CONTROL, fc.LOCAL) else fc.CONTROL
+        order = ADMITTED_MODES[::-1] if (i + int(m == 64)) % 2 else ADMITTED_MODES
+        print(f"C{m} round {i+1}: " + " → ".join(order), flush=True)
+        for mode in order:
+            rows.append(call(folder / str(i) / mode, mode, files, True, i))
+    stat = pair_statistics(
+        rows, fc.LOCAL, fc.CONTROL, flops=2 * m * fc.K * fc.N, logical_bytes=fc.logical_bytes(m)
     )
-    return dict(runs=rows, statistics=all_stats, selected=chosen)
+    return dict(
+        runs=rows,
+        statistics={fc.CONTROL + "__" + fc.LOCAL: stat},
+        selected=fc.LOCAL if stat["decision"] == "GO" else fc.CONTROL,
+    )
 
 
 def run(out, args, state):
@@ -97,7 +85,7 @@ def run(out, args, state):
     )
     fc.c.verify(exe)
     pkgs = {fc.CONTROL: src["control_package"]}
-    for mode in (fc.LOCAL, fc.GLOBAL):
+    for mode in ADMITTED_MODES[1:]:
         pkgs[mode] = stage(
             "build-" + mode,
             dict(
@@ -160,11 +148,11 @@ def run(out, args, state):
             len(
                 {tuple(s["sha256"] for s in a["selected"]["executable_sections"]) for a in models[m].values()}
             )
-            == len(fc.MODES),
+            == len(ADMITTED_MODES),
             "coincident FC executables",
         )
     if len(gears) == 2:
-        for mode in fc.MODES:
+        for mode in ADMITTED_MODES:
             fc.require(
                 [i["sha256"] for i in models[16][mode]["packing"]["constants"]]
                 == [i["sha256"] for i in models[64][mode]["packing"]["constants"]],
@@ -187,6 +175,7 @@ def run(out, args, state):
         return "COMPILED_NOT_EXECUTED"
     state["phase"] = "DSO admission"
     dsos = {mode: seal(out / ("dso-" + mode), pkg, exe, envs[mode]) for mode, pkg in pkgs.items()}
+    state["excluded"] = dict(mode=fc.GLOBAL, reason="qR8ETP C16 original features: 5868 bit mismatches")
     state["measurements"] = {}
     inputs = {}
     for m in gears:
@@ -241,13 +230,13 @@ def run(out, args, state):
         key = dict(
             cases=cases,
             runner=exe,
-            models=[stages.refs[f"atc-c{m}-" + mode] for mode in fc.MODES],
+            models=[stages.refs[f"atc-c{m}-" + mode] for mode in ADMITTED_MODES],
             code=code(fc.HERE / "fc_runtime.py", fc.OPS / "draft_gate_tile_nd/fresh_run.py"),
         )
 
         def smoke(d):
             rows = []
-            for mode in fc.MODES:
+            for mode in ADMITTED_MODES:
                 for label, files in cases.items():
                     rows.append(dict(call(d / mode / label, mode, files, False, -1), case=label))
                 print(
@@ -262,7 +251,7 @@ def run(out, args, state):
             dict(
                 key,
                 smoke=stages.refs[f"smoke-c{m}"],
-                protocol="3 interleaved pairs x 3 rounds; 5+30",
+                protocol="one A/B pair x 3 alternating rounds; 5+30",
                 stats=fc.c.sha(fc.OPS / "draft_gate_bandwidth/run_gate.py"),
             ),
             lambda d: benchmark(d, m, call, cases["features"]),
@@ -289,7 +278,7 @@ def run(out, args, state):
     state["profiles"] = {}
     for m in gears:
         state["profiles"][str(m)] = {}
-        for mode in fc.MODES:
+        for mode in ADMITTED_MODES:
             row = stage(
                 f"profile-c{m}-" + mode,
                 dict(

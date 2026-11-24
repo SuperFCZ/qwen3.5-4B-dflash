@@ -216,10 +216,11 @@ class FC(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for m, winner in ((16, f.LOCAL), (64, f.GLOBAL)):
+            for m, winner in ((16, f.LOCAL), (64, f.LOCAL)):
                 out = benchmark(root / str(m), m, replay, {"gear": m})
                 self.assertEqual(out["selected"], winner)
-                self.assertEqual(len(out["runs"]), 18)
+                self.assertEqual(len(out["runs"]), 6)
+                self.assertNotIn(f.GLOBAL, {r["mode"] for r in out["runs"]})
                 for pair in out["statistics"].values():
                     self.assertTrue(all(r["count"] == 90 for r in pair["variants"].values()))
             p = root / "profiler"
