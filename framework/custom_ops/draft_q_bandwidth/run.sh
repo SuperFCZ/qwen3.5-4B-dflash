@@ -2,7 +2,7 @@
 set -eo pipefail
 here=$(cd "$(dirname "$0")" && pwd -P)
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then
-    echo 'Usage: bash run.sh [--full-run full-draft-panels-UFqlys] [--compile-only | --no-profile] [--resume q-bandwidth-XXXXXX]'
+    echo 'Usage: bash run.sh [--full-run full-draft-panels-UFqlys | --next-n q-bandwidth-ZSCliO] [--compile-only | --no-profile] [--resume q-bandwidth-XXXXXX]'
     exit 0
 fi
 source "$here/../ascend310p_workspace/run_root.sh"

@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -45,7 +46,32 @@ def q_cpu_headers(root):
         "    if (cpuSync.l1B.bytes && Overlaps(target,cpuSync.l1B)) {",
         '    if constexpr(sizeof(T)==1) for(auto reader:cpuSync.rawReaders) Require(!Overlaps(target,reader),"raw overwrite before Vector to MTE2 fence");\n    if (cpuSync.l1B.bytes && Overlaps(target,cpuSync.l1B)) {',
     )
+    s = once(
+        s,
+        "cpuSync.stores.push_back({target,src.data,0});",
+        'for(auto r:cpuSync.cubeReads) Require(!Overlaps(target,r),"B1 overwritten while Cube reads"); cpuSync.stores.push_back({target,src.data,0});',
+    )
     p.write_text(s)
+    p = inc / "lib/matmul_intf.h"
+    s = once(
+        p.read_text(),
+        "inline int cpuFailIteration = -1;",
+        "inline int cpuFailIteration = -1; inline std::vector<uint64_t> qCastsAtIterate, qCastsAtOutput;",
+    )
+    p.write_text(
+        once(
+            s,
+            "bool Iterate(bool partial = false) {",
+            "bool Iterate(bool partial = false) { qCastsAtIterate.push_back(cpuMetrics.castCalls);",
+        )
+    )
+    text = p.read_text()
+    import re
+
+    match = re.search(r"void GetTensorC\([^)]*\) \{", text)
+    if not match:
+        raise AssertionError("missing CPU GetTensorC")
+    p.write_text(once(text, match[0], match[0] + " qCastsAtOutput.push_back(cpuMetrics.castCalls);"))
     return inc
 
 
@@ -72,11 +98,12 @@ class TestQ(unittest.TestCase):
             (root / "scales").write_bytes(scale)
             x.tofile(root / "x")
             acc.astype("<f2").tofile(root / "expected")
-            for mode in (q.PANEL, q.PREFETCH):
-                (root / "q_spec.h").write_bytes(q.header(mode))
+            for mode in (q.PANEL, q.PREFETCH, "next-n"):
+                (root / "q_spec.h").write_bytes(q.header(q.PANEL if mode == "next-n" else mode))
                 command = [
                     "c++",
                     "-std=c++17",
+                    "-DQ_TEST_NEXT_N=" + str(int(mode == "next-n")),
                     "-O2",
                     "-ffp-contract=off",
                     "-I" + str(inc),
@@ -90,6 +117,7 @@ class TestQ(unittest.TestCase):
                 subprocess.run(command, check=True)
                 subprocess.run([root / "portable", root], check=True)
                 subprocess.run([root / "portable", root, "fail-first-iterate"], check=True)
+                subprocess.run([root / "portable", root, "fail-second-iterate"], check=True)
                 if mode == q.PREFETCH:
                     source = (HERE / "op_kernel" / (q.STEM + ".cpp")).read_text()
                     for anchor, msg in (
@@ -108,6 +136,28 @@ class TestQ(unittest.TestCase):
                         )
                         self.assertNotEqual(bad.returncode, 0)
                         self.assertIn(msg, bad.stderr)
+
+    def test_cross_tile_requires_unchanged_complete_tiling(self):
+        from q_next_pair import compile_next, NEXT
+
+        base = dict(
+            air={"sha256": "same"},
+            query={"schedule": {"tiling_hex": "010203"}},
+            contract={"resources": {"scratch": 46592}},
+            selected={"executable_sections": [{"sha256": "old"}]},
+        )
+        candidate = copy.deepcopy(base)
+        candidate["selected"]["executable_sections"][0]["sha256"] = "new"
+        with tempfile.TemporaryDirectory() as d, patch.object(q, "compile_q", return_value=candidate):
+            args = (Path(d), None, None, None, None, {"model": base, "source": {}})
+            self.assertEqual(compile_next(*args)["mode"], NEXT)
+            candidate["query"]["schedule"]["tiling_hex"] = "010204"
+            with self.assertRaisesRegex(ValueError, "identical AIR"):
+                compile_next(*args)
+            candidate["query"] = base["query"]
+            candidate["selected"] = base["selected"]
+            with self.assertRaisesRegex(ValueError, "different machine code"):
+                compile_next(*args)
 
     def test_resource_and_selection(self):
         offsets = {f["name"]: 24 + f["offset"] for f in q.schema()}

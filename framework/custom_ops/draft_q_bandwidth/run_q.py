@@ -28,8 +28,12 @@ def run_path(base, name, prefix):
 
 def run(out, args, state):
     runs = Path(os.environ["DFLASH_RUN_ROOT"]) / "runs"
-    old = run_path(runs, args.full_run, "full-draft-panels-")
     prior = run_path(runs, args.resume, "q-bandwidth-") if args.resume else None
+    if args.next_n:
+        import q_next_pair
+
+        return q_next_pair.run(out, args, state, run_path(runs, args.next_n, "q-bandwidth-"), prior)
+    old = run_path(runs, args.full_run, "full-draft-panels-")
     stages = Stages(out, prior)
 
     def stage(name, contract, action):
@@ -65,7 +69,15 @@ def run(out, args, state):
         source=stages.refs["source"],
         weight=src["weights"]["w_nz.bin"],
         scale=src["weights"]["s_gn.bin"],
-        roofline=dict(bytes=q.BYTES, flops=q.FLOPS, assumed_gbps=204.8, single_pass_ms=q.FLOOR_MS),
+        roofline=dict(
+            bytes=q.BYTES,
+            flops=q.FLOPS,
+            assumed_gbps=204.8,
+            single_pass_ms=q.FLOOR_MS,
+            w8_and_scale_bytes=sum(src["weights"][name]["bytes"] for name in ("w_nz.bin", "s_gn.bin")),
+            sdk_l2_bytes=16 * 1024 * 1024,
+            cache_state="repeat of one OM; actual DDR traffic unmeasured",
+        ),
     )
     exe = stage(
         "runner",
@@ -251,6 +263,11 @@ def run(out, args, state):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--full-run", default="full-draft-panels-UFqlys")
+    p.add_argument(
+        "--next-n",
+        metavar="MEASURED_Q_RUN",
+        help="compare cross-N preparation against the measured single-raw Q",
+    )
     p.add_argument("--resume", help="reuse passed stages from a q-bandwidth run")
     p.add_argument("--compile-only", action="store_true")
     p.add_argument("--no-profile", action="store_true")

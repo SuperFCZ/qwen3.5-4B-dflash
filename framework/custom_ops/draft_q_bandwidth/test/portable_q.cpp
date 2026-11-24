@@ -1,4 +1,8 @@
+#if Q_TEST_NEXT_N
+#include "next_n.cpp"
+#else
 #include "d_flash_q_panel.cpp"
+#endif
 #include <algorithm>
 #include <cstring>
 #include <fstream>
@@ -25,11 +29,24 @@ int main(int argc,char** argv) {
     cpuOutputBase=y.data();cpuOutputWrites.assign(M*N,0);cpuOutputOwners.assign(M*N,-1);
     cpuBlockNum=8;
     const bool fail=argc==3;
-    if(fail)matmul::cpuFailIteration=0;
+    const bool second = fail && std::string(argv[2]) == "fail-second-iterate";
+    if(fail)matmul::cpuFailIteration=second ? 1 : 0;
     for(cpuBlockIdx=0;cpuBlockIdx<(fail?1u:cpuBlockNum);++cpuBlockIdx)
         d_flash_q_panel(x.data(),codes.data(),scales.data(),y.data(),nullptr,&td);
-    if(fail)return std::all_of(cpuOutputWrites.begin(),cpuOutputWrites.end(),[](int n){return n==0;}) &&
-                   std::all_of(y.begin(),y.end(),[](half v){return v==half(-127);}) && cpuMetrics.ends==1 ? 0:4;
+    if(fail) {
+        for (unsigned i=0; i<M*N; ++i) {
+            const bool written=second && i%N<Columns;
+            if (cpuOutputWrites[i]!=int(written) || y[i]!=(written?expected[i]:half(-127))) return 4;
+        }
+        return cpuMetrics.ends==1 ? 0 : 4;
+    }
+    if (matmul::qCastsAtIterate.size()!=Tiles || matmul::qCastsAtOutput.size()!=Tiles) return 6;
+    for (uint32_t i=0; i<Tiles; ++i) {
+        // Between Iterate and GetTensorC, two Cast instructions for the next N16 must be issued,
+        // except for each block's tail. The numerical test also checks which cyclic tile they used.
+        const bool ahead=Q_TEST_NEXT_N && i%(Tiles/8)+1<Tiles/8;
+        if (matmul::qCastsAtIterate[i]!=8*(i+1) || matmul::qCastsAtOutput[i]!=8*(i+1)+(ahead?2:0)) return 6;
+    }
     if(std::memcmp(expected.data(),y.data(),2*M*N)!=0)return 2;
     for(uint32_t i=0;i<M*N;++i)if(cpuOutputWrites[i]!=1 || cpuOutputOwners[i]!=int(i%N/Columns%8))return 3;
     if(cpuMetrics.iterations!=Tiles || cpuMetrics.partials!=0 || cpuMetrics.outputs!=Tiles || cpuMetrics.ends!=8 ||
