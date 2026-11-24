@@ -116,7 +116,9 @@ def panel_header(panel, w16_banks=1):
     return config.encode() + (HERE / "panel_spec.h").read_bytes()
 
 
-def build(folder, cann, env, panel, *, w16_banks=1):
+def build(folder, cann, env, panel, *, w16_banks=1, device_source=None):
+    if device_source is not None:
+        require(panel == K and w16_banks == 2, "cross-tile schedules require the full-K dual-W16 Gate")
     folder.mkdir()
     rows = c.read(OPS / "draft_gate_tile_nd/DFlashGateTileNd.json")
     rows[0]["op"] = OP
@@ -126,7 +128,11 @@ def build(folder, cann, env, panel, *, w16_banks=1):
     hdr = panel_header(panel, w16_banks)
     for sub in ("op_kernel", "op_host"):
         name = "full_l1.cpp" if panel == K and sub == "op_kernel" else STEM + ".cpp"
-        shutil.copyfile(HERE / sub / name, project / sub / (STEM + ".cpp"))
+        dest = project / sub / (STEM + ".cpp")
+        if sub == "op_kernel" and device_source is not None:
+            dest.write_text(device_source)
+        else:
+            shutil.copyfile(HERE / sub / name, dest)
         (project / sub / "panel_spec.h").write_bytes(hdr)
     helpers = HERE / "panel_vector.h"
     shutil.copyfile(helpers, project / "op_kernel" / helpers.name)
