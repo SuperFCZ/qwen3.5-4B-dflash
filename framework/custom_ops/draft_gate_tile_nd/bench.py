@@ -162,7 +162,7 @@ def prepare_air(out, src, env, original, files):
     return packing
 
 
-def compile_image(out, pkg, env, argv, op, *, shape=SHAPE, model_name="gate"):
+def compile_graph(out, pkg, env, argv, *, shape, model_name):
     air = out / (model_name + ".air")
     platform = out / "platform.jsonl"
     schedule = out / "scheduling.jsonl"
@@ -185,7 +185,11 @@ def compile_image(out, pkg, env, argv, op, *, shape=SHAPE, model_name="gate"):
     dump = out / "om-graph.json"
     command([argv[0], "--mode=1", "--om=" + str(om), "--json=" + str(dump)], out / "inspect.log", env, out)
     q = flow.read_query(platform, schedule, pkg["opp"], "ATC", "A", shape)
-    nodes = read_om_json(dump)
+    return args, om, dump, q, read_om_json(dump)
+
+
+def compile_image(out, pkg, env, argv, op, *, shape=SHAPE, model_name="gate"):
+    args, om, dump, q, nodes = compile_graph(out, pkg, env, argv, shape=shape, model_name=model_name)
     operators = [n for n in nodes if n["type"] not in ("Data", "Const", "FileConstant", "NetOutput")]
     node = one(operators, "candidate OM requires exactly one compute node")
     image = selected_image(node, q["platform"]["blockDim"], op)

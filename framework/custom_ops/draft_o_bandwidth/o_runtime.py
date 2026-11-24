@@ -7,7 +7,7 @@ import shutil
 
 import numpy as np
 
-from o_panel import c, require, M, K, ABI, OPS, ROLE, CONTROL, OLD_OP, plan, BYTES, FLOOR_MS
+from o_panel import c, require, M, K, ABI, OPS, ROLE, CONTROL, OLD_OP, plan, BYTES
 from bench import atc_args, read_om_json, selected_image, embedded, flow
 from compile_model import grouped
 from layout import once
@@ -42,7 +42,7 @@ def abi_guard(spec):
     return " &&\n                ".join(checks)
 
 
-def runner(out, cann, env, ref_abi):
+def runner(out, cann, env, ref_abi, *, projection_abi=ABI, reference=REFERENCE):
     src = out / "runner-src"
     shutil.copytree(OPS / "draft_gate_raw_atc8/runner", src)
     p = src / "runner.cpp"
@@ -56,13 +56,17 @@ def runner(out, cann, env, ref_abi):
     end = code.index('throw std::runtime_error("expected frozen Gate projection ABI");', start) + len(
         'throw std::runtime_error("expected frozen Gate projection ABI");'
     )
-    code = code[:start] + f"""        if(capture) {{
-            if(!({abi_guard(ref_abi)})) throw std::runtime_error("unexpected Layer0 O prefix ABI");
-        }} else if(!({abi_guard(ABI)})) throw std::runtime_error("unexpected single O ABI");""" + code[end:]
+    code = (
+        code[:start]
+        + f"""        if(capture) {{
+            if(!({abi_guard(ref_abi)})) throw std::runtime_error("unexpected projection prefix ABI");
+        }} else if(!({abi_guard(projection_abi)})) throw std::runtime_error("unexpected single projection ABI");"""
+        + code[end:]
+    )
     code = once(code, "golden;for(const auto&t:outputs)", "golden;if(!capture)for(const auto&t:outputs)")
     code = once(code, "i<golden[0].size()", "!capture && i<golden[0].size()")
     code = once(code, "if(value!=golden[i])", "if(!capture && value!=golden[i])")
-    code = once(code, "single Gate frozen Native Golden checked in process", REFERENCE)
+    code = once(code, "single Gate frozen Native Golden checked in process", reference)
     code = once(
         code,
         r"\"golden_match\":true",
@@ -89,7 +93,7 @@ def runner(out, cann, env, ref_abi):
     return c.identity(target / "gate_om_runner")
 
 
-def compile_prefix(out, src, env, argv):
+def compile_prefix(out, src, env, argv, *, validate_site=None):
     air = c.verify(src["reference_air"])
     pkg = src["pkg"]
     cache = out / "cache"
@@ -135,7 +139,10 @@ def compile_prefix(out, src, env, argv):
             "prefix tiling differs: " + key,
         )
         plans[key] = query
-    plan(plans["16x4096x2560"], CONTROL, src["query"])
+    if validate_site is None:
+        plan(plans["16x4096x2560"], CONTROL, src["query"])
+    else:
+        validate_site(plans)
     for node in read_om_json(dump):
         if not node["type"].startswith("DFlash"):
             continue
@@ -167,7 +174,7 @@ def compile_prefix(out, src, env, argv):
     return dict(om=c.identity(om), dump=c.identity(dump), selected=bins, plans=plans, argv=args)
 
 
-def capture(out, runner, model, env, dsos, src, label):
+def capture(out, runner, model, env, dsos, src, label, *, input_shape=(M, K)):
     app = out / "application"
     prepare_case(app, src["reference_abi"], dict(files=src["replays"][label]), None)
     launch(out, runner, model["om"], "capture", env, dsos, None)
@@ -181,7 +188,7 @@ def capture(out, runner, model, env, dsos, src, label):
         and e["verification_calls"] == 2
         and e["timing"]["repetitions"] == 0
         and all(e[k] is True for k in ("guards", "readonly", "repeat", "poison_verified", "sync_completed")),
-        "incomplete O prefix replay",
+        "incomplete Layer0 prefix replay",
     )
     files = dict(src["weights"])
     snapshots = {}
@@ -197,11 +204,11 @@ def capture(out, runner, model, env, dsos, src, label):
         )
         snapshots[name] = f
         if name in ("x", "y"):
-            require(np.any(a), "all-zero O prefix snapshot: " + name)
+            require(np.any(a), "all-zero projection prefix snapshot: " + name)
             if label == "stress" and name == "x":
                 require(
-                    np.unique(a.reshape(M, K), axis=0).shape[0] == M,
-                    "O stress does not exercise all rows distinctly",
+                    np.unique(a.reshape(input_shape), axis=0).shape[0] == input_shape[0],
+                    "projection stress does not exercise all rows distinctly",
                 )
             files["x.bin" if name == "x" else "golden.bin"] = f
         elif label == "measured":
@@ -213,29 +220,31 @@ def capture(out, runner, model, env, dsos, src, label):
         files=files,
         outputs=snapshots,
         execution=c.identity(app / "execution.json"),
-        origin="LAYER0_ATTENTION_DEVICE_PREFIX_" + label.upper(),
+        origin=src.get("capture_origin", "LAYER0_ATTENTION_DEVICE_PREFIX") + "_" + label.upper(),
     )
 
 
-def execute(folder, runner, model, env, dsos, files, timed, i):
+def execute(folder, runner, model, env, dsos, files, timed, i, *, abi=ABI, reference=REFERENCE):
     try:
-        return run_child(folder, runner, model, env, dsos, files, timed, REFERENCE, i, abi=ABI)
+        return run_child(folder, runner, model, env, dsos, files, timed, reference, i, abi=abi)
     except Exception:
-        record_mismatches(folder, ABI, {"y": files["golden.bin"]})
+        record_mismatches(folder, abi, {"y": files["golden.bin"]})
         raise
 
 
-def profile(out, runner, model, env, dsos, files, cli):
+def profile(
+    out, runner, model, env, dsos, files, cli, *, abi=ABI, role=ROLE, reference=REFERENCE, logical_bytes=BYTES
+):
     from module_profile import analyze
 
     app = out / "application"
-    prepare_case(app, ABI, {"files": {"x": files["x.bin"]}}, {"y": files["golden.bin"]})
+    prepare_case(app, abi, {"files": {"x": files["x.bin"]}}, {"y": files["golden.bin"]})
     require(c.identity(cli["alias"]) == cli["file"], "msprof changed")
     witness = launch(out, runner, model["om"], "benchmark", env, dsos, cli["alias"])
     e = c.read(app / "execution.json")
     require(
         e["status"] == "PASS"
-        and e["scope"] == REFERENCE
+        and e["scope"] == reference
         and e["device"] == 0
         and e["reference_capture"] is False
         and e["cpu_fallback"] is False
@@ -253,30 +262,31 @@ def profile(out, runner, model, env, dsos, files, cli):
             )
         )
         and (e["timing"]["warmup"], e["timing"]["repetitions"]) == (5, 30),
-        "profiled O correctness or timing structure differs",
+        "profiled projection correctness or timing structure differs",
     )
     for suffix in ("actual-0", "actual-1", "benchmark-last", "postcheck"):
         require(
-            c.sha(app / ("y-" + suffix + ".bin")) == files["golden.bin"]["sha256"], "profiled O output drift"
+            c.sha(app / ("y-" + suffix + ".bin")) == files["golden.bin"]["sha256"],
+            "profiled projection output drift",
         )
     node = model["selected"]["node"]
     report = analyze(
         out,
         dict(witness, profiler=str(out / "profiler")),
         model,
-        dict(modules={node: ROLE}, node_types={node: model["op"]}),
+        dict(modules={node: role}, node_types={node: model["op"]}),
     )
-    (row,) = (r for r in report["modules"] if r["module"] == ROLE)
+    (row,) = (r for r in report["modules"] if r["module"] == role)
     require(
         row["calls_observed"] == row["tasks"] == 30 and row["p50_task_sum_ms"] > 0,
-        "need one O device task in every timed window",
+        f"need one {role} device task in every timed window",
     )
     ms = row["p50_task_sum_ms"]
     return dict(
         attribution=report["scope"],
         kernel=row,
-        logical_gbps=BYTES / ms / 1e6,
-        floor_ratio=ms / FLOOR_MS,
+        logical_gbps=logical_bytes / ms / 1e6,
+        floor_ratio=ms / (logical_bytes / 204.8e6),
         timeline=report["timeline"],
         op_summary=report["op_summary"],
         execution=c.identity(app / "execution.json"),

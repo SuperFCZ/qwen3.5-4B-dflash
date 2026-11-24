@@ -175,7 +175,9 @@ def packed_weights(nz, gn, n, k, width, pk):
     return data, bits
 
 
-def add_pack_graph(model, width, pk, weights, scales, *, m=M, k=K, n=N):
+def add_pack_graph(
+    model, width, pk, weights, scales, *, m=M, k=K, n=N, op_type=OP, prefix="fc_a", pack_activation=True
+):
     g = model.graph[0]
     original = list(g.op)
     del g.op[:]
@@ -194,8 +196,8 @@ def add_pack_graph(model, width, pk, weights, scales, *, m=M, k=K, n=N):
 
     table = {}
     for node in original:
-        if node.type == f.OLD_OP:
-            for name, data in (("fc_a_dims", (m, k // 16, 16)), ("fc_a_order", (1, 0, 2))):
+        if node.type == f.OLD_OP and pack_activation:
+            for name, data in ((f"{prefix}_dims", (m, k // 16, 16)), (f"{prefix}_order", (1, 0, 2))):
                 p = g.op.add(name=name, type="Const", id=len(g.op))
                 d = p.output_desc.add()
                 desc(d, "y", 7, [3])
@@ -203,8 +205,14 @@ def add_pack_graph(model, width, pk, weights, scales, *, m=M, k=K, n=N):
                 p.attr["value"].t.data = np.array(data, "<i4").tobytes()
                 table[name] = p
             for name, t, edges, ports, shape in (
-                ("fc_a_rows", "Reshape", ("x", "fc_a_dims"), ("x", "shape"), (m, k // 16, 16)),
-                ("fc_a_pack", "Transpose", ("fc_a_rows", "fc_a_order"), ("x", "perm"), (k // 16, m, 16)),
+                (f"{prefix}_rows", "Reshape", ("x", f"{prefix}_dims"), ("x", "shape"), (m, k // 16, 16)),
+                (
+                    f"{prefix}_pack",
+                    "Transpose",
+                    (f"{prefix}_rows", f"{prefix}_order"),
+                    ("x", "perm"),
+                    (k // 16, m, 16),
+                ),
             ):
                 p = g.op.add(name=name, type=t, id=len(g.op))
                 for edge, port in zip(edges, ports):
@@ -232,9 +240,10 @@ def add_pack_graph(model, width, pk, weights, scales, *, m=M, k=K, n=N):
             p.attr["value"].t.data = weights if is_w else scales
             p.attr["_out_shape_locked"].b = True
         if p.type == f.OLD_OP:
-            p.type = OP
-            p.input[0] = "fc_a_pack:0"
-            for idx, name in enumerate(("fc_a_pack", "weight", "scale")):
+            p.type = op_type
+            x = f"{prefix}_pack" if pack_activation else "x"
+            p.input[0] = x + ":0"
+            for idx, name in enumerate((x, "weight", "scale")):
                 p.input_desc[idx].CopyFrom(table[name].output_desc[0])
             p.input_desc[0].name = "x"
     return model
@@ -348,6 +357,41 @@ def actual_plan(out, pkg, platform, schedule, original, width, *, banked=False):
     )
 
 
+def activation_nodes(nodes, fc, m, k):
+    table = {n["name"]: n for n in nodes}
+    require(len(nodes) == len(table), "ambiguous compiled FC graph")
+
+    def parents(n):
+        return [t.rsplit(":", 1)[0] for t in n["inputs"] if t and not t.endswith(":-1")]
+
+    def upstream(name, seen):
+        if name not in seen:
+            seen.add(name)
+            for n in parents(table[name]):
+                upstream(n, seen)
+
+    inputs = parents(fc)
+    require(len(inputs) == 3, "packed FC edge inventory")
+    ancestors = set()
+    upstream(inputs[0], ancestors)
+    public = [table[k] for k in ancestors if table[k]["type"] == "Data"]
+    require(
+        len(public) == 1
+        and public[0]["output_desc"][0]["layout"] == "ND"
+        and fc["input_desc"][0]["layout"] == "ND"
+        and list(map(int, public[0]["output_desc"][0]["shape"]["dim"])) == [m, k]
+        and list(map(int, fc["input_desc"][0]["shape"]["dim"])) == [k // 16, m, 16],
+        "FC public ND input or internal activation descriptor changed",
+    )
+    skip = {"Const", "FileConstant", "Data", "NetOutput"}
+    prep = {n for n in ancestors if table[n]["type"] not in skip}
+    require(
+        prep and all(n["name"] in prep | {fc["name"]} or n["type"] in skip for n in nodes),
+        "activation preparation not bound to runtime input or unexpected compiled work",
+    )
+    return prep
+
+
 def compile_model(out, types, pkg, env, argv, width, archive, *, banked=False):
     pk = recipe(width, banked)[0]
     src = archive["source"]
@@ -385,38 +429,8 @@ def compile_model(out, types, pkg, env, argv, width, archive, *, banked=False):
     command([argv[0], "--mode=1", "--om=" + str(om), "--json=" + str(dump)], out / "inspect.log", env, out)
     query = actual_plan(out, pkg, pfile, sfile, archive["control"]["query"], width, banked=banked)
     nodes = read_om_json(dump)
-    table = {n["name"]: n for n in nodes}
-    require(len(nodes) == len(table), "ambiguous compiled FC graph")
     (fc,) = (n for n in nodes if n["type"] == OP)
-
-    def parents(n):
-        return [t.rsplit(":", 1)[0] for t in n["inputs"] if t and not t.endswith(":-1")]
-
-    def upstream(name, seen):
-        if name not in seen:
-            seen.add(name)
-            for n in parents(table[name]):
-                upstream(n, seen)
-
-    inputs = parents(fc)
-    require(len(inputs) == 3, "packed FC edge inventory")
-    ancestors = set()
-    upstream(inputs[0], ancestors)
-    public = [table[k] for k in ancestors if table[k]["type"] == "Data"]
-    require(
-        len(public) == 1
-        and public[0]["output_desc"][0]["layout"] == "ND"
-        and fc["input_desc"][0]["layout"] == "ND"
-        and list(map(int, public[0]["output_desc"][0]["shape"]["dim"])) == [M, K]
-        and list(map(int, fc["input_desc"][0]["shape"]["dim"])) == [K // 16, M, 16],
-        "FC public ND input or internal activation descriptor changed",
-    )
-    skip = {"Const", "FileConstant", "Data", "NetOutput"}
-    prep = {n for n in ancestors if table[n]["type"] not in skip}
-    require(
-        prep and all(n["name"] in prep | {fc["name"]} or n["type"] in skip for n in nodes),
-        "activation preparation not bound to runtime input or unexpected compiled work",
-    )
+    prep = activation_nodes(nodes, fc, M, K)
     require(
         [a["value"] for a in fc["attributes"] if a["key"] == "custom_op_file_path"]
         == [{"s": str(Path(pkg["opp"]["install"]) / "vendors/customize")}],

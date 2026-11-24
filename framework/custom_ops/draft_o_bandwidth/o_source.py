@@ -57,21 +57,21 @@ def embedding_rows(out, table, op, blob, anchor, m, n):
     return result
 
 
-def extract(out, types, model, gear, embedding, io, *, shape=SHAPE):
+def extract(out, types, model, gear, embedding, io, *, shape=SHAPE, role=ROLE, roles=ROLES):
     m, k, n_out = shape
     (original,) = model.graph
     table = {op.name: op for op in original.op}
     require(len(table) == len(original.op), "duplicate original graph node")
-    sites = {role: gear["projections"][role] for role in ROLES}
-    site = sites[ROLE]
-    o = table[site["node"]]
+    sites = {r: gear["projections"][r] for r in roles}
+    site = sites[role]
+    projection = table[site["node"]]
     require(
         tuple(site[n] for n in ("m", "k", "n")) == shape
-        and o.type == OLD_OP
-        and [edge(v) for v in o.input[1:]] == [site["weight"], site["scale"]],
-        "different O projection or operands",
+        and projection.type == OLD_OP
+        and [edge(v) for v in projection.input[1:]] == [site["weight"], site["scale"]],
+        f"different {role} projection or operands",
     )
-    x = edge(o.input[0])
+    x = edge(projection.input[0])
     output_abi = gear["abi"]["outputs"]
     require(len(output_abi) == len(original.output), "public output arity differs")
     kv = {
@@ -84,14 +84,36 @@ def extract(out, types, model, gear, embedding, io, *, shape=SHAPE):
         for n in ancestors
         if table[n].type == "GatherV2" and table[edge(table[n].input[0])].type == "FileConstant"
     )
-    require(
-        any(gear["modules"].get(n) == "layer0.attention" for n in ancestors),
-        "O input not produced by Layer0 attention",
-    )
+    if role == "layer0.kv":
+        # The first rows are FC+hidden_norm(context); the last 16 use normalized token embeddings.
+        flat = table[x]
+        cat = table[edge(flat.input[0])]
+        require(
+            flat.type == "Reshape"
+            and cat.type == "ConcatD"
+            and cat.attr["concat_dim"].i == 1
+            and len(cat.input) == 2,
+            "KV input must concatenate context then proposal rows",
+        )
+        ctx, noise = (table[edge(v)] for v in cat.input)
+        require(
+            list(ctx.output_desc[0].shape.dim) == [1, m - 16, k]
+            and list(noise.output_desc[0].shape.dim) == [1, 16, k]
+            and sites["fc"]["node"] in parents(table, ctx.name)
+            and lookup.name in parents(table, noise.name),
+            "KV input lineage or row order changed",
+        )
+        token_rows, hidden_width = 16, k
+    else:
+        require(
+            role == ROLE and any(gear["modules"].get(n) == "layer0.attention" for n in ancestors),
+            "O input not produced by Layer0 attention",
+        )
+        token_rows, hidden_width = m, n_out
     anchor = np.fromfile(c.verify(io["files"]["anchor"]), "<i8")
     require(anchor.shape == (1,) and anchor.item() == io["scalars"]["anchor"], "invalid archived anchor")
-    embeddings = embedding_rows(out, table, lookup, embedding, anchor, m, n_out)
-    wanted = parents(table, o.name, lookup.name)
+    embeddings = embedding_rows(out, table, lookup, embedding, anchor, token_rows, hidden_width)
+    wanted = parents(table, projection.name, lookup.name)
     for name in kv.values():
         wanted.update(parents(table, name, lookup.name))
     require(
@@ -102,7 +124,7 @@ def extract(out, types, model, gear, embedding, io, *, shape=SHAPE):
     original_inputs = {a["name"]: a for a in gear["abi"]["inputs"]}
     replay = {label: {} for label in embeddings}
     ref = types[0]()
-    ref.name = "c16_layer0_attention_o"
+    ref.name = "c16_layer0_attention_o" if role == ROLE else f"c{m-16}_layer0_kv"
     g = ref.graph.add(name=ref.name)
     abi = dict(inputs=[], outputs=[])
     for old in original.op:
@@ -116,7 +138,7 @@ def extract(out, types, model, gear, embedding, io, *, shape=SHAPE):
             spec = dict(name=name, dtype=DTYPES[desc.dtype], shape=list(desc.shape.dim))
             if old.name == lookup.name:
                 require(
-                    spec["dtype"] == "float16" and spec["shape"] == [1, m, n_out],
+                    spec["dtype"] == "float16" and spec["shape"] == [1, token_rows, hidden_width],
                     "unexpected embedding shape",
                 )
             else:
@@ -150,11 +172,11 @@ def extract(out, types, model, gear, embedding, io, *, shape=SHAPE):
     public = {a["name"]: a for a in output_abi}
     for name, node, shape in (
         ("x", x, [m, k]),
-        ("y", o.name, [m, n_out]),
+        ("y", projection.name, [m, n_out]),
         *((name, kv[name], public[name]["shape"]) for name in ("d0_key", "d0_value")),
     ):
         desc = table[node].output_desc[0]
-        require(desc.dtype == 2 and list(desc.shape.dim) == shape, "different O prefix output: " + name)
+        require(desc.dtype == 2 and list(desc.shape.dim) == shape, f"different {role} prefix output: {name}")
         end.input.append(node + ":0")
         d = end.input_desc.add()
         d.CopyFrom(desc)
@@ -176,19 +198,19 @@ def extract(out, types, model, gear, embedding, io, *, shape=SHAPE):
             and desc.dtype == dt
             and desc.layout == fmt
             and tuple(desc.shape.dim) == shape,
-            "O constant descriptor: " + key,
+            f"{role} constant descriptor: {key}",
         )
         path = out / name
         path.write_bytes(node.attr["value"].t.data)
         files[name] = c.identity(path)
-        require(files[name]["sha256"] == site[pin], "O checkpoint constant drift: " + key)
+        require(files[name]["sha256"] == site[pin], f"{role} checkpoint constant drift: {key}")
     return dict(
         reference_air=c.identity(air),
         reference_abi=abi,
         replays=replay,
         tokens={k: v["tokens"] for k, v in embeddings.items()},
         weights=files,
-        o_node=o.name,
+        **{role.split(".")[-1] + "_node": projection.name},
         x_node=x,
         sites=sites,
         prefix_nodes=len(g.op),
@@ -196,44 +218,54 @@ def extract(out, types, model, gear, embedding, io, *, shape=SHAPE):
 
 
 def read_source(out, root, types):
+    return read_projection_source(
+        out, root, types, 16, ROLE, ROLES, SHAPE, (NZ_SHA, GN_SHA, PARENT, 14516, TEXT)
+    )
+
+
+def read_projection_source(out, root, types, gear_id, role, roles, shape, pins):
+    """Bind the prefix to a successfully smoked and measured full Draft archive."""
+    g = str(gear_id)
+    tag = "x".join(map(str, shape))
     stages = Stages(out, root)
     bundle = c.read(c.verify(stages.completed("checkpoint-graphs")["result"]))
     pkg = stages.completed("private-opp")["result"]
     c.verify_opp(pkg["opp"])
     c.verify_tree(pkg["sources"])
     runner = stages.completed("runner")["result"]
-    stages.completed("atc-c16-baseline")
-    opt = stages.completed("atc-c16-optimized")
-    io = stages.completed("inputs-c16")
-    ref = stages.completed("reference-c16")
-    smoke = stages.completed("smoke-c16")
-    bench = stages.completed("benchmark-c16")
-    gear = bundle["gears"]["16"]
+    stages.completed(f"atc-c{g}-baseline")
+    opt = stages.completed(f"atc-c{g}-optimized")
+    io = stages.completed(f"inputs-c{g}")
+    ref = stages.completed(f"reference-c{g}")
+    smoke = stages.completed(f"smoke-c{g}")
+    bench = stages.completed(f"benchmark-c{g}")
+    gear = bundle["gears"][g]
     m = opt["result"]
     require(
         m["air"] == gear["optimized"] == opt["contract"]["air"]
         and opt["contract"]["pkg"] == stages.refs["private-opp"]
         and io["contract"]["abi"] == gear["abi"]
-        and ref["contract"]["io"] == stages.refs["inputs-c16"]
+        and ref["contract"]["io"] == stages.refs[f"inputs-c{g}"]
         and ref["contract"]["runner"] == runner
-        and ref["contract"]["models"] == [stages.refs["atc-c16-baseline"], stages.refs["atc-c16-optimized"]]
+        and ref["contract"]["models"]
+        == [stages.refs[f"atc-c{g}-baseline"], stages.refs[f"atc-c{g}-optimized"]]
         and smoke["contract"] == dict(ref["contract"], reference=ref["result"]["reference"])
-        and bench["contract"] == dict(smoke["contract"], smoke=stages.refs["smoke-c16"])
+        and bench["contract"] == dict(smoke["contract"], smoke=stages.refs[f"smoke-c{g}"])
         and bench["result"]["statistics"]["variants"]["optimized"]["count"] == 90,
-        "different accepted C16 measurement",
+        f"different accepted C{g} measurement",
     )
-    site = gear["projections"][ROLE]
+    site = gear["projections"][role]
     image = m["kernels"][site["node"]]
-    query = m["plans"][TAG]
+    query = m["plans"][tag]
     require(
-        (site["nz_sha256"], site["gn_sha256"], query["tiling_sha256"]) == (NZ_SHA, GN_SHA, PARENT)
+        (site["nz_sha256"], site["gn_sha256"], query["tiling_sha256"]) == pins[:3]
         and image["block_dim"] == 8
-        and image["executable_sections"] == [dict(bytes=14516, sha256=TEXT)],
-        "different measured O constant, tiling or machine text",
+        and image["executable_sections"] == [dict(bytes=pins[3], sha256=pins[4])],
+        f"different measured {role} constant, tiling or machine text",
     )
     emitted = {
         m["kernels"][gear["projections"][r]["node"]]["node"]: m["kernels"][gear["projections"][r]["node"]]
-        for r in ROLES
+        for r in roles
     }
     recheck_embedded(
         c.verify(m["om"]),
@@ -250,6 +282,9 @@ def read_source(out, root, types):
         gear,
         bundle["target"]["embedding"]["fp16"],
         io["result"],
+        shape=shape,
+        role=role,
+        roles=roles,
     )
     expected = {name: ref["result"]["reference"][name] for name in ("d0_key", "d0_value")}
     c.verify_tree(expected)
@@ -257,10 +292,10 @@ def read_source(out, root, types):
         data,
         pkg=pkg,
         query=query,
-        compiled_o=image,
+        **{"compiled_" + role.split(".")[-1]: image},
         expected_kv=expected,
         archive=stages.refs,
-        source_implementations={r: m["kernels"][gear["projections"][r]["node"]] for r in ROLES},
+        source_implementations={r: m["kernels"][gear["projections"][r]["node"]] for r in roles},
         source_plans={
             "x".join(str(row[k]) for k in ("m", "k", "n")): m["plans"][
                 "x".join(str(row[k]) for k in ("m", "k", "n"))

@@ -105,7 +105,7 @@ def execute(folder, m, runner, model, env, dsos, files, timed, i):
         raise
 
 
-def pipeline_times(folder, summary):
+def pipeline_times(folder, summary, *, module="fc"):
     from module_profile import trace
     from hotspots import counters
 
@@ -120,10 +120,10 @@ def pipeline_times(folder, summary):
                 kind=r["kind"],
                 start=r["start"],
                 model=None,
-                label="FC",
+                label=module.upper(),
             )
             for r in csv.DictReader(handle)
-            if r["module"] == "fc"
+            if r["module"] == module
         ]
     raw = folder / "profiler"
     tables, _ = trace.csv_tables(raw)

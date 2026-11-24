@@ -148,10 +148,11 @@ def selected_archive(out, run, runs):
     )
 
 
-def charged_span(folder, model, row):
+def charged_span(folder, model, row, *, module="fc", logical_bytes=None):
     # Device interval from first verified layout task to the end of its dependent FC (includes any gap).
     with (folder / "timed-tasks.csv").open(newline="") as fobj:
         tasks = list(csv.DictReader(fobj))
+    nbytes = f.logical_bytes(M) if logical_bytes is None else logical_bytes
     per = []
     prep = set(model.get("prep_nodes", []))
     metadata = {"Reshape", "Squeeze", "ExpandDims", "Flatten"}
@@ -159,7 +160,7 @@ def charged_span(folder, model, row):
     fc_name = model["selected"]["node"]
     for call in range(7, 37):
         events = [r for r in tasks if int(r["call"]) == call and not r["module"].startswith("NOTIFY_")]
-        core = [r for r in events if r["op"] == fc_name and r["module"] == "fc"]
+        core = [r for r in events if r["op"] == fc_name and r["module"] == module]
         transforms = [r for r in events if r["op"] in prep]
         if (
             len(core) != 1
@@ -183,8 +184,8 @@ def charged_span(folder, model, row):
         median_us=p50,
         p95_us=sorted(spans)[math.ceil(0.95 * len(spans)) - 1],
         pack_task_median_us=median(x["layout_us"] for x in per),
-        logical_gbps=f.logical_bytes(M) / p50 / 1000,
-        floor_ratio=p50 / (f.logical_bytes(M) / 204800),
+        logical_gbps=nbytes / p50 / 1000,
+        floor_ratio=p50 / (nbytes / 204800),
     )
 
 
