@@ -308,6 +308,14 @@ def run(out, args, state):
 
 def main():
     p = argparse.ArgumentParser()
+    p.add_argument(
+        "--packed-a",
+        metavar="MEASURED_FC_RUN",
+        help="compare C64 with runtime activation packing against an accepted A1 run",
+    )
+    p.add_argument(
+        "--width", choices=("64", "320", "both"), default="both", help="output-column grouping for --packed-a"
+    )
     p.add_argument("--gear", choices=("16", "64", "both"), default="both")
     p.add_argument("--resume", help="reuse successful stages from an fc-bandwidth run")
     p.add_argument("--full-run", default="full-draft-panels-UFqlys")
@@ -318,7 +326,13 @@ def main():
     out = Path(os.environ["DFLASH_OUTPUT"])
     state = dict(phase="setup", status="FAILED")
     try:
-        state["status"] = run(out, args, state)
+        if args.packed_a:
+            import packed_run
+
+            fc.require(args.gear != "16", "--packed-a targets C64")
+            state["status"] = packed_run.run(out, args, state)
+        else:
+            state["status"] = run(out, args, state)
     except Exception as err:
         state["error"] = repr(err)
         traceback.print_exc()
