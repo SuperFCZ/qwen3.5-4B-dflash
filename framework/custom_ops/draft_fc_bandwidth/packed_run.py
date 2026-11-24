@@ -75,6 +75,79 @@ def admit(out, old):
     return dict(source=src, cases=refs, runner=exe, package=pkg, control=model["result"], receipts=st.refs)
 
 
+def selected_archive(out, run, runs):
+    result = f.c.read(run / "result.json")
+    f.require(result["status"] in ("MEASURED", "MEASURED_AND_PROFILED"), "packed comparison is incomplete")
+    base = admit(out, run_path(runs, result["parent_run"], "fc-bandwidth-"))
+    st = Stages(out, run)
+    old_control = f.LOCAL
+    selected = result["selected_c64"]
+    f.require(selected in (pp.MODES[64], pp.MODES[320]), "expected an admitted packed C64 winner")
+    pk = st.completed("build-" + selected)
+    atc = st.completed("atc-" + selected)
+    f.require(
+        atc["contract"]["build"] == st.refs["build-" + selected]
+        and atc["contract"]["control"] == base["receipts"]["atc-c64-" + old_control]
+        and atc["contract"]["source"] == base["receipts"]["source"],
+        "crossed packed C64 model",
+    )
+
+    def decision(a, b):
+        for name in (a, b):
+            row = st.completed("smoke-" + name)
+            f.require(
+                row["contract"]["runner"] == base["runner"]
+                and row["contract"]["inputs"] == base["cases"]
+                and row["contract"]["archive"] == base["receipts"]["benchmark-c64"],
+                "crossed packed C64 smoke",
+            )
+            if name == selected:
+                f.require(row["contract"]["model"] == atc["result"]["om"], "different measured packed OM")
+        key = a + "__" + b
+        record = st.completed("benchmark-" + key)
+        f.require(
+            record["contract"]["smoke"] == [st.refs["smoke-" + s] for s in (a, b)],
+            "different paired predecessor",
+        )
+        for row in record["result"]["rows"]:
+            exe = f.c.read(f.c.verify(row["execution"]))
+            f.require(
+                exe["golden_match"]
+                and exe["status"] == "PASS"
+                and exe["sync_completed"]
+                and exe["timing"]["execute_sync"]["samples_ms"] == row["validation"]["timing"]["samples_ms"],
+                "old packed timing changed",
+            )
+        stats = pair_statistics(
+            record["result"]["rows"], b, a, flops=2 * M * f.K * f.N, logical_bytes=f.logical_bytes(M)
+        )
+        f.require(
+            record["result"]["statistics"] == stats == result["comparisons"][key],
+            "different packed statistics",
+        )
+        return stats["decision"] == "GO"
+
+    f.require(decision(old_control, selected), "prior packed candidate did not beat A1")
+    narrow, wide = pp.MODES[64], pp.MODES[320]
+    if narrow + "__" + wide in result["comparisons"]:
+        better = decision(narrow, wide)
+        f.require(selected == (wide if better else narrow), "wrong direct-pair selection")
+    pkg, model = pk["result"], atc["result"]
+    f.c.verify_opp(pkg["opp"])
+    f.c.verify(pkg["source"])
+    f.c.verify(pkg["host_source"])
+    f.c.verify(model["om"])
+    f.c.verify(model["dump"])
+    f.c.verify(model["air"])
+    return dict(
+        base,
+        control=model,
+        package=pkg,
+        model_ref=st.refs["atc-" + selected],
+        benchmark_ref=st.refs["benchmark-" + old_control + "__" + selected],
+    )
+
+
 def charged_span(folder, model, row):
     # Device interval from first verified layout task to the end of its dependent FC (includes any gap).
     with (folder / "timed-tasks.csv").open(newline="") as fobj:
@@ -117,7 +190,7 @@ def charged_span(folder, model, row):
 
 def run(out, args, state):
     runs = Path(os.environ["DFLASH_RUN_ROOT"]) / "runs"
-    old = run_path(runs, args.packed_a, "fc-bandwidth-")
+    old = run_path(runs, args.n160 or args.packed_a, "fc-bandwidth-")
     prior = run_path(runs, args.resume, "fc-bandwidth-") if args.resume else None
     stages = Stages(out, prior)
 
@@ -125,11 +198,13 @@ def run(out, args, state):
         state["phase"] = name
         return stages.run(name, key, action)
 
-    archive = admit(out, old)
-    control = f.LOCAL
+    archive = selected_archive(out, old, runs) if args.n160 else admit(out, old)
+    control = archive["control"]["mode"]
+    previous = archive.get("benchmark_ref", archive["receipts"]["benchmark-c64"])
+    parent_model = archive.get("model_ref", archive["receipts"].get("atc-c64-" + control))
     runner = archive["runner"]
     cases = archive["cases"]
-    print("Reusing measured C64 FC A1 control", archive["control"]["om"]["sha256"], flush=True)
+    print("Reusing measured C64 FC control", control, archive["control"]["om"]["sha256"], flush=True)
     cann = Path(os.environ["CANN_ROOT"]).resolve(strict=True)
     tools = {n: f.c.identity(shutil.which(n)) for n in ("atc", "msopgen", "cmake")}
     shared = environment(cann, tools)
@@ -148,7 +223,7 @@ def run(out, args, state):
     pkgs = {control: archive["package"]}
     envs = {control: environment(cann, tools, pkgs[control]["opp"]["install"])}
     dsos = {}
-    root_key = dict(archive=archive["receipts"]["benchmark-c64"], runner=runner, inputs=cases)
+    root_key = dict(archive=previous, runner=runner, inputs=cases)
     state.update(
         parent_run=str(old),
         control=archive["control"]["om"],
@@ -240,19 +315,22 @@ def run(out, args, state):
     widths = (64, 320) if args.width == "both" else (int(args.width),)
     passing = []
     cli = None
-    for width in widths:
-        mode = pp.MODES[width]
+    variants = [(w, False) for w in widths]
+    if args.n160:
+        variants = [(160, b) for b in (False, True)]
+    for width, banked in variants:
+        mode = pp.BANKED if banked else pp.MODES[width]
         pkg = stage(
             "build-" + mode,
             dict(
                 tools=tools,
-                device=f.q.sha(pp.device_source().encode()),
-                host=f.q.sha(pp.host_source().encode()),
+                device=f.q.sha(pp.device_source(banked).encode()),
+                host=f.q.sha(pp.host_source(width).encode()),
                 scheduler=f.q.sha(pp.scheduler_source().encode()),
-                header=f.q.sha(pp.header(width)),
+                header=f.q.sha(pp.header(width, banked)),
                 builder=f.c.sha(f.HERE / "packed_panel.py"),
             ),
-            lambda d: pp.build(d, cann, shared, width),
+            lambda d: pp.build(d, cann, shared, width, banked=banked),
         )
         f.c.verify_opp(pkg["opp"])
         pkgs[mode] = pkg
@@ -261,17 +339,17 @@ def run(out, args, state):
             "atc-" + mode,
             dict(
                 build=stages.refs["build-" + mode],
-                control=archive["receipts"]["atc-c64-" + control],
+                control=parent_model,
                 source=archive["receipts"]["source"],
                 atc=tools["atc"],
                 width=width,
             ),
-            lambda d: pp.compile_model(d, types, pkg, envs[mode], atc, width, archive),
+            lambda d: pp.compile_model(d, types, pkg, envs[mode], atc, width, archive, banked=banked),
         )
         f.c.verify(model["om"])
         models[mode] = model
         print(
-            f"C64 {mode}: ATC 8 blocks, N{width}/K{pp.QUERY[width][0]}, charged layout",
+            f"C64 {mode}: ATC 8 blocks, N{width}/K{pp.recipe(width,banked)[0]}, charged layout",
             model["prep_nodes"],
             flush=True,
         )

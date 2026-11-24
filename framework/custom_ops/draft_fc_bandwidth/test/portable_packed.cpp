@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "d_flash_fc_packed_panel.cpp"
 #include <cstring>
 #include <fstream>
@@ -29,8 +30,14 @@ int main(int argc,char** argv)
         else if(y[i]!=half(-127))return 4;
     }
     if(fail>=0)return cpuMetrics.ends==1?0:5;
+#if FC_TEST_BANKED
+    const uint64_t copies=(3+Pieces)*Panels*Tiles;
+    if(cpuMetrics.eventAllocations!=3*8 || cpuMetrics.eventReleases!=3*8) return 7;
+#else
+    const uint64_t copies=(2+2*Pieces)*Panels*Tiles;
+#endif
     if(cpuMetrics.iterations!=Tiles*Panels || cpuMetrics.partials!=Tiles*(Panels-1) || cpuMetrics.outputs!=Tiles ||
-       cpuMetrics.copies!=(2+2*Pieces)*Panels*Tiles || cpuMetrics.fullBarriers!=3*Tiles*Panels ||
+       cpuMetrics.copies!=copies || cpuMetrics.fullBarriers!=3*Tiles*Panels ||
        cpuMetrics.mulCalls!=Groups*Pieces*Panels*Tiles || AscendC::storeWaits!=(Pieces-2)*Panels*Tiles)return 6;
     std::cout<<"C64 N"<<Columns<<": 163,840 outputs, real contiguous A panel loads, partials and owners verified\n";
 }

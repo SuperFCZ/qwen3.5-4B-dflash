@@ -17,16 +17,33 @@ import json
 M, K, N = 64, f.K, f.N
 OP = "DFlashFcPackedPanel"
 STEM = "d_flash_fc_packed_panel"
-MODES = {64: "fc-pack-a-n64", 320: "fc-pack-a-n320"}
-QUERY = {64: (2560, 256, 1, 10, 2, 10), 320: (1280, 32, 2, 1, 4, 2)}  # PK, baseK, steps and depths
+MODES = {64: "fc-pack-a-n64", 160: "fc-pack-a-n160", 320: "fc-pack-a-n320"}
+BANKED = "fc-n160-l1-pair"
+QUERY = {
+    64: (2560, 256, 1, 10, 2, 10),
+    160: (1280, 80, 2, 16, 4, 16),
+    320: (1280, 32, 2, 1, 4, 2),
+}  # PK, baseK, steps and depths
 
 
-def header(width):
+def recipe(width, banked=False):
+    require(width in MODES and (not banked or width == 160), "unsupported FC geometry")
+    return (640, 80, 8, 8, 8, 8) if banked else QUERY[width]
+
+
+def header(width, banked=False):
     require(width in MODES, "unknown FC width")
+    recipe(width, banked)
+    if width == 160:
+        return (
+            f"#define DFLASH_FC_BANKED_L1 {int(banked)}U\n".encode() + (f.HERE / "n160_spec.h").read_bytes()
+        )
     return f"#define DFLASH_FC_COLUMNS {width}U\n".encode() + (f.HERE / "packed_spec.h").read_bytes()
 
 
-def device_source():
+def device_source(banked=False):
+    if banked:
+        return (f.HERE / "op_kernel/banked.cpp").read_text()
     s = (
         (f.HERE / "op_kernel" / (f.STEM + ".cpp"))
         .read_text()
@@ -50,7 +67,7 @@ def device_source():
     )
 
 
-def host_source():
+def host_source(width=64):
     s = (
         f.host_source()
         .replace('"fc_spec.h"', '"packed_spec.h"')
@@ -77,6 +94,12 @@ def host_source():
         ("a = M*256*2, b = Columns*256*2", "a = M*BaseK*2, b = Columns*BaseK*2"),
     ):
         s = once(s, a, b)
+    if width == 160:
+        return once(
+            s,
+            "cube.get_stepKa() != (Wide ? 2 : 1) || cube.get_stepKb() != (Wide ? 1 : 10)",
+            "cube.get_stepKa() != StepKa || cube.get_stepKb() != StepKb",
+        )
     return s
 
 
@@ -87,7 +110,7 @@ def scheduler_source():
     )
 
 
-def build(out, cann, env, width):
+def build(out, cann, env, width, *, banked=False):
     spec = out / (OP + ".json")
     entries = c.read(f.OPS / "draft_gate_tile_nd/DFlashGateTileNd.json")
     entries[0]["op"] = OP
@@ -95,11 +118,11 @@ def build(out, cann, env, width):
     proj = f.generate(out, spec, env)
     host = proj / "op_host"
     dev = proj / "op_kernel"
-    config = header(width)
+    config = header(width, banked)
     for folder in (host, dev):
         (folder / "packed_spec.h").write_bytes(config)
-    (host / (STEM + ".cpp")).write_text(host_source())
-    (dev / (STEM + ".cpp")).write_text(device_source())
+    (host / (STEM + ".cpp")).write_text(host_source(width))
+    (dev / (STEM + ".cpp")).write_text(device_source(banked))
     helper = f.q.gate.HERE / "panel_vector.h"
     shutil.copyfile(helper, dev / helper.name)
     (host / (STEM + "_tiling.h")).write_text(
@@ -217,7 +240,7 @@ def add_pack_graph(model, width, pk, weights, scales, *, m=M, k=K, n=N):
     return model
 
 
-def actual_plan(out, pkg, platform, schedule, original, width):
+def actual_plan(out, pkg, platform, schedule, original, width, *, banked=False):
     def records(file):
         return [json.loads(line, object_pairs_hook=unique_object) for line in file.read_text().splitlines()]
 
@@ -243,10 +266,11 @@ def actual_plan(out, pkg, platform, schedule, original, width):
         ),
         "different packed FC tiler",
     )
-    pk, bk, sa, sb, da, db = QUERY[width]
-    codes = 16 * pk
+    pk, bk, sa, sb, da, db = recipe(width, banked)
+    codes = (width if banked else 16) * pk
     scales = pk // 128 * width * 2
-    user = codes * 5 + scales + 8192
+    weight_bytes = 4 * 16 * pk
+    user = codes + weight_bytes + scales + 8192
     scratch = 262144 - user
     raw = bytes.fromhex(s["tiling_hex"])
     require(
@@ -281,9 +305,9 @@ def actual_plan(out, pkg, platform, schedule, original, width):
         scratch=scratch,
         codes_bytes=codes,
         scale_bytes=scales,
-        weight_bytes=4 * codes,
+        weight_bytes=weight_bytes,
         workspace=p["workspace"],
-        l1_used=2 * (M + width) * pk + 2 * bk * (M * da + width * db),
+        l1_used=(2 if banked else 1) * 2 * (M + width) * pk + 2 * bk * (M * da + width * db),
         l0a_used=M * bk * 4,
         l0b_used=width * bk * 4,
         l0c_used=4 * M * width,
@@ -324,8 +348,8 @@ def actual_plan(out, pkg, platform, schedule, original, width):
     )
 
 
-def compile_model(out, types, pkg, env, argv, width, archive):
-    pk = QUERY[width][0]
+def compile_model(out, types, pkg, env, argv, width, archive, *, banked=False):
+    pk = recipe(width, banked)[0]
     src = archive["source"]
     nz, gn = (c.verify(src["weights"][name]).read_bytes() for name in ("w_nz.bin", "s_gn.bin"))
     w, s = packed_weights(nz, gn, N, K, width, pk)
@@ -359,7 +383,7 @@ def compile_model(out, types, pkg, env, argv, width, archive):
     dump = out / "om-graph.json"
     command(args, out / "atc.log", local, out)
     command([argv[0], "--mode=1", "--om=" + str(om), "--json=" + str(dump)], out / "inspect.log", env, out)
-    query = actual_plan(out, pkg, pfile, sfile, archive["control"]["query"], width)
+    query = actual_plan(out, pkg, pfile, sfile, archive["control"]["query"], width, banked=banked)
     nodes = read_om_json(dump)
     table = {n["name"]: n for n in nodes}
     require(len(nodes) == len(table), "ambiguous compiled FC graph")
@@ -417,7 +441,7 @@ def compile_model(out, types, pkg, env, argv, width, archive):
             require(off >= 0, "FC packed constant missing in OM")
             offsets.append(off)
     return dict(
-        mode=MODES[width],
+        mode=BANKED if banked else MODES[width],
         op=OP,
         abi=f.abi(M),
         om=c.identity(om),

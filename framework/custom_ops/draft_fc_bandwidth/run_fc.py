@@ -308,7 +308,11 @@ def run(out, args, state):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument(
+    extra = p.add_mutually_exclusive_group()
+    extra.add_argument(
+        "--n160", metavar="MEASURED_PACKED_RUN", help="C64 direct follow-up against the selected packed OM"
+    )
+    extra.add_argument(
         "--packed-a",
         metavar="MEASURED_FC_RUN",
         help="compare C64 with runtime activation packing against an accepted A1 run",
@@ -326,10 +330,10 @@ def main():
     out = Path(os.environ["DFLASH_OUTPUT"])
     state = dict(phase="setup", status="FAILED")
     try:
-        if args.packed_a:
+        if args.packed_a or args.n160:
             import packed_run
 
-            fc.require(args.gear != "16", "--packed-a targets C64")
+            fc.require(args.gear != "16", "packed-activation comparisons target C64")
             state["status"] = packed_run.run(out, args, state)
         else:
             state["status"] = run(out, args, state)

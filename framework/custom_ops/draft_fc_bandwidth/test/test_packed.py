@@ -45,25 +45,44 @@ class Packed(unittest.TestCase):
             s = once(
                 h.read_text(),
                 "tiling_.singleM==16 && tiling_.orgKa==2560",
-                "tiling_.singleM==64 && (tiling_.orgKa==1280 || tiling_.orgKa==2560)",
+                "tiling_.singleM==64 && (tiling_.orgKa==640 || tiling_.orgKa==1280 || tiling_.orgKa==2560)",
             )
-            s = once(s, "tiling_.singleN == 64);", "(tiling_.singleN==64 || tiling_.singleN==320));")
+            s = once(
+                s,
+                "tiling_.singleN == 64);",
+                "(tiling_.singleN==64 || tiling_.singleN==160 || tiling_.singleN==320));",
+            )
             h.write_text(
                 once(s, "globalIndex % tiling_.orgN / 64", "globalIndex % tiling_.orgN / tiling_.singleN")
             )
             x.reshape(m, k // 16, 16).transpose(1, 0, 2).tofile(d / "x")
             expected.astype("<f2").tofile(d / "expected")
-            for width in (64, 320):
-                pk = p.QUERY[width][0]
+            h = inc / "kernel_operator.h"
+            txt = once(h.read_text(), "Range l1B{0,0};", "Range l1B{0,0}; std::vector<Range> allB;")
+            txt = once(
+                txt,
+                "if constexpr(P==TPosition::B1) cpuSync.l1B=Bytes(buffer.template Get<uint8_t>(bytes).data,bytes);",
+                "if constexpr(P==TPosition::B1) cpuSync.allB.push_back(Bytes(buffer.template Get<uint8_t>(bytes).data,bytes));",
+            )
+            h.write_text(
+                once(
+                    txt,
+                    "cpuSync.l1B.bytes && Overlaps(target,cpuSync.l1B)",
+                    "std::any_of(cpuSync.allB.begin(),cpuSync.allB.end(),[&](const Range& r){return Overlaps(target,r);})",
+                )
+            )
+            for width, banked in ((64, False), (320, False), (160, False), (160, True)):
+                pk = p.recipe(width, banked)[0]
                 weights, scales = p.packed_weights(nz, gn.tobytes(), n, k, width, pk)
                 (d / "w").write_bytes(weights)
                 (d / "s").write_bytes(scales)
-                (d / "packed_spec.h").write_bytes(p.header(width))
-                (d / (p.STEM + ".cpp")).write_text(p.device_source())
+                (d / "packed_spec.h").write_bytes(p.header(width, banked))
+                (d / (p.STEM + ".cpp")).write_text(p.device_source(banked))
                 ex = d / "run"
                 cc = [
                     "c++",
                     "-std=c++17",
+                    "-DFC_TEST_BANKED=" + str(int(banked)),
                     "-O2",
                     "-ffp-contract=off",
                     "-I" + str(inc),
@@ -76,6 +95,20 @@ class Packed(unittest.TestCase):
                 subprocess.run(cc, check=True)
                 for args in ([], ["0"], [str(k // pk - 1)]):
                     subprocess.run([ex, d, *args], check=True)
+
+                if banked:
+                    wrong = once(
+                        p.device_source(True),
+                        "if (ahead) FillB(second?b0:b1,weights,raw,scale,ids);",
+                        "if (ahead) FillB(second?b1:b0,weights,raw,scale,ids);",
+                    )
+                    (d / (p.STEM + ".cpp")).write_text(wrong)
+                    subprocess.run(cc, check=True)
+                    bad = subprocess.run([ex, d], cwd=d, capture_output=True, text=True)
+                    self.assertNotEqual(bad.returncode, 0)
+                    self.assertRegex(
+                        bad.stderr, "B1 overwritten while Cube reads|reused while Cube consumer is live"
+                    )
 
     def test_read_real_wide_scheduler(self):
         w = 320
@@ -149,6 +182,81 @@ class Packed(unittest.TestCase):
             (d / "s").write_text(json.dumps(dict(sch, tile_n=64)) + "\n")
             with self.assertRaisesRegex(ValueError, "scheduler/resource"):
                 p.actual_plan(d, pkg, d / "p", d / "s", orig, w)
+
+    def test_n160_layout_and_sdk_budget(self):
+        off = {v["name"]: 24 + v["offset"] for v in p.f.schema()}
+        for banked, expected in (
+            (False, (113792, 148352, 1024000, 2, 16, 4, 16)),
+            (True, (153152, 108992, 860160, 8, 8, 8, 8)),
+        ):
+            ub, scratch, l1, sa, sb, da, db = expected
+            pk, bk, *steps = p.recipe(160, banked)
+            self.assertEqual(steps, [sa, sb, da, db])
+            with tempfile.TemporaryDirectory() as tmp:
+                import json
+
+                d = Path(tmp)
+                ds = d / "lib.so"
+                ds.write_bytes(b"host")
+                pkg = {"opp": {"install": str(d), "preflight": {"files": [p.c.identity(ds)]}}}
+                origp = dict(
+                    host_dso=str(ds),
+                    blockDim=8,
+                    availableCores=8,
+                    coreLimit=0,
+                    workspace=2097152,
+                    capacity=dict(UB=262144, L1=1048576, L0A=65536, L0B=65536, L0C=262144),
+                )
+                raw = bytearray(224)
+                struct.pack_into("<4IQ", raw, 0, 64, p.K, p.N, pk, scratch)
+                for key, value in dict(
+                    singleCoreM=64,
+                    singleCoreN=160,
+                    singleCoreK=pk,
+                    baseM=64,
+                    baseN=160,
+                    baseK=bk,
+                    stepKa=sa,
+                    stepKb=sb,
+                    depthA1=da,
+                    depthB1=db,
+                    dbL0A=2,
+                    dbL0B=2,
+                    dbL0C=1,
+                    isBias=0,
+                    transLength=20480,
+                ).items():
+                    struct.pack_into("<I", raw, off[key], value)
+                rs = dict(
+                    tile_k=pk,
+                    raw_banks=1,
+                    user_ub=ub,
+                    scratch=scratch,
+                    codes_bytes=(160 if banked else 16) * pk,
+                    scale_bytes=2 * 160 * (pk // 128),
+                    weight_bytes=64 * pk,
+                    workspace=2097152,
+                    l1_used=l1,
+                    l0a_used=20480,
+                    l0b_used=51200,
+                    l0c_used=40960,
+                )
+                ass = [list(range(i, 16, 8)) for i in range(8)]
+                sch = dict(
+                    tile_n=160,
+                    n_tiles=16,
+                    baseline_assignments=ass,
+                    candidate_assignments=ass,
+                    resources=rs,
+                    tiling_bytes=224,
+                    tiling_hex=raw.hex(),
+                )
+                (d / "p").write_text(json.dumps(origp) + "\n")
+                (d / "s").write_text(json.dumps(sch) + "\n")
+                proof = p.actual_plan(
+                    d, pkg, d / "p", d / "s", dict(platform=origp, schedule=sch), 160, banked=banked
+                )
+                self.assertEqual(proof["schedule"]["resources"]["l1_used"], l1)
 
     @unittest.skipUnless(os.environ.get("DFLASH_GE_DESCRIPTOR"), "CANN GE descriptor required")
     def test_real_air_pack_and_charged_span(self):
