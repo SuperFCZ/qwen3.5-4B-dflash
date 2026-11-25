@@ -103,6 +103,18 @@ def reference_graph(out, types, model, graph, *, shape=SHAPE):
         and tuple(site[key] for key in ("m", "k", "n")) == shape,
         "wrong raw Layer0 Gate",
     )
+    return cut_reference(out,types,g,graph,site,cuts,shape,ROLE,"layer0.post_norm","Add","layer0_post_norm_raw_gate")
+
+
+def cut_reference(out,types,g,graph,site,cuts,shape,role,required_module,required_type,graph_name):
+    """Replace frozen upstream tensors by public inputs and expose the raw projection's x/y on device."""
+    m,k,n=shape
+    table={t.name:t for t in g.op}
+    projection=table[site["node"]]
+    require(len(table)==len(g.op) and projection.type==OLD_OP and
+            tuple(site[key] for key in ("m","k","n"))==shape and
+            [edge(v) for v in projection.input[1:]]==[site["weight"],site["scale"]],
+            "reference projection, shape or constants differ")
     x = edge(projection.input[0])
     wanted = set()
 
@@ -114,16 +126,12 @@ def reference_graph(out, types, model, graph, *, shape=SHAPE):
                     visit(edge(e))
 
     visit(projection.name)
-    require(
-        cuts.keys() <= wanted
-        and any(graph["modules"].get(name) == "layer0.post_norm" for name in wanted)
-        and any(table[name].type == "Add" for name in wanted)
-        and {name for name in wanted - set(cuts) if table[name].type.startswith("DFlash")}
-        == {projection.name},
-        "expected Layer0 residual/post-norm path from O and token embeddings",
-    )
+    require(cuts.keys() <= wanted and any(graph["modules"].get(name) == required_module for name in wanted)
+            and required_type in {table[name].type for name in wanted}
+            and {name for name in wanted-set(cuts) if table[name].type.startswith("DFlash")}=={projection.name},
+            "unexpected "+role+" prefix dataflow")
     ref = types[0]()
-    ref.name = "layer0_post_norm_raw_gate"
+    ref.name = graph_name
     target = ref.graph.add(name=ref.name)
     abi = {"inputs": [], "outputs": []}
     for old in g.op:
@@ -177,40 +185,41 @@ def reference_graph(out, types, model, graph, *, shape=SHAPE):
             and d.dtype == dt
             and d.layout == fmt
             and tuple(d.shape.dim) == sz,
-            "wrong raw Gate constant: " + key,
+            "wrong raw projection constant: " + key,
         )
         dst = out / file
         dst.write_bytes(t.data)
         weights[file] = c.identity(dst)
-        require(weights[file]["sha256"] == site[pin], "checkpoint Gate bytes changed: " + key)
+        require(weights[file]["sha256"] == site[pin], "checkpoint projection bytes changed: " + key)
     return dict(
         reference_air=c.identity(path),
         reference_abi=abi,
         weights=weights,
         x_node=x,
-        sites={ROLE: site},
+        sites={role: site},
         cut_nodes={name: spec[0] for name, spec in cuts.items()},
     )
 
 
-def single_graph(out, types, model, site, weights, *, shape=SHAPE):
+def single_graph(out, types, model, site, weights, *, shape=SHAPE, op_type=gate.OP, panel=None, name="gate"):
     """Keep the deployed Gate, constant names, ports and descriptors; expose only its ND activation."""
     m, k, n = shape
+    panel = k if panel is None else panel
     (original,) = model.graph
     table = {op.name: op for op in original.op}
     op = table[site["node"]]
     require(
-        op.type == gate.OP
+        op.type == op_type
         and [edge(v) for v in op.input[1:]] == [site["weight"], site["scale"]]
         and list(op.input_desc[0].shape.dim) == [m, k]
         and list(op.output_desc[0].shape.dim) == [m, n],
         "expected full-K panel in integrated AIR",
     )
     codes, scales, _ = gate.pack_cube_panels(
-        *(c.verify(weights[name]).read_bytes() for name in ("w_nz.bin", "s_gn.bin")), k, k=k, n=n
+        *(c.verify(weights[name]).read_bytes() for name in ("w_nz.bin", "s_gn.bin")), panel, k=k, n=n
     )
     msg = types[0]()
-    msg.name = "layer0_single_gate"
+    msg.name = "layer0_single_" + name
     g = msg.graph.add(name=msg.name)
     x = g.op.add(name="x", type="Data", id=0)
     x.attr["index"].i = 0
@@ -220,7 +229,7 @@ def single_graph(out, types, model, site, weights, *, shape=SHAPE):
     constants = []
     dims = []
     for i, (key, expected, sz) in enumerate(
-        (("weight", codes, [n // 64, 1, 64 * k]), ("scale", scales, [n // 64, k // 128, 64])), 1
+        (("weight", codes, [n // 64, k // panel, 64 * panel]), ("scale", scales, [n // 64, k // 128, 64])), 1
     ):
         node = table[site[key]]
         d = node.output_desc[0]
@@ -250,7 +259,7 @@ def single_graph(out, types, model, site, weights, *, shape=SHAPE):
     d.CopyFrom(proj.output_desc[0])
     d.name = "y"
     g.output.append(proj.name + ":0")
-    p = out / "gate.air"
+    p = out / (name + ".air")
     p.write_bytes(msg.SerializeToString(deterministic=True))
     return c.identity(p), dict(physical_shapes=dims, constants=constants)
 

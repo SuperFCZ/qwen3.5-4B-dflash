@@ -232,11 +232,7 @@ def execute(folder, runner, model, env, dsos, files, timed, i, *, abi=ABI, refer
         raise
 
 
-def profile(
-    out, runner, model, env, dsos, files, cli, *, abi=ABI, role=ROLE, reference=REFERENCE, logical_bytes=BYTES
-):
-    from module_profile import analyze
-
+def collect_profile(out, runner, model, env, dsos, files, cli, *, abi, reference):
     app = out / "application"
     prepare_case(app, abi, {"files": {"x": files["x.bin"]}}, {"y": files["golden.bin"]})
     require(c.identity(cli["alias"]) == cli["file"], "msprof changed")
@@ -269,10 +265,16 @@ def profile(
             c.sha(app / ("y-" + suffix + ".bin")) == files["golden.bin"]["sha256"],
             "profiled projection output drift",
         )
+    return dict(witness, profiler=str(out / "profiler"), execution=c.identity(app / "execution.json"))
+
+
+def analyze_profile(out, model, capture, *, role, logical_bytes):
+    from module_profile import analyze
+
     node = model["selected"]["node"]
     report = analyze(
         out,
-        dict(witness, profiler=str(out / "profiler")),
+        capture,
         model,
         dict(modules={node: role}, node_types={node: model["op"]}),
     )
@@ -289,5 +291,12 @@ def profile(
         floor_ratio=ms / (logical_bytes / 204.8e6),
         timeline=report["timeline"],
         op_summary=report["op_summary"],
-        execution=c.identity(app / "execution.json"),
+        execution=capture["execution"],
     )
+
+
+def profile(
+    out, runner, model, env, dsos, files, cli, *, abi=ABI, role=ROLE, reference=REFERENCE, logical_bytes=BYTES
+):
+    capture = collect_profile(out, runner, model, env, dsos, files, cli, abi=abi, reference=reference)
+    return analyze_profile(out, model, capture, role=role, logical_bytes=logical_bytes)

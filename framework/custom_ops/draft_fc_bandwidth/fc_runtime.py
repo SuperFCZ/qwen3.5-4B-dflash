@@ -105,7 +105,7 @@ def execute(folder, m, runner, model, env, dsos, files, timed, i):
         raise
 
 
-def pipeline_times(folder, summary, *, module="fc"):
+def pipeline_times(folder, summary, *, module="fc", profiler_folder=None):
     from module_profile import trace
     from hotspots import counters
 
@@ -125,7 +125,7 @@ def pipeline_times(folder, summary, *, module="fc"):
             for r in csv.DictReader(handle)
             if r["module"] == module
         ]
-    raw = folder / "profiler"
+    raw = folder / "profiler" if profiler_folder is None else profiler_folder
     tables, _ = trace.csv_tables(raw)
     require(
         len(tables) == 1 and c.identity(raw / tables[0]["file"]) == summary["op_summary"],
