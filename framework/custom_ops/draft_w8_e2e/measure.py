@@ -56,8 +56,16 @@ def runner(d, history, cann, env):
     return dict(file=c.identity(p), same_as_archive=c.sha(p) == history["runner"]["sha256"])
 
 
-def launch(d, history, plan, exe, env):
+def launch(d, history, plan, exe, env, *, canary=False):
     batch = c.verify(history["batch"])
+    selected = history["prompts"]
+    if canary:
+        selected = selected[:1]
+        require(selected[0]["id"] == "zh_explain", "unexpected canary prompt")
+        lines = batch.read_text().splitlines()
+        batch = d / "canary-prompt.txt"
+        batch.write_text("\n".join(lines[:2]) + "\n")
+    batch_hash = c.sha(batch)
     index = d / "runner-batch.json"
     cmd = list(
         map(
@@ -75,7 +83,7 @@ def launch(d, history, plan, exe, env):
                 "--prompt-batch",
                 batch,
                 "--prompt-batch-sha256",
-                history["batch"]["sha256"],
+                batch_hash,
                 "--output",
                 index,
                 "--eos-token-ids",
@@ -89,9 +97,9 @@ def launch(d, history, plan, exe, env):
                 "--max-draft-tokens",
                 "15",
                 "--warmup",
-                "1",
+                "0" if canary else "1",
                 "--repetitions",
-                "3",
+                "1" if canary else "3",
                 "--trace-rounds",
                 "--low-memory",
             ),
@@ -99,7 +107,11 @@ def launch(d, history, plan, exe, env):
     )
     c.write(d / "command.json", cmd)
     print(
-        "20 archived prompts, 8 short + 12 long; Target Prefill → optimized Draft C16/C64 → Chunk Verify/commit",
+        (
+            "One candidate-only zh_explain generation, 0 warmup + 1 run; device check"
+            if canary
+            else "20 archived prompts, 8 short + 12 long; Target Prefill → optimized Draft C16/C64 → Chunk Verify/commit"
+        ),
         flush=True,
     )
     with (d / "runner.log").open("x") as log, subprocess.Popen(
@@ -121,8 +133,8 @@ def launch(d, history, plan, exe, env):
         and raw["low_memory"]
         and raw["order"] == "DFlash only; ordinary baseline external"
         and raw["model_sha256"] == plan["sha256"]
-        and raw["prompt_batch_sha256"] == history["batch"]["sha256"]
-        and [v["id"] for v in raw["cases"]] == [p["id"] for p in history["prompts"]],
+        and raw["prompt_batch_sha256"] == batch_hash
+        and [v["id"] for v in raw["cases"]] == [p["id"] for p in selected],
         "incomplete genuine candidate batch",
     )
     files = {}
@@ -133,6 +145,31 @@ def launch(d, history, plan, exe, env):
             "unexpected case report",
         )
         files[row["id"]] = c.identity(f)
+    if canary:
+        r = c.read(c.verify(files[selected[0]["id"]]))
+        (m,) = r["dflash"]["measurements"]
+        counts = {
+            k: len(m["stage_ms"].get(k, []))
+            for k in ("target_prefill", "draft", "target_verify", "target_decode")
+        }
+        require(
+            "ordinary" not in r
+            and r["cpu_fallback"] is False
+            and r["prompt_token_ids"] == selected[0]["tokens"]
+            and r["protocol"]["warmup"] == 0
+            and r["protocol"]["repetitions"] == 1
+            and counts["target_prefill"] == 1
+            and counts["target_verify"] == counts["draft"] > 0
+            and counts["target_decode"] == 0,
+            "incomplete candidate device check",
+        )
+        print(
+            "Target/Draft/Verify device check PASS",
+            counts,
+            "tokens",
+            len(m["generated_token_ids"]),
+            flush=True,
+        )
     return dict(index=c.identity(index), reports=files, command=c.identity(d / "command.json"))
 
 

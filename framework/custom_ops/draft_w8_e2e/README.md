@@ -14,6 +14,7 @@ git pull --ff-only origin feature/ascend310p-custom-ops && bash framework/custom
 - Target 输出的 11 层特征按 `[1,5,8,9,13,15,17,21,22,25,29]` 拼接。新 Draft 在图内按槽位 `[0,2,5,8,10]` 取 checkpoint 指定的五层，公开 ND 输入宽 28,160，FC 输入宽 12,800。两档共享逻辑容量 2,048 和物理 KV 容量 2,112。使用旧单 Draft 的冻结输入构造等价宽输入，对 15 个 ID 和十份完整 KV 做逐位验收，含两种 poison、Guard、Readonly、Repeat 和同步。
 - Target 优先识别历史 OM 的 SHA。也可用 `DFLASH_E2E_TARGET_OM_DIR` 指定原始 `prefill.om` 与 `verify_chunk.om`。缺少原件时，默认从两份按 SHA 锁定的 W8A8 receiver AIR 直接恢复 GE 图并重新 ATC。每图逐文件核验 701 个 FileConstant，对其中八个注意力页表从 9 页扩展至 33 页。其余 693 个文件绑定、249 个量化矩阵乘、105 个 AdnRmsNorm、原始 CacheUpdate 链和带有效长度的 ChunkGatedDeltaRule 均保留。以原图的八个层端连接校验全部 32 层的顺序，再接出所需的 11 层。FP32 递归输入与已提交输出直接连接原始 GDR，对 Verify 分别核对第一遍的 discard 输出及第二遍的接受前缀状态。两个重建图都在进入 ATC 前校验实际端口。
 - 默认 GE 路线使用 `gate310p`。有历史原生导出前端时，可显式使用 `DFLASH_TARGET_BUILD_ROUTE=torchair` 和 `DFLASH_TARGET_PYTHON`；`DFLASH_TARGET_OPP_PATH` 可指定接收机配套 vendor。每个新 Target OM 都记录与历史二进制的 SHA 对照，完整生成另报告相同前缀与提议上的 Target 预测。
+- `w8-e2e-AsGU1u` 已恢复两张 Target AIR。该次编译缺少 Tensor 索引版本的 CacheUpdate，第一次设备错误指向 stream 7、task 6 的 AICPU `libaicpu_kernels.so / CacheUpdate`，该次计时无效。续接使用 `run.sh --resume w8-e2e-AsGU1u`，从 `/home/l00886453/custom_ops_llm/vendors/customize_scatter`（可用 `DFLASH_CACHE_UPDATE_OPP` 指定）绑定四输入 310P 包。编译后核验 Prefill 的 16 个及 Verify 的 256 个 CacheUpdate 实际使用 AI Core。一条独立候选请求先走通 Prefill、提议与 Verify；它的样本排除在正式 20 题统计之外。
 
 ## 结果
 

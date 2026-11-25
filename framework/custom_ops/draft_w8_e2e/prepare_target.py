@@ -21,6 +21,7 @@ from experiment import Stages
 from run_q import run_path
 from receiver_air import receiver_specs, reconstruct
 from air import protobuf_classes
+from cache_backend import provider, SHARED, audit_compiled
 
 
 def prepare(out, st, history, state, explicit=None):
@@ -30,8 +31,23 @@ def prepare(out, st, history, state, explicit=None):
 
     cann = Path(os.environ["CANN_ROOT"]).resolve(strict=True)
     paths = receiver_vendors(cann)
-    env = receiver_env(cann, os.environ, paths)
     target = exact_oms(history, explicit)
+    rebuilding = set(TARGET_SHA) - set(target)
+    cache = None
+    if rebuilding:
+        requested = os.environ.get("DFLASH_CACHE_UPDATE_OPP")
+        existing = next((p for p in paths if p.name == "customize_scatter"), SHARED)
+        cache = provider(requested or existing)
+        root = Path(cache["path"])
+        conflicts = [
+            str(p)
+            for p in paths
+            if p.resolve() != root and (p / "op_api/include/aclnn_cache_update.h").is_file()
+        ]
+        require(not conflicts, "another CacheUpdate provider is active: " + str(conflicts))
+        paths = [root, *[p for p in paths if p != root]]
+        print("Target CacheUpdate", root, cache["signature"], flush=True)
+    env = receiver_env(cann, os.environ, paths)
     route = os.environ.get("DFLASH_TARGET_BUILD_ROUTE", "receiver-air")
     require(route in ("receiver-air", "torchair"), "unknown Target rebuild route")
     if len(target) < 2 and route == "receiver-air":
@@ -61,6 +77,7 @@ def prepare(out, st, history, state, explicit=None):
                     air=rewritten["air"],
                     audit=rewritten["audit"],
                     vendors=list(map(str, paths)),
+                    cache_update=cache,
                     tool=c.identity(atc),
                     comparison_plan=history["plan"],
                     code=c.sha(HERE / "targets.py"),
@@ -92,12 +109,24 @@ def prepare(out, st, history, state, explicit=None):
                         export=st.refs["target-export"],
                         tool=c.identity(atc),
                         historical=history["graphs"][name]["sha256"],
+                        cache_update=cache,
                         code=c.sha(HERE / "targets.py"),
                     ),
                     lambda d: compile_target(d, name, src, history, env, atc),
                 )
+    for name in sorted(rebuilding):
+        om = target[name]["om"]
+        proof = stage(
+            "cache-backend-" + name,
+            dict(om=om, provider=cache, atc=c.identity(atc), code=c.sha(HERE / "cache_backend.py")),
+            lambda d: audit_compiled(d, name, c.verify(om), atc, env, cache["path"]),
+        )
+        c.verify(proof)
+        target[name] = dict(target[name], cache_backend=proof)
     c.verify_tree([t["om"] for t in target.values()])
-    result = dict(models=target, vendors=list(map(str, paths)), historical_index=history["index"])
+    result = dict(
+        models=target, vendors=list(map(str, paths)), cache_provider=cache, historical_index=history["index"]
+    )
     c.write(out / "target.json", result)
     return result
 

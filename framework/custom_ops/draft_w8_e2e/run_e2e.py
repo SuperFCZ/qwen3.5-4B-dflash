@@ -204,6 +204,12 @@ def run(out, args, state):
         )
     else:
         target = prepare(out, st, h, state, os.getenv("DFLASH_E2E_TARGET_OM_DIR"))
+    for node in target["models"].values():
+        if node["origin"] != "HISTORICAL_OM_SHA_MATCH":
+            require(node.get("cache_backend"), "rebuilt Target has no actual CacheUpdate backend receipt")
+            c.verify(node["cache_backend"])
+    if target.get("cache_provider"):
+        c.verify_tree(target["cache_provider"])
     env = receiver_env(cann, os.environ, [Path(v) for v in target["vendors"]])
     settled = stage(
         "plan",
@@ -220,13 +226,28 @@ def run(out, args, state):
         dict(archived=h["runner"], cmake=tools["cmake"], code=c.sha(HERE / "measure.py")),
         lambda d: runner(d, h, cann, env),
     )
+    launch_sha = hashlib.sha256(inspect.getsource(launch).encode()).hexdigest()
+    probe = stage(
+        "generation-check",
+        dict(
+            plan=settled,
+            source_batch=h["batch"],
+            runner=generation,
+            protocol="zh_explain 0+1 candidate only",
+            code=launch_sha,
+        ),
+        lambda d: launch(d, h, settled, generation, env, canary=True),
+    )
+    c.verify(probe["index"])
+    c.verify_tree(probe["reports"])
     cap = stage(
         "generation",
         dict(
             plan=settled,
             prompts=h["batch"],
             runner=generation,
-            code=hashlib.sha256(inspect.getsource(launch).encode()).hexdigest(),
+            code=launch_sha,
+            device_check=st.refs["generation-check"],
             protocol="DFlash-only, thinking-on, max 128, device 0, 1+3, chunk, low memory, 15, trace rounds",
         ),
         lambda d: launch(d, h, settled, generation, env),

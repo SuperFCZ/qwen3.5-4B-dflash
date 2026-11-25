@@ -14,7 +14,7 @@ sys.path.insert(0, str(HERE))
 from winners import c, selected, UNION, SELECT, OPS
 from history import TARGET_SHA, write_candidate_plan, parse_plan
 from features import insert_selector, slots
-from measure import compare_generation, metric_row, aggregate, DOCS
+from measure import compare_generation, compare_target_rounds, metric_row, aggregate, DOCS
 from packed_panel import nd_desc
 from air import protobuf_classes
 
@@ -158,6 +158,28 @@ sys.meta_path.insert(0,SDKOnly());sys.path.insert(0,sys.argv[1]);import run_e2e
             (2, 1, 1),
         )
         self.assertEqual((DOCS["all"]["decode_ms"], DOCS["all"]["gen_tok_s"]), (3193.72, 29.16))
+
+    def test_target_alignment_requires_same_prefix_and_block(self):
+        def measured(anchor, proposal, prediction):
+            return {
+                "generated_token_ids": [anchor, prediction],
+                "rounds": [
+                    dict(proposed_token_ids=[], emitted_token_ids=[anchor], target_token_ids=[anchor]),
+                    dict(
+                        proposed_token_ids=[proposal],
+                        emitted_token_ids=[prediction],
+                        target_token_ids=[prediction, 2],
+                    ),
+                ],
+            }
+
+        old = measured(5, 7, 1)
+        a = {"measurements": [old] * 3}
+        b = {"measurements": [measured(5, 7, 3), measured(5, 8, 1), measured(9, 7, 1)]}
+        self.assertEqual(
+            compare_target_rounds(a, b),
+            dict(prefill_anchors_matched=2, same_prefix_and_proposals=1, target_predictions_matched=0),
+        )
 
     @unittest.skipUnless(
         importlib.util.find_spec("torch") and importlib.util.find_spec("pytest"), "historical report frontend"
