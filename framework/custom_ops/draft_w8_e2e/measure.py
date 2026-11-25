@@ -11,7 +11,6 @@ import subprocess
 from winners import c, require, REPO
 from history import suite
 from package import command
-from qwen35_dflash.ascend310p.cpp_runtime import _validate_mode_report
 
 
 def runner(d, history, cann, env):
@@ -159,6 +158,8 @@ def compare_generation(old, new):
 
 
 def validate_dflash(z, p, plan):
+    from qwen35_dflash.ascend310p.cpp_runtime import _validate_mode_report
+
     require(
         "ordinary" not in z
         and z["cpu_fallback"] is False
@@ -213,7 +214,7 @@ def validate_dflash(z, p, plan):
 
 
 def metric_row(p, ordinary, dflash):
-    row = suite.summarize_prompt({"ordinary": ordinary, "dflash": dflash})
+    row = suite.summarize_prompt({"prompt_token_ids": p["tokens"], "ordinary": ordinary, "dflash": dflash})
     first, last = ordinary["measurements"][0], dflash["measurements"][0]
     parity = all(first[k] == last[k] for k in ("generated_token_ids", "stop_reason"))
     row.update(
@@ -298,6 +299,8 @@ DOCS = {
 
 
 def analyze(d, history, plan, capture):
+    from qwen35_dflash.ascend310p.cpp_runtime import _validate_mode_report
+
     old_rows = []
     rows = []
     consistency = {}

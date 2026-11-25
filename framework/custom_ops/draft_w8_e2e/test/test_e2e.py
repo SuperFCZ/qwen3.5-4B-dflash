@@ -3,6 +3,7 @@ import importlib.util
 import os
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -49,6 +50,15 @@ def plan_text():
 
 
 class Integrated(unittest.TestCase):
+    def test_sdk_entry_does_not_import_torch(self):
+        script = """import importlib.abc,sys
+class SDKOnly(importlib.abc.MetaPathFinder):
+ def find_spec(self,fullname,*args):
+  if fullname.split('.')[0] in {'torch','torch_npu','transformers'}:raise ModuleNotFoundError(fullname)
+sys.meta_path.insert(0,SDKOnly());sys.path.insert(0,sys.argv[1]);import run_e2e
+"""
+        subprocess.run([sys.executable, "-B", "-c", script, str(HERE)], check=True)
+
     def test_all_winners(self):
         for gear in (16, 64):
             s = selected(gear)

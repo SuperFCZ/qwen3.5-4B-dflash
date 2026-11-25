@@ -24,7 +24,8 @@ from history import read_history, write_candidate_plan, SUITE
 from features import export, expand_replay
 from targets import receiver_env
 from prepare_target import prepare
-from measure import runner, launch, analyze
+from measure import runner, launch
+from package import command
 from experiment import Stages
 from fresh_run import environment
 from fresh_dso import seal
@@ -230,6 +231,17 @@ def run(out, args, state):
     )
     c.verify(cap["index"])
     c.verify_tree(cap["reports"])
+
+    def compare_in_frontend(d):
+        # The repository report API imports the Torch frontend on package initialization.
+        # Keep the compiler/runner in its measured gate310p environment.
+        front = Path(os.environ["DFLASH_RUN_ROOT"]) / "envs/full-draft-frontend/bin/python"
+        request = d / "analysis-input.json"
+        c.write(request, dict(history=h, plan=settled, capture=cap))
+        command([front, "-B", HERE / "compare_saved.py", request], d / "analysis.log", os.environ, d)
+        print((d / "analysis.log").read_text(), flush=True)
+        return c.read(d / "compared.json")
+
     result = stage(
         "comparison",
         dict(
@@ -237,9 +249,11 @@ def run(out, args, state):
             archived=h["cases"],
             plan=settled,
             docs=c.sha(HERE.parents[2] / "docs/RESULTS.md"),
-            code=code(HERE / "measure.py", HERE.parents[2] / "tools/benchmark_prompts.py"),
+            code=code(
+                HERE / "measure.py", HERE / "compare_saved.py", HERE.parents[2] / "tools/benchmark_prompts.py"
+            ),
         ),
-        lambda d: analyze(d, h, settled, cap),
+        compare_in_frontend,
     )
     state.update(
         targets=target["models"],
