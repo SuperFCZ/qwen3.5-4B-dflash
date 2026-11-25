@@ -194,7 +194,14 @@ def run(out, args, state):
         return "DRAFT_VERIFIED_AND_TIMED"
     state["phase"] = "historical-generation"
     h = read_history(SUITE)
-    if args.target_run:
+    checked_env = None
+    if args.prefill_probe:
+        from qualified_provider import promote
+
+        require(prev is not None, "Prefill probe handoff needs its measured predecessor via --resume")
+        checked_root = run_path(runs, args.prefill_probe, "target-opp-check-")
+        target, checked_env = promote(out, stage, h, prev, checked_root, drafts, cann)
+    elif args.target_run:
         tr = run_path(runs, args.target_run, "e2e-target-")
         receipt = c.read(tr / "result.json")
         require(receipt["status"] == "TARGET_READY", "Target preparation has not completed")
@@ -210,7 +217,11 @@ def run(out, args, state):
             c.verify(node["cache_backend"])
     if target.get("cache_provider"):
         c.verify_tree(target["cache_provider"])
-    env = receiver_env(cann, os.environ, [Path(v) for v in target["vendors"]])
+    env = (
+        checked_env
+        if checked_env is not None
+        else receiver_env(cann, os.environ, [Path(v) for v in target["vendors"]])
+    )
     settled = stage(
         "plan",
         dict(
@@ -240,6 +251,21 @@ def run(out, args, state):
     )
     c.verify(probe["index"])
     c.verify_tree(probe["reports"])
+    if checked_env is not None:
+        name = h["prompts"][0]["id"]
+        measured = c.read(c.verify(probe["reports"][name]))["dflash"]["measurements"][0]
+        previous = c.read(c.verify(h["cases"][name]))["dflash"]["measurements"][0]
+        require(
+            measured["generated_token_ids"][0] == previous["generated_token_ids"][0],
+            "generation check lost the previously verified first token",
+        )
+        print(
+            "Generation check vs archived W8: same tokens",
+            measured["generated_token_ids"] == previous["generated_token_ids"],
+            "same rounds",
+            measured["rounds"] == previous["rounds"],
+            flush=True,
+        )
     cap = stage(
         "generation",
         dict(
@@ -300,7 +326,12 @@ def run(out, args, state):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--target-run", help="e2e-target-... directory from prepare_target.sh")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--target-run", help="e2e-target-... directory from prepare_target.sh")
+    mode.add_argument(
+        "--prefill-probe",
+        help="accepted single-token provider probe; reuse Prefill and compile its matching Verify",
+    )
     p.add_argument("--resume", help="w8-e2e-... directory to reuse")
     p.add_argument("--draft-only", action="store_true", help="only build, check, and time the new Draft OMs")
     args = p.parse_args()
