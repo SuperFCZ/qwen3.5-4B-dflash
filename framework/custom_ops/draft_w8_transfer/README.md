@@ -23,6 +23,8 @@ git pull --ff-only origin feature/ascend310p-custom-ops && bash framework/custom
 
 “合并 raw”让一笔 DMA 在同一缓冲区连续搬两片，每片仍分别 Cast 和 FP16 Mul。驱动须等最后一片的 Vector 读者结束才允许回填。改变 N/K 几何时同时改变离线权重打包及 Cube 分块，结果代表整个候选组合。每份 ATC 报告核对实际 8-block、归属、常量字节、UB/L1/L0、完整 Cube 与机器实现。相同 Cube 几何的候选要求 Cube 序列化相同。
 
+CANN 9.0 主机 SDK 的 310P3 资源查询覆盖了表中 8 个对照和 24 个候选。各行的 baseM/N/K、L0 双缓冲与容量检查均通过。同几何的 200 B Cube 序列化一致。最紧的 UB 配置剩余 5,632 B scratch，其中 KV C16 的 Cube 查询需 4,096 B；最大 L1 用量为 FC C64 的 1,024,000 B。服务器仍以实际 ATC 回调重新核对这些值。
+
 Down 的真实激活来自封存的 Gate 输出，经原图的 split 与 SwiGLU 回放。参考 Down 同时产出 FP16 Golden，计时只覆盖 Down。单算子对照的机器执行段和 tiling 须与 TglfhB 中已部署的 Down 一致。其他路径复用各自获胜 OM、冻结常量和验收过的参考。每条路径测试真实回放、独立稠密压力输入以及覆盖 Group128、首尾 K、向量分片和 K 面板的边界输入；两种 poison 下全输出逐位匹配，检查 Guard、Readonly、Repeat 和 Sync。数值不符的候选单独记录，设备、同步和内存检查异常时停止。
 
 每个通过正确性的候选与原胜者做新鲜配对，每边三轮，每轮 5 次预热和 30 次计时，顺序交替。**Median 延迟下降至少 3%、三轮同向且 P95 无回退**才晋级。多个候选晋级时按表内预登记顺序做新的直接配对，按同一标准选型。公开 ND 输入需要的图内重排全部计入 Execute+Sync。

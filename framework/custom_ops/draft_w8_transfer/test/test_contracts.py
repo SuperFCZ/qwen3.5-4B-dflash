@@ -11,13 +11,68 @@ import unittest
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 from recipes import CONTROL, OPS, down, q, c, validate, candidates
-from atc_transfer import plan
+from atc_transfer import make_air, plan
 from run_transfer import choose, fresh_pair, boundaries
 from gate_input import cut_reference, single_graph
 from air import protobuf_classes
 
 
 class Contracts(unittest.TestCase):
+    @unittest.skipUnless(os.getenv("DFLASH_GE_DESCRIPTOR"), "CANN GE descriptor")
+    def test_public_nd_through_optional_activation_pack(self):
+        import numpy as np
+
+        m, k, n = 16, 256, 256
+        op = CONTROL["kv64"].spec.op
+        types = protobuf_classes(Path(os.environ["DFLASH_GE_DESCRIPTOR"]).read_bytes())
+        rng = np.random.default_rng(310)
+        nk = rng.integers(-127, 128, size=(n, k), dtype=np.int8)
+        nz = nk.reshape(n // 16, 16, k // 32, 32).transpose(2, 0, 1, 3).tobytes()
+        gn = rng.standard_normal((k // 128, n)).astype("<f2").tobytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            files = {}
+            for name, data in (("w_nz.bin", nz), ("s_gn.bin", gn)):
+                f = folder / name
+                f.write_bytes(data)
+                files[name] = c.identity(f)
+            for paid in (False, True):
+                r = SimpleNamespace(
+                    shape=(m, k, n),
+                    width=128,
+                    panel=128,
+                    role="kv",
+                    gear=64,
+                    name="test",
+                    activation="packed" if paid else "row",
+                    layout=(128, 128, paid),
+                    spec=SimpleNamespace(op=op),
+                )
+                site = folder / r.activation
+                site.mkdir()
+                air, dims, (w, s) = make_air(
+                    site, types, r, SimpleNamespace(layout=(64, k, False)), {}, files
+                )
+                graph = types[0].FromString(air.read_bytes()).graph[0]
+                nodes = {v.name: v for v in graph.op}
+                kv = nodes["proj_layer0_kv"]
+                self.assertEqual(kv.type, op)
+                self.assertEqual(list(kv.input[1:]), ["weight:0", "scale:0"])
+                self.assertEqual(list(graph.output), ["proj_layer0_kv:0"])
+                self.assertEqual(list(nodes["NetOutput"].input), list(graph.output))
+                self.assertEqual(tuple(nodes["x"].output_desc[0].shape.dim), (m, k))
+                self.assertEqual(tuple(kv.input_desc[0].shape.dim), (k // 16, m, 16) if paid else (m, k))
+                self.assertEqual(sum(v.type == "Transpose" for v in graph.op), int(paid))
+                self.assertEqual(tuple(nodes["weight"].output_desc[0].shape.dim), dims[0])
+                self.assertEqual(
+                    (nodes["weight"].attr["value"].t.data, nodes["scale"].attr["value"].t.data), (w, s)
+                )
+                # Same-layout transfers must consume the unchanged AIR, including the original producer.
+                alias = site / "reuse"
+                alias.mkdir()
+                linked, _, _ = make_air(alias, types, r, r, {"air": c.identity(air)}, files)
+                self.assertTrue(linked.samefile(air))
+
     def test_registry_and_boundaries(self):
         names = set()
         for key, b in CONTROL.items():
