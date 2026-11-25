@@ -29,8 +29,8 @@ def local_headers(source):
     return result
 
 
-def build(folder, cann, env, gear, assets):
-    specs = selections(gear)
+def build(folder, cann, env, gear, assets, *, specs=None):
+    specs = selections(gear) if specs is None else specs
     (row,) = c.read(OPS / "draft_gate_tile_nd/DFlashGateTileNd.json")
     schema = folder / "operators.json"
     c.write(schema, [dict(row, op=s.op) for s in specs.values()])
@@ -56,6 +56,9 @@ def build(folder, cann, env, gear, assets):
             dest = proj / sub
             src = file.read_bytes()
             headers = local_headers(file)
+            # Each measured transfer has a different shape in a header of the same name.
+            # Keep its contents intact and bind that file to this translation unit.
+            installed = {}
             inputs[kind][role] = dict(
                 source=source[role], headers={k: c.identity(v) for k, v in headers.items()}
             )
@@ -65,14 +68,22 @@ def build(folder, cann, env, gear, assets):
                 target = (
                     spec.stem + "_scheduler.h" if role == "host" and name == "scheduler_evidence.h" else name
                 )
+                if name == "transfer_spec.h":
+                    target = spec.stem + "_transfer_spec.h"
+                    old = b'#include "transfer_spec.h"'
+                    require(src.count(old) == 1, "missing transfer geometry header")
+                    src = src.replace(old, f'#include "{target}"'.encode())
+                    if role == "host":
+                        src = f"#define transfer_panel {spec.stem}_geometry\n".encode() + src
                 put(dest, target, path.read_bytes())
+                installed[target] = path
             if role == "host":
                 old = b'#include "scheduler_evidence.h"'
                 require(src.count(old) == 1, "missing measured scheduler for " + kind)
                 new = f'#include "{spec.stem}_scheduler.h"'.encode()
                 src = f"#define dflash_scheduler {spec.stem}_scheduler\n".encode() + src.replace(old, new)
             else:
-                devices[kind] = (file, headers)
+                devices[kind] = (src, installed)
             (dest / file.name).write_bytes(src)
     preset = proj / "CMakePresets.json"
     write_preset(preset, preset, cann)
@@ -85,10 +96,10 @@ def build(folder, cann, env, gear, assets):
     ]
     binaries = []
     for kind, spec in specs.items():
-        original, headers = devices[kind]
+        source_bytes, headers = devices[kind]
         (dyn,) = vendor.rglob(spec.stem + ".cpp")
         require(
-            c.sha(dyn) == c.sha(original)
+            dyn.read_bytes() == source_bytes
             and all(c.sha(dyn.parent / name) == c.sha(p) for name, p in headers.items()),
             "private dynamic device source differs from the measured implementation: " + kind,
         )

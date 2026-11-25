@@ -69,11 +69,11 @@ def compile_candidate(out, graph, cann, env):
     )
 
 
-def audit(out, gear, graph, pkg, case, compiled):
+def audit(out, gear, graph, pkg, case, compiled, *, specs=None):
     require(compiled["air"] == graph["air"], "compiled a different AIR")
     om, dump = c.verify(compiled["om"]), c.verify(compiled["dump"])
     pp, ss = grouped(c.verify(compiled["platform"])), grouped(c.verify(compiled["scheduler"]))
-    specs = selections(gear)
+    specs = selections(gear) if specs is None else specs
     shapes = {s.shape for s in specs.values()}
     require(len(shapes) == 6 and set(pp) == set(ss) == shapes, "incomplete actual ATC tiling callbacks")
     proof = {}
@@ -117,11 +117,11 @@ def audit(out, gear, graph, pkg, case, compiled):
             row = graph["inventory"][role]
             node = bound[role]
             img = emitted[node["name"]]
-            expected = (
-                case["model"]["kernels"][row["node"]]
-                if role.endswith((".gate_up", ".down"))
-                else case["assets"][role.split(".")[-1]]["image"]
-            )
+            asset = case["assets"][role.split(".")[-1]]
+            expected = asset.get("image")
+            if expected is None:
+                require(role.endswith((".gate_up", ".down")), "missing measured projection: " + role)
+                expected = case["model"]["kernels"][row["node"]]
             if img["executable_sections"] != expected["executable_sections"]:
                 mismatches[role] = dict(
                     measured=expected["executable_sections"], integrated=img["executable_sections"]
