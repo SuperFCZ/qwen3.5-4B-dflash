@@ -279,9 +279,9 @@ def run(out, args, state):
     base = receiver_env(cann, os.environ, active)
     env, binding = add_provider(base, vendor)
     state["sourced"] = binding
-    old = result["targets"]["target_prefill"]
-    cache = c.read(c.verify(old["cache_backend"]))
-    old_model = dict(om=old["om"], dump=cache["dump"])
+    previous_prefill = result["targets"]["target_prefill"]
+    cache = c.read(c.verify(previous_prefill["cache_backend"]))
+    old_model = dict(om=previous_prefill["om"], dump=cache["dump"])
     orig, count = inventory(old_model)
     print(
         "Previous Prefill providers",
@@ -300,10 +300,10 @@ def run(out, args, state):
         ("QuantBatchMatmulV4444", "customize_quantMatmul"),
         ("ChunkGatedDeltaRule", "customize_linearAttention_new"),
     ):
-        old = {x["vendor"] for x in orig.values() if x["role"] == family and x["vendor"]}
+        active_providers = {x["vendor"] for x in orig.values() if x["role"] == family and x["vendor"]}
         other = vendor.parent / name
-        if len(old) == 1 and other.is_dir():
-            a = package_fingerprint(old.pop(), family)
+        if len(active_providers) == 1 and other.is_dir():
+            a = package_fingerprint(next(iter(active_providers)), family)
             b = package_fingerprint(other, family)
             value = dict(
                 same_source=a["sources"] == b["sources"] if a["sources"] and b["sources"] else None,
@@ -321,7 +321,7 @@ def run(out, args, state):
     atc = Path(shutil.which("atc", path=env["PATH"])).resolve(strict=True)
     require(atc == Path(shutil.which("atc", path=base["PATH"])).resolve(strict=True), "compiler changed")
     source_graph = st.completed("reconstruct-target_prefill")["result"]
-    require(source_graph["air"] == old["source_air"], "different Target Prefill AIR")
+    require(source_graph["air"] == previous_prefill["source_air"], "different Target Prefill AIR")
     d = out / "prefill"
     d.mkdir()
     model = compile_target(d, "target_prefill", source_graph, history, env, atc)

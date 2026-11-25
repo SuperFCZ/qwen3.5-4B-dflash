@@ -4,13 +4,86 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 from probe_dynamic import add_provider, compare, probe_args, FAMILIES
+import probe_dynamic as probe
 
 
 class Probe(unittest.TestCase):
+    def test_full_driver_keeps_prefill_after_fingerprinting_both_siblings(self):
+        with tempfile.TemporaryDirectory() as tmp, ExitStack() as ctx:
+            root = Path(tmp)
+            out = root / "new"
+            out.mkdir()
+            source = root / "w8-e2e-fixture"
+            source.mkdir()
+            vendor = root / "dynamic"
+            vendor.mkdir()
+            for name in ("customize_quantMatmul", "customize_linearAttention_new"):
+                (root / name).mkdir()
+            tool = root / "atc"
+            tool.write_text("")
+            tool.chmod(0o755)
+
+            def file(name, content):
+                p = root / name
+                probe.c.write(p, content)
+                return probe.c.identity(p)
+
+            prior = dict(
+                om=file("old-om", {}),
+                source_air=file("air", {}),
+                cache_backend=file("backend", {"dump": file("dump", {})}),
+            )
+            models = {"target_prefill": prior}
+            draft_ref = file("draft-om", {})
+            drafts = {str(g): dict(om=draft_ref) for g in (16, 64)}
+            probe.c.write(
+                source / "target.json", dict(models=models, vendors=[], cache_provider=dict(path=str(root)))
+            )
+            probe.c.write(source / "result.json", dict(status="E2E_MEASURED", targets=models, drafts=drafts))
+            stages = Mock()
+
+            def receipt(name):
+                if name == "reconstruct-target_prefill":
+                    return {"result": {"air": prior["source_air"]}}
+                return {"result": {"om": draft_ref, "abi": {}}}
+
+            stages.completed.side_effect = receipt
+            env = {"PATH": str(root)}
+            ctx.enter_context(patch.dict(os.environ, CANN_ROOT=str(root)))
+
+            def stub(name, *args, **kw):
+                return ctx.enter_context(patch.object(probe, name, *args, **kw))
+
+            stub("Stages", return_value=stages)
+            stub("read_history", return_value={})
+            stub("receiver_env", return_value=env)
+            stub("add_provider", return_value=(env, {"order": [str(vendor)]}))
+            old = {
+                f: dict(role=f, engine="AIcoreEngine", vendor=str(root / f), text=["code"], block=1)
+                for f in FAMILIES
+            }
+            new = dict(old, DynamicQuant=dict(old["DynamicQuant"], vendor=str(vendor), text=["new"]))
+            stub("inventory", side_effect=[(old, {}), (new, {})])
+            stub("package_fingerprint", return_value=dict(sources=["same"], text=["same"]))
+            compiled = stub("compile_target", return_value=dict(om=file("new-om", {})))
+            stub("audit_compiled", return_value=prior["cache_backend"])
+            anchors = stub("run_anchors", return_value=dict(matches=1))
+            state = {}
+            result = probe.run(
+                out, SimpleNamespace(provider=vendor, from_run=source.name, inspect_only=False), state
+            )
+            self.assertEqual(result, "ANCHOR_DIFFERENCES")
+            self.assertEqual(len(state["sibling_comparisons"]), 2)
+            self.assertEqual(compiled.call_args.args[2]["air"], prior["source_air"])
+            self.assertEqual(anchors.call_count, 1)
+
     def test_child_source_order_and_scope(self):
         with tempfile.TemporaryDirectory() as d:
             r = Path(d)
