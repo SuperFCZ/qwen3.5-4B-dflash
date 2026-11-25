@@ -96,6 +96,17 @@ def receiver_vendors(cann):
             continue
         selected.append(v)
         covered.update(names)
+    # Some receiver releases put DynamicQuant/CacheUpdate in ops-info and an
+    # ACLNN library without a REG_OP declaration in the public headers.
+    for v in list(selected):
+        for pkg in ("customize_dynamic", "customize_scatter"):
+            sibling = v.parent / pkg
+            if (
+                sibling not in selected
+                and (sibling / "op_api/lib").is_dir()
+                and (sibling / "op_impl").is_dir()
+            ):
+                selected.append(sibling)
     print("Target receiver vendors", list(map(str, selected)), sorted(covered), flush=True)
     return selected
 
