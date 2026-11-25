@@ -14,7 +14,7 @@ sys.path.insert(0, str(HERE))
 from winners import c, selected, UNION, SELECT, OPS
 from history import TARGET_SHA, write_candidate_plan, parse_plan
 from features import insert_selector, slots
-from measure import compare_generation, DOCS
+from measure import compare_generation, metric_row, aggregate, DOCS
 from packed_panel import nd_desc
 from air import protobuf_classes
 
@@ -158,6 +158,37 @@ sys.meta_path.insert(0,SDKOnly());sys.path.insert(0,sys.argv[1]);import run_e2e
             (2, 1, 1),
         )
         self.assertEqual((DOCS["all"]["decode_ms"], DOCS["all"]["gen_tok_s"]), (3193.72, 29.16))
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("torch") and importlib.util.find_spec("pytest"), "historical report frontend"
+    )
+    def test_docs_denominators_and_historical_difference(self):
+        sys.path.insert(0, str(HERE.parents[2] / "tests"))
+        from test_prompt_analysis import saved_report
+
+        saved = saved_report(warmup=1, repetitions=3)
+        for mode in ("ordinary", "dflash"):
+            for a in saved[mode]["measurements"]:
+                if mode == "ordinary":
+                    a["latency_ms"].update(prefill=1.0, decode=3.0)
+                    a["stage_ms"] = {"target_prefill": [0.8], "target_decode": [0.2] * 7}
+                else:
+                    a["latency_ms"].update(prefill=0.5, decode=1.5)
+                    a["stage_ms"] = {
+                        "target_prefill": [0.4],
+                        "target_verify": [0.3, 0.4],
+                        "draft": [0.2, 0.25],
+                    }
+        row = metric_row(
+            dict(id="test", group="short", tokens=saved["prompt_token_ids"]),
+            saved["ordinary"],
+            saved["dflash"],
+        )
+        self.assertEqual(row["status"], "PASS_WITH_DIFFERENCES")
+        result = aggregate([row])
+        self.assertEqual(result["decode_speedup_over_archived_ordinary"], 2)
+        self.assertAlmostEqual(result["gen_tok_s"], 4000)
+        self.assertEqual((result["accepted"], result["proposed"], result["calls"]["draft"]), (18, 21, 6))
 
 
 if __name__ == "__main__":

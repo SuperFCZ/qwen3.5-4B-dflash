@@ -31,6 +31,14 @@ def prototypes(vendor):
                 continue
             if name in NEEDED:
                 ops.add(name)
+    # These two operations can be installed as precompiled 310P binaries with
+    # ops-info but without a public REG_OP block.
+    tbe = vendor / "op_impl/ai_core/tbe"
+    for f in (tbe / "config/ascend310p").glob("*ops-info.json"):
+        info = c.read(f)
+        for name in ("CacheUpdate", "DynamicQuant"):
+            if name in info:
+                ops.add(name)
     return ops
 
 
@@ -248,7 +256,8 @@ def compile_target(d, name, source, history, env, atc):
         om=om,
         abi=source["abi"],
         target_layers=source["target_layers"],
-        origin="REBUILT_W8A8_TARGET",
+        origin=source.get("origin", "REBUILT_W8A8_TARGET"),
+        receiver_audit=source.get("audit"),
         source_air=source["air"],
         historical_om_sha256=TARGET_SHA[name],
         historical_binary_match=om["sha256"] == TARGET_SHA[name],

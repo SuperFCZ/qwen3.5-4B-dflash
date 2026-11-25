@@ -157,6 +157,30 @@ def compare_generation(old, new):
     return dict(matching_repetitions=3 - len(changes), round_traces_matched=3 - rounds, differences=changes)
 
 
+def compare_target_rounds(old, new):
+    """Verify the archived Target predictions only where the observed inputs agree."""
+    anchors = same = matching = 0
+    for a, b in zip(old["measurements"], new["measurements"], strict=True):
+        anchors += a["generated_token_ids"][0] == b["generated_token_ids"][0]
+
+        def calls(m):
+            prefix = []
+            for r in m["rounds"]:
+                proposals = tuple(r["proposed_token_ids"])
+                if proposals:
+                    yield (tuple(prefix), proposals), tuple(r["target_token_ids"])
+                prefix.extend(r["emitted_token_ids"])
+
+        saved = dict(calls(a))
+        for key, ids in calls(b):
+            if key in saved:
+                same += 1
+                matching += ids == saved[key]
+    return dict(
+        prefill_anchors_matched=anchors, same_prefix_and_proposals=same, target_predictions_matched=matching
+    )
+
+
 def validate_dflash(z, p, plan):
     from qwen35_dflash.ascend310p.cpp_runtime import _validate_mode_report
 
@@ -329,7 +353,9 @@ def analyze(d, history, plan, capture):
         old_rows.append(metric_row(p, ordinary, old))
         rows.append(metric_row(p, ordinary, new))
         consistency[name] = dict(
-            ordinary=compare_generation(ordinary, new), previous_w8=compare_generation(old, new)
+            ordinary=compare_generation(ordinary, new),
+            previous_w8=compare_generation(old, new),
+            target=compare_target_rounds(old, new),
         )
         count = len(p["tokens"])
         prefix = (count - 1) // 64
@@ -390,6 +416,11 @@ def analyze(d, history, plan, capture):
         k: sum(v[k]["matching_repetitions"] for v in consistency.values())
         for k in ("ordinary", "previous_w8")
     }
+    target_match = {
+        k: sum(v["target"][k] for v in consistency.values())
+        for k in ("prefill_anchors_matched", "same_prefix_and_proposals", "target_predictions_matched")
+    }
+    round_matches = sum(v["previous_w8"]["round_traces_matched"] for v in consistency.values())
     lines = [
         "# W8A16 完整生成实测",
         "",
@@ -407,6 +438,7 @@ def analyze(d, history, plan, capture):
     lines += [
         "",
         f"60 次正式生成中，候选与历史 W8 token 序列和停止原因完全一致 {scores['previous_w8']}/60，与历史 ordinary 一致 {scores['ordinary']}/60。生成吞吐含 Prefill，Decode 加速比使用循环时长总和。任务质量未评估。",
+        f"与历史 W8 相比，首 token 一致 {target_match['prefill_anchors_matched']}/60，整条接受轨迹一致 {round_matches}/60。在实际前缀与提议均相同的 Verify 调用中，Target 输出一致 {target_match['target_predictions_matched']}/{target_match['same_prefix_and_proposals']}。",
     ]
     (d / "comparison.md").write_text("\n".join(lines) + "\n")
     for l in lines:
@@ -418,6 +450,8 @@ def analyze(d, history, plan, capture):
         cases=c.identity(d / "cases.csv"),
         comparison=c.identity(d / "comparison.md"),
         token_parity=consistency,
+        target_agreement=target_match,
+        matching_round_traces=round_matches,
         matching_generations=scores,
         ordinary_executions=0,
         historical_index=history["index"],

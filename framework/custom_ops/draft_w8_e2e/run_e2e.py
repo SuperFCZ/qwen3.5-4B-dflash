@@ -1,6 +1,8 @@
 """Run the optimized five-layer W8 Draft in the documented real Target generation loop."""
 
 import argparse
+import hashlib
+import inspect
 from dataclasses import asdict
 import os
 from pathlib import Path
@@ -224,7 +226,7 @@ def run(out, args, state):
             plan=settled,
             prompts=h["batch"],
             runner=generation,
-            code=c.sha(HERE / "measure.py"),
+            code=hashlib.sha256(inspect.getsource(launch).encode()).hexdigest(),
             protocol="DFlash-only, thinking-on, max 128, device 0, 1+3, chunk, low memory, 15, trace rounds",
         ),
         lambda d: launch(d, h, settled, generation, env),
@@ -262,6 +264,8 @@ def run(out, args, state):
         groups=result["groups"],
         gear_calls=result["gears"],
         matched=result["matching_generations"],
+        target_agreement=result["target_agreement"],
+        matching_round_traces=result["matching_round_traces"],
         ordinary_executions=0,
         raw_capture=cap["index"],
     )

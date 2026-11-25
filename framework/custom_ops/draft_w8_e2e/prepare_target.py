@@ -19,6 +19,8 @@ from targets import (
 )
 from experiment import Stages
 from run_q import run_path
+from receiver_air import receiver_specs, reconstruct
+from air import protobuf_classes
 
 
 def prepare(out, st, history, state, explicit=None):
@@ -30,7 +32,42 @@ def prepare(out, st, history, state, explicit=None):
     paths = receiver_vendors(cann)
     env = receiver_env(cann, os.environ, paths)
     target = exact_oms(history, explicit)
-    if len(target) < 2:
+    route = os.environ.get("DFLASH_TARGET_BUILD_ROUTE", "receiver-air")
+    require(route in ("receiver-air", "torchair"), "unknown Target rebuild route")
+    if len(target) < 2 and route == "receiver-air":
+        sources = receiver_specs(history)
+        desc = c.identity(out / "cann-ge.desc")
+        types = protobuf_classes(c.verify(desc).read_bytes())
+        atc = Path(shutil.which("atc")).resolve(strict=True)
+        exported = {}
+        for name, src in sources.items():
+            if name in target:
+                continue
+            exported[name] = stage(
+                "reconstruct-" + name,
+                dict(
+                    source=src["air"],
+                    manifest=src["manifest"],
+                    schema=desc["sha256"],
+                    abi=src["abi"],
+                    code=c.sha(HERE / "receiver_air.py"),
+                ),
+                lambda d: reconstruct(d, types, name, src),
+            )
+        for name, rewritten in exported.items():
+            target[name] = stage(
+                "compile-" + name,
+                dict(
+                    air=rewritten["air"],
+                    audit=rewritten["audit"],
+                    vendors=list(map(str, paths)),
+                    tool=c.identity(atc),
+                    comparison_plan=history["plan"],
+                    code=c.sha(HERE / "targets.py"),
+                ),
+                lambda d: compile_target(d, name, rewritten, history, env, atc),
+            )
+    elif len(target) < 2:
         cfg = target_config()
         py = Path(os.getenv("DFLASH_TARGET_PYTHON", "/root/anaconda3/envs/torch_npu_py3.11/bin/python"))
         keys = dict(

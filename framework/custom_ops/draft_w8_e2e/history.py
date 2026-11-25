@@ -14,6 +14,8 @@ TARGET_SHA = {
     "target_verify": "268e0b4cf11f39e3aa3eb53a4e78834127eaaf77065f91d7baf2a30a2ef30ec8",
 }
 RUNNER_SHA = "2c033fb0f80914d915d196a00adb8fabcf665cce0a3fb7584ab899770ce5a254"
+INDEX_SHA = "5515c2c2f50a9f0b0021b9373b1914e09c5933afd193104ed9d52b9890b55e55"
+BATCH_SHA = "f4d2bfe5462cd2658d332982d66b4494ebf7726a9f09675fe57333467e14bde7"
 
 
 def parse_plan(path):
@@ -74,7 +76,10 @@ def read_target_contract(root):
     (index,) = root.rglob("runner-batch.json")
     base = index.parent
     idx = c.read(index)
-    require(idx["fake_acl"] is False, "historical batch has no real device identity")
+    require(
+        idx["fake_acl"] is False and c.sha(index) == INDEX_SHA and idx["prompt_batch_sha256"] == BATCH_SHA,
+        "different historical 20-prompt device measurement or tokens",
+    )
     plans = [p for p in root.rglob("chunk-plan.txt") if c.sha(p) == idx["model_sha256"]]
     require(plans, "missing authentic historical plan")
     graphs = parse_plan(plans[0])
