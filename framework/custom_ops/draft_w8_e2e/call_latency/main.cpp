@@ -101,7 +101,10 @@ int main(int argc, char** argv) {
         check(prompt.size() > 16 && prompt.size() <= 64 && anchor.size() == 1 &&
               verified.size() == first.size() + 1, "invalid archive boundary");
         latency::configure(argv[2], policy);
-        AclChunkExecutor executor(argv[1], 0, "dflash", true);
+        // Keep the diagnostic's archived control reproducible with newer production defaults.
+        const auto pages = policy == "huge-io-work" ? AclChunkExecutor::WorkspacePages::kHugeFirst
+                                                   : AclChunkExecutor::WorkspacePages::kNormalOnly;
+        AclChunkExecutor executor(argv[1], 0, "dflash", true, pages);
         std::ofstream csv(out / "samples.csv");
         csv.exceptions(std::ios::badbit | std::ios::failbit);
         csv << std::setprecision(12)

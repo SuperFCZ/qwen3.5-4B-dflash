@@ -352,9 +352,9 @@ struct Loaded {
 class AclChunkExecutor::Impl {
  public:
   Impl(const std::filesystem::path& path, int device, const std::string& mode,
-       bool share_workspace)
+       bool share_workspace, WorkspacePages pages)
       : plan(ReadChunkPlan(path, mode)), plan_path(path), plan_sha256(Sha256File(path)),
-        device_id(device), share_workspace(share_workspace) {
+        device_id(device), share_workspace(share_workspace), workspace_pages(pages) {
     Require(device >= 0, "negative device ID");
     std::cerr << "[chunk-runtime] verify_gdr="
               << (plan.abi == "qwen35-dflash-mtp-v1" || plan.abi == "qwen35-dflash-mtp-v2" ? "mtp" : "chunk")
@@ -425,14 +425,17 @@ class AclChunkExecutor::Impl {
         workspace = std::make_unique<Memory>(cleanup);
         workspace->spec.name = "shared_workspace";
         workspace->bytes = maximum_work;
-        Check(aclrtMalloc(&workspace->device, maximum_work,
-                          ACL_MEM_MALLOC_NORMAL_ONLY), "aclrtMalloc(shared_workspace)");
+        const auto allocation = workspace_pages == WorkspacePages::kHugeFirst
+                                    ? ACL_MEM_MALLOC_HUGE_FIRST : ACL_MEM_MALLOC_NORMAL_ONLY;
+        Check(aclrtMalloc(&workspace->device, maximum_work, allocation), "aclrtMalloc(shared_workspace)");
         cleanup.allocated_device_bytes += maximum_work;
       }
       std::cerr << "[chunk-runtime] workspace policy=shared_serial"
                 << " shared_bytes=" << maximum_work
                 << " separate_sum_bytes=" << total_work
-                << " saved_work_bytes=" << total_work - maximum_work << '\n';
+                << " saved_work_bytes=" << total_work - maximum_work
+                << " workspace_page_request=" << (workspace_pages == WorkspacePages::kHugeFirst ? "huge_first" : "normal_only")
+                << '\n';
     } else {
       std::cerr << "[chunk-runtime] workspace policy=per_model"
                 << " reason=" << (share_workspace ? "memory_query_unavailable" : "debug_private")
@@ -1245,6 +1248,7 @@ class AclChunkExecutor::Impl {
   std::string plan_sha256;
   int device_id;
   bool share_workspace;
+  WorkspacePages workspace_pages;
   bool initialized = false, device_set = false, invalid = true, cleaned = false;
   aclrtContext context = nullptr;
   aclrtStream stream = nullptr;
@@ -1261,7 +1265,10 @@ class AclChunkExecutor::Impl {
 AclChunkExecutor::AclChunkExecutor(const std::filesystem::path& plan,
                                    int device, const std::string& mode,
                                    bool share_workspace)
-    : impl_(std::make_unique<Impl>(plan, device, mode, share_workspace)) {}
+    : AclChunkExecutor(plan, device, mode, share_workspace, WorkspacePages::kHugeFirst) {}
+AclChunkExecutor::AclChunkExecutor(const std::filesystem::path& plan, int device, const std::string& mode,
+                                   bool share_workspace, WorkspacePages pages)
+    : impl_(std::make_unique<Impl>(plan, device, mode, share_workspace, pages)) {}
 AclChunkExecutor::~AclChunkExecutor() = default;
 void AclChunkExecutor::Close() {
   impl_->Cleanup();

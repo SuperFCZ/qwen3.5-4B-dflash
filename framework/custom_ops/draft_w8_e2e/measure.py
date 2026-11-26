@@ -1,10 +1,8 @@
 """Measure only real DFlash generation and compare to the saved ordinary and native W8 outputs."""
 
 import csv
-import json
 import math
 from pathlib import Path
-import shlex
 import statistics
 import subprocess
 
@@ -13,15 +11,14 @@ from history import suite
 from package import command
 
 
-def runner(d, history, cann, env):
-    prev = c.verify(history["runner"])
-
+def runner(d, history, cann, env, *, rebuild=False):
     def supports(p):
         r = subprocess.run([str(p), "--help"], cwd=d, env=env, capture_output=True, text=True)
         return r.returncode == 0 and "dflash-only batch" in r.stdout
 
-    if supports(prev):
-        p = prev
+    archived = None if rebuild else c.verify(history["runner"])
+    if archived is not None and supports(archived):
+        p = archived
     else:
         build = d / "build"
         command(
@@ -56,7 +53,7 @@ def runner(d, history, cann, env):
     return dict(file=c.identity(p), same_as_archive=c.sha(p) == history["runner"]["sha256"])
 
 
-def launch(d, history, plan, exe, env, *, canary=False):
+def launch(d, history, plan, exe, env, *, canary=False, reference_command=None):
     batch = c.verify(history["batch"])
     selected = history["prompts"]
     if canary:
@@ -105,6 +102,12 @@ def launch(d, history, plan, exe, env, *, canary=False):
             ),
         )
     )
+    if reference_command is not None:
+        expected = list(reference_command)
+        expected[0] = cmd[0]
+        for option in ("--prompt-batch", "--output"):
+            expected[expected.index(option) + 1] = cmd[cmd.index(option) + 1]
+        require(cmd == expected, "generation command differs from the archived protocol")
     c.write(d / "command.json", cmd)
     print(
         (

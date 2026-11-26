@@ -69,10 +69,13 @@ GenerationMeasurement GenerateChunk(ChunkExecutor&,
 
 class AclChunkExecutor final : public ChunkExecutor {
  public:
+  enum class WorkspacePages { kHugeFirst, kNormalOnly };
   explicit AclChunkExecutor(const std::filesystem::path& plan,
                             int device_id = 0,
                             const std::string& mode = "paired",
                             bool share_workspace = true);
+  AclChunkExecutor(const std::filesystem::path& plan, int device_id,
+                   const std::string& mode, bool share_workspace, WorkspacePages pages);
   ~AclChunkExecutor() override;
   void Close();
   void UnloadModels();

@@ -9,10 +9,12 @@ from context_graph import STATES
 from package import command
 
 
-def stats(values):
+def stats(values, *, allow_zero=False):
     if not values:
         return dict(count=0, mean_ms=None, median_ms=None, p95_ms=None)
-    require(all(math.isfinite(v) and v > 0 for v in values), "invalid latency sample")
+    require(
+        all(math.isfinite(v) and (v >= 0 if allow_zero else v > 0) for v in values), "invalid latency sample"
+    )
     return dict(
         count=len(values),
         mean_ms=statistics.mean(values),
@@ -101,10 +103,13 @@ def timings(report, prompt, plan, *, context):
     rows = []
     for m in mode["measurements"]:
         t = m["stage_ms"]
-        verify = t["target_verify"]
+        verify = t.get("target_verify", [])
         n = chunks - 1
-        preparation = t.get("draft_context64", []) if context else t["draft"][:n]
-        proposals = t["draft"] if context else t["draft"][n:]
+        draft = t.get("draft", [])
+        preparation = t.get("draft_context64", []) if context else draft[:n]
+        proposals = draft if context else draft[n:]
+        # Only the first proposal can consume more than 16 committed rows.
+        first_is_c64 = len(prompt["tokens"]) - 64 * n > 16
         require(
             len(t["target_prefill"]) == chunks
             and len(preparation) == n
@@ -120,6 +125,9 @@ def timings(report, prompt, plan, *, context):
                 total=m["latency_ms"]["model_total"],
                 context=list(preparation),
                 draft=list(proposals),
+                draft_c64=proposals[:1] if first_is_c64 else [],
+                draft_c16=proposals[1:] if first_is_c64 else proposals,
+                target_prefill=t["target_prefill"],
                 verify=verify,
                 tokens=len(m["generated_token_ids"]),
                 accepted=m["counters"]["accepted_draft_tokens"],
@@ -130,8 +138,15 @@ def timings(report, prompt, plan, *, context):
 
 
 def summarize(rows):
-    result = {k: stats([v[k] for v in rows]) for k in ("prefill", "decode", "total")}
-    result.update({k: stats([x for row in rows for x in row[k]]) for k in ("context", "draft", "verify")})
+    result = {
+        k: stats([v[k] for v in rows], allow_zero=k == "decode") for k in ("prefill", "decode", "total")
+    }
+    result.update(
+        {
+            k: stats([x for row in rows for x in row[k]])
+            for k in ("context", "draft", "draft_c16", "draft_c64", "target_prefill", "verify")
+        }
+    )
     result.update({k: sum(row[k] for row in rows) for k in ("tokens", "accepted", "proposed")})
     result["generation_tok_s"] = result["tokens"] * 1000 / sum(row["total"] for row in rows)
     return result
