@@ -226,16 +226,31 @@ def test_route_only_when_all_consumers_allow_it(tmp_path, context):
     assert answers[0] == answers[1]
 
 
-def test_guarded_three_block_entry(tmp_path):
+@pytest.mark.parametrize(
+    "variation", ["", "prefill_ref_update", "prefill_body_ref_only", "prefill_ids_mutation"]
+)
+def test_guarded_three_block_entry(tmp_path, variation):
     exe = os.getenv("DFLASH_TEST_GUARDED_REPLAY")
     if not exe:
         pytest.skip("host guarded replay needed")
     _, _, original, parts = make_split_plan(tmp_path)
     folder = tmp_path / "captures"
     folder.mkdir()
-    receipts = check_blocks(folder, [j % 32 for j in range(129)], exe, original, parts, os.environ)
+    env = dict(os.environ, QWEN35_FAKE_PROFILE_VARIATION=variation)
+    if variation == "prefill_body_ref_only":
+        with pytest.raises(ValueError, match="ref input side effects differ"):
+            check_blocks(folder, [j % 32 for j in range(129)], exe, original, parts, env)
+        return
+    if variation == "prefill_ids_mutation":
+        with pytest.raises(RuntimeError):
+            check_blocks(folder, [j % 32 for j in range(129)], exe, original, parts, env)
+        assert "input modified: input_ids byte 0" in (folder / "block-0/original/capture.log").read_text()
+        return
+    receipts = check_blocks(folder, [j % 32 for j in range(129)], exe, original, parts, env)
     assert [r["valid"] for r in receipts] == [64, 64, 1]
     assert not any(folder.rglob("*actual-1.bin"))
+    for rec in receipts:
+        assert set(rec["original_mutations"]) == ({"t0_recurrent"} if variation else set())
 
 
 def test_effective_last_call_includes_head_once():

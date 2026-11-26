@@ -152,15 +152,24 @@ def capture(folder, exe, model, files, env):
         folder,
     )
     e = c.read(app / "execution.json")
+    changed = e["mutated_inputs"]
+    states = {
+        v["name"] for v in abi["outputs"] if re.fullmatch(r"t\d+_(key|value|conv|recurrent)", v["name"])
+    }
     require(
         e["status"] == "PASS"
         and not e["cpu_fallback"]
         and e["reference_capture"]
-        and all(e[k] for k in ("guards", "readonly", "repeat"))
+        and all(e[k] for k in ("guards", "repeat"))
+        and len(changed) == len(set(changed))
+        and set(changed) <= states
+        and e["readonly"] is (not changed)
         and e["timing"]["repetitions"] == 0,
         "invalid two-poison device capture",
     )
-    return {v["name"]: c.identity(app / (v["name"] + "-actual-0.bin")) for v in abi["outputs"]}
+    outputs = {v["name"]: c.identity(app / (v["name"] + "-actual-0.bin")) for v in abi["outputs"]}
+    mutations = {n: c.identity(app / (n + "-input-after.bin")) for n in changed}
+    return outputs, mutations
 
 
 def check_blocks(d, tokens, exe, original, parts, env):
@@ -189,17 +198,34 @@ def check_blocks(d, tokens, exe, original, parts, env):
                 p
             )
             files[name] = c.identity(p)
-        old = capture(block / "original", exe, original, files, env)
-        body = capture(block / "body", exe, parts["body"], files, env)
-        head = capture(block / "head", exe, parts["head"], {ROW: body[ROW]}, env)
+        old, old_refs = capture(block / "original", exe, original, files, env)
+        body, body_refs = capture(block / "body", exe, parts["body"], files, env)
+        head, head_refs = capture(block / "head", exe, parts["head"], {ROW: body[ROW]}, env)
+        require(
+            not head_refs
+            and {k: v["sha256"] for k, v in old_refs.items()}
+            == {k: v["sha256"] for k, v in body_refs.items()},
+            f"Target ref input side effects differ at position {pos}: see original/body *-input-after.bin",
+        )
         same = {**{k: v for k, v in body.items() if k != ROW}, **head}
         require(set(same) == set(old), "missing recovered Target result")
         errors = [k for k in old if old[k]["sha256"] != same[k]["sha256"]]
         require(not errors, f"Target outputs differ at position {pos} valid={valid}: {errors}")
         state = {k: body[k] for k in state}
-        proofs.append(dict(start=pos, valid=valid, reference=old, candidate=same, hidden=body[ROW]))
+        proofs.append(
+            dict(
+                start=pos,
+                valid=valid,
+                reference=old,
+                candidate=same,
+                hidden=body[ROW],
+                original_mutations=old_refs,
+                candidate_mutations=body_refs,
+            )
+        )
         print(
-            f"Target block start={pos} valid={valid}: Top1, features and all {len(state)} complete states bitwise PASS",
+            f"Target block start={pos} valid={valid}: Top1, features and all {len(state)} complete states bitwise PASS; "
+            f"{len(old_refs)} modified ref inputs match byte-for-byte",
             flush=True,
         )
     return proofs

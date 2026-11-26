@@ -269,8 +269,13 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
       if (*static_cast<std::uint16_t*>(item.second->data) != start) return 27;
       std::memcpy(result->data, item.second->data, result->size);
       *static_cast<std::uint16_t*>(result->data) = static_cast<std::uint16_t>(start + committed);
+      if (model.role == "target_prefill" && (variation == "prefill_ref_update" ||
+          (variation == "prefill_body_ref_only" && out.count("prefill_head_input"))))
+        std::memcpy(item.second->data, result->data, result->size);
     }
   }
+  if (model.role == "target_prefill" && variation == "prefill_ids_mutation")
+    static_cast<unsigned char*>(in.at("input_ids")->data)[0] ^= 1;
   if (model.role == "draft" && call_number == 3) {
     if (variation == "draft_input_mutation")
       static_cast<unsigned char*>(in.at("d0_key")->data)[2] ^= 1;

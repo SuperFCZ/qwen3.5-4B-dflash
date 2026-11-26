@@ -102,24 +102,67 @@ int main(int argc,char** argv) {
             }
         }
         std::vector<std::vector<uint8_t>> first(outputs.size());
+        std::vector<bool> ref_input(inputs.size(), false), changed_input(inputs.size(), false);
+        if (capture) {
+            for (size_t i = 0; i < inputs.size(); ++i) {
+                const auto& t = inputs[i];
+                // Target state is a named input/output pair. CacheUpdate may write its ref operand.
+                const auto suffix = t.name.find('_');
+                if (t.name.size()<3 || t.name.front()!='t' || suffix==std::string::npos || suffix<=1 ||
+                    t.name.find_first_not_of("0123456789",1)!=suffix) continue;
+                ref_input[i] = std::any_of(outputs.begin(), outputs.end(), [&](const auto& y) {
+                    return y.name==t.name && y.dtype==t.dtype && y.shape==t.shape;
+                });
+            }
+        }
         Timing timing; timing.continuous=!capture; timing.collectPrepare=false;
         timing.warmup=capture?0:5; timing.repetitions=capture?0:30;
+        auto restore_capture = [&]() {
+            for (size_t i=0; capture && i<inputs.size(); ++i) {
+                if (!changed_input[i]) continue;
+                auto restored=originals[i];
+                restored.resize(s.x[i]->bytes,0);
+                s.x[i]->CopyIn(restored);
+            }
+        };
         auto verify=[&](const std::string& name) {
             s.Guards();
             for(size_t i=0;i<inputs.size();++i) {
+                bool changed=false;
                 std::vector<uint8_t> chunk(std::min<size_t>(4*1024*1024,s.x[i]->bytes));
                 for(size_t offset=0;offset<s.x[i]->bytes;offset+=chunk.size()) {
                     const size_t count=std::min(chunk.size(),s.x[i]->bytes-offset);
                     Check(aclrtMemcpy(chunk.data(),chunk.size(),static_cast<uint8_t*>(s.x[i]->data)+offset,count,ACL_MEMCPY_DEVICE_TO_HOST),"readonly");
                     for(size_t j=0;j<count;++j) {
                         const auto expected=offset+j<inputs[i].bytes?originals[i][offset+j]:uint8_t(0);
-                        if(chunk[j]!=expected) throw std::runtime_error("input modified");
+                        if(chunk[j]!=expected) {
+                            if (!ref_input[i] || offset+j>=inputs[i].bytes)
+                                throw std::runtime_error("input modified: "+inputs[i].name+" byte "+std::to_string(offset+j));
+                            changed=true;
+                        }
                     }
+                }
+                if (capture) {
+                    const bool initial = name == "actual-0.bin";
+                    if (!initial && changed != changed_input[i])
+                        throw std::runtime_error("different ref mutation on repeat: "+inputs[i].name);
+                    if (changed) {
+                        const auto path=dir+"/"+inputs[i].name+"-input-after.bin";
+                        auto actual=s.x[i]->CopyOut(); actual.resize(inputs[i].bytes);
+                        if (initial) WriteBytes(path,actual);
+                        else if (actual!=ReadBytes(path,inputs[i].bytes))
+                            throw std::runtime_error("different ref bytes on repeat: "+inputs[i].name);
+                    }
+                    changed_input[i]=changed;
                 }
             }
             for(size_t i=0;i<outputs.size();++i) {
                 auto value=s.y[i]->CopyOut(); value.resize(outputs[i].bytes);
-                if(first[i].empty()) first[i]=value; else if(first[i]!=value) throw std::runtime_error("repeat drift");
+                if(first[i].empty()) first[i]=value;
+                else if(first[i]!=value) {
+                    if (capture) WriteBytes(dir+"/"+outputs[i].name+"-repeat-mismatch.bin",value);
+                    throw std::runtime_error("repeat drift: "+outputs[i].name);
+                }
                 if (snapshot && !capture && value != golden[i]) {
                     WriteBytes(dir+"/"+outputs[i].name+"-mismatch.bin", value);
                     throw std::runtime_error("receiver snapshot mismatch: "+outputs[i].name);
@@ -129,7 +172,7 @@ int main(int argc,char** argv) {
             }
         };
         s.Guards();
-        RunMeasuredCalls(timing,[](){},[&](){ Check(aclmdlExecuteAsync(s.model,s.inputs,s.outputs,s.stream),"execute"); Check(aclrtSynchronizeStream(s.stream),"sync"); },
+        RunMeasuredCalls(timing,restore_capture,[&](){ Check(aclmdlExecuteAsync(s.model,s.inputs,s.outputs,s.stream),"execute"); Check(aclrtSynchronizeStream(s.stream),"sync"); },
             [&](int repeat){ for(auto& y:s.y) Check(aclrtMemset(y->data,y->bytes,repeat%2?0xff:0x7f,y->bytes),"poison"); },verify);
         // Changed-request check on the SAME model/workspace, outside timed calls.
         const bool permutable=!snapshot && (inputs[0].name=="x" || inputs[0].name=="hidden") && inputs[0].shape[0]>1;
@@ -156,9 +199,18 @@ int main(int argc,char** argv) {
         std::ofstream report(dir+"/execution.json");
         report.exceptions(std::ios::badbit | std::ios::failbit);
         report<<"{\"status\":\"PASS\",\"scope\":\"" << (snapshot ? "single OM receiver snapshot" : "execution only; numerical comparison separate")
-              << "\",\"guards\":true,\"readonly\":true,\"repeat\":true,\"cpu_fallback\":false";
+              << "\",\"guards\":true,\"readonly\":" << (std::count(changed_input.begin(),changed_input.end(),true) ? "false" : "true")
+              << ",\"repeat\":true,\"cpu_fallback\":false";
         report<<",\"row_permutation_checked\":"<<(permutable?"true":"false");
-        if (capture) report << ",\"reference_capture\":true";
+        if (capture) {
+            report << ",\"reference_capture\":true,\"mutated_inputs\":[";
+            bool emitted=false;
+            for (size_t i=0;i<inputs.size();++i) if (changed_input[i]) {
+                if (emitted) report << ',';
+                report << '"' << inputs[i].name << '"'; emitted=true;
+            }
+            report << ']';
+        }
         if (snapshot)
             report << ",\"allocation\":{\"workspace\":\"" << argv[6] << "\",\"io\":\"" << argv[7]
                    << "\",\"workspace_bytes\":" << work << ",\"ge_weight_bytes\":" << weights
