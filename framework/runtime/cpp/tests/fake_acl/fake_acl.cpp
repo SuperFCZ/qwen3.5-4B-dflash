@@ -40,6 +40,7 @@ struct FixtureModel {
   std::string role;
   std::vector<FixtureTensor> inputs, outputs;
   void* workspace = nullptr;
+  void* weights = nullptr;
   std::size_t workspace_size = 0;
   bool dynamic_context = false;
 };
@@ -395,7 +396,7 @@ aclError aclrtMalloc(void** device_ptr, std::size_t size, aclrtMemMallocPolicy) 
 aclError aclrtFree(void* device_ptr) {
   if (FailCleanup("aclrtFree")) return 38;
   for (const auto& item : fixtures)
-    if (item.second.workspace == device_ptr) return 39;
+    if (item.second.workspace == device_ptr || item.second.weights == device_ptr) return 39;
   discard_allocations.erase(device_ptr);
   device_allocations.erase(device_ptr);
   std::free(device_ptr);
@@ -518,14 +519,16 @@ aclError aclmdlLoadFromFileWithMem(const char* path, std::uint32_t* model_id,
                                  void* work, std::size_t work_size,
                                  void* weight, std::size_t weight_size) {
   if (!work || !device_allocations.count(work) ||
-      device_allocations.at(work) < work_size || weight || weight_size) return 40;
+      device_allocations.at(work) < work_size || (weight == nullptr) != (weight_size == 0)) return 40;
   std::size_t required_work = 0, required_weight = 0;
   if (aclmdlQuerySize(path, &required_work, &required_weight) != ACL_SUCCESS ||
-      work_size < required_work) return 41;
+      work_size < required_work || (weight && (!device_allocations.count(weight) ||
+      device_allocations.at(weight) < weight_size || weight_size < required_weight))) return 41;
   const auto status = aclmdlLoadFromFile(path, model_id);
   if (status != ACL_SUCCESS) return status;
   auto& model = fixtures.at(*model_id);
   model.workspace = work;
+  model.weights = weight;
   model.workspace_size = work_size;
   if (const auto* log_path = std::getenv("QWEN35_FAKE_WORKSPACE_LOG")) {
     std::ofstream log(log_path, std::ios::app);
@@ -699,6 +702,13 @@ aclError aclmdlAddDatasetBuffer(
   dataset->buffers.push_back(data_buffer);
   return ACL_SUCCESS;
 }
+
+std::size_t aclmdlGetDatasetNumBuffers(const aclmdlDataset* ds) { return ds ? ds->buffers.size() : 0; }
+aclDataBuffer* aclmdlGetDatasetBuffer(const aclmdlDataset* ds, std::size_t i) {
+  return ds && i < ds->buffers.size() ? ds->buffers[i] : nullptr;
+}
+void* aclGetDataBufferAddr(const aclDataBuffer* b) { return b ? b->data : nullptr; }
+std::size_t aclGetDataBufferSizeV2(const aclDataBuffer* b) { return b ? b->size : 0; }
 
 aclError aclmdlExecuteAsync(
     std::uint32_t id,

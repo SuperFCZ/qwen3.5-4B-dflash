@@ -131,6 +131,10 @@ aclError aclDestroyDataBuffer(aclDataBuffer* buffer);
 aclError aclmdlAddDatasetBuffer(
     aclmdlDataset* dataset,
     aclDataBuffer* data_buffer);
+std::size_t aclmdlGetDatasetNumBuffers(const aclmdlDataset* dataset);
+aclDataBuffer* aclmdlGetDatasetBuffer(const aclmdlDataset* dataset, std::size_t index);
+void* aclGetDataBufferAddr(const aclDataBuffer* buffer);
+std::size_t aclGetDataBufferSizeV2(const aclDataBuffer* buffer);
 aclError aclmdlExecuteAsync(
     std::uint32_t model_id,
     const aclmdlDataset* input,
