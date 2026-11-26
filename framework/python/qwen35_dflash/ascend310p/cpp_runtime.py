@@ -380,7 +380,10 @@ def validate_cpp_runner_report(
         raise RuntimeError("C++ runner Draft prefill policy differs")
     if chunk_abi and reported_policy in ("single_draft16_64_gears", "static_draft16_64_oms") and abi.get("draft_context_gears") != [16, 64]:
         raise RuntimeError("C++ runner Draft dynamic gears differ")
-    extra_context_graph = chunk_abi and reported_rows == 16 and reported_policy is None
+    context_only = abi.get("context_only_prefill", False)
+    if type(context_only) is not bool or context_only and reported_policy != "static_draft16_64_oms":
+        raise RuntimeError("C++ runner context-only Prefill requires static Draft gears")
+    extra_context_graph = chunk_abi and (context_only or reported_rows == 16 and reported_policy is None)
     if low_memory and (
         not chunk_abi
         or protocol.get("order") not in (

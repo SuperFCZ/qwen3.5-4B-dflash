@@ -190,6 +190,12 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
       proposals[7] = (proposals[7] + 7) % 64;
     if (variation == "draft_private_output" && !model.workspace)
       proposals[7] = (proposals[7] + 7) % 64;
+  } else if (model.role == "draft_context64") {
+    if (valid != 64 || in.count("anchor") || in.count("proposal_count") || out.count("draft_top1")) return 23;
+    const auto* features = in.at("features");
+    const auto stride = features->size / (64 * sizeof(std::uint16_t));
+    for (int row = 0; row < valid; ++row)
+      if (static_cast<const std::uint16_t*>(features->data)[row * stride] != start + row) return 24;
   } else {
     auto* ids = static_cast<std::int64_t*>(in.at("input_ids")->data);
     auto* predictions = static_cast<std::int64_t*>(out.at("target_top1")->data);

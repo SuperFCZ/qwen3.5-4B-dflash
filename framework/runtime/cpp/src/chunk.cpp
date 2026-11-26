@@ -46,6 +46,25 @@ void ValidateVerifyDiscardOutputs(const ChunkGraph& graph, bool mtp) {
             "verify discard output name/order/dtype/shape differs from raw FP32 state");
   }
 }
+void ValidateContextPrefill(const ChunkGraph& context, const ChunkGraph& draft) {
+  const auto same = [](const TensorSpec& a, const TensorSpec& b) {
+    return a.name == b.name && a.dtype == b.dtype && a.shape == b.shape;
+  };
+  Require(!draft.static_model64.empty() && draft.inputs.size() >= 7 &&
+              draft.inputs.size() == draft.outputs.size() + 4 &&
+              draft.inputs[0].name == "features" && draft.inputs[0].shape.size() == 3 &&
+              draft.inputs[0].shape[1] == 64 && draft.inputs[1].name == "start_position" &&
+              draft.inputs[2].name == "valid_rows" && draft.inputs[3].name == "anchor" &&
+              draft.inputs[4].name == "proposal_count" && draft.outputs[0].name == "draft_top1",
+          "context-only Prefill needs the static Draft feature, controls and KV ABI");
+  Require(context.inputs.size() == draft.inputs.size() - 2 &&
+              context.outputs.size() == draft.outputs.size() - 1 &&
+              std::equal(context.inputs.begin(), context.inputs.begin() + 3, draft.inputs.begin(), same) &&
+              std::equal(context.inputs.begin() + 3, context.inputs.end(), draft.inputs.begin() + 5, same) &&
+              std::equal(context.outputs.begin(), context.outputs.end(), draft.outputs.begin() + 1, same) &&
+              std::equal(context.outputs.begin(), context.outputs.end(), context.inputs.begin() + 3, same),
+          "context-only Prefill feature or ordered KV ports differ from the full Draft");
+}
 }  // namespace
 
 bool IsVerifyDiscardState(const std::string& name) {
@@ -89,7 +108,7 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
                                                result.draft_policy == "static_draft16_64_oms"),
           "chunk plan needs single_draft16_64_gears; regenerate the plan with current AIR/OM and runner");
   const std::set<std::string> roles{"target_prefill", "target_decode",
-                                    "target_verify", "draft"};
+                                    "target_verify", "draft", "draft_context64"};
   while (input >> word && word == "graph") {
     ChunkGraph graph;
     std::string filename;
@@ -101,7 +120,7 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
     graph.model = filename;
     if (!(mode == "dflash" && graph.name == "target_decode") &&
         !(mode == "ordinary" &&
-          (graph.name == "target_verify" || graph.name == "draft"))) {
+          (graph.name == "target_verify" || graph.name == "draft" || graph.name == "draft_context64"))) {
       Require(Sha256File(graph.model) == graph.sha256,
               "chunk OM SHA-256 mismatch: " + graph.name);
     }
@@ -179,6 +198,8 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
           "chunk plan needs prefill, verify and one draft; regenerate AIR/OM in a new bundle directory");
   Require(mode == "dflash" || result.graphs.count("target_decode"),
           "ordinary/paired execution requires target_decode");
+  if (result.graphs.count("draft_context64"))
+    ValidateContextPrefill(result.graphs.at("draft_context64"), result.graphs.at("draft"));
   Require(!(input >> word), "unexpected data after chunk plan");
   return result;
 }

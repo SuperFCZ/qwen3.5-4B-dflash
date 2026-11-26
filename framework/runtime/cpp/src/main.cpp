@@ -641,6 +641,8 @@ void WriteReport(
     const std::string& error = {}) {
   const bool pass = result.token_id_mismatches == 0 && result.eos_mismatches == 0;
   const bool stable = result.ordinary.repeatable && result.dflash.repeatable;
+  const auto* chunk = dynamic_cast<const qwen35::dflash::ChunkExecutor*>(&executor);
+  const bool context_prefill = chunk && chunk->has_context_only_prefill();
   double ordinary_decode_ms = 0.0, dflash_decode_ms = 0.0;
   for (const auto& measurement : result.ordinary.measurements)
     ordinary_decode_ms += measurement.decode_ms;
@@ -660,10 +662,11 @@ void WriteReport(
   if (arguments.model_kind == "chunk") {
     output << "\"abi\":{\"id\":\""
            << JsonEscape(dynamic_cast<const qwen35::dflash::ChunkExecutor&>(executor).abi_id())
-           << "\",\"graph_count\":4,\"draft_context_rows\":16"
+           << "\",\"graph_count\":" << (4 + context_prefill) << ",\"draft_context_rows\":16"
            << ",\"draft_context_gears\":[16,64],\"draft_prefill_policy\":\""
            << JsonEscape(dynamic_cast<const qwen35::dflash::ChunkExecutor&>(executor).draft_prefill_policy())
-           << "\",\"om_count\":" << dynamic_cast<const qwen35::dflash::ChunkExecutor&>(executor).om_count()
+           << "\",\"om_count\":" << chunk->om_count()
+           << (context_prefill ? ",\"context_only_prefill\":true" : "")
            << ",\"sequence_length\":";
   } else {
     output << "\"abi\":{\"input_names\":[\"input_ids\",\"attention_mask\"],"
@@ -682,7 +685,7 @@ void WriteReport(
          << "\"om_io_binding\":\"" << (arguments.model_kind == "chunk" ? "prebound_ping_pong" : "static") << "\","
          << "\"repeatability_policy\":\"observe\","
          << "\"max_resident_models\":" << (arguments.model_kind == "chunk"
-              ? (arguments.low_memory || arguments.mode == "dflash" ? 3 : 4) +
+              ? (arguments.low_memory || arguments.mode == "dflash" ? 3 : 4) + context_prefill +
                 (dynamic_cast<const qwen35::dflash::ChunkExecutor&>(executor).draft_prefill_policy() ==
                  "static_draft16_64_oms") : 1) << ','
          << "\"synchronization\":\"one aclrtSynchronizeStream after queued H2D, execute, D2H\","

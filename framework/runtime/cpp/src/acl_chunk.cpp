@@ -383,7 +383,7 @@ class AclChunkExecutor::Impl {
     for (const auto& item : plan.graphs) {
       if (mode == "dflash" && item.first == "target_decode") continue;
       if (mode == "ordinary" &&
-          (item.first == "target_verify" || item.first == "draft"))
+          (item.first == "target_verify" || item.first == "draft" || item.first == "draft_context64"))
         continue;
       expanded.push_back(item.second);
       if (!item.second.static_model64.empty()) {
@@ -784,15 +784,17 @@ class AclChunkExecutor::Impl {
       feature_rows = rows;
       cursor += rows;
       if (draft && cursor < ids.size()) {
-        // One 64-row call per non-final Target block. The final block is
-        // consumed by the first useful proposal call, then Verify supplies
-        // <=16 committed rows and the same OM switches to its compact gear.
+        // The final Target block feeds the first proposal. Earlier blocks only publish Draft KV.
         Require(draft_cursor == feature_start, "Draft prefill cursor is inconsistent");
         Scalar("start_position", static_cast<std::int64_t>(feature_start));
         Scalar("valid_rows", static_cast<std::int64_t>(feature_rows));
-        Scalar("anchor", token);
-        Scalar("proposal_count", 1);
-        Call("draft");
+        if (models.count("draft_context64")) {
+          Call("draft_context64");
+        } else {
+          Scalar("anchor", token);
+          Scalar("proposal_count", 1);
+          Call("draft");
+        }
         Swap('d');
         draft_cursor = cursor;
         feature_rows = 0;
@@ -1291,6 +1293,7 @@ std::int64_t AclChunkExecutor::vocabulary_size() const noexcept {
 
 std::string AclChunkExecutor::abi_id() const { return impl_->plan.abi; }
 std::string AclChunkExecutor::draft_prefill_policy() const { return impl_->plan.draft_policy; }
+bool AclChunkExecutor::has_context_only_prefill() const { return impl_->plan.graphs.count("draft_context64") != 0; }
 std::size_t AclChunkExecutor::om_count() const {
   return impl_->plan.graphs.size() + (impl_->plan.draft_policy == "static_draft16_64_oms");
 }

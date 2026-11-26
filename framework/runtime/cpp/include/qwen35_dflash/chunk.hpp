@@ -43,6 +43,7 @@ class ChunkExecutor : public GraphExecutor {
   virtual std::string abi_id() const { return "qwen35-dflash-chunk-v4"; }
   virtual std::string draft_prefill_policy() const { return "single_draft16_64_gears"; }
   virtual std::size_t om_count() const { return 4; }
+  virtual bool has_context_only_prefill() const { return false; }
   std::size_t draft_width() const noexcept override { return 15; }
   const GraphOutputs& Execute(const std::vector<std::int64_t>&,
                               std::int64_t) override;
@@ -91,6 +92,7 @@ class AclChunkExecutor final : public ChunkExecutor {
   std::string abi_id() const override;
   std::string draft_prefill_policy() const override;
   std::size_t om_count() const override;
+  bool has_context_only_prefill() const override;
   std::int64_t vocabulary_size() const noexcept override;
   void Reset(std::int64_t) override;
   void Abort() noexcept override;
