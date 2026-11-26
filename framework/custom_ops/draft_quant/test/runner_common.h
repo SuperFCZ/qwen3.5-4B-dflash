@@ -58,11 +58,12 @@ struct GuardedBuffer {
         bytes = 0;
     }
 
-    void Allocate(size_t size)
+    void Allocate(size_t size, decltype(ACL_MEM_MALLOC_HUGE_FIRST) policy = ACL_MEM_MALLOC_HUGE_FIRST)
     {
+        if (size > size_t(-1) - 2 * kGuard) throw std::runtime_error("guarded allocation overflow");
         Release();
         bytes = size;
-        Check(aclrtMalloc(&allocation, bytes + 2 * kGuard, ACL_MEM_MALLOC_HUGE_FIRST), "aclrtMalloc");
+        Check(aclrtMalloc(&allocation, bytes + 2 * kGuard, policy), "aclrtMalloc");
         data = static_cast<uint8_t *>(allocation) + kGuard;
         Check(aclrtMemset(allocation, bytes + 2 * kGuard, kCanary, bytes + 2 * kGuard), "init guards");
     }

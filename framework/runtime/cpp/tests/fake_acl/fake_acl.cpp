@@ -79,6 +79,15 @@ bool TouchesDiscard(const void* pointer, std::size_t bytes) {
   return false;
 }
 
+// Guarded replays pass an aligned payload inside the allocation to the loader.
+void* AllocationOwner(void* payload, std::size_t bytes) {
+  auto it = device_allocations.upper_bound(payload);
+  if (it == device_allocations.begin()) return nullptr;
+  --it;
+  const auto offset = reinterpret_cast<std::uintptr_t>(payload) - reinterpret_cast<std::uintptr_t>(it->first);
+  return offset <= it->second && bytes <= it->second - offset ? it->first : nullptr;
+}
+
 aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, aclmdlDataset* output) {
   LogIo("execute", input, output, model.role);
   if (input->buffers.size() != model.inputs.size() || output->buffers.size() != model.outputs.size()) return 21;
@@ -351,6 +360,10 @@ aclError aclrtDestroyStream(aclrtStream stream) {
 }
 
 aclError aclrtSynchronizeStream(aclrtStream) { return ACL_SUCCESS; }
+const char* aclGetRecentErrMsg() { return "fake ACL"; }
+aclError aclrtMemset(void* ptr, std::size_t maximum, std::int32_t value, std::size_t count) {
+  return aclrtMemsetAsync(ptr, maximum, value, count, nullptr);
+}
 aclError aclrtMemsetAsync(void* ptr, std::size_t maximum, std::int32_t value, std::size_t count, aclrtStream) {
   if (!ptr || count > maximum) return 1;
   if (TouchesDiscard(ptr, count)) return 33;
@@ -381,13 +394,15 @@ aclError aclrtFreeHost(void* host_ptr) {
   return ACL_SUCCESS;
 }
 
-aclError aclrtMalloc(void** device_ptr, std::size_t size, aclrtMemMallocPolicy) {
+aclError aclrtMalloc(void** device_ptr, std::size_t size, aclrtMemMallocPolicy policy) {
   if (device_ptr == nullptr || size == 0) {
     return 1;
   }
   *device_ptr = std::malloc(size);
   if (*device_ptr) {
     device_allocations[*device_ptr] = size;
+    if (const auto* path = std::getenv("QWEN35_FAKE_ALLOC_POLICY_LOG"))
+      std::ofstream(path, std::ios::app) << size << ' ' << static_cast<int>(policy) << '\n';
     if (executed) ++allocations_after_execute;
   }
   return *device_ptr == nullptr ? 1 : ACL_SUCCESS;
@@ -518,17 +533,17 @@ aclError aclmdlLoadFromFile(const char* path, std::uint32_t* model_id) {
 aclError aclmdlLoadFromFileWithMem(const char* path, std::uint32_t* model_id,
                                  void* work, std::size_t work_size,
                                  void* weight, std::size_t weight_size) {
-  if (!work || !device_allocations.count(work) ||
-      device_allocations.at(work) < work_size || (weight == nullptr) != (weight_size == 0)) return 40;
+  void* work_owner = AllocationOwner(work, work_size);
+  if (!work || !work_owner || (weight == nullptr) != (weight_size == 0)) return 40;
+  void* weight_owner = weight ? AllocationOwner(weight, weight_size) : nullptr;
   std::size_t required_work = 0, required_weight = 0;
   if (aclmdlQuerySize(path, &required_work, &required_weight) != ACL_SUCCESS ||
-      work_size < required_work || (weight && (!device_allocations.count(weight) ||
-      device_allocations.at(weight) < weight_size || weight_size < required_weight))) return 41;
+      work_size < required_work || (weight && (!weight_owner || weight_size < required_weight))) return 41;
   const auto status = aclmdlLoadFromFile(path, model_id);
   if (status != ACL_SUCCESS) return status;
   auto& model = fixtures.at(*model_id);
-  model.workspace = work;
-  model.weights = weight;
+  model.workspace = work_owner;
+  model.weights = weight_owner;
   model.workspace_size = work_size;
   if (const auto* log_path = std::getenv("QWEN35_FAKE_WORKSPACE_LOG")) {
     std::ofstream log(log_path, std::ios::app);

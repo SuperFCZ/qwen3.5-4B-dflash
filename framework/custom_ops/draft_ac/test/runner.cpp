@@ -3,6 +3,7 @@
 #include <iostream>
 #include <memory>
 #include <sstream>
+#include <limits>
 using namespace draft_quant_test;
 struct TensorSpec { std::string name; aclDataType dtype; std::vector<int64_t> shape; size_t bytes; };
 std::vector<TensorSpec> Specs(const std::string& file) {
@@ -40,16 +41,37 @@ struct Session {
         for(size_t i=0;i<y.size();++i) CheckNamedGuards({{("output-"+std::to_string(i)).c_str(),y[i].get()}},std::cerr);
     }
 };
+aclrtMemMallocPolicy PagePolicy(const std::string& name) {
+    if (name == "normal") return ACL_MEM_MALLOC_NORMAL_ONLY;
+    if (name == "huge-first") return ACL_MEM_MALLOC_HUGE_FIRST;
+    throw std::runtime_error("unknown allocation policy " + name);
+}
 int main(int argc,char** argv) {
     try {
-        if(argc!=5) throw std::runtime_error("usage: runner DEVICE OM CASE_DIR INPUT_DIR");
+        const bool snapshot = argc == 8;
+        if(argc!=5 && !snapshot) throw std::runtime_error("usage: runner DEVICE OM CASE_DIR INPUT_DIR [WORK_BYTES WORK_POLICY IO_POLICY]");
         Session s; s.device=std::stoi(argv[1]); std::string dir=argv[3],source=argv[4];
         const auto inputs=Specs(dir+"/inputs.tsv"),outputs=Specs(dir+"/outputs.tsv");
+        const auto work_policy = snapshot ? PagePolicy(argv[6]) : ACL_MEM_MALLOC_HUGE_FIRST;
+        const auto io_policy = snapshot ? PagePolicy(argv[7]) : ACL_MEM_MALLOC_HUGE_FIRST;
+        std::vector<std::vector<uint8_t>> golden;
+        if (snapshot)
+            for (const auto& out : outputs) golden.push_back(ReadBytes(dir+"/golden/"+out.name+".bin", out.bytes));
         Check(aclInit(nullptr),"init"); s.init=true; Check(aclrtSetDevice(s.device),"set device"); s.ready=true;
         Check(aclrtCreateStream(&s.stream),"stream"); size_t work=0,weights=0;
         Check(aclmdlQuerySize(argv[2],&work,&weights),"query model");
-        if(work) s.workspace.Allocate(work); if(weights) s.weights.Allocate(weights);
-        Check(aclmdlLoadFromFileWithMem(argv[2],&s.model,s.workspace.data,work,s.weights.data,weights),"load OM"); s.loaded=true;
+        if (snapshot) {
+            const std::string arg(argv[5]);
+            if (arg.empty() || arg.find_first_not_of("0123456789") != std::string::npos)
+                throw std::runtime_error("invalid workspace byte count");
+            const auto capacity = std::stoull(arg);
+            if (!capacity || capacity < work || capacity > std::numeric_limits<size_t>::max() - 2*kGuard)
+                throw std::runtime_error("incompatible receiver workspace capacity");
+            work = static_cast<size_t>(capacity);
+        }
+        if (work) s.workspace.Allocate(work, work_policy);
+        if (weights && !snapshot) s.weights.Allocate(weights);
+        Check(aclmdlLoadFromFileWithMem(argv[2],&s.model,s.workspace.data,work,s.weights.data,s.weights.bytes),"load OM"); s.loaded=true;
         s.desc=aclmdlCreateDesc(); if(!s.desc) throw std::runtime_error("desc"); Check(aclmdlGetDesc(s.desc,s.model),"get desc");
         if(aclmdlGetNumInputs(s.desc)!=inputs.size() || aclmdlGetNumOutputs(s.desc)!=outputs.size()) throw std::runtime_error("OM public IO count differs");
         s.inputs=aclmdlCreateDataset(); s.outputs=aclmdlCreateDataset(); if(!s.inputs||!s.outputs) throw std::runtime_error("datasets");
@@ -65,13 +87,13 @@ int main(int argc,char** argv) {
                 if(bytes<t.bytes) throw std::runtime_error("OM reported size below logical bytes");
                 if(bytes>size_t(-1)-31) throw std::runtime_error("allocation overflow");
                 const auto physical=(std::max(bytes,t.bytes)+31)/32*32;
-                auto memory=std::make_unique<GuardedBuffer>(); memory->Allocate(physical);
+                auto memory=std::make_unique<GuardedBuffer>(); memory->Allocate(physical, io_policy);
                 if(!out) {
                     originals.push_back(ReadBytes(source+"/"+t.name+".bin",t.bytes));
                     if(physical==t.bytes) memory->CopyIn(originals.back());
                     else { auto padded=originals.back(); padded.resize(physical,0); memory->CopyIn(padded); }
                 }
-                auto* b=aclCreateDataBuffer(memory->data,physical); if(!b) throw std::runtime_error("buffer");
+                auto* b=aclCreateDataBuffer(memory->data,snapshot ? bytes : physical); if(!b) throw std::runtime_error("buffer");
                 Check(aclmdlAddDatasetBuffer(out?s.outputs:s.inputs,b),"bind"); s.buffers.push_back(b);
                 (out?s.y:s.x).push_back(std::move(memory));
                 std::cerr<<(out?"output ":"input ")<<t.name<<" logical="<<t.bytes<<" reported="<<bytes<<" physical="<<physical<<'\n';
@@ -95,14 +117,18 @@ int main(int argc,char** argv) {
             for(size_t i=0;i<outputs.size();++i) {
                 auto value=s.y[i]->CopyOut(); value.resize(outputs[i].bytes);
                 if(first[i].empty()) first[i]=value; else if(first[i]!=value) throw std::runtime_error("repeat drift");
-                if(!name.empty()) WriteBytes(dir+"/"+outputs[i].name+"-"+name,value);
+                if (snapshot && value != golden[i]) {
+                    WriteBytes(dir+"/"+outputs[i].name+"-mismatch.bin", value);
+                    throw std::runtime_error("receiver snapshot mismatch: "+outputs[i].name);
+                }
+                if(!snapshot && !name.empty()) WriteBytes(dir+"/"+outputs[i].name+"-"+name,value);
             }
         };
         s.Guards();
         RunMeasuredCalls(timing,[](){},[&](){ Check(aclmdlExecuteAsync(s.model,s.inputs,s.outputs,s.stream),"execute"); Check(aclrtSynchronizeStream(s.stream),"sync"); },
             [&](int repeat){ for(auto& y:s.y) Check(aclrtMemset(y->data,y->bytes,repeat%2?0xff:0x7f,y->bytes),"poison"); },verify);
         // Changed-request check on the SAME model/workspace, outside timed calls.
-        const bool permutable=(inputs[0].name=="x" || inputs[0].name=="hidden") && inputs[0].shape[0]>1;
+        const bool permutable=!snapshot && (inputs[0].name=="x" || inputs[0].name=="hidden") && inputs[0].shape[0]>1;
         if(permutable) {
             const size_t rows=inputs[0].shape[0], rowBytes=inputs[0].bytes/rows;
             auto saved=originals[0]; auto savedOutputs=first;
@@ -123,8 +149,15 @@ int main(int argc,char** argv) {
             Check(aclmdlExecuteAsync(s.model,s.inputs,s.outputs,s.stream),"restore execute");
             Check(aclrtSynchronizeStream(s.stream),"restore sync"); verify("restored.bin");
         }
-        std::ofstream report(dir+"/execution.json"); report<<"{\"status\":\"PASS\",\"scope\":\"execution only; numerical comparison separate\",\"guards\":true,\"readonly\":true,\"repeat\":true,\"cpu_fallback\":false";
+        std::ofstream report(dir+"/execution.json");
+        report.exceptions(std::ios::badbit | std::ios::failbit);
+        report<<"{\"status\":\"PASS\",\"scope\":\"" << (snapshot ? "single OM receiver snapshot" : "execution only; numerical comparison separate")
+              << "\",\"guards\":true,\"readonly\":true,\"repeat\":true,\"cpu_fallback\":false";
         report<<",\"row_permutation_checked\":"<<(permutable?"true":"false");
-        timing.Write(report); report<<"}\n"; return 0;
+        if (snapshot)
+            report << ",\"allocation\":{\"workspace\":\"" << argv[6] << "\",\"io\":\"" << argv[7]
+                   << "\",\"workspace_bytes\":" << work << ",\"ge_weight_bytes\":" << weights
+                   << ",\"golden_outputs\":" << golden.size() << "}";
+        timing.Write(report); report<<"}\n"; report.close(); return 0;
     } catch(const std::exception& e) { std::cerr<<"FAIL: "<<e.what()<<'\n'; return 1; }
 }

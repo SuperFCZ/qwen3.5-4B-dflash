@@ -19,6 +19,7 @@ from fresh_dso import seal
 from full_replay import run_om
 from package import command
 from call_latency_results import compare, dist, samples, task_contrasts
+from snapshot_profiles import ProfileLoadFailure, check_application, collect as collect_snapshot_profiles
 
 
 def workload(capture, plan):
@@ -134,9 +135,9 @@ def integrated(d, exe, plan, roles, case, env, mode, policy, n, *, save=False, p
     ):
         print(f"{policy} allocation unavailable; see {log}", flush=True)
         return dict(unavailable=c.identity(log))
-    require(
-        rc == 0 and (d / "backend.txt").read_text().strip() == "ASCENDCL_DEVICE_BOUNDARIES_VERIFIED",
-        f"boundary replay failed: {msg[-2400:]}",
+    marker = d / "backend.txt"
+    check_application(
+        rc, marker.is_file() and marker.read_text().strip() == "ASCENDCL_DEVICE_BOUNDARIES_VERIFIED", msg
     )
     rows = c.identity(d / "samples.csv")
     samples(c.verify(rows), mode, n)
@@ -158,10 +159,12 @@ def real_inputs(gear, pair, abi):
     base = Path(pair["root"]) / ("c" + gear)
     inputs = {t["name"]: c.identity(base / "inputs" / (t["name"] + ".bin")) for t in abi["inputs"]}
     golden = {t["name"]: c.identity(base / "golden" / (t["name"] + ".bin")) for t in abi["outputs"]}
-    hashes = [line.split() for line in c.verify(pair["hashes"][gear]).read_text().splitlines()]
+    hashes = [tuple(line.split()) for line in c.verify(pair["hashes"][gear]).read_text().splitlines()]
+    expected = {
+        (side, k, v["sha256"]) for side, files in (("I", inputs), ("O", golden)) for k, v in files.items()
+    }
     require(
-        len(hashes) == len(inputs) + len(golden)
-        and all((inputs if side == "I" else golden)[k]["sha256"] == sha for side, k, sha in hashes),
+        len(hashes) == len(expected) and set(hashes) == expected,
         "snapshot payloads differ from genuine boundary",
     )
     return {"files": inputs}, golden
@@ -213,6 +216,92 @@ def export_csv(root, cli, env):
         )
 
 
+def receiver_runtime(original, old, cann):
+    target = c.read(original / "target.json")
+    require(target["models"] == old["targets"], "different Target assets")
+    vendor = c.verify(target["dynamic_provider"]["script"]).parents[1]
+    env, binding = add_provider(
+        receiver_env(cann, os.environ, [Path(v) for v in target["vendors"] if Path(v) != vendor]), vendor
+    )
+    require(binding == target["dynamic_provider"], "different Target runtime providers")
+    return env, binding
+
+
+def snapshot_profiles(stage, cann, env, cli, paired, models, graphs):
+    cases = {}
+    for g, model in models.items():
+        graph = graphs[g]
+        require(graph["air"] == model["air"], "different source AIR and OM for C" + g)
+        io, golden = real_inputs(g, paired, graph["abi"])
+        cases[g] = dict(
+            abi=graph["abi"], om=model["om"], spec=profile_info(graph, model), io=io, golden=golden
+        )
+    return collect_snapshot_profiles(stage, cann, env, cli, paired, cases, export_csv)
+
+
+def profile_saved(out, prior, resume, state):
+    from panel_profiler import bind_msprof
+
+    prev = c.read(prior / "result.json")
+    timing = c.identity(prior / "timing.json")
+    require(
+        prev.get("timing") == c.read(c.verify(timing)) and set(prev["timing"]) == {"16", "64"},
+        "the previous call-gap run has no completed timing comparison",
+    )
+    context_root = c.verify(prev["baseline"]).parent
+    context = c.read(context_root / "result.json")
+    require(
+        context["status"] == "MEASURED" and context["token_matches"] == context["round_matches"] == 60,
+        "previous diagnosis used a different generation",
+    )
+    original = c.verify(context["baseline"]).parent
+    old = c.read(original / "result.json")
+    require(old["status"] == "E2E_MEASURED", "missing baseline generation")
+    archived = Stages(out, original)
+    ctx = Stages(out, context_root)
+    record = Stages(out, prior).completed("paired")
+    plan = ctx.completed("plan")["result"]
+    require(
+        record["contract"]["plan"] == prev["plan"] == plan
+        and record["contract"]["case"] == c.sha(prior / "case.txt"),
+        "different measured plan or prompt",
+    )
+    c.verify(plan)
+    paired = record["result"]
+    require(
+        paired["mode"] == "pair" and record["contract"]["key"][1:3] == ["pair", "stock"],
+        "expected the verified stock Target/Draft snapshots",
+    )
+    samples(c.verify(paired["rows"]), paired["mode"], paired["n"])
+    state.update(
+        prior=c.identity(prior / "result.json"),
+        timing_source=timing,
+        baseline=prev["baseline"],
+        plan=plan,
+        prompt=prev["prompt"],
+        timing=prev["timing"],
+        actual_generation=prev["actual_generation"],
+    )
+    models = {g: archived.completed("audit-c" + g)["result"] for g in prev["timing"]}
+    graphs = {g: archived.completed("air-c" + g)["result"] for g in models}
+    require(all(v["om"] == old["drafts"][g]["om"] for g, v in models.items()), "different measured Draft OMs")
+    cann = Path(os.environ["CANN_ROOT"]).resolve(strict=True)
+    env, binding = receiver_runtime(original, old, cann)
+    cli = bind_msprof(out, cann, env)
+    stages = Stages(out, resume)
+
+    def stage(name, key, action):
+        state["phase"] = name
+        return stages.run(name, dict(timing=timing, providers=binding, inputs=key), action)
+
+    print(
+        "Reusing measured call timings and real input/Golden snapshots. Profiling one Draft OM per process.",
+        flush=True,
+    )
+    state["profile"] = snapshot_profiles(stage, cann, env, cli, paired, models, graphs)
+    return "MEASURED" if state["profile"]["complete"] else "MEASURED_WITH_PARTIAL_PROFILE"
+
+
 def run(out, args, state):
     base = run_path(out.parent, args.from_run, "context-prefill-")
     context = c.read(base / "result.json")
@@ -256,14 +345,8 @@ def run(out, args, state):
     roles.write_text("".join(k + " " + json.dumps(p) + "\n" for k, (p, _) in bindings.items()))
     case.write_text("".join(" ".join(map(str, row)) + "\n" for row in chosen["rows"]))
     state.update(prompt=chosen["name"], baseline=c.identity(base / "result.json"), plan=plan)
-    target = c.read(original / "target.json")
-    require(target["models"] == old["targets"], "different Target assets")
     cann = Path(os.environ["CANN_ROOT"]).resolve(strict=True)
-    vendor = c.verify(target["dynamic_provider"]["script"]).parents[1]
-    env, binding = add_provider(
-        receiver_env(cann, os.environ, [Path(v) for v in target["vendors"] if Path(v) != vendor]), vendor
-    )
-    require(binding == target["dynamic_provider"], "different Target runtime providers")
+    env, binding = receiver_runtime(original, old, cann)
     previous = run_path(out.parent, args.resume, "draft-call-gap-") if args.resume else None
     stages = Stages(out, previous)
     source = [
@@ -375,7 +458,13 @@ def run(out, args, state):
         from panel_profiler import bind_msprof
 
         cli = bind_msprof(out, cann, env)
-        captured = probe("profile-pairs", "pair", n=5, cli=cli)
+        try:
+            captured = probe("profile-pairs", "pair", n=5, cli=cli)
+        except ProfileLoadFailure as e:
+            state["resident_profile_load_error"] = str(e)
+            print("Model loading failed during profiling. Using the verified one-OM snapshots.", flush=True)
+            state["profile"] = snapshot_profiles(stage, cann, env, cli, original_pair, models, graphs)
+            return "MEASURED" if state["profile"]["complete"] else "MEASURED_WITH_PARTIAL_PROFILE"
         check_same_inputs(captured, original_pair)
         specs = {g: profile_info(graphs[g], models[g]) for g in archive}
         with c.verify(captured["rows"]).open() as f:
@@ -416,17 +505,26 @@ def run(out, args, state):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--from-run", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--from-run")
+    mode.add_argument(
+        "--profile-only", help="reuse a measured call-gap run and profile one Draft OM at a time"
+    )
     parser.add_argument("--resume")
     parser.add_argument("--profile", action="store_true")
     args = parser.parse_args()
     out = Path(os.environ["DFLASH_OUTPUT"])
     s = {"status": "RUNNING"}
     try:
-        s["status"] = run(out, args, s)
+        if args.profile_only:
+            prior = run_path(out.parent, args.profile_only, "draft-call-gap-")
+            reuse = run_path(out.parent, args.resume, "draft-call-gap-") if args.resume else None
+            s["status"] = profile_saved(out, prior, reuse, s)
+        else:
+            s["status"] = run(out, args, s)
     except Exception as e:
-        s.update(status="FAILED", error=str(e))
+        s.update(status="TIMING_MEASURED_PROFILE_FAILED" if "timing" in s else "FAILED", error=str(e))
         traceback.print_exc()
     c.write(out / "result.json", s)
     print(s["status"], "REPORT", out / "result.json", flush=True)
-    raise SystemExit(s["status"] != "MEASURED")
+    raise SystemExit(s["status"] not in ("MEASURED", "MEASURED_WITH_PARTIAL_PROFILE"))

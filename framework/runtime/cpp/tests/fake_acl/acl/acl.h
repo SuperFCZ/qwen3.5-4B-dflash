@@ -69,6 +69,8 @@ aclError aclrtSetCurrentContext(aclrtContext context);
 aclError aclrtCreateStream(aclrtStream* stream);
 aclError aclrtDestroyStream(aclrtStream stream);
 aclError aclrtSynchronizeStream(aclrtStream stream);
+const char* aclGetRecentErrMsg();
+aclError aclrtMemset(void*, std::size_t, std::int32_t, std::size_t);
 aclError aclrtMemsetAsync(void*, std::size_t, std::int32_t, std::size_t, aclrtStream);
 aclError aclUpdateDataBuffer(aclDataBuffer*, void*, std::size_t);
 aclError aclrtMallocHost(void** host_ptr, std::size_t size);
