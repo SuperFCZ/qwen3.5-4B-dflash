@@ -384,11 +384,14 @@ def validate_cpp_runner_report(
     if type(context_only) is not bool or context_only and reported_policy != "static_draft16_64_oms":
         raise RuntimeError("C++ runner context-only Prefill requires static Draft gears")
     extra_context_graph = chunk_abi and (context_only or reported_rows == 16 and reported_policy is None)
+    split_head = abi.get("split_target_prefill_head", False)
+    if type(split_head) is not bool or (split_head and not chunk_abi):
+        raise RuntimeError("invalid split Target Prefill Head report")
     if low_memory and (
         not chunk_abi
         or protocol.get("order") not in (
             "ordinary then DFlash with model unload between modes", "saved ordinary baseline then DFlash")
-        or protocol.get("max_resident_models") != 3 + extra_context_graph + (reported_policy == "static_draft16_64_oms")
+        or protocol.get("max_resident_models") != 3 + extra_context_graph + split_head + (reported_policy == "static_draft16_64_oms")
     ):
         raise RuntimeError("C++ runner low-memory protocol differs")
     abi = report.get("abi", {})
@@ -398,7 +401,7 @@ def validate_cpp_runner_report(
             require_verify_gdr({"abi": abi.get("id")}, verify_gdr)
         except ValueError as error:
             raise RuntimeError("C++ runner incremental ABI differs: " + str(error)) from error
-        if abi.get("graph_count") != 4 + extra_context_graph:
+        if abi.get("graph_count") != 4 + extra_context_graph + split_head:
             raise RuntimeError("C++ runner incremental graph count differs")
     if not chunk_abi and abi.get("input_names") != ["input_ids", "attention_mask"]:
         raise RuntimeError("C++ runner input ABI differs")

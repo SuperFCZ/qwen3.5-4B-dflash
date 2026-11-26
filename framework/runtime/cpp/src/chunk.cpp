@@ -108,7 +108,7 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
                                                result.draft_policy == "static_draft16_64_oms"),
           "chunk plan needs single_draft16_64_gears; regenerate the plan with current AIR/OM and runner");
   const std::set<std::string> roles{"target_prefill", "target_decode",
-                                    "target_verify", "draft", "draft_context64"};
+                                    "target_verify", "draft", "draft_context64", "target_prefill_head"};
   while (input >> word && word == "graph") {
     ChunkGraph graph;
     std::string filename;
@@ -200,6 +200,18 @@ ChunkPlan ReadChunkPlan(const std::filesystem::path& path,
           "ordinary/paired execution requires target_decode");
   if (result.graphs.count("draft_context64"))
     ValidateContextPrefill(result.graphs.at("draft_context64"), result.graphs.at("draft"));
+  const auto& first = result.graphs.at("target_prefill").outputs.front();
+  const bool split = result.graphs.count("target_prefill_head") != 0;
+  Require((first.name == "prefill_head_input") == split, "incomplete split Target Prefill plan");
+  if (split) {
+    const auto& head = result.graphs.at("target_prefill_head");
+    Require(first.dtype == "float16" && first.shape.size() == 3 && first.shape[0] == 1 && first.shape[1] == 1 &&
+                head.inputs.size() == 1 && head.inputs[0].name == first.name && head.inputs[0].dtype == first.dtype &&
+                head.inputs[0].shape == first.shape && head.outputs.size() == 1 &&
+                head.outputs[0].name == "target_top1" && head.outputs[0].dtype == "int64" &&
+                head.outputs[0].shape == std::vector<std::int64_t>{1, 1},
+            "invalid Target Prefill Head handoff or Top1 ABI");
+  }
   Require(!(input >> word), "unexpected data after chunk plan");
   return result;
 }

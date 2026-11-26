@@ -96,6 +96,12 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
   std::map<std::string, aclDataBuffer*> in, out;
   for (std::size_t i = 0; i < model.inputs.size(); ++i) in[model.inputs[i].name] = input->buffers[i];
   for (std::size_t i = 0; i < model.outputs.size(); ++i) out[model.outputs[i].name] = output->buffers[i];
+  if (model.role == "target_prefill_head") {
+    if (in.size() != 1 || out.size() != 1) return 21;
+    *static_cast<std::int64_t*>(out.at("target_top1")->data) =
+        *static_cast<const std::uint16_t*>(in.at("prefill_head_input")->data);
+    return ACL_SUCCESS;
+  }
   if (model.role == "matmul_probe") {
     // Identity fixture exercises native transport, never MatMul/device accuracy.
     if (in.size() != 1 || out.size() != 1 || in.at("x")->size != out.at("y")->size) return 43;
@@ -208,7 +214,9 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
       if (static_cast<const std::uint16_t*>(features->data)[row * stride] != start + row) return 24;
   } else {
     auto* ids = static_cast<std::int64_t*>(in.at("input_ids")->data);
-    auto* predictions = static_cast<std::int64_t*>(out.at("target_top1")->data);
+    std::int64_t last_token = 0;
+    auto* predictions = out.count("prefill_head_input") ? &last_token :
+        static_cast<std::int64_t*>(out.at("target_top1")->data);
     if (model.role == "target_verify") {
       if (valid > 16) return 25;
       for (int i = 0; i < 16; ++i) predictions[i] = (ids[i] + 1) % 64;
@@ -237,6 +245,11 @@ aclError ExecuteChunk(const FixtureModel& model, const aclmdlDataset* input, acl
         predictions[0] = (predictions[0] + 7) % 64;
       if (variation == model.role + "_output" && profiled)
         predictions[0] = (predictions[0] + 7) % 64;
+      if (out.count("prefill_head_input")) {
+        auto* hidden = out.at("prefill_head_input");
+        std::memset(hidden->data, 0, hidden->size);
+        *static_cast<std::uint16_t*>(hidden->data) = static_cast<std::uint16_t>(last_token);
+      }
     }
     if (out.count("features")) {
       std::memset(out.at("features")->data, 0, out.at("features")->size);

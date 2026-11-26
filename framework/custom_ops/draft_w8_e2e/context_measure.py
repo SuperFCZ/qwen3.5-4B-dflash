@@ -81,6 +81,7 @@ def boundaries(folder, runner, env, plans, tokens):
 
 def timings(report, prompt, plan, *, context):
     mode = report["dflash"]
+    split = report["abi"].get("split_target_prefill_head", False)
     require(
         report["status"] in ("PASS", "PASS_WITH_OBSERVATIONS")
         and report["cpu_fallback"] is False
@@ -95,7 +96,8 @@ def timings(report, prompt, plan, *, context):
         and report["protocol"]["low_memory"]
         and report["protocol"]["round_trace_enabled"]
         and bool(report["abi"].get("context_only_prefill")) == context
-        and report["abi"]["om_count"] == 4 + int(context)
+        and type(split) is bool
+        and report["abi"]["om_count"] == 4 + int(context) + int(split)
         and len(mode["measurements"]) == 3,
         "generation protocol changed for " + prompt["id"],
     )
@@ -110,14 +112,20 @@ def timings(report, prompt, plan, *, context):
         proposals = draft if context else draft[n:]
         # Only the first proposal can consume more than 16 committed rows.
         first_is_c64 = len(prompt["tokens"]) - 64 * n > 16
+        body = t["target_prefill"]
+        head = t.get("target_prefill_head", [])
         require(
-            len(t["target_prefill"]) == chunks
+            len(body) == chunks
+            and len(head) == ((1 if context else chunks) if split else 0)
             and len(preparation) == n
             and len(proposals) == len(verify) == sum(bool(r["proposed_token_ids"]) for r in m["rounds"])
             and not t.get("target_decode")
             and (context or not t.get("draft_context64")),
             "invalid context/proposal dispatch for " + prompt["id"],
         )
+        effective = list(body)
+        for i, elapsed in enumerate(head, start=chunks - len(head)):
+            effective[i] += elapsed
         rows.append(
             dict(
                 prefill=m["latency_ms"]["prefill"],
@@ -127,7 +135,11 @@ def timings(report, prompt, plan, *, context):
                 draft=list(proposals),
                 draft_c64=proposals[:1] if first_is_c64 else [],
                 draft_c16=proposals[1:] if first_is_c64 else proposals,
-                target_prefill=t["target_prefill"],
+                target_prefill=effective,
+                prefill_middle=effective[:-1],
+                prefill_last=effective[-1:],
+                prefill_body=list(body) if split else [],
+                prefill_head=list(head),
                 verify=verify,
                 tokens=len(m["generated_token_ids"]),
                 accepted=m["counters"]["accepted_draft_tokens"],
@@ -144,7 +156,18 @@ def summarize(rows):
     result.update(
         {
             k: stats([x for row in rows for x in row[k]])
-            for k in ("context", "draft", "draft_c16", "draft_c64", "target_prefill", "verify")
+            for k in (
+                "context",
+                "draft",
+                "draft_c16",
+                "draft_c64",
+                "target_prefill",
+                "verify",
+                "prefill_middle",
+                "prefill_last",
+                "prefill_body",
+                "prefill_head",
+            )
         }
     )
     result.update({k: sum(row[k] for row in rows) for k in ("tokens", "accepted", "proposed")})

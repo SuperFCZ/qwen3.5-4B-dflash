@@ -430,7 +430,10 @@ std::string ProfileChunk(AclChunkExecutor& executor,
     const auto graph = stage == "draft" ? "draft" : "target_" + stage;
     const std::size_t expected =
         stage == "prefill" ? (prompt.size() + 63) / 64 : 1;
-    Require(captured.size() == 1 && captured[graph] == expected,
+    std::map<std::string, std::size_t> expected_calls{{graph, expected}};
+    const bool split_prefill = stage == "prefill" && executor.has_separate_prefill_head();
+    if (split_prefill) expected_calls["target_prefill_head"] = 1;
+    Require(captured == expected_calls,
             "capture executed unexpected OM calls");
     std::ostringstream report;
     report << std::setprecision(17)
@@ -446,8 +449,11 @@ std::string ProfileChunk(AclChunkExecutor& executor,
            << ",\"target_verify\":" << (stage == "verify");
     if (p.mode == "ordinary")
       report << ",\"target_decode\":" << (stage == "decode");
-    report << "},\"captured_graph_calls\":{" << Quote(graph) << ':' << expected
-           << "},\"stage_scope\":" << Quote(Scope(stage))
+    report << '}';
+    if (split_prefill) report << ",\"split_target_prefill_head\":true";
+    report << ",\"captured_graph_calls\":{" << Quote(graph) << ':' << expected;
+    if (split_prefill) report << ",\"target_prefill_head\":1";
+    report << "},\"stage_scope\":" << Quote(Scope(stage))
            << ",\"warmup_iterations\":" << p.warmup
            << ",\"proposal_count\":" << ((stage == "draft" || stage == "verify") ? proposal_count : 0)
            << ",\"warmup_output_match\":" << (p.warmup ? "true" : "null")

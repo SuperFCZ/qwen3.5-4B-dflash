@@ -48,14 +48,15 @@ aclrtMemMallocPolicy PagePolicy(const std::string& name) {
 }
 int main(int argc,char** argv) {
     try {
-        const bool snapshot = argc == 8;
-        if(argc!=5 && !snapshot) throw std::runtime_error("usage: runner DEVICE OM CASE_DIR INPUT_DIR [WORK_BYTES WORK_POLICY IO_POLICY]");
+        const bool capture = argc == 9 && std::string(argv[8]) == "--capture";
+        const bool snapshot = argc == 8 || capture;
+        if(argc!=5 && !snapshot) throw std::runtime_error("usage: runner DEVICE OM CASE_DIR INPUT_DIR [WORK_BYTES WORK_POLICY IO_POLICY [--capture]]");
         Session s; s.device=std::stoi(argv[1]); std::string dir=argv[3],source=argv[4];
         const auto inputs=Specs(dir+"/inputs.tsv"),outputs=Specs(dir+"/outputs.tsv");
         const auto work_policy = snapshot ? PagePolicy(argv[6]) : ACL_MEM_MALLOC_HUGE_FIRST;
         const auto io_policy = snapshot ? PagePolicy(argv[7]) : ACL_MEM_MALLOC_HUGE_FIRST;
         std::vector<std::vector<uint8_t>> golden;
-        if (snapshot)
+        if (snapshot && !capture)
             for (const auto& out : outputs) golden.push_back(ReadBytes(dir+"/golden/"+out.name+".bin", out.bytes));
         Check(aclInit(nullptr),"init"); s.init=true; Check(aclrtSetDevice(s.device),"set device"); s.ready=true;
         Check(aclrtCreateStream(&s.stream),"stream"); size_t work=0,weights=0;
@@ -65,9 +66,10 @@ int main(int argc,char** argv) {
             if (arg.empty() || arg.find_first_not_of("0123456789") != std::string::npos)
                 throw std::runtime_error("invalid workspace byte count");
             const auto capacity = std::stoull(arg);
-            if (!capacity || capacity < work || capacity > std::numeric_limits<size_t>::max() - 2*kGuard)
+            if ((!capacity && !capture) || (capacity && capacity < work) ||
+                capacity > std::numeric_limits<size_t>::max() - 2*kGuard)
                 throw std::runtime_error("incompatible receiver workspace capacity");
-            work = static_cast<size_t>(capacity);
+            if (capacity) work = static_cast<size_t>(capacity);
         }
         if (work) s.workspace.Allocate(work, work_policy);
         if (weights && !snapshot) s.weights.Allocate(weights);
@@ -100,7 +102,8 @@ int main(int argc,char** argv) {
             }
         }
         std::vector<std::vector<uint8_t>> first(outputs.size());
-        Timing timing; timing.continuous=true; timing.collectPrepare=false; timing.warmup=5; timing.repetitions=30;
+        Timing timing; timing.continuous=!capture; timing.collectPrepare=false;
+        timing.warmup=capture?0:5; timing.repetitions=capture?0:30;
         auto verify=[&](const std::string& name) {
             s.Guards();
             for(size_t i=0;i<inputs.size();++i) {
@@ -117,11 +120,12 @@ int main(int argc,char** argv) {
             for(size_t i=0;i<outputs.size();++i) {
                 auto value=s.y[i]->CopyOut(); value.resize(outputs[i].bytes);
                 if(first[i].empty()) first[i]=value; else if(first[i]!=value) throw std::runtime_error("repeat drift");
-                if (snapshot && value != golden[i]) {
+                if (snapshot && !capture && value != golden[i]) {
                     WriteBytes(dir+"/"+outputs[i].name+"-mismatch.bin", value);
                     throw std::runtime_error("receiver snapshot mismatch: "+outputs[i].name);
                 }
-                if(!snapshot && !name.empty()) WriteBytes(dir+"/"+outputs[i].name+"-"+name,value);
+                if((!snapshot && !name.empty()) || (capture && name=="actual-0.bin"))
+                    WriteBytes(dir+"/"+outputs[i].name+"-"+name,value);
             }
         };
         s.Guards();
@@ -154,6 +158,7 @@ int main(int argc,char** argv) {
         report<<"{\"status\":\"PASS\",\"scope\":\"" << (snapshot ? "single OM receiver snapshot" : "execution only; numerical comparison separate")
               << "\",\"guards\":true,\"readonly\":true,\"repeat\":true,\"cpu_fallback\":false";
         report<<",\"row_permutation_checked\":"<<(permutable?"true":"false");
+        if (capture) report << ",\"reference_capture\":true";
         if (snapshot)
             report << ",\"allocation\":{\"workspace\":\"" << argv[6] << "\",\"io\":\"" << argv[7]
                    << "\",\"workspace_bytes\":" << work << ",\"ge_weight_bytes\":" << weights

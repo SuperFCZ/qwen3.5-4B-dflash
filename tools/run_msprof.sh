@@ -628,7 +628,10 @@ for selected, capture, handshake in zip(stages, reports, controls):
     if backend == "cpp":
         graph = "draft" if selected == "draft" else "target_" + selected
         graph_count = (report["prompt_tokens"] + 63) // 64 if selected == "prefill" else 1
-        if capture.get("captured_graph_calls") != {graph: graph_count} or report.get("runtime") != "AscendCL":
+        expected_graphs = {graph: graph_count}
+        if selected == "prefill" and capture.get("split_target_prefill_head") is True:
+            expected_graphs["target_prefill_head"] = 1
+        if capture.get("captured_graph_calls") != expected_graphs or report.get("runtime") != "AscendCL":
             raise SystemExit(f"{selected}: captured OM calls do not match the window")
         # The fused graph includes both GDR passes; no Python layer counters.
         gdr_calls = {"verify": None, "commit": None}

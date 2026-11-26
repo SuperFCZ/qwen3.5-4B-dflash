@@ -50,7 +50,7 @@ def archive_inputs(folder, capture, plan):
     return dict(batch=identity, prompts=prompts)
 
 
-def memory(capture, candidate):
+def memory(capture, candidate, *, model_count=5):
     file = Path(c.verify(capture["index"])).parent / "runner.log"
     log = file.read_text(errors="replace")
     match = re.findall(
@@ -58,8 +58,8 @@ def memory(capture, candidate):
         log,
     )
     require(
-        len(match) == 1 and int(match[0][0]) > 0 and "loaded_models=5 " in log,
-        "expected five resident OMs sharing one serial workspace",
+        len(match) == 1 and int(match[0][0]) > 0 and f"loaded_models={model_count} " in log,
+        f"expected {model_count} resident OMs sharing one serial workspace",
     )
     shared, total, saved, tail = match[0]
     request = re.search(r"\bworkspace_page_request=(\w+)", tail)
@@ -87,19 +87,28 @@ def request_summary(rows):
     return result
 
 
-def compare(folder, prompts, previous, candidate, plan, archived_groups):
-    samples = {s: {"short": [], "long": []} for s in ("previous", "workspace")}
+def compare(folder, prompts, previous, candidate, plan, archived_groups, *, split_plan=None):
+    label = "split_head" if split_plan is not None else "workspace"
+    samples = {s: {"short": [], "long": []} for s in ("previous", label)}
     agreement = {}
     for p in prompts:
         name = p["id"]
         a, b = [c.read(c.verify(run["reports"][name])) for run in (previous, candidate)]
+        abi, protocol = dict(a["abi"]), dict(a["protocol"])
+        if split_plan is not None:
+            abi.update(
+                split_target_prefill_head=True,
+                graph_count=abi["graph_count"] + 1,
+                om_count=abi["om_count"] + 1,
+            )
+            protocol["max_resident_models"] += 1
         require(
-            a["abi"] == b["abi"] and a["protocol"] == b["protocol"],
+            abi == b["abi"] and protocol == b["protocol"],
             "generation ABI/protocol changed: " + name,
         )
         agreement[name] = compare_generation(a["dflash"], b["dflash"])
-        for side, report in (("previous", a), ("workspace", b)):
-            for i, row in enumerate(timings(report, p, plan, context=True)):
+        for side, report, observed_plan in (("previous", a, plan), (label, b, split_plan or plan)):
+            for i, row in enumerate(timings(report, p, observed_plan, context=True)):
                 samples[side][p["group"]].append(dict(row, prompt=name, repetition=i))
     groups = {}
     for group in ("all", "short", "long"):
@@ -109,13 +118,13 @@ def compare(folder, prompts, previous, candidate, plan, archived_groups):
         }
         a, b = groups[group].values()
         # Reproduce the actual previous comparison and its token/latency denominators.
-        control = archived_groups[group]["context"]
+        control = archived_groups[group]["workspace" if split_plan is not None else "context"]
+        required = ("total", "draft", "context", "verify", "generation_tok_s", "tokens")
+        if split_plan is not None:
+            required += ("target_prefill", "prefill", "decode", "target_per_request")
         require(
-            all(
-                a[k] == control[k]
-                for k in ("total", "draft", "context", "verify", "generation_tok_s", "tokens")
-            ),
-            "recomputed control differs from the saved context result: " + group,
+            all(a[k] == control[k] for k in required),
+            "recomputed control differs from the archived result: " + group,
         )
         old_tps, new_tps = a["generation_tok_s"], b["generation_tok_s"]
         print(
@@ -132,8 +141,19 @@ def compare(folder, prompts, previous, candidate, plan, archived_groups):
                 flush=True,
             )
     a, b = groups["all"].values()
+    prefill_parts = (
+        (
+            ("Target non-final chunks", "prefill_middle"),
+            ("Target final chunk incl. Head", "prefill_last"),
+            ("Target body alone", "prefill_body"),
+            ("Separate Target Head", "prefill_head"),
+        )
+        if split_plan
+        else ()
+    )
     for label, k in (
         ("Target Prefill", "target_prefill"),
+        *prefill_parts,
         ("Draft context C64", "context"),
         ("Draft propose C16", "draft_c16"),
         ("Draft propose C64", "draft_c64"),
@@ -150,6 +170,12 @@ def compare(folder, prompts, previous, candidate, plan, archived_groups):
             )
 
         print(f"  {label} n={x['count']}/{y['count']} mean/P50/P95 ms {show(x)} -> {show(y)}", flush=True)
+    if split_plan:
+        print(
+            f"Vocabulary Head calls {a['target_prefill']['count']} -> {b['prefill_head']['count']}, "
+            f"skipped {b['prefill_middle']['count']} non-final blocks",
+            flush=True,
+        )
     n = sum(len(v) for v in samples["previous"].values())
     matches = sum(z["matching_repetitions"] for z in agreement.values())
     traces = sum(z["round_traces_matched"] for z in agreement.values())

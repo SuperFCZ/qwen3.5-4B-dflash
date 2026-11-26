@@ -506,7 +506,7 @@ class AclChunkExecutor::Impl {
   std::string Key(const TensorSpec& spec, const std::string& graph,
                   bool output) const {
     if (State(spec.name)) return spec.name + (output ? ".next" : ".current");
-    if (spec.name == "features" || spec.name == "start_position" ||
+    if (spec.name == "features" || spec.name == "prefill_head_input" || spec.name == "start_position" ||
         spec.name == "valid_rows" || spec.name == "anchor" ||
         spec.name == "proposal_count")
       return spec.name;
@@ -530,7 +530,7 @@ class AclChunkExecutor::Impl {
     cleanup.allocated_device_bytes += buffer->bytes;
     // Discard outputs have private graph-scoped device allocations. No host
     // allocation means Call queues neither H2D nor D2H for them.
-    if (!State(spec.name) && spec.name != "features" &&
+    if (!State(spec.name) && spec.name != "features" && spec.name != "prefill_head_input" &&
         spec.name.rfind("draft_weight_", 0) != 0 &&
         !IsVerifyDiscardState(spec.name))
       Check(aclrtMallocHost(&buffer->host, buffer->bytes), "aclrtMallocHost");
@@ -776,12 +776,21 @@ class AclChunkExecutor::Impl {
     Healthy();
     Require(cursor == 0 && pending == 0, "prefill needs a fresh request");
     std::int64_t token = 0;
+    const bool split_head = models.count("target_prefill_head") != 0;
+    const bool cache_only = models.count("draft_context64") != 0;
     for (std::size_t offset = 0; offset < ids.size(); offset += 64) {
       const auto rows = std::min<std::size_t>(64, ids.size() - offset);
       Inputs("target_prefill",
              {ids.begin() + offset, ids.begin() + offset + rows});
       Call("target_prefill");
-      token = Tokens("target_prefill").at(0);
+      if (!split_head) {
+        token = Tokens("target_prefill").at(0);
+      } else if (offset + rows == ids.size() || (draft && !cache_only)) {
+        // The final block supplies the generation anchor. Legacy full-Draft
+        // preparation also consumes an anchor on every intermediate block.
+        Call("target_prefill_head");
+        token = Tokens("target_prefill_head").at(0);
+      }
       Swap('t');
       feature_start = cursor;
       feature_rows = rows;
@@ -791,7 +800,7 @@ class AclChunkExecutor::Impl {
         Require(draft_cursor == feature_start, "Draft prefill cursor is inconsistent");
         Scalar("start_position", static_cast<std::int64_t>(feature_start));
         Scalar("valid_rows", static_cast<std::int64_t>(feature_rows));
-        if (models.count("draft_context64")) {
+        if (cache_only) {
           Call("draft_context64");
         } else {
           Scalar("anchor", token);
@@ -1301,6 +1310,7 @@ std::int64_t AclChunkExecutor::vocabulary_size() const noexcept {
 std::string AclChunkExecutor::abi_id() const { return impl_->plan.abi; }
 std::string AclChunkExecutor::draft_prefill_policy() const { return impl_->plan.draft_policy; }
 bool AclChunkExecutor::has_context_only_prefill() const { return impl_->plan.graphs.count("draft_context64") != 0; }
+bool AclChunkExecutor::has_separate_prefill_head() const { return impl_->plan.graphs.count("target_prefill_head") != 0; }
 std::size_t AclChunkExecutor::om_count() const {
   return impl_->plan.graphs.size() + (impl_->plan.draft_policy == "static_draft16_64_oms");
 }
