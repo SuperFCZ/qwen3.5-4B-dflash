@@ -1,0 +1,20 @@
+[
+  {
+    "op": "TargetGateUpPanel",
+    "input_desc": [
+      {"name":"x", "param_type":"required", "format":["ND"], "type":["int8"]},
+      {"name":"panels", "param_type":"required", "format":["ND"], "type":["int8"]},
+      {"name":"row_scale", "param_type":"required", "format":["ND"], "type":["float"]},
+      {"name":"gate_scale", "param_type":"required", "format":["ND"], "type":["float"]},
+      {"name":"up_scale", "param_type":"required", "format":["ND"], "type":["float"]}
+    ],
+    "output_desc": [
+      {"name":"gate", "param_type":"required", "format":["ND"], "type":["float16"]},
+      {"name":"up", "param_type":"required", "format":["ND"], "type":["float16"]}
+    ],
+    "attr": [
+      {"name":"cube_dequant", "param_type":"optional", "type":"int", "default_value":1},
+      {"name":"prefetch_b", "param_type":"optional", "type":"int", "default_value":0}
+    ]
+  }
+]

@@ -8,6 +8,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pair_graph import K, N, MM, DQ, pairs, protobuf_classes, single_graph, spec
 from pair_reference import LAYOUTS, converted, ints, matrix_view
+from pair_kernel import VARIANTS, custom_nodes, pack_matrix
+from pair_measure import device, WEIGHT_BYTES, PEAK
+import csv
 
 
 def fixture(tmp_path):
@@ -81,3 +84,45 @@ def test_layout_inverse_and_exact_integer_reference():
     assert converted(
         np.array([[100]], np.int32), np.float32(0.1), np.array([[0.2]], np.float32), "weight-first"
     )[0, 0] == np.float16(2).view(np.uint16)
+    assert np.array_equal(matrix_view(pack_matrix(w).ravel(), "nz-kn", k, n), w)
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_custom_boundary(tmp_path, variant):
+    model, abi = fixture(tmp_path)
+
+    def bind(cls, b, rows):
+        return custom_nodes(cls, b, rows, tmp_path / "packed.bin", variant)
+
+    g, s = single_graph(model, abi, 16, "custom", bind)
+    ops = {v.name: v for v in g.graph[0].op}
+    assert sum(v.type == DQ for v in ops.values()) == 1
+    assert not any(v.type == MM for v in ops.values())
+    main = ops["pair_gate_up"]
+    width, packed, prefetch = VARIANTS[variant]
+    assert list(ops["pair_panels"].attr["shape"].list.i) == [2 * N // width, width // 32, K // 16, 16, 32]
+    assert main.input[0].endswith("_pack_a:0") == packed
+    assert bool(main.attr["prefetch_b"].i) == prefetch
+    assert main.attr["cube_dequant"].i == (variant != "pack128-vector")
+    assert list(ops["NetOutput"].input) == [main.name + ":0", main.name + ":1"]
+    assert [o["name"] for o in s["outputs"]] == ["gate", "up"]
+
+
+def test_profile_has_separate_pair_span_and_projection_time(tmp_path):
+    path = tmp_path / "op_summary.csv"
+    with path.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(
+            ["Model ID", "Op Name", "Op Type", "Task Start Time(us)", "Task Duration(us)", "mte2_time(us)"]
+        )
+        for i in range(38):
+            for n, t, s, d in (
+                ("dq", DQ, 0, 10),
+                ("pack", "Transpose", 11, 8),
+                ("op", "TargetGateUpPanel", 20, 250),
+            ):
+                w.writerow([1, n, t, 1000 * i + s, d, 21])
+    z = device(path, {"dq": {"type": DQ}, "op": {"type": "TargetGateUpPanel"}}, 64)
+    assert z["core_us"]["p50"] == 250 and z["span_us"]["p50"] == 270 and z["matched"] == 30
+    assert z["dq_us"] == 10 and z["layout_us"] == 8 and z["pipe_sums_us"]["mte2timeus"] == 21
+    assert WEIGHT_BYTES / (1000 * PEAK) == 230.4

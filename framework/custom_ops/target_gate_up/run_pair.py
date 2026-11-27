@@ -25,7 +25,18 @@ def run(out, args, state):
 
     refs = references(out, stage, assets, env, desc)
     state.update(baseline=assets["baseline"], math={k: v["math"] for k, v in refs.items()})
-    return "REFERENCES_MEASURED"
+    if args.references_only:
+        return "REFERENCES_MEASURED"
+    from pair_sweep import run_sweep
+
+    groups = run_sweep(out, stage, assets, refs, env, cann, desc, state)
+    if any(not any(k not in ("native", "shared") for k in g["modes"]) for g in groups.values()):
+        return "MEASURED_CUSTOM_CHECKS_INCOMPLETE"
+    return (
+        "MEASURED_AND_PROFILED"
+        if all("core_us" in v for g in groups.values() for v in g["profiles"].values())
+        else "MEASURED_PROFILE_INCOMPLETE"
+    )
 
 
 if __name__ == "__main__":
