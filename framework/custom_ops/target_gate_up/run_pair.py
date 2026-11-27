@@ -29,7 +29,7 @@ def run(out, args, state):
         return "REFERENCES_MEASURED"
     from pair_sweep import run_sweep
 
-    groups = run_sweep(out, stage, assets, refs, env, cann, desc, state)
+    groups = run_sweep(out, stage, assets, refs, env, cann, desc, state, st)
     if any(not any(k not in ("native", "shared") for k in g["modes"]) for g in groups.values()):
         return "MEASURED_CUSTOM_CHECKS_INCOMPLETE"
     return (

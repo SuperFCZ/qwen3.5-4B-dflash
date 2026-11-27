@@ -10,6 +10,7 @@ from pair_graph import K, N, MM, DQ, pairs, protobuf_classes, single_graph, spec
 from pair_reference import LAYOUTS, converted, ints, matrix_view
 from pair_kernel import VARIANTS, custom_nodes, pack_matrix
 from pair_measure import device, WEIGHT_BYTES, PEAK
+from pair_sweep import package_key
 import csv
 
 
@@ -84,7 +85,46 @@ def test_layout_inverse_and_exact_integer_reference():
     assert converted(
         np.array([[100]], np.int32), np.float32(0.1), np.array([[0.2]], np.float32), "weight-first"
     )[0, 0] == np.float16(2).view(np.uint16)
-    assert np.array_equal(matrix_view(pack_matrix(w).ravel(), "nz-kn", k, n), w)
+
+
+@pytest.mark.parametrize("width", [128, 256])
+def test_local_b1_panels_use_transposed_nz_per_tile(width):
+    k, n = 64, 512
+    w = np.random.default_rng(3103).integers(-128, 128, (k, n), dtype=np.int8)
+    panels = pack_matrix(w, width)
+    assert panels.shape == (n // width, k // 32, width // 16, 16, 32)
+    for index, panel in enumerate(panels):
+        raw = panel.ravel()
+        chunk = w[:, index * width : (index + 1) * width]
+        assert np.array_equal(matrix_view(raw, "nz-nk", k, width), chunk)
+        for row in (0, 1, 31, 32, k - 1):
+            for col in (0, 1, 15, 16, width - 1):
+                offset = ((row // 32 * (width // 16) + col // 16) * 16 + col % 16) * 32 + row % 32
+                assert raw[offset] == chunk[row, col]
+    assert pack_matrix(w, 128).tobytes() != pack_matrix(w, 256).tobytes()
+
+
+def test_repacking_can_reuse_only_the_bound_device_source():
+    class Prior:
+        previous = {}
+
+        def completed(self, name):
+            assert name == "new-operator"
+            return self.receipt
+
+    p = Prior()
+    now = package_key(p)
+    assets = now["sources"]
+    legacy = {Path(name).name: digest for name, digest in assets.items()}
+    legacy["pair_kernel.py"] = "37a422eb1d9badc2cf02fc142f21a18f8a4f134ff667dcec376a2c7aa6d17a75"
+    p.previous = {"new-operator": True}
+    p.receipt = dict(
+        contract={"inputs": legacy},
+        result={"implementation": {"sha256": assets["op_kernel/target_gate_up_panel.cpp"]}},
+    )
+    assert package_key(p) == legacy
+    p.receipt["result"]["implementation"]["sha256"] = "different"
+    assert package_key(p) == now
 
 
 @pytest.mark.parametrize("variant", VARIANTS)

@@ -56,19 +56,27 @@ def use_operator(base, package):
     return dict(base, ASCEND_CUSTOM_OPP_PATH=os.pathsep.join(dict.fromkeys([vendor, *filter(None, paths)])))
 
 
-def pack_matrix(w):
+def pack_matrix(w, width):
+    """Pack each K x width logical panel as NZ of its transpose for local B1."""
     k, n = w.shape
-    return w.reshape(k // 16, 16, n // 32, 32).transpose(2, 0, 1, 3).copy()
+    require(width > 0 and width % 16 == 0 and n % width == 0 and k % 32 == 0, "invalid B1 panel")
+    # [panel, K1, N1 within this panel, N0=16, K0=32].
+    return w.reshape(k // 32, 32, n // width, width // 16, 16).transpose(2, 0, 3, 4, 1).copy()
 
 
-def pack(folder, weights, layouts):
+def pack(folder, weights, layouts, width):
     dest = folder / "gate-up.i8"
     with dest.open("xb") as f:
         for branch in ("gate", "up"):
             raw = np.fromfile(c.verify(weights[branch]["weight"]), np.int8)
             w = matrix_view(raw, layouts[branch])
-            packed = pack_matrix(w)
-            require(np.array_equal(matrix_view(packed.ravel(), "nz-kn"), w), "nonreversible weight pack")
+            packed = pack_matrix(w, width)
+            for index, panel in enumerate(packed):
+                decoded = matrix_view(panel.ravel(), "nz-nk", K, width)
+                require(
+                    np.array_equal(decoded, w[:, index * width : (index + 1) * width]),
+                    "incorrect local B1 bytes",
+                )
             packed.tofile(f)
     require(dest.stat().st_size == 2 * K * N, "wrong packed byte count")
     return c.identity(dest)
@@ -86,6 +94,8 @@ def custom_nodes(cls, branch, rows, packed_file, variant, prefix="pair"):
         nodes.append(n)
         return n.name + ":0"
 
+    # Public ND carrier of the already-built kernel. The inner dimensions encode
+    # the tiling width; each flat K*width payload uses the B1 order above.
     wshape = [2 * N // width, width // 32, K // 16, 16, 32]
     w = tensor_node(cls, prefix + "_panels", "FileConstant", [], [("y", 3, wshape)])
     w.attr["shape"].list.i[:] = wshape

@@ -1,21 +1,70 @@
 from pathlib import Path
+import hashlib
+import inspect
 import shutil
+import numpy as np
 
-from pair_graph import HERE, OP, MM, DQ, c, require, load_model, single_graph, save_graph
+from pair_graph import HERE, OP, MM, DQ, N, c, require, load_model, single_graph, save_graph
 from pair_kernel import VARIANTS, build_operator, use_operator, pack, custom_nodes
 from pair_measure import compiled_inventory, validate_two_rounds, smoke, paired, profile, WEIGHT_BYTES, PEAK
-from pair_reference import compile_om
+from pair_reference import compile_om, matrix_view, read_case
 from panel_profiler import bind_msprof
 
 
-def run_sweep(out, stage, assets, refs, env, cann, desc, state):
+def package_key(stages):
     files = [
         HERE / "TargetGateUpPanel.json",
         *sorted((HERE / "op_kernel").glob("*.cpp")),
         *sorted((HERE / "op_host").glob("*")),
-        HERE / "pair_kernel.py",
     ]
-    package = stage("new-operator", {f.name: c.sha(f) for f in files}, lambda d: build_operator(d, cann, env))
+    builder = hashlib.sha256(inspect.getsource(build_operator).encode()).hexdigest()
+    sources = {str(p.relative_to(HERE)): c.sha(p) for p in files}
+    # The first board sweep keyed both C++ translation units by basename. The
+    # installed, hash-bound dynamic source disambiguates the missing device entry.
+    if "new-operator" in stages.previous:
+        receipt = stages.completed("new-operator")
+        legacy = {f.name: sources[str(f.relative_to(HERE))] for f in files}
+        legacy["pair_kernel.py"] = "37a422eb1d9badc2cf02fc142f21a18f8a4f134ff667dcec376a2c7aa6d17a75"
+        if (
+            receipt["contract"]["inputs"] == legacy
+            and builder == "5cdf9756a60b4f807a636715aa608afbefcac6b0fe4fd396dc65256ae8420a98"
+            and receipt["result"]["implementation"]["sha256"] == sources["op_kernel/target_gate_up_panel.cpp"]
+        ):
+            return legacy
+    return dict(sources=sources, builder=builder)
+
+
+def rounding_examples(proof, ref, layouts):
+    """Record the exact inputs to a rare discrepancy; never adjust a result by token or fixture."""
+    examples = {}
+    for key, failure in proof["mismatches"].items():
+        if failure["count"] > 32:
+            continue
+        case, branch = key.split("/")
+        q, scales, _ = read_case(ref["cases"][case], ref["rows"])
+        source = ref["weights"][branch]
+        w = matrix_view(np.fromfile(c.verify(source["weight"]), np.int8), layouts[branch])
+        sw = np.fromfile(c.verify(source["scale"]), "<f4")[0]
+        r, n = divmod(int(failure["first"]), N)
+        acc = int(q[r].astype(np.int32) @ w[:, n].astype(np.int32))
+        pre = np.float16(np.float32(acc) * sw)
+        sr = scales[r, 0]
+        examples[key] = dict(
+            row=r,
+            column=n,
+            acc=acc,
+            weight_bits=int(sw.view("<u4")),
+            row_bits=int(sr.view("<u4")),
+            mid_bits=int(pre.view("<u2")),
+            half_row_bits=int(np.float16(sr).view("<u2")),
+            expected=failure["expected"],
+            actual=failure["actual"],
+        )
+    return examples
+
+
+def run_sweep(out, stage, assets, refs, env, cann, desc, state, stages):
+    package = stage("new-operator", package_key(stages), lambda d: build_operator(d, cann, env))
     private = use_operator(env, package)
     state["package"] = package
     cli = bind_msprof(out, cann, env)
@@ -33,11 +82,13 @@ def run_sweep(out, stage, assets, refs, env, cann, desc, state):
             lambda d: validate_two_rounds(d, ref),
         )
         layouts = {b: v["layout"] for b, v in math.items()}
-        packed = stage(
-            role + "-packed-weight",
-            [ref["weights"], layouts, c.sha(HERE / "pair_kernel.py")],
-            lambda d: pack(d, ref["weights"], layouts),
-        )
+        packed_by_width = {}
+        for width in sorted({v[0] for v in VARIANTS.values()}):
+            packed_by_width[str(width)] = stage(
+                f"{role}-b1-n{width}",
+                [ref["weights"], layouts, width, c.sha(HERE / "pair_kernel.py")],
+                lambda d: pack(d, ref["weights"], layouts, width),
+            )
         candidates = {}
         envs = {}
         inv = {}
@@ -48,6 +99,7 @@ def run_sweep(out, stage, assets, refs, env, cann, desc, state):
                     model = ref["models"][name]
                     e = env
                 else:
+                    packed = packed_by_width[str(VARIANTS[name][0])]
 
                     def make(d):
                         def builder(cls, b, m):
@@ -96,6 +148,9 @@ def run_sweep(out, stage, assets, refs, env, cann, desc, state):
                 )
                 if not proof["ok"]:
                     failures[name] = proof["mismatches"]
+                    examples = rounding_examples(proof, ref, layouts)
+                    if examples:
+                        print(f"M{rows} {name} rounding witnesses {examples}", flush=True)
                     continue
                 candidates[name] = model
                 envs[name] = e
@@ -131,7 +186,7 @@ def run_sweep(out, stage, assets, refs, env, cann, desc, state):
             profiles=profiles,
             layouts=layouts,
             rounding=math,
-            packed=packed,
+            packed_by_width=packed_by_width,
         )
     state["groups"] = results
     print("Target Gate/Up: real Layer 0, host Execute+Sync and msprof device times in us", flush=True)
