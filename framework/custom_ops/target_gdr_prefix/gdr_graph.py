@@ -82,7 +82,7 @@ def prefix_graph(model, abi, site):
     return subgraph(model, abi, list(edges), [], {}, {}, "target_gdr_real_operands")
 
 
-def isolated(model, site, chunk=64, physical=16, custom=False):
+def isolated(model, site, chunk=64, physical=16, custom=False, level=2):
     """Keep all inputs dynamic. Only the state output is live, as in the deployed second pass."""
     (g,) = model.graph
     src = next(n for n in g.op if n.name == site["commit"])
@@ -105,6 +105,7 @@ def isolated(model, site, chunk=64, physical=16, custom=False):
     args = [("in_" + s["name"] + ":0", s["name"], types[s["name"]], s["shape"]) for s in public]
     if custom:
         op = tensor_node(cls, "prefix_state", COMMIT, args, [("state", 1, STATE)])
+        op.attr["prune_level"].i = level
         port = 0
     else:
         op = cls()
@@ -129,3 +130,40 @@ def isolated(model, site, chunk=64, physical=16, custom=False):
     net.attr["_input_name_key"].list.s.append(b"input0")
     net.attr["_input_name_value"].list.i.append(0)
     return out, dict(inputs=public, outputs=[spec("state", "float32", STATE)])
+
+
+def replace_commit(model, abi, level=2):
+    """Replace only the second-pass state producer. Keep every first-pass output and public port."""
+    bound = sites(model, abi)
+    (graph,) = model.graph
+    table = {n.name: n for n in graph.op}
+    aliases = {}
+    for state, entry in bound.items():
+        old = table[entry["commit"]]
+        name = "target_gdr_prefix_" + state
+        require(name not in table, "GDR name collision")
+        port_specs = specs()[1:]
+        args = [
+            (edge, v["name"], dt, v["shape"])
+            for edge, v, dt in zip(old.input[1:], port_specs, TYPES[1:], strict=True)
+        ]
+        op = tensor_node(type(old), name, COMMIT, args, [("state", 1, STATE)])
+        op.attr["prune_level"].i = level
+        op.id = old.id
+        for port in (":1", ":-1"):
+            aliases[old.name + port] = name + (":0" if port == ":1" else port)
+        old.CopyFrom(op)
+        entry["new"] = name
+    for n in graph.op:
+        for i, e in enumerate(n.input):
+            if e in aliases:
+                n.input[i] = aliases[e]
+    for i, e in enumerate(graph.output):
+        if e in aliases:
+            graph.output[i] = aliases[e]
+    require(
+        Counter(n.type for n in graph.op)[GDR] == len(bound)
+        and Counter(n.type for n in graph.op)[COMMIT] == len(bound),
+        "wrong first/commit rewrite counts",
+    )
+    return bound

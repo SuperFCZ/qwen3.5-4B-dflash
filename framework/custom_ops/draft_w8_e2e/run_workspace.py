@@ -87,8 +87,9 @@ def request_summary(rows):
     return result
 
 
-def compare(folder, prompts, previous, candidate, plan, archived_groups, *, split_plan=None, window_plan=None):
-    label = "conv_window" if window_plan else "split_head" if split_plan else "workspace"
+def compare(folder, prompts, previous, candidate, plan, archived_groups, *, split_plan=None, window_plan=None, labels=None):
+    label, control_key = labels or (("conv_window", "split_head") if window_plan else
+                                    ("split_head", "workspace") if split_plan else ("workspace", "context"))
     candidate_plan = window_plan or split_plan or plan
     samples = {s: {"short": [], "long": []} for s in ("previous", label)}
     agreement = {}
@@ -119,7 +120,6 @@ def compare(folder, prompts, previous, candidate, plan, archived_groups, *, spli
         }
         a, b = groups[group].values()
         # Reproduce the actual previous comparison and its token/latency denominators.
-        control_key = "split_head" if window_plan else "workspace" if split_plan else "context"
         control = archived_groups[group][control_key]
         required = ("total", "draft", "context", "verify", "generation_tok_s", "tokens")
         if split_plan or window_plan:

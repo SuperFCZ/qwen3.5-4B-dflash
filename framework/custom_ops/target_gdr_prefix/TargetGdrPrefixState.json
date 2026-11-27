@@ -1,0 +1,17 @@
+[
+  {
+    "op": "TargetGdrPrefixState",
+    "input_desc": [
+      {"name":"key","param_type":"required","format":["ND"],"type":["float16"]},
+      {"name":"value","param_type":"required","format":["ND"],"type":["float16"]},
+      {"name":"g","param_type":"required","format":["ND"],"type":["float"]},
+      {"name":"beta","param_type":"required","format":["ND"],"type":["float16"]},
+      {"name":"initial","param_type":"required","format":["ND"],"type":["float"]},
+      {"name":"length","param_type":"required","format":["ND"],"type":["int16"]}
+    ],
+    "output_desc": [
+      {"name":"state","param_type":"required","format":["ND"],"type":["float"]}
+    ],
+    "attr":[{"name":"prune_level","param_type":"optional","type":"int","default_value":2}]
+  }
+]
