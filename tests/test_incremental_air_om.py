@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 
@@ -22,6 +23,8 @@ from qwen35_dflash.ascend310p.incremental import (
     TargetRowsGraph,
     accepted_prefix_length,
     conv_chunk,
+    conv_prefix,
+    conv_with_history,
     copy_cache_rows,
     incremental_graph_specs,
     prefix_state,
@@ -293,6 +296,8 @@ def test_conv_chunk_preserves_output_and_every_committed_prefix(rows, dtype, wit
         F.conv1d(history, weight.unsqueeze(1), bias, groups=channels)
     )[..., -rows:].to(dtype)
     output, bank = conv_chunk(x, state, weight, bias)
+    compact_output, compact_history = conv_with_history(x, state, weight, bias)
+    assert torch.equal(output, compact_output)
     torch.testing.assert_close(output, reference_output, rtol=0, atol=0)
     assert bank.shape == (batch, rows, channels, width)
     assert bank.dtype == dtype and bank.is_contiguous()
@@ -304,6 +309,8 @@ def test_conv_chunk_preserves_output_and_every_committed_prefix(rows, dtype, wit
         torch.testing.assert_close(bank[:, valid - 1], window, rtol=0, atol=0)
         committed = prefix_state(bank, torch.tensor([valid], dtype=torch.int16))
         torch.testing.assert_close(committed, window, rtol=0, atol=0)
+        direct = conv_prefix(compact_history, torch.tensor([valid], dtype=torch.int16), width)
+        assert torch.equal(direct.view(torch.uint8), committed.view(torch.uint8))
     torch.testing.assert_close(x, original_x, rtol=0, atol=0)
     torch.testing.assert_close(state, original_state, rtol=0, atol=0)
 
@@ -965,7 +972,7 @@ def chunk_bundle(tmp_path, monkeypatch, request):
     deployment = compile_air_bundle(
         air["manifest_path"],
         soc_version="Ascend310P3",
-        atc_bin="/bin/true",
+        atc_bin=shutil.which("true"),
         runner=atc,
         atc_identity="fake-host-test",
     )
@@ -1030,7 +1037,7 @@ def test_compiler_rejects_invalid_graph_sets_before_atc(chunk_bundle, failure):
         compile_air_bundle(
             air_path,
             soc_version="Ascend310P3",
-            atc_bin="/bin/true",
+            atc_bin=shutil.which("true"),
             runner=lambda *args: calls.append(args),
             atc_identity="host-test",
         )

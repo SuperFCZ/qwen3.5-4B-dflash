@@ -25,11 +25,23 @@ from .incremental_plan import (
 CHUNK_ABI = ABI
 
 
-def conv_chunk(x: Tensor, state: Tensor, weight: Tensor, bias: Tensor | None):
-    """The branch's causal-conv formula, including every valid-prefix state."""
+def conv_with_history(x: Tensor, state: Tensor, weight: Tensor, bias: Tensor | None):
     rows = x.shape[-1]
     history = torch.cat((state, x), dim=-1).to(weight.dtype)
     output = F.silu(F.conv1d(history, weight.unsqueeze(1), bias, groups=x.shape[1]))
+    return output[..., -rows:].to(x.dtype), history.to(x.dtype)
+
+
+def conv_prefix(history: Tensor, rows: Tensor, width: int) -> Tensor:
+    """History starts with the old window; after r input rows the new window starts at r."""
+    columns = rows.to(torch.long) + torch.arange(width, device=history.device, dtype=torch.long)
+    return torch.index_select(history, 2, columns)
+
+
+def conv_chunk(x: Tensor, state: Tensor, weight: Tensor, bias: Tensor | None):
+    """Return the convolution and every prefix window for callers consuming a full bank."""
+    rows = x.shape[-1]
+    output, history = conv_with_history(x, state, weight, bias)
     # Window i is history[..., i+1:i+1+K], the state after input row i.
     # TorchAir cannot lower aten.unfold. Stack K shifted slices instead of
     # creating an overlapping view; K is the static convolution width (4).
@@ -38,9 +50,7 @@ def conv_chunk(x: Tensor, state: Tensor, weight: Tensor, bias: Tensor | None):
          for offset in range(state.shape[-1])],
         dim=-1,
     )
-    return output[..., -rows:].to(x.dtype), bank.permute(0, 2, 1, 3).contiguous().to(
-        x.dtype
-    )
+    return output, bank.permute(0, 2, 1, 3).contiguous()
 
 
 def prefix_state(bank: Tensor, rows: Tensor) -> Tensor:
@@ -213,12 +223,14 @@ class AirGdn(nn.Module):
     def forward(self, x, conv, recurrent, valid_rows):
         base = self.base
         batch, rows, _ = x.shape
-        mixed, bank = conv_chunk(
-            base.in_proj_qkv(x).transpose(1, 2),
-            conv,
-            base.conv1d.weight.squeeze(1),
-            base.conv1d.bias,
-        )
+        projected = base.in_proj_qkv(x).transpose(1, 2)
+        weight = base.conv1d.weight.squeeze(1)
+        if self.mtp:
+            mixed, bank = conv_chunk(projected, conv, weight, base.conv1d.bias)
+            next_conv = prefix_state(bank, valid_rows)
+        else:
+            mixed, history = conv_with_history(projected, conv, weight, base.conv1d.bias)
+            next_conv = conv_prefix(history, valid_rows, conv.shape[-1])
         query, key, value = torch.split(
             mixed.transpose(1, 2), [base.key_dim, base.key_dim, base.value_dim], dim=-1
         )
@@ -269,14 +281,14 @@ class AirGdn(nn.Module):
             if final.dtype != torch.float32:
                 raise TypeError("GDR recurrent output must be FP32")
             committed_final = final
-            capsule = (query, key, value, g, beta, initial, bank)
+            capsule = (query, key, value, g, beta, initial, history)
         z = base.in_proj_z(x).reshape(-1, base.head_v_dim)
         output = base.norm(output.reshape(-1, base.head_v_dim), z).reshape(
             batch, rows, -1
         )
         return (
             base.out_proj(output),
-            prefix_state(bank, valid_rows),
+            next_conv,
             committed_final,
             capsule,
             final,
@@ -430,7 +442,7 @@ class TargetCommitGraph(nn.Module):
     def forward(self, committed_rows, *capsules):
         result = []
         for index in range(self.layers):
-            query, key, value, g, beta, initial, bank = capsules[
+            query, key, value, g, beta, initial, history = capsules[
                 index * 7 : index * 7 + 7
             ]
             _, final = self.operation(
@@ -447,7 +459,8 @@ class TargetCommitGraph(nn.Module):
             )
             if final.dtype != torch.float32:
                 raise TypeError("GDR committed recurrent state must be FP32")
-            result.extend((prefix_state(bank, committed_rows), final))
+            width = history.shape[-1] - query.shape[1]
+            result.extend((conv_prefix(history, committed_rows, width), final))
         return tuple(result)
 
 
@@ -795,10 +808,10 @@ def incremental_graph_specs(
                 (1, 16, base.num_v_heads),
                 (1, 16, base.num_v_heads),
                 tuple(state[2 * index + 1].shape),
-                (1, 16, base.conv_dim, base.conv_kernel_size),
+                (1, base.conv_dim, 16 + base.conv_kernel_size),
             )
             capsule_layout = list(zip(
-                ("q", "k", "v", "g", "beta", "initial", "conv_bank"),
+                ("q", "k", "v", "g", "beta", "initial", "conv_history"),
                 shapes,
                 (
                     torch.float16,

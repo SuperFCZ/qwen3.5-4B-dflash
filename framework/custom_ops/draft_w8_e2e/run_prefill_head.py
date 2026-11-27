@@ -44,7 +44,8 @@ def compile_part(d, side, part, original, atc, env, cache_vendor):
     )
     c.verify_tree(part["payloads"])
     air = c.verify(part["air"])
-    prefix = d / ("target_prefill_" + side)
+    role = "target_verify" if side == "verify" else "target_prefill"
+    prefix = d / (role if side == "verify" else role + "_" + side)
     (output,) = (x for x in args if x.startswith("--output="))
     args[args.index("--model=" + original["source_air"]["path"])] = "--model=" + str(air)
     args[args.index(output)] = "--output=" + str(prefix)
@@ -54,8 +55,8 @@ def compile_part(d, side, part, original, atc, env, cache_vendor):
     c.write(d / "atc-command.json", args)
     command(args, d / "atc.log", e, air.parent)
     om = c.identity(prefix.with_suffix(".om"))
-    if side == "body":
-        backend = audit_compiled(d, "target_prefill", Path(om["path"]), atc, e, cache_vendor)
+    if side in ("body", "verify"):
+        backend = audit_compiled(d, role, Path(om["path"]), atc, e, cache_vendor)
         dump = c.read(c.verify(backend))["dump"]
     else:
         path = d / "compiled-target.json"
@@ -140,17 +141,16 @@ def write_plan(d, old_plan, original, parts):
     return c.identity(path)
 
 
-def capture(folder, exe, model, files, env):
+def capture(folder, exe, model, files, env, *, workspace=0, profiler=None):
     abi = model["abi"]
     app = folder / "case"
     require(set(files) == {v["name"] for v in abi["inputs"]}, "missing reference input")
     prepare_case(app, abi, {"files": files}, None)
-    command(
-        [exe, "0", c.verify(model["om"]), app, app / "inputs", "0", "huge-first", "normal", "--capture"],
-        folder / "capture.log",
-        env,
-        folder,
-    )
+    args = [exe, "0", c.verify(model["om"]), app, app / "inputs", str(workspace), "huge-first", "normal", "--capture"]
+    if profiler:
+        args = [profiler["alias"], *profiler["flags"], "--output=" + str(folder / "profiler"), *args]
+    command(args, folder / "capture.log", env, folder)
+    require((app / "execution.json").is_file(), f"capture application did not finish; see {folder/'capture.log'}")
     e = c.read(app / "execution.json")
     changed = e["mutated_inputs"]
     states = {
@@ -164,7 +164,8 @@ def capture(folder, exe, model, files, env):
         and len(changed) == len(set(changed))
         and set(changed) <= states
         and e["readonly"] is (not changed)
-        and e["timing"]["repetitions"] == 0,
+        and e["timing"]["repetitions"] == 0
+        and (not workspace or e["allocation"]["workspace_bytes"] == workspace),
         "invalid two-poison device capture",
     )
     outputs = {v["name"]: c.identity(app / (v["name"] + "-actual-0.bin")) for v in abi["outputs"]}

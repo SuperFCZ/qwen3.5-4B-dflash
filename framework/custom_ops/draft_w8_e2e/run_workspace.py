@@ -87,8 +87,9 @@ def request_summary(rows):
     return result
 
 
-def compare(folder, prompts, previous, candidate, plan, archived_groups, *, split_plan=None):
-    label = "split_head" if split_plan is not None else "workspace"
+def compare(folder, prompts, previous, candidate, plan, archived_groups, *, split_plan=None, window_plan=None):
+    label = "conv_window" if window_plan else "split_head" if split_plan else "workspace"
+    candidate_plan = window_plan or split_plan or plan
     samples = {s: {"short": [], "long": []} for s in ("previous", label)}
     agreement = {}
     for p in prompts:
@@ -107,7 +108,7 @@ def compare(folder, prompts, previous, candidate, plan, archived_groups, *, spli
             "generation ABI/protocol changed: " + name,
         )
         agreement[name] = compare_generation(a["dflash"], b["dflash"])
-        for side, report, observed_plan in (("previous", a, plan), (label, b, split_plan or plan)):
+        for side, report, observed_plan in (("previous", a, plan), (label, b, candidate_plan)):
             for i, row in enumerate(timings(report, p, observed_plan, context=True)):
                 samples[side][p["group"]].append(dict(row, prompt=name, repetition=i))
     groups = {}
@@ -118,9 +119,10 @@ def compare(folder, prompts, previous, candidate, plan, archived_groups, *, spli
         }
         a, b = groups[group].values()
         # Reproduce the actual previous comparison and its token/latency denominators.
-        control = archived_groups[group]["workspace" if split_plan is not None else "context"]
+        control_key = "split_head" if window_plan else "workspace" if split_plan else "context"
+        control = archived_groups[group][control_key]
         required = ("total", "draft", "context", "verify", "generation_tok_s", "tokens")
-        if split_plan is not None:
+        if split_plan or window_plan:
             required += ("target_prefill", "prefill", "decode", "target_per_request")
         require(
             all(a[k] == control[k] for k in required),
@@ -148,7 +150,7 @@ def compare(folder, prompts, previous, candidate, plan, archived_groups, *, spli
             ("Target body alone", "prefill_body"),
             ("Separate Target Head", "prefill_head"),
         )
-        if split_plan
+        if split_plan or window_plan
         else ()
     )
     for label, k in (
